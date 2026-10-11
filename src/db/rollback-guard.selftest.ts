@@ -18,6 +18,7 @@ const srv = path.join(tmp, 'srv');
 const log = path.join(tmp, 'calls');
 const queryFile = path.join(tmp, 'brand-query');
 const rolledBack = path.join(tmp, 'rolled-back');
+const purged = path.join(tmp, 'purged');
 const guardSource = fs.readFileSync(path.join(root, 'deploy/rollback-guard.sh'), 'utf8');
 const recovery = '再重跑回滚检查，确认品牌风险已消除';
 let checks = 0;
@@ -35,10 +36,12 @@ const baseEnv = {
   FAKE_LOG: log,
   FAKE_QUERY: queryFile,
   FAKE_ROLLED_BACK: rolledBack,
+  FAKE_PURGED: purged,
 };
 const run = (command: string, args: string[], env: Record<string, string> = {}, input?: string) => {
   fs.writeFileSync(log, '');
   fs.rmSync(rolledBack, { force: true });
+  fs.rmSync(purged, { force: true });
   const started = performance.now();
   const r = spawnSync(command, args, { cwd: repo, env: { ...baseEnv, ...env }, input, encoding: 'utf8', timeout: 15_000 });
   assert.ifError(r.error);
@@ -70,7 +73,7 @@ const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const [kill, limit, command, ...args] = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_LOG, 'timeout ' + process.argv.slice(2).join(' ') + '\\n');
-if (kill !== '--kill-after=2s' || limit !== '8s') process.exit(99);
+if (kill !== '--kill-after=2s' || !['8s', '120s'].includes(limit)) process.exit(99);
 const r = spawnSync(command, args, { encoding: 'utf8', stdio: ['inherit', 'pipe', 'pipe'],
   timeout: Number(process.env.FAKE_TIMEOUT_MS || 8000), killSignal: 'SIGKILL' });
 process.stdout.write(r.stdout || '');
@@ -97,12 +100,22 @@ case "$*" in
 esac
 case "$*" in
   *"inspect --format {{.Image}}"*) [ "\${FAKE_RUNNING:-4}" = missing ] && exit 1; echo sha256:running ;;
-  *pg-backend.ts*|*registry.ts*|*pack-api.ts*)
+  *"container ls"*) [ "\${FAKE_CONTAINER_DOWN:-0}" = 0 ] || exit 1; [ "\${FAKE_SANDBOX_CONTAINER:-absent}" = absent ] || echo placeholder; exit 0 ;;
+  *"sandbox.ts purge --all"*) [ "\${FAKE_PURGE_FAIL:-0}" = 0 ] || exit 3; echo "purge image=\${APP_IMAGE:-missing}" >> "$FAKE_LOG"; touch "$FAKE_PURGED" ;;
+  *pg-backend.ts*|*registry.ts*|*pack-api.ts*|*runtime.ts*)
     phase="\${FAKE_TARGET:-3}"
     case "$*" in *sha256:running*) phase="\${FAKE_RUNNING:-4}" ;; esac
     [ "$phase" = error ] && exit 125
-    case "$*" in *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *) need=4 ;; esac
+    case "$*" in *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *pack-api.ts*) need=4 ;; *) need=5 ;; esac
     [ "$phase" -ge "$need" ] ;;
+  *information_schema.columns*"column_name = 'kind'"*)
+    case "\${FAKE_TENANCY_SCHEMA:-f}" in down) exit 1 ;; *) echo "\${FAKE_TENANCY_SCHEMA:-f}" ;; esac ;;
+  *"kind = 'standard'"*)
+    printf '%s' "\${!#}" > "$FAKE_QUERY.tenancy"
+    [ "\${FAKE_TENANCY_DOWN:-0}" = 0 ] || exit 1
+    rows="\${FAKE_SANDBOX_ROWS:-f}"
+    [ ! -f "$FAKE_PURGED" ] || rows="\${FAKE_AFTER_PURGE:-f}"
+    echo "\${FAKE_OTHER_HOST:-f}|$rows" ;;
   *information_schema.columns*tenants*)
     printf '%s' "\${!#}" > "$FAKE_QUERY.pending-probe"
     case "\${FAKE_PROBE-t}" in down) exit 1 ;; *) echo "\${FAKE_PENDING_SCHEMA-\${FAKE_PROBE-t}}" ;; esac ;;
@@ -129,7 +142,7 @@ esac`,
 cat >/dev/null
 echo "curl $*" >> "$FAKE_LOG"
 [ "\${FAKE_HEALTH_FAIL:-}" = 1 ] && [ ! -f "$FAKE_ROLLED_BACK" ] && exit 7
-printf '{"revision":"%s","config":{"catalogVersioned":false}}' "\${FAKE_REVISION:-fixture}"`,
+printf '{"revision":"%s","sandboxes":0,"config":{"catalogVersioned":false}}' "\${FAKE_REVISION:-fixture}"`,
   );
   fake(
     'git',
@@ -142,6 +155,7 @@ case "$1" in
       *pg-backend.ts) case "$3" in *v01:*) exit 1 ;; esac ;;
       *registry.ts) case "$3" in *v01:*|*v02:*) exit 1 ;; esac ;;
       *pack-api.ts) case "$3" in *v04:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *runtime.ts) exit 1 ;;
     esac ;;
   archive) tar -cf - package.json Dockerfile deploy src ;;
   *) exit 98 ;;
@@ -157,8 +171,10 @@ echo "ssh $*" >> "$FAKE_LOG"
 shift
 if [ "$1" = bash ]; then exec "$@"; fi
 case "$*" in
+  *"if [ -f"*".env.sandbox"*"echo 1"*) [ -f "$REMOTE_DIR/.env.sandbox" ] && echo 1 || echo 0 ;;
+  *runtime.ts*) exec docker run --rm --entrypoint /bin/sh side1:prev -c "test -e /app/src/tenancy/runtime.ts" ;;
   *curl*) exec curl ;;
-  *"image inspect"*) exec docker image inspect side1:prev ;;
+  *"image inspect"*) case "$*" in *".Config.Env"*) echo "APP_REVISION=\${FAKE_REVISION:-fixture}" ;; *) exec docker image inspect side1:prev ;; esac ;;
   *"up -d --no-deps app"*) touch "$FAKE_ROLLED_BACK" ;;
 esac
 exit 0`,
@@ -250,8 +266,14 @@ exit 0`,
   check('品牌为空放行，当前 04 发布的 brand:null 由 SQL 判断', r.code === 0, r.out);
   check(
     '每次品牌探测/查询都有进程超时、SQL/锁超时与失败退出保护',
-    r.log.split('\n').filter((line) => line.startsWith('docker ') && line.includes('psql')).length === 4 &&
-      r.log.split('\n').filter((line) => line.startsWith('timeout --kill-after=2s 8s docker ')).length === 4 &&
+    r.log.split('\n').filter((line) => line.startsWith('docker ') && line.includes('psql') && !line.includes("column_name = 'kind'"))
+      .length === 4 &&
+      r.log
+        .split('\n')
+        .filter(
+          (line) =>
+            line.startsWith('timeout --kill-after=2s 8s docker ') && line.includes('psql') && !line.includes("column_name = 'kind'"),
+        ).length === 4 &&
       r.log.includes('PGOPTIONS=-c statement_timeout=5000 -c lock_timeout=2000') &&
       r.log.includes('-v ON_ERROR_STOP=1'),
     r.log,
@@ -296,7 +318,11 @@ exit 0`,
     }
   }
   r = guard('side1:prev', { FAKE_TARGET: '4', FAKE_BRAND: 'down' });
-  check('04 到 04 无需品牌降级检查', r.code === 0 && !r.log.includes('information_schema.columns'), r.log);
+  check(
+    '04 到 04 无需品牌降级检查',
+    r.code === 0 && !r.log.includes("column_name = 'brand'") && !r.log.includes("column_name = 'render_inputs'"),
+    r.log,
+  );
   for (const running of ['4', 'error', 'missing']) {
     for (const brand of ['down', 'malformed', '']) {
       r = guard('pre-04', { FAKE_RUNNING: running, FAKE_BRAND: brand, FAKE_HEALTH_FAIL: '1' });
@@ -397,6 +423,74 @@ exit 0`,
   const queries = Object.fromEntries(
     ['pending-probe', 'published-probe', 'pending', 'published'].map((key) => [key, fs.readFileSync(`${queryFile}.${key}`, 'utf8')]),
   );
+  // 05 验收 13：真实脚本由 bash -s 执行，所有 docker/psql 都是吞 stdin 的替身。
+  fs.writeFileSync(path.join(srv, '.env'), 'DEPLOY_PROFILE=demo\nDEFAULT_TENANT_SLUG=demo\n');
+  const sandboxEnv = { FAKE_TARGET: '4', FAKE_RUNNING: '5', FAKE_TENANCY_SCHEMA: 't' };
+  for (const state of ['running', 'stopped', 'env-only']) {
+    if (state === 'env-only') fs.writeFileSync(path.join(srv, '.env.sandbox'), 'placeholder');
+    const env = { ...sandboxEnv, FAKE_SANDBOX_CONTAINER: state === 'env-only' ? 'absent' : state };
+    r = guard('pre-05', env);
+    check(
+      `05-13① ${state}：拒绝 7，删容器、改名、摘站点，未 purge`,
+      r.code === 7 &&
+        r.out.includes('--profile sandbox rm -sf sandbox') &&
+        r.out.includes('mv .env.sandbox .env.sandbox.off') &&
+        r.out.includes('摘掉沙箱站点') &&
+        !r.log.includes('sandbox.ts purge --all'),
+      r.out,
+    );
+    const d = deploy('v04', env);
+    check(
+      `05-13① ${state}：deploy 转 1，不同步、不换容器、不改环境文件`,
+      d.code === 1 &&
+        !d.log.includes('rsync ') &&
+        !d.log.includes('up -d app') &&
+        (state !== 'env-only' || fs.existsSync(path.join(srv, '.env.sandbox'))),
+      d.out,
+    );
+    fs.rmSync(path.join(srv, '.env.sandbox'), { force: true });
+  }
+  r = guard('pre-05', { ...sandboxEnv, FAKE_SANDBOX_ROWS: 't' });
+  check(
+    '05-13② 当前镜像 purge --all 后重新问库才放行',
+    r.code === 0 &&
+      r.log.includes('purge image=sha256:running') &&
+      r.log.includes('sandbox.ts purge --all') &&
+      r.log.indexOf('sandbox.ts purge --all') < r.log.lastIndexOf("kind = 'standard'") &&
+      r.log.includes('timeout --kill-after=2s 120s docker compose') &&
+      !r.out.includes('拒绝回滚'),
+    r.log + r.out,
+  );
+  for (const [name, env] of [
+    ['purge 持续失败', { FAKE_SANDBOX_ROWS: 't', FAKE_PURGE_FAIL: '1' }],
+    ['运行时为零，purge 成功但库仍有行', { FAKE_SANDBOX_ROWS: 't', FAKE_AFTER_PURGE: 't' }],
+    ['库不可达', { FAKE_TENANCY_DOWN: '1' }],
+    ['库元数据不可达', { FAKE_TENANCY_SCHEMA: 'down' }],
+    ['容器列表不可确认', { FAKE_CONTAINER_DOWN: '1' }],
+    ['其他 standard 有 public_host', { FAKE_OTHER_HOST: 't', FAKE_SANDBOX_ROWS: 't' }],
+  ] as const) {
+    r = guard('pre-05', { ...sandboxEnv, ...env });
+    check(`05-13③ ${name}：拒绝 7`, r.code === 7, r.out);
+    const d = deploy('v04', { ...sandboxEnv, ...env });
+    check(`05-13③ ${name}：deploy 转 1、不 rsync`, d.code === 1 && !d.log.includes('rsync '), d.out);
+    if ('FAKE_OTHER_HOST' in env)
+      check(
+        '05-13③ Host 风险先报，打印 clear 与摘域名、不 purge',
+        r.out.includes('tenant-host clear') && r.out.includes('摘掉它们的域名') && !r.log.includes('sandbox.ts purge --all'),
+        r.out,
+      );
+  }
+  r = guard('pre-04', { ...sandboxEnv, FAKE_BRAND: 't', FAKE_SANDBOX_CONTAINER: 'stopped', FAKE_SANDBOX_ROWS: 't' });
+  check(
+    '05-13④ 品牌与沙箱风险同时存在先报 6、不 purge',
+    r.code === 6 && r.out.includes(recovery) && !r.log.includes('sandbox.ts purge --all'),
+    r.out,
+  );
+  r = guard('pre-05', { ...sandboxEnv, FAKE_RUNNING: '4', FAKE_TENANCY_SCHEMA: 'down' });
+  check('05 旧运行镜像且问不到库，保留旧部署回归豁免', r.code === 0, r.out);
+  r = guard('side1:prev', { ...sandboxEnv, FAKE_TARGET: '5', FAKE_TENANCY_DOWN: '1' });
+  check('05 到 05 回滚无需 pre-05 数据检查', r.code === 0 && !r.log.includes("column_name = 'kind'"), r.out);
+
   const pg = new PGlite();
   try {
     await pg.query("select set_config('statement_timeout', $1, false), set_config('lock_timeout', $2, false)", [
@@ -465,10 +559,26 @@ exit 0`,
     await pg.exec(`alter table sop_versions drop column render_inputs;
       update tenants set brand = '{"brandName":"山海旅行"}' where id = 'other';`);
     await state('发布快照列缺失仍检查待生效品牌', true);
+    // 直接执行脚本捕获的 05 谓词，证明宿主 Host 被排除而其他 standard 与沙箱行分别计数。
+    const tenancySql = fs.readFileSync(`${queryFile}.tenancy`, 'utf8');
+    await pg.exec(`alter table tenants add column kind text default 'standard';
+      alter table tenants add column slug text; alter table tenants add column public_host text;
+      update tenants set slug = id;
+      update tenants set public_host = 'host-placeholder' where id = 'demo';`);
+    const tenancyRows = async (): Promise<boolean[]> => Object.values((await pg.query<Record<string, boolean>>(tenancySql)).rows[0]!);
+    check('05-13③ SQL 宿主 public_host 不阻止回滚', (await tenancyRows()).join() === 'false,false');
+    await pg.exec("update tenants set public_host = 'other-placeholder' where id = 'other'");
+    check('05-13③ SQL 其他 standard public_host 阻止回滚', (await tenancyRows()).join() === 'true,false');
+    await pg.exec(
+      "update tenants set public_host = null where id = 'other'; insert into tenants(id,slug,kind) values ('sandbox','sbx-placeholder','sandbox')",
+    );
+    check('05-13② SQL 库中沙箱行独立于 standard Host 风险', (await tenancyRows()).join() === 'false,true');
+    await pg.exec("delete from tenants where kind = 'sandbox'");
+    check('05-13② SQL purge 后无沙箱行才放行', (await tenancyRows()).join() === 'false,false');
   } finally {
     await pg.close();
   }
-  console.log(`PASS rollback brand：${checks} 项（stdin、SQL、部署与自动回滚）`);
+  console.log(`PASS rollback brand/sandbox：${checks} 项（stdin、SQL、部署与自动回滚）`);
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

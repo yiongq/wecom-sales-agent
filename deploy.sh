@@ -43,12 +43,13 @@ for f in deploy/compose.yml src/db/migrate.ts; do
 done
 
 # 服务器地址不进 git：写在 .deploy.env（已 gitignore），或用环境变量覆盖。环境变量优先：先记下，读完文件再盖回去
-ENV_SERVER="${SERVER:-}" ENV_REMOTE_DIR="${REMOTE_DIR:-}" ENV_HOST_PORT="${HOST_PORT:-}" ENV_NAME="${NAME:-}"
+ENV_SERVER="${SERVER:-}" ENV_REMOTE_DIR="${REMOTE_DIR:-}" ENV_HOST_PORT="${HOST_PORT:-}" ENV_NAME="${NAME:-}" ENV_SANDBOX_PORT="${SANDBOX_PORT:-}"
 [[ -f .deploy.env ]] && source .deploy.env
 [[ -n "$ENV_SERVER" ]] && SERVER="$ENV_SERVER"
 [[ -n "$ENV_REMOTE_DIR" ]] && REMOTE_DIR="$ENV_REMOTE_DIR"
 [[ -n "$ENV_HOST_PORT" ]] && HOST_PORT="$ENV_HOST_PORT"
 [[ -n "$ENV_NAME" ]] && NAME="$ENV_NAME"
+[[ -n "$ENV_SANDBOX_PORT" ]] && SANDBOX_PORT="$ENV_SANDBOX_PORT"
 SERVER="${SERVER:?未设置 SERVER。写入 .deploy.env（如 SERVER=root@<服务器IP>）或以环境变量传入}"
 LIVE_NAME=wecom-sales-agent LIVE_DIR=/opt/wecom-sales-agent LIVE_PORT=3210 # 线上 demo 实例（宿主 3200 已被别的容器占用）
 REMOTE_DIR="${REMOTE_DIR:-$LIVE_DIR}"
@@ -86,6 +87,9 @@ compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PO
 # 或看不出来（回到文件存储也去不掉，只能用 02 之后的镜像）；5 渠道状态在库里，先 channel-export。
 # 6 有品牌风险，按上面打印的品牌状态与部署路径恢复。
 guard_rollback() { ssh "${SERVER}" bash -s -- "$REMOTE_DIR" "$1" "$NAME" "$HOST_PORT" <deploy/rollback-guard.sh; }
+# 05 以前只核对 revision；目标镜像判断失败从严按 pre-05 处理。
+pre05_image() { ssh "${SERVER}" "timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh $1 -c 'test -e /app/src/tenancy/runtime.ts'"; }
+sandbox_compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} SANDBOX_PORT=${SANDBOX_PORT} docker compose -p ${NAME} -f deploy/compose.yml --profile sandbox"; }
 
 # 1) 归档：只取 tag 里提交过的文件。目录权限改成 755：rsync -a 会把源目录的权限带到 REMOTE_DIR 上，mktemp 给的是 700
 BUILD_DIR="$(mktemp -d)"
@@ -149,6 +153,8 @@ elif ! git cat-file -e "refs/tags/${TAG}:src/channels/registry.ts" 2>/dev/null; 
   rollback_target=pre-03
 elif ! git cat-file -e "refs/tags/${TAG}:src/core/pack-api.ts" 2>/dev/null; then
   rollback_target=pre-04
+elif ! git cat-file -e "refs/tags/${TAG}:src/tenancy/runtime.ts" 2>/dev/null; then
+  rollback_target=pre-05
 fi
 if [ -n "$rollback_target" ]; then
   guard_rollback "$rollback_target" || {
@@ -157,10 +163,19 @@ if [ -n "$rollback_target" ]; then
       4) echo "错误：${TAG} 是 02 之前的版本，拒绝部署（服务器上什么都没动）。改过上架条目的内容（或看不出改没改过）：回到 02 之前的镜像会让已发出的方案书链接显示旧价，只能部署 02 之后的 tag。" >&2 ;;
       5) echo "错误：${TAG} 是 03 之前的版本，拒绝部署（服务器上什么都没动）。渠道状态在库里：按上面的步骤先 channel-export，再部署它。" >&2 ;;
       6) echo "错误：${TAG} 是 04 之前的版本，拒绝部署（服务器上什么都没动）。有品牌风险：按上面对应品牌状态的步骤恢复，检查通过后再部署它。" >&2 ;;
+      7) echo "错误：${TAG} 是 05 之前的版本，拒绝部署。按上面的删沙箱容器、改名 .env.sandbox、摘站点与 tenant-host clear 步骤处理。" >&2 ;;
       *) echo "错误：${TAG} 是旧版本，回滚前检查没跑完，拒绝部署（服务器上什么都没动）。" >&2 ;;
     esac
     exit 1
   }
+fi
+# 以文件是否存在为准；无文件时不启用 profile，也不改变宿主与备份路径。
+SANDBOX_ENABLED=$(ssh "${SERVER}" "if [ -f ${REMOTE_DIR}/.env.sandbox ]; then echo 1; else echo 0; fi")
+case "$SANDBOX_ENABLED" in 0 | 1) ;; *) echo "错误：无法确认沙箱是否启用，中止部署。" >&2; exit 1 ;; esac
+SANDBOX_PORT="${SANDBOX_PORT:-3211}"
+if [ "$SANDBOX_ENABLED" = 1 ] && { [[ ! "$SANDBOX_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || ((SANDBOX_PORT > 65535)) || [[ "$SANDBOX_PORT" = "$HOST_PORT" ]]; }; then
+  echo "错误：SANDBOX_PORT 必须是与 HOST_PORT 不同的有效端口。" >&2
+  exit 1
 fi
 
 # 4) 同步。--checksum：git archive 把所有文件的修改时间都设成提交时间，按「大小 + 修改时间」可能漏掉改过的文件。
@@ -173,6 +188,28 @@ rsync -az --checksum --delete \
 
 # 5) 构建，旧容器此时还在跑。失败就中止：线上照旧，只多了一个 :prev 标签
 echo "[5/7] 服务器上构建镜像（revision ${TAG}），并用新镜像试读 .env"
+if [ "$SANDBOX_ENABLED" = 1 ]; then
+  # 只接受明确赋值，避免 docker 与 compose 对裸变量采用不同来源；错误只报行号。
+  if ! ssh "${SERVER}" bash -s -- "${REMOTE_DIR}/.env.sandbox" <<'SANDBOX_ENV'
+awk '
+  { sub(/\r$/, ""); sub(/^[ \t]+/, "") }
+  $0 == "" || substr($0, 1, 1) == "#" { next }
+  {
+    eq = index($0, "=")
+    name = eq > 1 ? substr($0, 1, eq - 1) : ""
+    if (eq < 2 || name !~ /^[A-Za-z_][A-Za-z0-9_]*$/) {
+      printf "sandbox_env_format line=%d\n", NR > "/dev/stderr"
+      failed = 1
+    }
+  }
+  END { exit failed }
+' "$1" </dev/null
+SANDBOX_ENV
+  then
+    echo "错误：.env.sandbox 格式检查失败，中止部署（旧容器照常运行）。" >&2
+    exit 1
+  fi
+fi
 if ! ssh "${SERVER}" "set -e; cd ${REMOTE_DIR}
   # var/ 必须归容器内 node(1000) 所有：root 属主时应用写不进去，
   # 会话/订单只活在内存、重启即丢（且表面看不出任何异常）
@@ -195,18 +232,37 @@ if ! ssh "${SERVER}" "set -e; cd ${REMOTE_DIR}
   echo "错误：构建、.env 试读或安装备份脚本失败，中止部署（旧容器照常运行）。" >&2
   exit 1
 fi
+# 同一个新镜像解析沙箱环境，并复用 R16 的启动校验；禁止项按存在判断（空值也拒绝），五项体验客服变量必须齐全。
+# 在迁移、停止或更换任何容器之前完成；错误只输出校验短码，不打印 env 内容。
+if [ "$SANDBOX_ENABLED" = 1 ] && ! ssh "${SERVER}" "docker run --rm --env-file ${REMOTE_DIR}/.env.sandbox -e APP_ROLE=sandbox --entrypoint node ${NAME} --import tsx --input-type=module -e 'import { resolveRole } from \"./src/tenancy/sandbox/role.ts\"; try { resolveRole(process.env); } catch (e) { console.log(e.reason || \"env_invalid\"); process.exit(1); }' 2>/dev/null"; then
+  echo "错误：.env.sandbox 没过试读与 R16 检查，中止部署（旧容器照常运行）。" >&2
+  exit 1
+fi
 
 # 约 30s 内 /healthz 通过即视为起来了。给了 revision 时还要对得上：打错实例或新容器没换上，不能报成功
 health_ok() {
-  local want="${1:-}" body
-  for _ in $(seq 1 10); do
-    if body=$(ssh "${SERVER}" "curl -fsS --max-time 3 http://127.0.0.1:${HOST_PORT}/healthz" 2>/dev/null); then
-      if [[ -z "$want" || "$body" == *"\"revision\":\"${want}\""* ]]; then
+  local want="${1:-}" role="${2:-}" port="${3:-$HOST_PORT}" body
+  local attempts=10 deadline=$((SECONDS + ${4:-90})) curl_limit=3
+  [ "$role" = sandbox ] && attempts=45
+  for _ in $(seq 1 "$attempts"); do
+    if [ "$role" = sandbox ]; then
+      ((SECONDS < deadline)) || return 1
+      local remaining=$((deadline - SECONDS))
+      curl_limit=3
+      ((remaining < curl_limit)) && curl_limit=$remaining
+    fi
+    local probe=(ssh "${SERVER}" "curl -fsS --max-time ${curl_limit} http://127.0.0.1:${port}/healthz")
+    # 沙箱的总时限包含 ssh 等待；宿主仍用原来的十拍检查。
+    if [ "$role" = sandbox ]; then probe=(perl -e 'alarm shift; exec @ARGV' "$remaining" "${probe[@]}"); fi
+    if body=$("${probe[@]}" 2>/dev/null); then
+      if [ "$role" = sandbox ] && ((SECONDS >= deadline)); then return 1; fi
+      if [[ -z "$want" || "$body" == *"\"revision\":\"${want}\""* ]] &&
+        [[ -z "$role" || "$body" == *"\"role\":\"${role}\""* ]]; then
         echo "$body"
         return 0
       fi
     fi
-    sleep 2
+    if [ "$role" != sandbox ] || ((SECONDS + 2 < deadline)); then sleep 2; fi
   done
   return 1
 }
@@ -228,6 +284,8 @@ fi
 # 直接杀会让处理到一半的消息靠重启后重放兜底、丢掉去抖窗口里的会话变更。10s 必须大于那 8s，两处要一起改。
 # 第一次换成 compose 时，原来 docker run 起的同名容器不归 compose 管（没有 compose 的项目标签），先按同样的方式停掉删掉
 echo "[7/7] 换容器并做健康检查（http://127.0.0.1:${HOST_PORT}/healthz via ssh，revision 应为 ${TAG}）"
+HOST_ROLE=host
+[ -n "$rollback_target" ] && HOST_ROLE=''
 # set -e：compose up 失败时 ssh 就报失败，直接去回滚，不再白等一整轮健康检查
 if ssh "${SERVER}" "set -e
   if docker container inspect ${NAME} >/dev/null 2>&1 &&
@@ -237,7 +295,20 @@ if ssh "${SERVER}" "set -e
   $(compose "${NAME}:latest") up -d app
   # :current 总是 app 容器正在用的镜像：compose 文件缺省取它，手工的 compose 命令不带 APP_IMAGE 也不会换错镜像
   docker tag ${NAME}:latest ${NAME}:current
-  docker ps --filter name=^/${NAME}\$ --format '  {{.Names}}  {{.Status}}  {{.Ports}}'" && health_ok "$TAG"; then
+  docker ps --filter name=^/${NAME}\$ --format '  {{.Names}}  {{.Status}}  {{.Ports}}'" && health_ok "$TAG" "$HOST_ROLE"; then
+  if [ "$SANDBOX_ENABLED" = 1 ]; then
+    echo "[sandbox] 换沙箱并做健康检查（总时限 90 秒）"
+    if ! ssh "${SERVER}" "$(sandbox_compose "${NAME}:latest") up -d --no-deps sandbox" ||
+      ! health_ok "$TAG" sandbox "$SANDBOX_PORT" 90; then
+      echo "错误：沙箱换容器或健康检查失败。宿主已上线、沙箱已停；修好之后重新部署。" >&2
+      # 服务端 8 秒后终止、再给 2 秒强杀；本地 ssh 12 秒封顶，取日志失败也继续删除。
+      perl -e 'alarm 12; exec @ARGV' ssh "${SERVER}" "timeout --kill-after=2s 8s docker logs --tail 40 ${NAME}-sandbox" >&2 || true
+      perl -e 'alarm 12; exec @ARGV' ssh "${SERVER}" "cd ${REMOTE_DIR} && APP_IMAGE=${NAME}:latest APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} SANDBOX_PORT=${SANDBOX_PORT} timeout --kill-after=2s 8s docker compose -p ${NAME} -f deploy/compose.yml --profile sandbox rm -sf sandbox" >&2 || {
+        echo "错误：删除沙箱容器失败，需立即人工处理。" >&2
+      }
+      exit 1
+    fi
+  fi
   echo "OK. ${TAG} 部署成功。"
   exit 0
 fi
@@ -252,19 +323,47 @@ if ! ssh "${SERVER}" "docker image inspect ${NAME}:prev >/dev/null 2>&1"; then
   echo "错误：服务器上没有 ${NAME}:prev（首次部署？），无法自动回滚，服务当前不可用！" >&2
   exit 1
 fi
+PREV_ROLE=host
+PREV_REVISION=''
+if pre05_image "${NAME}:prev"; then
+  PREV_ROLE=host
+else
+  probe_rc=$?
+  if [ "$probe_rc" != 1 ]; then
+    echo "错误：无法确认上一版是否为 pre-05，没有自动回滚，沙箱未动。" >&2
+    exit 1
+  fi
+  PREV_ROLE=''
+  # 仅自动回滚替人清理。手工部署旧 tag 在第 3 步拒绝并打印步骤。
+  if ! ssh "${SERVER}" "set -e
+    cd ${REMOTE_DIR}
+    containers=\$(timeout --kill-after=2s 8s docker container ls -aq --filter 'name=^/${NAME}-sandbox\$')
+    if [ -n \"\$containers\" ]; then docker rm -f ${NAME}-sandbox; fi
+    if [ -f .env.sandbox ]; then mv .env.sandbox .env.sandbox.off; fi"; then
+    echo "错误：pre-05 回滚前清理沙箱失败，没有自动回滚。" >&2
+    exit 1
+  fi
+fi
+# 回滚也核对目标镜像声明的 revision；role 仅在目标为 05 及以后时核对。
+PREV_REVISION=$(ssh "${SERVER}" "docker image inspect --format '{{range .Config.Env}}{{println .}}{{end}}' ${NAME}:prev" | sed -n 's/^APP_REVISION=//p' | head -n 1)
+if [[ ! "$PREV_REVISION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+  echo "错误：无法确认上一版 revision，没有自动回滚。" >&2
+  exit 1
+fi
 guard_rollback "${NAME}:prev" || {
   case $? in
     3) echo "错误：${NAME}:prev 是 02 之前的镜像而会话在库里，没有自动回滚，服务当前不可用！按上面的步骤人工处理。" >&2 ;;
     4) echo "错误：${NAME}:prev 是 02 之前的镜像，而改过上架条目的内容（或看不出改没改过），没有自动回滚，服务当前不可用！回到它会让已发出的方案书链接显示旧价：修好之后部署 02 之后的 tag。" >&2 ;;
     5) echo "错误：${NAME}:prev 是 03 之前的镜像而渠道状态在库里，没有自动回滚，服务当前不可用！按上面的步骤先 channel-export，再起它。" >&2 ;;
     6) echo "错误：${NAME}:prev 是 04 之前的镜像而有品牌风险，没有自动回滚，服务当前不可用！按上面对应品牌状态的步骤恢复，检查通过后再起它。" >&2 ;;
+    7) echo "错误：${NAME}:prev 是 05 之前的镜像而有多租户或沙箱风险，没有自动回滚！按上面的步骤人工处理。" >&2 ;;
     *) echo "错误：回滚前检查没跑完，没有自动回滚到 ${NAME}:prev，服务当前不可用！" >&2 ;;
   esac
   exit 1
 }
 if ssh "${SERVER}" "set -e
   $(compose "${NAME}:prev") up -d --no-deps app
-  docker tag ${NAME}:prev ${NAME}:current" >&2 && health_ok; then
+  docker tag ${NAME}:prev ${NAME}:current" >&2 && health_ok "$PREV_REVISION" "$PREV_ROLE"; then
   echo "已回滚到 ${NAME}:prev（/healthz 的 revision 是上一版的 tag），服务恢复；${TAG} 未上线，请排查上面的日志后重新部署。" >&2
 else
   echo "错误：回滚后健康检查仍失败，服务当前不可用，需立即人工处理！" >&2
