@@ -38,7 +38,7 @@ async function refresh(): Promise<void> {
 }
 
 /** boot() 在 initConfig 成功之后调一次（db 模式；文件模式什么都不做，current 保持 null） */
-export async function initPrivacy(): Promise<void> {
+export async function initPrivacy(opts: { strict?: boolean } = {}): Promise<void> {
   const rt = currentRuntime();
   const state = notices.get(rt);
   if (configMode() !== 'db') {
@@ -49,6 +49,7 @@ export async function initPrivacy(): Promise<void> {
     await refresh();
   } catch (e) {
     if (e instanceof TenantScopeMissing) throw e;
+    if (opts.strict) throw e;
     if (!notices.owns(rt, state)) return;
     console.error('[privacy] 启动读取隐私说明失败（先当没发布过，60 秒后重试）:', e instanceof Error ? e.message : e);
     state.current = null;

@@ -30,6 +30,7 @@ const functions = [
   'sandbox_session_resolve(bytea)',
   'sandbox_tenant_expire(uuid)',
   'sandbox_tenant_purge(uuid)',
+  'sandbox_privacy_seed(uuid,text)',
 ];
 
 async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
@@ -150,6 +151,21 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
     '22023',
   );
   await rejects(() => execute(sql`select sandbox_tenant_expire(${templateId})`), '22023');
+  await rejects(() => execute(sql`select public.sandbox_privacy_seed(${templateId}::uuid, '测试')`), '22023');
+  await rejects(() => execute(sql`select public.sandbox_privacy_seed(${randomUUID()}::uuid, '测试')`), '22023');
+  await rejects(
+    () =>
+      app((db) =>
+        withTenant(db, ctx(templateId), (tx) => tx.execute(sql`select public.sandbox_privacy_seed(${created.tenantId}::uuid, '测试')`)),
+      ),
+    '42501',
+  );
+  await q('set role agent_platform');
+  try {
+    await rejects(() => q('select public.sandbox_privacy_seed($1::uuid, $2)', [created.tenantId, '测试']), '42501');
+  } finally {
+    await q('reset role');
+  }
   const standardToken = randomBytes(32);
   await q(
     `insert into auth_sessions (token_hash,tenant_id,user_id,created_at,last_seen_at,expires_at)
@@ -267,7 +283,25 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
     values ($1,'draft','console','travel','[]')`,
     [created.tenantId],
   );
-  await q(`insert into privacy_notices (tenant_id,version,body) values ($1,1,'测试')`, [created.tenantId]);
+  await q(`insert into privacy_notices (tenant_id,version,body) values ($1,7,'已有版本')`, [created.tenantId]);
+  await rejects(() => execute(sql`select public.sandbox_privacy_seed(${created.tenantId}::uuid, '测试')`), '23514');
+  await q('delete from privacy_notices where tenant_id=$1', [created.tenantId]);
+  await app((db) =>
+    withTenant(db, ctx(created.tenantId), (tx) => tx.execute(sql`select public.sandbox_privacy_seed(${created.tenantId}::uuid, '测试')`)),
+  );
+  const [notice] = await q<{ version: number; body: string; published_by_name: string | null; fresh: boolean }>(
+    "select version,body,published_by_name,published_at > now()-interval '1 minute' as fresh from privacy_notices where tenant_id=$1",
+    [created.tenantId],
+  );
+  check(
+    notice?.version === 1 && notice.body === '测试' && notice.published_by_name === null && notice.fresh,
+    '初始化版本 1、内容原样、无宿主姓名、时刻取 now()',
+  );
+  await rejects(() => execute(sql`select public.sandbox_privacy_seed(${created.tenantId}::uuid, '替换')`), '23514');
+  const [privacyGuc] = rowsOf<{ id: string | null }>(await execute(sql`select current_setting('app.tenant_id', true) as id`));
+  check(!privacyGuc?.id, '隐私说明函数不泄漏 GUC');
+  const [privacyGrant] = await q<{ ok: boolean }>("select has_table_privilege('agent_app','privacy_notices','INSERT') as ok");
+  check(!privacyGrant?.ok, 'agent_app 对隐私说明表仍无 INSERT 权限');
   await execute(sql`select sandbox_tenant_expire(${created.tenantId})`);
   const expired = await resolve();
   check(
@@ -401,7 +435,7 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
     [functions.map((f) => f.split('(')[0])],
   );
   check(
-    defs.length === 4 &&
+    defs.length === functions.length &&
       defs.every(
         (d) =>
           d.owner === 'agent_owner' &&
@@ -411,7 +445,7 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
           !/timestamp|p_now/i.test(d.args) &&
           !/clock_timestamp|statement_timestamp|current_timestamp/i.test(d.body),
       ),
-    '四函数属主、DEFINER、search_path、无 PUBLIC 执行权、无传入时间',
+    '五函数属主、DEFINER、search_path、无 PUBLIC 执行权、无传入时间',
   );
   console.log(`${real ? '真实 PG' : 'PGlite 冒烟'}：函数行为、授权矩阵与 RLS 检查完成`);
   check(

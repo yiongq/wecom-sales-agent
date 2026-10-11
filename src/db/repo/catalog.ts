@@ -62,6 +62,7 @@ export async function insertActiveItems(
   kind: CatalogKind,
   payloads: readonly Record<string, unknown>[],
   by: { userId: string | null; name: string | null },
+  ords?: readonly number[],
 ): Promise<void> {
   if (!payloads.length) return;
   await tx.insert(catalogItems).values(
@@ -69,7 +70,7 @@ export async function insertActiveItems(
       tenantId,
       kind,
       code: String(payload.id),
-      ord,
+      ord: ords?.[ord] ?? ord,
       status: 'active' as const,
       payload,
       createdBy: by.userId,
