@@ -1,4 +1,5 @@
-import { tenantScopeMiddleware, currentRuntime, withoutTenantScope, tenantCallback, withTenantScope } from '../tenancy/runtime.js';
+import { publicHostMiddleware } from '../tenancy/hosts.js';
+import { currentRuntime, withoutTenantScope, tenantCallback, withTenantScope } from '../tenancy/runtime.js';
 import { brandTexts } from '../core/brand.js';
 // 后台接口子应用（docs/architecture/01-pg-config-console/spec.md「后台 API 与页面」）。
 // 必须链式注册，Hono RPC 才推得出类型（ADR-002）；console/src 只用 import type 引 ConsoleApp。
@@ -397,7 +398,7 @@ function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503
 export const consoleApi = new Hono<ConsoleEnv>()
   .basePath('/api/console')
   // requestLogContext：req 与 x-request-id（02 spec R24）；挂在 server.ts 下时沿用外层生成的那个
-  .use('*', requestLogContext, tenantScopeMiddleware, securityHeaders, requireDbMode, loadSession, guardWrites)
+  .use('*', requestLogContext, publicHostMiddleware, securityHeaders, requireDbMode, loadSession, guardWrites)
 
   // ---------------- 登录 ----------------
   .post('/auth/login', zValidator('json', LoginBody, badRequest), async (c) => {

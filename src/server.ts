@@ -4,14 +4,8 @@
 // demo 与 prod 的差别只经 profile().flags 的开关体现（00 spec「部署 profile 与开关」），每次用到时现读。
 import './env.js'; // 必须第一个 import：加载 .env（此前 .env 从未被读取，README 的跑法照做即挂）
 import './profile-boot.js'; // 紧接着解析部署 profile：配置错误时打一行原因退出，必须排在任何会 import store 的模块之前
-import {
-  tenantScopeMiddleware,
-  hostRuntime,
-  tenantRuntimes,
-  withTenantScope,
-  currentRuntime,
-  TenantScopeMissing,
-} from './tenancy/runtime.js';
+import { publicHostMiddleware, publicBase } from './tenancy/hosts.js';
+import { hostRuntime, tenantRuntimes, withTenantScope, currentRuntime, TenantScopeMissing } from './tenancy/runtime.js';
 import { currentPack } from './config/source.js';
 import { renderBrandPage } from './core/brand.js';
 import { serve } from '@hono/node-server';
@@ -101,7 +95,7 @@ import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
 const app = new Hono();
 // 每个请求一个 req（响应头 x-request-id），这个请求里的日志都带它（02 spec R24）。排在最前：413、411 这类拒绝也有
-app.use('/*', requestLogContext, tenantScopeMiddleware);
+app.use('/*', requestLogContext, publicHostMiddleware);
 
 // channel 来自落盘的会话 JSON：数据改坏、或加了新渠道漏接这里，都会落到兜底。兜底此前是模拟器，
 // 没有 SSE 连接时它的 push 返回 true，后台显示「已回复」，实际什么也没发出去。现在兜底一律推送失败，
@@ -796,7 +790,7 @@ function renderProposalHtml(html: string, route: Route | null, travelers: number
   // 微信自带的「发送给朋友」不读 og:image，它是在页面里自己挑一张图当缩略图——
   // 这里只改 head（meta）；那张给微信挑的真实封面图由 proposal.html 在客户端渲染进 body
   // （1px 不行，太小会被跳过）。
-  const base = (process.env.PUBLIC_BASE_URL ?? '').replace(/\/+$/, '');
+  const base = publicBase();
   const cover = base ? `${base}/share-cover.png` : '/share-cover.png';
   return withHead(
     html,
@@ -850,7 +844,7 @@ app.post('/wecom/callback/:key', async (c) => {
 });
 
 app.get('/wecom/callback', (c) => {
-  if (channelsMode() === 'db') {
+  if (!currentRuntime().isHost || channelsMode() === 'db') {
     const r = accountCallbackGet(null, c.req.query());
     return c.text(r.text, r.status);
   }
@@ -875,7 +869,7 @@ app.get('/wecom/callback', (c) => {
 // kf 事件回调：企微 POST 加密的 kf_msg_or_event 事件 → 解密取 Token → 用它拉消息。
 // 必须尽快回 success（拉取异步做），否则企微超时重推。
 app.post('/wecom/callback', async (c) => {
-  if (channelsMode() === 'db') {
+  if (!currentRuntime().isHost || channelsMode() === 'db') {
     accountCallbackPost(null, c.req.query(), extractTag(await c.req.text(), 'Encrypt'), extractTag);
     return c.text('success');
   }
