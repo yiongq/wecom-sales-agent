@@ -1,3 +1,4 @@
+import { withoutTenantScope } from './tenancy/runtime.js';
 // LLM 请求的并发闸 + 退避重试。
 //
 // Node 的异步 I/O 解决的是「我们自己的服务器不被阻塞」：等 LLM 响应时线程去服务别的请求，
@@ -42,7 +43,7 @@ function acquire(signal: AbortSignal): Promise<void> {
       reject(signal.reason);
     };
     waiting.push(grant);
-    signal.addEventListener('abort', onAbort, { once: true });
+    withoutTenantScope(() => signal.addEventListener('abort', onAbort, { once: true }));
   });
 }
 
@@ -54,11 +55,13 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
       clearTimeout(timer);
       reject(signal.reason);
     };
-    const timer = setTimeout(() => {
-      signal.removeEventListener('abort', onAbort);
-      resolve();
-    }, ms);
-    signal.addEventListener('abort', onAbort, { once: true });
+    const timer = withoutTenantScope(() =>
+      setTimeout(() => {
+        signal.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms),
+    );
+    withoutTenantScope(() => signal.addEventListener('abort', onAbort, { once: true }));
   });
 }
 

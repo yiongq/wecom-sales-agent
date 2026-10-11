@@ -1,3 +1,4 @@
+import { withoutTenantScope } from '../tenancy/runtime.js';
 // usage_daily 的累加器（docs/architecture/02-conversations-workbench/spec.md「逐轮 trace、护栏事件与用量」、R16）。
 // 订阅 usage.ts 的 onUsage（所有模型调用的唯一汇聚点），内存里按（天、模型、用途）累加；db 存储装上之后（store.ts 的
 // initSessionStore 调 startUsageDaily）每 30 秒与停机的 drain 段把累加的部分交给写入函数 upsert 进 usage_daily。
@@ -127,7 +128,7 @@ let armedMs: number | null = null;
 function arm(ms: number): void {
   if (timer) clearInterval(timer);
   armedMs = ms;
-  timer = setInterval(() => void flushUsageDaily(), ms);
+  timer = withoutTenantScope(() => setInterval(() => void flushUsageDaily(), ms));
   timer.unref();
 }
 

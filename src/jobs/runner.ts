@@ -1,3 +1,4 @@
+import { hostRuntime, scopedRuntime, withTenantScope, withoutTenantScope, tenantCallback } from '../tenancy/runtime.js';
 // 任务表（docs/architecture/02-conversations-workbench/spec.md「任务表与跟进」，R17、不变量 38）：只在 db 存储下有。
 // 排程：与会话有关的（跟进、转人工通知，payload 必带 sessionId）随这个会话的下一次落库提交（store 的 queueJobs），其余单独一个事务。
 // 认领：每 5 秒一批，status='pending' AND run_at <= now ORDER BY run_at LIMIT 10 FOR UPDATE SKIP LOCKED，改成 running 并提交，再逐个执行。
@@ -418,6 +419,11 @@ async function stopJobs(): Promise<void> {
  * 第一批之前先做启动归位。push 是推给客户的那一下（server 传 adapterFor 的 push），跟进到点时用。文件存储下什么都不做
  */
 export function startJobs(push: PushFn): void {
+  const rt = scopedRuntime() ?? hostRuntime();
+  withTenantScope(rt, () => startJobsInScope(push));
+}
+function startJobsInScope(push: PushFn): void {
+  const rt = scopedRuntime()!;
   if (sessionStoreMode() !== 'db') {
     console.log('[jobs] 文件存储没有任务表：跟进由扫描器驱动');
     return;
@@ -426,10 +432,10 @@ export function startJobs(push: PushFn): void {
   started = true;
   followupJobs.install(push);
   installUnsavedNotices();
-  onShutdown(stopJobs);
+  withoutTenantScope(() => onShutdown(tenantCallback(rt, stopJobs)));
   console.log(`[jobs] 任务表已启动：每 ${TICK_MS / 1000} 秒认领一批（跟进${process.env.FOLLOWUP_ENABLED === '1' ? '已启用' : '未启用'}）`);
-  void runJobsOnce();
-  timer = setInterval(() => void runJobsOnce(), TICK_MS);
+  void tenantCallback(rt, runJobsOnce)();
+  timer = withoutTenantScope(() => setInterval(() => tenantCallback(rt, runJobsOnce)(), TICK_MS));
   timer.unref();
 }
 

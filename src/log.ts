@@ -1,3 +1,4 @@
+import { currentRuntime } from './tenancy/runtime.js';
 // 结构化日志（docs/architecture/02-conversations-workbench/spec.md「可观测性与告警 · 结构化日志」、R24、不变量 48）。
 // LOG_FORMAT=json：pino 输出 JSON 行（time、level、msg，请求里带 req，轮次里带 tenant、conv、turn），boot() 与 profile-boot
 // 把 console.log / info / warn / error 接过来（msg 是原来那一行字符串），现有日志不用逐行改就带上下文。
@@ -37,7 +38,7 @@ interface Ctx extends Partial<LogContext> {
 const ctxStore = new AsyncLocalStorage<Ctx>();
 
 let refOf: (conversationId: string) => string | null = () => null;
-let tenantSlug = '';
+// 旧 setLogTenant 门面保留；租户身份只取当前运行时。
 
 /** store 在加载时交进来：db 存储的真实会话的 ref（文件存储与 demo 类会话为 null，退回短码） */
 export function setConvRefResolver(fn: (conversationId: string) => string | null): void {
@@ -45,7 +46,8 @@ export function setConvRefResolver(fn: (conversationId: string) => string | null
 }
 /** 配置源装上 DB 配置时交进来租户的 slug；文件配置模式没有租户，是空串 */
 export function setLogTenant(slug: string): void {
-  tenantSlug = slug;
+  // slug 由配置装载时的运行时身份提供；旧调用方仍可调用门面。
+  void slug;
 }
 
 /** 日志里的会话：db 存储的真实会话是会话行的 ref，其余是短码（与后台的短码同一规则），都不含会话原 id */
@@ -153,6 +155,14 @@ function scrubLine(line: string): string {
     .replace(REDACT_JSON_FIELD, (_m, key: string) => `"${key}":"${CENSOR}"`);
 }
 
+function runtimeLogSlug(): string | undefined {
+  try {
+    return currentRuntime().slug;
+  } catch {
+    return undefined;
+  }
+}
+
 /** mixin：请求里带 req；有会话的（轮次里，或包在 withConversationLog 里）带 tenant、conv，轮次里再带 turn */
 function contextFields(): Record<string, string> {
   const c = ctxStore.getStore();
@@ -162,7 +172,7 @@ function contextFields(): Record<string, string> {
   if (c.req) out.req = c.req;
   const conv = c.conv ?? (c.conversationId ? convCode(c.conversationId) : undefined);
   if (conv !== undefined || c.turn) {
-    out.tenant = c.tenant ?? tenantSlug;
+    out.tenant = runtimeLogSlug() ?? c.tenant ?? '';
     if (conv !== undefined) out.conv = conv;
     if (c.turn) out.turn = c.turn;
   }

@@ -1,3 +1,4 @@
+import { withoutTenantScope } from '../tenancy/runtime.js';
 // 数据库连接、租户上下文与租户锁（docs/architecture/01-pg-config-console/spec.md「数据库 · withTenant」）。
 // 全仓只有 src/db/** 能 import pg / drizzle-orm / PGlite；租户 GUC 的名字也只出现在本文件和迁移 SQL 里（lint 守着）。
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -74,13 +75,20 @@ export function redactUrl(url: string): string {
 export async function openDb(url: string, opts: { max?: number } = {}): Promise<{ db: Db; close(): Promise<void> }> {
   assertPgUrl(url);
   const pool = new pg.Pool({ connectionString: url, max: opts.max ?? 5 });
+  // EventEmitter 不捕获注册时 ALS；实例日志回调执行时 exit，租户锁通知由订阅者显式进入所属 rt。
   // 空闲连接断开时 Pool 会发 error 事件，没人监听会让进程崩掉；下次借连接时 Pool 自己会新建
-  pool.on('error', (err) => console.warn(`[db] 空闲连接出错（${redactUrl(url)}）：${err.message}`));
+  withoutTenantScope(() =>
+    pool.on('error', (err) => withoutTenantScope(() => console.warn(`[db] 空闲连接出错（${redactUrl(url)}）：${err.message}`))),
+  );
   // 借出去的连接 Pool 不再替它监听：withTenant 进行中库重启、连接被踢、事务空闲超时，连接照样发 error 事件，
   // 没人监听就是整个进程崩掉。挂一个常驻监听，让出错只落在正在跑的那条查询上（它会 reject），归还时 Pool 丢弃这条连接
-  pool.on('connect', (client) => {
-    client.on('error', (err) => console.warn(`[db] 连接出错（${redactUrl(url)}）：${err.message}`));
-  });
+  withoutTenantScope(() =>
+    pool.on('connect', (client) => {
+      withoutTenantScope(() =>
+        client.on('error', (err) => withoutTenantScope(() => console.warn(`[db] 连接出错（${redactUrl(url)}）：${err.message}`))),
+      );
+    }),
+  );
   const probe = await pool.connect().catch(async (err: unknown) => {
     await pool.end().catch(() => {});
     throw err;
@@ -297,7 +305,17 @@ export interface TenantLock {
  */
 export async function holdTenantLock(url: string, tenantId: string, opts: { keepAliveMs?: number } = {}): Promise<TenantLock | null> {
   assertPgUrl(url);
-  const key = `wecom-sales-agent:${tenantId}`;
+  return holdTenantLocks(url, [tenantId], opts);
+}
+
+/** 05 R2：宿主进程一条专用连接，启动时一次取得全部装载租户的锁。 */
+export async function holdTenantLocks(
+  url: string,
+  tenantIds: readonly string[],
+  opts: { keepAliveMs?: number } = {},
+): Promise<TenantLock | null> {
+  assertPgUrl(url);
+  const keys = tenantIds.map((id) => `wecom-sales-agent:${id}`);
   const connect = async (): Promise<pg.Client> => {
     // 连接超时要比 5 秒一次的重取间隔短，免得一次重取拖过下一次
     const c = new pg.Client({
@@ -307,12 +325,16 @@ export async function holdTenantLock(url: string, tenantId: string, opts: { keep
       connectionTimeoutMillis: 4_000,
     });
     // 连接失败或之后断开都会发 error；先挂上监听，免得未处理的 error 事件让进程崩掉
-    c.on('error', () => {});
+    withoutTenantScope(() => c.on('error', () => {}));
     await c.connect();
     return c;
   };
-  const tryLock = async (c: pg.Client): Promise<boolean> =>
-    (await c.query<{ ok: boolean }>('select pg_try_advisory_lock(hashtextextended($1, 0)) as ok', [key])).rows[0]?.ok === true;
+  const tryLock = async (c: pg.Client): Promise<boolean> => {
+    for (const key of keys)
+      if ((await c.query<{ ok: boolean }>('select pg_try_advisory_lock(hashtextextended($1, 0)) as ok', [key])).rows[0]?.ok !== true)
+        return false;
+    return true;
+  };
   const drop = (c: pg.Client): void => {
     c.removeAllListeners('end');
     void c.end().catch(() => {});
@@ -340,8 +362,10 @@ export async function holdTenantLock(url: string, tenantId: string, opts: { keep
       lost = true;
       for (const cb of lostCallbacks) cb();
     };
-    c.on('error', onLost);
-    c.on('end', onLost);
+    withoutTenantScope(() => {
+      c.on('error', onLost);
+      c.on('end', onLost);
+    });
   };
   watch(client);
 
@@ -391,7 +415,7 @@ export async function holdTenantLock(url: string, tenantId: string, opts: { keep
     async release() {
       if (released) return;
       released = true;
-      await client.query('select pg_advisory_unlock(hashtextextended($1, 0))', [key]).catch(() => {});
+      for (const key of keys) await client.query('select pg_advisory_unlock(hashtextextended($1, 0))', [key]).catch(() => {});
       drop(client);
     },
   };

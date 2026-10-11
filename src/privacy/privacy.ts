@@ -1,3 +1,5 @@
+import { publicBase } from '../tenancy/hosts.js';
+import { hostRuntime, scopedRuntime, withTenantScope, withoutTenantScope, tenantCallback, TenantScopeMissing } from '../tenancy/runtime.js';
 // 隐私说明（docs/architecture/02-conversations-workbench/spec.md「隐私说明、敏感信息同意、保留期与行权」，R23）。
 // DB 配置模式下：boot() 在 initConfig 成功之后调 initPrivacy() 读进内存，之后 startPrivacyPoll() 起一个 60 秒的后台轮询——
 // 对话的轮次、GET /privacy、欢迎语都只读内存（不变量 9：读路径不发数据库查询），发布本身由平台命令行 privacy-publish 执行。
@@ -38,12 +40,19 @@ export async function initPrivacy(): Promise<void> {
 
 /** 之后每 60 秒在后台查一次（不在对话的轮次里）；文件模式什么都不做。可以调多次，只起一次定时器 */
 export function startPrivacyPoll(intervalMs = 60_000): void {
-  if (configMode() !== 'db' || pollTimer) return;
-  pollTimer = setInterval(() => {
-    void refresh().catch((e: unknown) =>
-      console.error('[privacy] 刷新隐私说明失败（保留上一次的结果）:', e instanceof Error ? e.message : e),
-    );
-  }, intervalMs);
+  const rt = scopedRuntime() ?? hostRuntime();
+  if (withTenantScope(rt, configMode) !== 'db' || pollTimer) return;
+  pollTimer = withoutTenantScope(() =>
+    setInterval(
+      tenantCallback(rt, () =>
+        refresh().catch((e: unknown) => {
+          if (e instanceof TenantScopeMissing) throw e;
+          console.error('[privacy] 刷新隐私说明失败（保留上一次的结果）:', e instanceof Error ? e.message : e);
+        }),
+      ),
+      intervalMs,
+    ),
+  );
   pollTimer.unref();
 }
 
@@ -55,7 +64,7 @@ export function currentPrivacyNotice(): PrivacyNotice | null {
 /** 发布过时的 /privacy 完整链接；没发布过是 null */
 export function privacyLink(): string | null {
   if (!current) return null;
-  const base = (process.env.PUBLIC_BASE_URL ?? '').replace(/\/+$/, '');
+  const base = publicBase();
   return `${base}/privacy`;
 }
 

@@ -1,6 +1,7 @@
+import { withoutTenantScope } from '../tenancy/runtime.js';
 // 后台会话（docs/architecture/01-pg-config-console/spec.md「鉴权」）。
 // cookie 是 32 字节随机数的 base64url，库里只存它的 sha256；空闲 12 小时、绝对 7 天过期，失效的在下一次被访问时删行。
-// 登录只接纳本实例租户（DEFAULT_TENANT_SLUG）的成员。限流都在进程内（单副本），键数到上限按 LRU 淘汰。
+// 登录只接纳 Host 解析出的租户成员。限流都在进程内（单副本），键数到上限按 LRU 淘汰。
 import { createHash, randomBytes } from 'node:crypto';
 import { configRuntime } from '../config/source.js';
 import { withTenant } from '../db/client.js';
@@ -152,7 +153,7 @@ export async function login(input: {
   }
   const byEmail = failByEmail.claim(email, input.now);
   try {
-    if (byEmail.count > 10) await new Promise((r) => setTimeout(r, slowDelayMs));
+    if (byEmail.count > 10) await new Promise((r) => withoutTenantScope(() => setTimeout(r, slowDelayMs)));
     const found = await authLoginLookup(db, tenantId, email);
     const { ok, needsRehash } = await verifyPassword(input.password, found?.passwordHash ?? fakeHash());
     if (!found || !ok) {
@@ -213,7 +214,8 @@ export async function logout(token: string, now = Date.now()): Promise<void> {
   if (!TOKEN_RE.test(token)) return;
   const user = await resolveSession(token, now);
   const { db, tenantId } = configRuntime();
-  await authSessionDelete(db, sha256(token));
+  // 删除函数只接收令牌；先确认它属于当前 Host 的租户，避免跨域 cookie 吊销别人的会话。
+  if (user) await authSessionDelete(db, sha256(token));
   if (user) {
     await withTenant(db, { tenantId, actor: { kind: 'user', userId: user.userId, name: user.displayName, ip: null } }, (tx) =>
       writeAudit(tx, { action: 'auth.logout', targetType: 'user', targetId: user.userId }),

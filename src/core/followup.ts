@@ -1,3 +1,4 @@
+import { hostRuntime, scopedRuntime, withoutTenantScope, tenantCallback } from '../tenancy/runtime.js';
 // 沉默唤醒 / 自动跟进：资格判断、话术生成与出口护栏（两种存储共用），以及文件存储下的扫描器。
 //
 // 此前所有主动外发都要人点（顾问在后台点发送、或有人点了支付按钮触发回执），
@@ -272,9 +273,8 @@ export function startFollowUpScheduler(push: (sessionId: string, text: string, o
   }
   console.log(`[followup] 自动跟进已启用：每 ${SCAN_MS / 60000} 分钟扫描一次，${QUIET_START}:00-${QUIET_END}:00 不打扰`);
   if (stopping) return;
-  scanTimer = setInterval(() => {
-    void runFollowUpScan(push);
-  }, SCAN_MS);
+  const rt = scopedRuntime() ?? hostRuntime();
+  scanTimer = withoutTenantScope(() => setInterval(() => tenantCallback(rt, () => runFollowUpScan(push))(), SCAN_MS));
   scanTimer.unref();
 }
 

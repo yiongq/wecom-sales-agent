@@ -1,3 +1,4 @@
+import { withoutTenantScope } from '../tenancy/runtime.js';
 // PGlite 测试库：进程内的 Postgres，不需要 Docker。只给 *.selftest.ts 与 eval/run.ts 用（lint 守着）。
 // 与生产一致的地方：三个角色都在，库的属主是 agent_owner，迁移以 agent_owner 执行，所以表和函数的属主、
 // 默认权限、授权都和真实库相同。不一致的地方：PGlite 以超级用户连接，默认绕过 RLS；RLS 与授权的结论
@@ -281,8 +282,8 @@ export async function openFlakyDb(
 ): Promise<{ db: Db; close(): Promise<void>; faults: { dropCommitReply: number; skipCommits: number; delayCommitMs: number } }> {
   assertPgUrl(url);
   const pool = new pg.Pool({ connectionString: url, max: 3 });
-  pool.on('error', () => {});
-  pool.on('connect', (c) => c.on('error', () => {}));
+  withoutTenantScope(() => pool.on('error', () => {}));
+  withoutTenantScope(() => pool.on('connect', (c) => withoutTenantScope(() => c.on('error', () => {}))));
   const faults = { dropCommitReply: 0, skipCommits: 0, delayCommitMs: 0 };
   const late = new Set<Promise<unknown>>();
   const db: Db = drizzleNodePg(pool, { schema, logger: countingLogger });
@@ -306,7 +307,9 @@ export async function openFlakyDb(
             if (faults.delayCommitMs > 0) {
               const ms = faults.delayCommitMs;
               dropped = true;
-              delayed = new Promise((r) => setTimeout(r, ms)).then(() => client.query(config as never, values as never)).catch(() => {});
+              delayed = new Promise((r) => withoutTenantScope(() => setTimeout(r, ms)))
+                .then(() => client.query(config as never, values as never))
+                .catch(() => {});
               late.add(delayed);
               throw lost();
             }
@@ -344,8 +347,8 @@ export async function openFlakyDb(
 export async function openGatedDb(url: string): Promise<{ db: Db; close(): Promise<void>; faults: Pick<StoreFaults, 'gate' | 'acquire'> }> {
   assertPgUrl(url);
   const pool = new pg.Pool({ connectionString: url, max: 5 });
-  pool.on('error', () => {});
-  pool.on('connect', (c) => c.on('error', () => {}));
+  withoutTenantScope(() => pool.on('error', () => {}));
+  withoutTenantScope(() => pool.on('connect', (c) => withoutTenantScope(() => c.on('error', () => {}))));
   const faults: Pick<StoreFaults, 'gate' | 'acquire'> = { gate: null, acquire: null };
   const db: Db = drizzleNodePg(pool, { schema, logger: countingLogger });
   const perClient = new WeakMap<pg.PoolClient, Db>();
@@ -374,7 +377,7 @@ export async function connectSuperQuery(
 ): Promise<{ query<R = Record<string, unknown>>(text: string, params?: unknown[]): Promise<R[]>; close(): Promise<void> }> {
   assertPgUrl(url);
   const c = new pg.Client({ connectionString: url });
-  c.on('error', () => {});
+  withoutTenantScope(() => c.on('error', () => {}));
   await c.connect();
   // 一条连接上排着发（调用方会并发查，pg 不许同一个 client 叠着 query）
   let chain: Promise<unknown> = Promise.resolve();
@@ -410,7 +413,7 @@ export async function createRealPgFixture(superUrl: string, opts: { slug?: strin
   const lit = (v: string): string => `'${v.replaceAll("'", "''")}'`;
   const ident = (v: string): string => `"${v.replaceAll('"', '""')}"`;
   const su = new pg.Client({ connectionString: superUrl });
-  su.on('error', () => {});
+  withoutTenantScope(() => su.on('error', () => {}));
   await su.connect();
   const dbName = `agent_storetest_${randomBytes(4).toString('hex')}`;
   const pw = { owner: randomBytes(12).toString('hex'), app: randomBytes(12).toString('hex'), platform: randomBytes(12).toString('hex') };
@@ -456,7 +459,7 @@ export async function createRealPgFixture(superUrl: string, opts: { slug?: strin
     };
     await runMigrations(urls.owner);
     const c = new pg.Client({ connectionString: urls.super });
-    c.on('error', () => {});
+    withoutTenantScope(() => c.on('error', () => {}));
     await c.connect();
     inDb = c;
     const slug = opts.slug ?? 'demo';

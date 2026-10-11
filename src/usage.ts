@@ -1,3 +1,4 @@
+import { withoutTenantScope } from './tenancy/runtime.js';
 // 模型调用用量与成本核算。此前 API 响应里的 usage 字段从头到尾没被读过，
 // 导致「这套系统一天花多少钱、一个客户聊到成交要花多少」只能靠估算——
 // 而选型（air 还是 5.2）恰恰要靠这个数决定。
@@ -98,18 +99,20 @@ try {
 let timer: NodeJS.Timeout | null = null;
 function persist(): void {
   if (timer) return;
-  timer = setTimeout(() => {
-    timer = null;
-    try {
-      fs.mkdirSync(VAR_DIR, { recursive: true });
-      // 原子写：半截文件下次启动解析失败，今日成本统计会静默归零
-      const tmp = FILE + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(state));
-      fs.renameSync(tmp, FILE);
-    } catch {
-      /* 用量统计落盘失败不该影响对话 */
-    }
-  }, 3000);
+  timer = withoutTenantScope(() =>
+    setTimeout(() => {
+      timer = null;
+      try {
+        fs.mkdirSync(VAR_DIR, { recursive: true });
+        // 原子写：半截文件下次启动解析失败，今日成本统计会静默归零
+        const tmp = FILE + '.tmp';
+        fs.writeFileSync(tmp, JSON.stringify(state));
+        fs.renameSync(tmp, FILE);
+      } catch {
+        /* 用量统计落盘失败不该影响对话 */
+      }
+    }, 3000),
+  );
 }
 
 export function costOf(model: string, promptTokens: number, completionTokens: number, cachedTokens = 0): number {

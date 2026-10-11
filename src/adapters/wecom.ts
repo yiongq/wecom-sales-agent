@@ -1,3 +1,13 @@
+import { publicBase } from '../tenancy/hosts.js';
+import {
+  runtimeOf,
+  hostRuntime,
+  withTenantScope,
+  withoutTenantScope,
+  backgroundEntry,
+  TenantScopeMissing,
+  type TenantRuntime,
+} from '../tenancy/runtime.js';
 import { currentPack } from '../config/source.js';
 import { brandTexts } from '../core/brand.js';
 // 企业微信「微信客服」（kf）适配器：回调驱动 + 兜底轮询。
@@ -120,8 +130,8 @@ interface WecomConfig {
   publicBaseUrl: string;
 }
 
-/** 回复里的 /pay/、/proposal/ 拼成完整 URL 用的公网前缀（不是企微凭据，所有账号共用，每次现读） */
-const publicBaseUrl = (): string => (process.env.PUBLIC_BASE_URL ?? '').replace(/\/+$/, '');
+/** 回复里的绝对链接属于发送账号的租户；env 账号属于宿主。 */
+const publicBaseUrl = (): string => publicBase();
 
 /**
  * 企微状态在库里（03 spec R1）：装上的账号里有库里的企微账号（任何状态）。这时 env 账号整条不走：不读 WECOM_*、不拉、
@@ -2573,6 +2583,9 @@ async function pullFromCallback(rt: WecomRuntime, cfg: WecomConfig, syncToken: s
  * 未配置 wecom 时（含企微状态在库里）静默忽略
  */
 export async function syncFromCallback(syncToken: string): Promise<void> {
+  await backgroundEntry(() => withTenantScope(hostRuntime(), () => syncFromCallbackInScope(syncToken)));
+}
+async function syncFromCallbackInScope(syncToken: string): Promise<void> {
   const cfg = envRuntime.config();
   if (!cfg) return;
   await pullFromCallback(envRuntime, cfg, syncToken);
@@ -2580,6 +2593,18 @@ export async function syncFromCallback(syncToken: string): Promise<void> {
 
 /** 库里的企微账号：按账号的回调（adapters/wecom-callback.ts）验签、按 OpenKfId 找到账号之后调用 */
 export async function syncAccountFromCallback(accountId: string, syncToken: string): Promise<void> {
+  // 账号停用或启动尚未装载时保留原行为；只有存在账号却找不到所属租户才是作用域遗漏。
+  if (accountId === ENV_ACCOUNT_ID || !runtimes.has(accountId)) {
+    await syncAccountFromCallbackInScope(accountId, syncToken);
+    return;
+  }
+  await backgroundEntry(() =>
+    withTenantScope(ownerRuntime(accountId === ENV_ACCOUNT_ID ? envRuntime : runtimes.get(accountId)), () =>
+      syncAccountFromCallbackInScope(accountId, syncToken),
+    ),
+  );
+}
+async function syncAccountFromCallbackInScope(accountId: string, syncToken: string): Promise<void> {
   const rt = accountId === ENV_ACCOUNT_ID ? undefined : runtimes.get(accountId);
   const cfg = rt?.config();
   if (!rt || !cfg) {
@@ -2592,7 +2617,16 @@ export async function syncAccountFromCallback(accountId: string, syncToken: stri
 // ---------------- 启动与停机 ----------------
 
 /** 起轮询循环（不阻塞调用方）：先加载、重放，再补拉一次，之后兜底慢轮询 */
+function ownerRuntime(rt: WecomRuntime | undefined): TenantRuntime {
+  if (!rt) throw new TenantScopeMissing();
+  const owner = rt.tenantId ? runtimeOf(rt.tenantId) : hostRuntime();
+  if (!owner) throw new TenantScopeMissing();
+  return owner;
+}
 function startRuntime(rt: WecomRuntime): void {
+  backgroundEntry(() => withTenantScope(ownerRuntime(rt), () => startRuntimeInScope(rt)));
+}
+function startRuntimeInScope(rt: WecomRuntime): void {
   const cfg = rt.config();
   if (!cfg || rt.started) return;
   rt.started = true;
@@ -2618,7 +2652,10 @@ function startRuntime(rt: WecomRuntime): void {
       } catch (err) {
         console.error(`${rt.tag} kf/sync_msg 异常（下轮重试）: errcode=${apiErrorCode(err)}`);
       }
-      if (!rt.stopping) rt.pollTimer = setTimeout(() => void tick(), fallbackMs);
+      if (!rt.stopping)
+        rt.pollTimer = withoutTenantScope(() =>
+          setTimeout(() => backgroundEntry(() => withTenantScope(ownerRuntime(rt), tick)), fallbackMs),
+        );
     };
     // 启动先补拉一次，不等第一个轮询周期：上个进程停机收尾时回调只回了 success 没拉，
     // 重启空档里的回调也可能已经丢了，这些消息都还在 cursor 之后
@@ -2701,6 +2738,13 @@ async function runRecovery(rt: WecomRuntime, cfg: WecomConfig, start: WecomAccou
  * 先做启动恢复（第 10 步，runRecovery），做完才开始拉取；恢复做完之前这个账号的 push 排队等待（至多 30 秒）
  */
 export function startWecomAccount(s: WecomAccountStart): void {
+  backgroundEntry(() => {
+    const owner = runtimeOf(s.account.tenantId);
+    if (!owner) throw new TenantScopeMissing();
+    withTenantScope(owner, () => startWecomAccountInScope(s));
+  });
+}
+function startWecomAccountInScope(s: WecomAccountStart): void {
   const { account } = s;
   const w = account.wecom;
   if (account.source !== 'db' || account.kind !== 'wecom_kf' || !w) throw new Error('startWecomAccount 只收库里的企微账号');
@@ -2720,7 +2764,7 @@ export function startWecomAccount(s: WecomAccountStart): void {
       secret: s.secrets.reveal().appSecret,
       openKfId: w.openKfId,
       pollIntervalMs,
-      publicBaseUrl: publicBaseUrl(),
+      publicBaseUrl: publicBase(runtimeOf(account.tenantId)),
     }),
     ...(w.settings.welcomeText !== undefined ? { welcomeText: w.settings.welcomeText } : {}),
     ...(w.settings.welcomeBackText !== undefined ? { welcomeBackText: w.settings.welcomeBackText } : {}),
@@ -2781,13 +2825,21 @@ async function drainForShutdown(rt: WecomRuntime, ctx?: { deadline: number }): P
 }
 /** 每个账号的运行时一起收尾，一个账号出错不耽误别的账号 */
 onShutdown(async (ctx) => {
-  const results = await Promise.allSettled([...runtimes.values()].map((rt) => drainForShutdown(rt, ctx)));
+  const results = await Promise.allSettled(
+    [...runtimes.values()].map((rt) => backgroundEntry(() => withTenantScope(ownerRuntime(rt), () => drainForShutdown(rt, ctx)))),
+  );
   for (const r of results) if (r.status === 'rejected') console.error('[wecom] 停机收尾异常:', apiErrorCode(r.reason));
 });
 /** 进程退出前把每个账号去抖窗口里的状态同步写出去（文件后端；库里的账号都在库里，没有要写的） */
-process.on('exit', () => {
-  for (const rt of runtimes.values()) if (rt.state.kind === 'file') rt.state.flushSync();
-});
+withoutTenantScope(() =>
+  process.on('exit', () => {
+    for (const rt of runtimes.values())
+      if (rt.state.kind === 'file') {
+        const state = rt.state;
+        backgroundEntry(() => withTenantScope(ownerRuntime(rt), () => state.flushSync()));
+      }
+  }),
+);
 
 /**
  * 发往一个企微会话的推送走哪个账号：企微状态在库里时经 accountForSession（前缀最长匹配，停用账号的会话不会落到默认账号上），

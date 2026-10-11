@@ -1,3 +1,4 @@
+import { tenantRuntimes, withTenantScope, withoutTenantScope, onTenantScopeMissing, backgroundEntry } from '../tenancy/runtime.js';
 // 告警（docs/architecture/02-conversations-workbench/spec.md「可观测性与告警 · 告警」、R24、不变量 32、50）。
 // 推到 ALERT_WEBHOOK_URL（企微群机器人，text 消息），内容是「[实例名] 中文说明 · 时间」，只有计数、短码、错误码：不含客户原话、
 // external_userid、密钥和带凭据的地址（地址只在 env 文件里，日志里也不打它）。
@@ -26,7 +27,7 @@ import { onPlanRejected, onSendSettled, onUnsafeSend, type SendSettled } from '.
 import { onShutdown, onStoreIncident, storeCounters, storeHealth, type StoreHealth, type StoreIncident } from '../store.js';
 import { onTurnEnd, type FinishedTurn } from '../trace/recorder.js';
 
-export type AlertKey = 'model_errors' | 'wecom_send' | 'tenant_lock' | 'store' | 'jobs' | 'channel';
+export type AlertKey = 'model_errors' | 'wecom_send' | 'tenant_lock' | 'store' | 'jobs' | 'channel' | 'tenant_scope_missing';
 
 export interface AlertOpts {
   /** 同一告警键下按账号与原因独立去重，正文仍只有公开账号 key。 */
@@ -87,7 +88,7 @@ function errName(e: unknown): string {
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
-    setTimeout(resolve, ms).unref();
+    withoutTenantScope(() => setTimeout(resolve, ms)).unref();
   });
 
 async function send(url: string, content: string): Promise<void> {
@@ -420,7 +421,7 @@ function checkChannels(now: number): void {
 function tick(): void {
   try {
     const t = clock();
-    checkStore(t);
+    for (const rt of tenantRuntimes()) backgroundEntry(() => withTenantScope(rt, () => checkStore(t)));
     flushRestoreCutoff(t, false);
     for (const [account, st] of wecomAccounts) {
       if (st.lastFailAt && t - st.lastFailAt >= WECOM_WINDOW_MS) {
@@ -429,7 +430,7 @@ function tick(): void {
         alert('wecom_send', `企微发送 10 分钟没有失败 · 账号 ${codeOf(account)}`, { ...wecomScope(account), resolved: true });
       }
     }
-    const p = refreshChannelObservability()
+    const p = Promise.all(tenantRuntimes().map((rt) => withTenantScope(rt, () => refreshChannelObservability())))
       .then(() => checkChannels(t))
       .finally(() => inflight.delete(p));
     inflight.add(p);
@@ -443,33 +444,45 @@ let timer: NodeJS.Timeout | null = null;
 
 /** 挂上各处的订阅（模型、企微、租户锁、写库、任务）与每 5 秒一次的巡检。两种存储都挂，文件存储下与库相关的键自然不触发。可以调多次 */
 export function startAlerts(): void {
-  if (started) return;
+  if (started) {
+    // boot 先挂订阅，起渠道后再调用；sending 转 unknown 要到 startChannels 才产生。
+    // 只补查启动告警（由 alert 去重），不重复订阅或创建巡检定时器。
+    checkChannelStartup();
+    return;
+  }
   started = true;
-  onTurnEnd(onTurn);
-  onSendSettled(onSettled);
-  onUnsafeSend(onUnsafe);
-  onPlanRejected(onRejected);
-  onInboxAbandoned(onInboxGivenUp);
-  onTokenError(onToken);
-  onLockEvent(onLock);
-  onStoreIncident(onIncident);
-  onJobFailed(onJob);
-  // 停机：在途的推送（store_conflict、锁被拿走、drain 段末尾的 spill）等到 late 段的截止时刻，再退出
-  onShutdown(
-    async ({ deadline }) => {
-      flushRestoreCutoff(clock(), true);
-      if (!inflight.size) return;
-      await Promise.race([Promise.allSettled(inflight), sleep(Math.max(0, deadline - Date.now()))]);
-    },
-    { phase: 'late' },
-  );
-  // 启动之前就成立的：锁在装载途中就断了；回放失败的 spill 在第一次巡检里报
-  if (configHealth().lock === 'lost') onLock('lost');
-  // 03：渠道装载时判出的（R15 的网页账号没启用、R19 的欢迎语按没设处理），合成一条
-  checkChannelStartup();
-  tick();
-  timer = setInterval(tick, TICK_MS);
-  timer.unref();
+  // 这里的 exit 控制注册分支、停机钩子与 timer，不改变同步订阅的发出方上下文；巡检逐 rt 进入作用域。
+  withoutTenantScope(() => {
+    onTenantScopeMissing(() => alert('tenant_scope_missing', '后台入口缺少租户作用域'));
+    onTurnEnd(onTurn);
+    onSendSettled(onSettled);
+    onUnsafeSend(onUnsafe);
+    onPlanRejected(onRejected);
+    onInboxAbandoned(onInboxGivenUp);
+    onTokenError(onToken);
+    onLockEvent(onLock);
+    onStoreIncident(onIncident);
+    onJobFailed(onJob);
+    // 停机：在途的推送（store_conflict、锁被拿走、drain 段末尾的 spill）等到 late 段的截止时刻，再退出
+    onShutdown(
+      async ({ deadline }) => {
+        flushRestoreCutoff(clock(), true);
+        if (!inflight.size) return;
+        await Promise.race([Promise.allSettled(inflight), sleep(Math.max(0, deadline - Date.now()))]);
+      },
+      { phase: 'late' },
+    );
+    // 启动之前就成立的：锁在装载途中就断了；回放失败的 spill 在第一次巡检里报
+    for (const rt of tenantRuntimes())
+      withTenantScope(rt, () => {
+        if (configHealth().lock === 'lost') onLock('lost');
+      });
+    // 03：渠道装载时判出的（R15 的网页账号没启用、R19 的欢迎语按没设处理），合成一条
+    checkChannelStartup();
+    tick();
+    timer = withoutTenantScope(() => setInterval(tick, TICK_MS));
+    timer.unref();
+  });
 }
 
 /** 仅供自测 */

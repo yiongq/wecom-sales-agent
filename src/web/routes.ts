@@ -1,3 +1,6 @@
+import { publicHostMiddleware } from '../tenancy/hosts.js';
+import { TenantScopeMissing } from '../tenancy/runtime.js';
+import { withoutTenantScope, tenantCallback, currentRuntime } from '../tenancy/runtime.js';
 import { currentPack } from '../config/source.js';
 import { brandTexts, renderBrandPage } from '../core/brand.js';
 // 03 R14：正式网页渠道。每次读写的会话都只由账号与 HttpOnly cookie 推导。
@@ -116,13 +119,14 @@ export const webRoutes = new Hono();
 const webOnly = async (c: Context, next: () => Promise<void>): Promise<Response | void> => {
   c.header('Cache-Control', 'no-store');
   c.header('X-Content-Type-Options', 'nosniff');
-  if (!profile().flags.web_channel || !accountByKey(c.req.param('key') ?? '', 'web')) return c.notFound();
+  if (!profile().flags.web_channel || !accountByKey(c.req.param('key') ?? '', 'web', currentRuntime().id)) return c.notFound();
   return next();
 };
+webRoutes.use('*', publicHostMiddleware);
 webRoutes.use('/w/:key', webOnly);
 webRoutes.use('/api/web/:key/*', webOnly);
 webRoutes.get('/w/:key', async (c) => {
-  const account = accountByKey(c.req.param('key'), 'web')!;
+  const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
   const binding = currentPack();
   const welcome = account.web!.welcomeText ?? brandTexts(binding.runtime, binding.brand).webWelcome;
   const config = JSON.stringify({
@@ -148,7 +152,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
   const parsed = bodySchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'invalid_message' }, 400);
   const body = parsed.data;
-  const account = accountByKey(c.req.param('key'), 'web')!;
+  const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
   let token = visitorToken(c);
   let s = ownSession(account, token);
   // 点击必须属于已问过的同意菜单，不凭匿名点击创建会话或捏造同意。
@@ -187,9 +191,11 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
   processing.add(s.id);
   let reservation: Daily | null = null;
   let usedModel = false;
-  const unsubscribeTurn = onTurnEnd(({ turn }) => {
-    if (turn.conversationId === s.id && turn.llm.length > 0) usedModel = true;
-  });
+  const unsubscribeTurn = withoutTenantScope(() =>
+    onTurnEnd(({ turn }) => {
+      if (turn.conversationId === s.id && turn.llm.length > 0) usedModel = true;
+    }),
+  );
   try {
     const count = daily(account);
     if (count.turns >= account.web!.dailyTurns && (!s.handedOver || s.webTurnLimited)) {
@@ -210,7 +216,8 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
       ...(at >= 0 ? { alreadyRecorded: true } : {}),
     });
     return c.json({ reply: s.handedOver || !reply.text ? null : webReply(reply.text) });
-  } catch {
+  } catch (e) {
+    if (e instanceof TenantScopeMissing) throw e;
     // 不序列化异常（上游异常可能含输入），客户端重试同 cid 可从已记录状态恢复。
     log.error('网页咨询处理失败');
     return c.json({ error: 'temporarily_unavailable' }, 503);
@@ -222,7 +229,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
 });
 
 webRoutes.get('/api/web/:key/history', lookupLimit, (c) => {
-  const account = accountByKey(c.req.param('key'), 'web')!;
+  const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
   const s = ownSession(account, visitorToken(c));
   const messages: WebMessage[] = (s?.messages ?? []).flatMap((m) => {
     if (m.role === 'system') return [];
@@ -238,16 +245,17 @@ webRoutes.get('/api/web/:key/events', lookupLimit, (c) => {
     c.header('Allow', 'GET');
     return c.body(null, 405);
   }
-  const account = accountByKey(c.req.param('key'), 'web')!;
+  const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
   const s = ownSession(account, visitorToken(c));
   if (!s) return c.json({ error: 'unauthorized' }, 401);
+  const rt = currentRuntime();
   const encoder = new TextEncoder();
   let controller: ReadableStreamDefaultController<Uint8Array>;
   let timer: NodeJS.Timeout | undefined;
   let lastActivity = Date.now();
   let closed = false;
   let cancelSubscription = (): void => {};
-  const close = (): void => {
+  const close = tenantCallback(rt, (): void => {
     if (closed) return;
     closed = true;
     if (timer) clearInterval(timer);
@@ -259,7 +267,7 @@ webRoutes.get('/api/web/:key/events', lookupLimit, (c) => {
     } catch {
       // ReadableStream.cancel 已先关闭控制器；订阅与定时器仍须释放。
     }
-  };
+  });
   const send = (event: string, data: unknown): void => {
     if (closed) throw new Error('closed');
     // 客户不读时关闭连接，防止慢连接无限积压正文与心跳。
@@ -294,13 +302,18 @@ webRoutes.get('/api/web/:key/events', lookupLimit, (c) => {
       start(ctrl) {
         controller = ctrl;
         streams.add(connection);
-        c.req.raw.signal.addEventListener('abort', close, { once: true });
+        withoutTenantScope(() => c.req.raw.signal.addEventListener('abort', close, { once: true }));
         if (c.req.raw.signal.aborted) {
           close();
           return;
         }
         send('ping', Date.now());
-        timer = setInterval(() => connection.tick(Date.now()), PING_MS);
+        timer = withoutTenantScope(() =>
+          setInterval(
+            tenantCallback(rt, () => connection.tick(Date.now())),
+            PING_MS,
+          ),
+        );
         timer.unref();
       },
       cancel: close,
@@ -322,9 +335,11 @@ webRoutes.post('/api/web/:key/end', (c) => {
   setVisitorCookie(c, '', 0);
   return c.json({ ok: true });
 });
-onShutdown(() => {
-  for (const stream of streams) stream.close();
-});
+withoutTenantScope(() =>
+  onShutdown(() => {
+    for (const stream of streams) stream.close();
+  }),
+);
 
 /** 自测手动触发生产用的心跳巡检，不缩短生产超时。 */
 export const __webTest = {

@@ -1,3 +1,4 @@
+import { currentRuntime, withTenantScope, withoutTenantScope, tenantCallback, type TenantRuntime } from '../tenancy/runtime.js';
 // PG 会话后端（docs/architecture/02-conversations-workbench/spec.md「identity map 与写入」，R2、R4、R7）：
 // 分批预载、每会话写队列与合并、一次落库的七步、进快照即冻结、失败两类与 poisoned、撞上另一写者即优雅停机、
 // drain 段排空、exit 时的 spill 与启动时的回放。
@@ -61,7 +62,11 @@ import { assignSeqs, lastSeqOf, linkTurn, seedSeqs, seqOf, turnIdOf, WindowCorru
 
 // 模块加载时取一个空的异步上下文：每次落库都在它里面启动。在 withTenant 回调或轮次上下文里调 saveSession，
 // 排出的落库也不继承那个上下文（withTenant 不能嵌套，轮次的 trace 也不该串进落库）
-const detached = AsyncLocalStorage.snapshot();
+const detachedSnapshot = withoutTenantScope(() => AsyncLocalStorage.snapshot());
+function detached<T>(fn: () => T): T {
+  const rt = currentRuntime();
+  return detachedSnapshot(() => withTenantScope(rt, fn));
+}
 
 /** 预载每批的会话数（R2）：每条语句都在 agent_app 的 5 秒语句超时之内 */
 const PRELOAD_BATCH = 500;
@@ -304,6 +309,7 @@ interface Entry {
 }
 
 export interface PgBackendDeps {
+  runtime?: TenantRuntime;
   db: Db;
   tenantId: string;
   varDir: string;
@@ -953,13 +959,20 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
  * 已经过时，同样再预载一遍，内存的投递状态与窗口计数才与库一致
  */
 export async function openPgBackend(d: PgBackendDeps): Promise<PgBackend> {
-  let pre = await detached(() => preload(d));
-  const replay = await replaySpills(d);
-  if (replay.applied || replay.channelWritten) pre = await detached(() => preload(d));
-  return createBackend(d, pre, replay);
+  const rt = d.runtime ?? currentRuntime();
+  return withTenantScope(rt, async () => {
+    let pre = await detached(() => preload(d));
+    const replay = await replaySpills(d);
+    if (replay.applied || replay.channelWritten) pre = await detached(() => preload(d));
+    return createBackend(d, pre, replay);
+  });
 }
 
 function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBackend {
+  const rt = d.runtime ?? currentRuntime();
+  const detached = <T>(fn: () => T): T => detachedSnapshot(() => withTenantScope(rt, fn));
+  const scopedTimeout = (fn: () => void, ms: number): NodeJS.Timeout => withoutTenantScope(() => setTimeout(tenantCallback(rt, fn), ms));
+
   const ctx = systemCtx(d.tenantId);
   const entries = new Map<string, Entry>();
   /** refOf 先生成好、还没建写队列的新会话的 ref（建写队列时取走） */
@@ -1206,7 +1219,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       console.error(`[store] 会话 ${short(e.id)}（poisoned）的渠道行短事务没写进去（${why}），留在内存里每秒再试，停机时写进 spill`);
     }
     if (closed || conflict) return;
-    e.pcTimer = setTimeout(() => {
+    e.pcTimer = scopedTimeout(() => {
       e.pcTimer = null;
       pumpPoisoned(e);
     }, POISONED_CHANNEL_RETRY_MS);
@@ -1438,7 +1451,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     const delay = RETRY_MS[Math.min(e.attempts - 1, RETRY_MS.length - 1)]!;
     stats.lastRetryDelayMs = delay;
     console.warn(`[store] 会话 ${short(e.id)} 落库失败（${label}），第 ${e.attempts} 次，${delay / 1000} 秒后重试`);
-    e.timer = setTimeout(() => {
+    e.timer = scopedTimeout(() => {
       e.timer = null;
       // 租户锁到点时已在别人手里：不再写库，这个快照留在「在途」位置给 spill
       if (!closed && !conflict && d.writable()) detached(() => void runFlush(e, snap));
@@ -1461,7 +1474,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
           resolve();
         },
       };
-      const timer = setTimeout(
+      const timer = scopedTimeout(
         () => {
           e.waiters.delete(w);
           resolve();
@@ -1479,7 +1492,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     return Promise.race([
       e.pcRun.done,
       new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+        timer = scopedTimeout(resolve, Math.max(0, deadline - Date.now()));
       }),
     ]).finally(() => {
       if (timer) clearTimeout(timer);
@@ -1735,7 +1748,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       );
       let timer: NodeJS.Timeout | null = null;
       const late = new Promise<MarkSendingResult>((resolve) => {
-        timer = setTimeout(() => {
+        timer = scopedTimeout(() => {
           gaveUp = true;
           resolve('db_unavailable');
         }, timeoutMs);
@@ -1886,7 +1899,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
             reject(err);
           },
         };
-        const timer = setTimeout(() => {
+        const timer = scopedTimeout(() => {
           e.waiters.delete(w);
           reject(new StoreLaggingError(sessionId));
         }, timeoutMs);
