@@ -1,4 +1,5 @@
 import { tenantRuntimes, withTenantScope, withoutTenantScope, onTenantScopeMissing, backgroundEntry } from '../tenancy/runtime.js';
+import { onDomainEventMismatch } from '../store/events.js';
 // 告警（docs/architecture/02-conversations-workbench/spec.md「可观测性与告警 · 告警」、R24、不变量 32、50）。
 // 推到 ALERT_WEBHOOK_URL（企微群机器人，text 消息），内容是「[实例名] 中文说明 · 时间」，只有计数、短码、错误码：不含客户原话、
 // external_userid、密钥和带凭据的地址（地址只在 env 文件里，日志里也不打它）。
@@ -454,6 +455,7 @@ export function startAlerts(): void {
   // 这里的 exit 控制注册分支、停机钩子与 timer，不改变同步订阅的发出方上下文；巡检逐 rt 进入作用域。
   withoutTenantScope(() => {
     onTenantScopeMissing(() => alert('tenant_scope_missing', '后台入口缺少租户作用域'));
+    onDomainEventMismatch(() => alert('store', '领域事件租户不匹配，已跳过该事件', { scope: 'domain_event_tenant_mismatch' }));
     onTurnEnd(onTurn);
     onSendSettled(onSettled);
     onUnsafeSend(onUnsafe);

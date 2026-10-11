@@ -2894,7 +2894,10 @@ function pushRoute(sessionId: string, quiet = false): { rt: WecomRuntime; cfg: W
     if (!quiet) console.error(...args);
   };
   if (!wecomInDb()) {
-    if (!currentRuntime().isHost) return null;
+    if (!currentRuntime().isHost) {
+      err('[wecom] ⚠️ 非宿主租户没有库里的企微账号，不能使用宿主 env 账号，消息未送达:', convLabel(sessionId));
+      return null;
+    }
     const cfg = envRuntime().config();
     if (!cfg) {
       // 历史 wecom 会话存在但企微 env 未配（如换服务器漏配）：必须出声，否则回复凭空消失

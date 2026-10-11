@@ -69,6 +69,9 @@ const tenantState = scopedState(() => ({
   outboundCommitHooks: new Set<(rows: readonly OutboundRow[]) => void>(),
 }));
 const hookState = tenantState.get;
+// 固定账本能力接线，不捕获导入时的租户；发出方显式传所属运行时。
+const instanceSaveHooks = new Set<(rt: TenantRuntime, s: Session) => void>();
+const instanceOutboundHooks = new Set<(rt: TenantRuntime, rows: readonly OutboundRow[]) => void>();
 registerTenantState({ name: 'store.incidentHooks', ...tenantState.registration('incidentHooks') });
 registerTenantState({ name: 'store.saveHooks', ...tenantState.registration('saveHooks') });
 registerTenantState({ name: 'store.outboundCommitHooks', ...tenantState.registration('outboundCommitHooks') });
@@ -307,6 +310,14 @@ async function loadSessionStore(deps: SessionStoreDeps | null): Promise<void> {
       if (currentRuntime().isHost) fileBackendOf(state).markChanged(ids);
     },
     outboundCommitted: (rows) => {
+      const rt = currentRuntime();
+      for (const cb of instanceOutboundHooks) {
+        try {
+          withoutTenantScope(() => cb(rt, rows));
+        } catch (e) {
+          console.error('[store] 出站行实例订阅者出错（已忽略）:', e instanceof Error ? e.name : e);
+        }
+      }
       for (const cb of hookState().outboundCommitHooks) {
         try {
           cb(rows);
@@ -533,6 +544,12 @@ export function onSessionSaved(cb: (s: Session) => void): () => void {
   return () => hooks.delete(cb);
 }
 
+/** 固定能力订阅所有运行时；允许空作用域注册，回调须进入参数 rt。 */
+export function onAnySessionSaved(cb: (rt: TenantRuntime, s: Session) => void): () => void {
+  instanceSaveHooks.add(cb);
+  return () => void instanceSaveHooks.delete(cb);
+}
+
 /** 企微去重集合（第 12 步用）：db 存储下是预载的最近 7 天带 msgid 的客户消息，加上本进程记下的；文件存储下为空 */
 export function recentMsgids(sessionId: string): ReadonlySet<string> {
   return pgFor(sessionId)?.recentMsgids(sessionId) ?? new Set();
@@ -562,6 +579,12 @@ export function onOutboundCommitted(cb: (rows: readonly OutboundRow[]) => void):
   const hooks = hookState().outboundCommitHooks;
   hooks.add(cb);
   return () => hooks.delete(cb);
+}
+
+/** 账本提交接线，与 onAnySessionSaved 相同的实例级约定。 */
+export function onAnyOutboundCommitted(cb: (rt: TenantRuntime, rows: readonly OutboundRow[]) => void): () => void {
+  instanceOutboundHooks.add(cb);
+  return () => void instanceOutboundHooks.delete(cb);
 }
 /**
  * 出站 pending 插入与 cancelled 排进这个会话的下一次落库（主事务）。db 存储的真实会话、内存里有这个会话时返回 true；
@@ -904,6 +927,14 @@ export function saveSession(s: Session, touch = true): void {
   b.schedule(s);
   emitSaved(s, unseq);
   if (b !== state.pgBackend) return;
+  const rt = currentRuntime();
+  for (const cb of instanceSaveHooks) {
+    try {
+      withoutTenantScope(() => cb(rt, s));
+    } catch (e) {
+      console.error('[store] saveSession 实例订阅者出错（已忽略）:', e instanceof Error ? e.name : e);
+    }
+  }
   for (const cb of hookState().saveHooks) {
     try {
       cb(s);

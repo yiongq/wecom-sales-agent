@@ -1,5 +1,6 @@
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
+import { standardTenants } from '../db/repo/tenants.js';
 import { withoutTenantScope, tenantCallback } from '../tenancy/runtime.js';
 import {
   scopedRuntime,
@@ -42,7 +43,7 @@ import {
   hasChannelsMarker,
   hasRestoreSentinel,
   hasWecomStateFile,
-  removeRestoreSentinel,
+  clearTenantRestoreSentinel,
   RESTORE_SENTINEL,
   WECOM_STATE_FILE,
   writeChannelsMarker,
@@ -201,11 +202,13 @@ const loadedOf = (account: ChannelAccount, extra: Partial<LoadedChannel> = {}): 
 });
 
 /** 渠道状态在文件里（文件存储、未导入、已导出）时有恢复哨兵：恢复照 02，只记一行并删掉它（R7） */
-function dropSentinel(varDir: string, state: string): () => void {
+function dropSentinel(varDir: string, state: string, tenantId = currentRuntime().id, shared = false): () => void {
   return () => {
     try {
-      removeRestoreSentinel(varDir);
-      console.log(`[channels] 有恢复哨兵 ${RESTORE_SENTINEL}：企微状态${state}，渠道状态在文件里、恢复照 02，已删掉`);
+      clearTenantRestoreSentinel(varDir, tenantId, shared);
+      console.log(
+        `[channels] 有恢复哨兵 ${RESTORE_SENTINEL}：企微状态${state}，渠道状态在文件里、恢复照 02，${shared ? '已解除本租户保护，总哨兵保留' : '已删掉'}`,
+      );
     } catch (e) {
       console.error(`[channels] ⚠️ 有恢复哨兵 ${RESTORE_SENTINEL}（企微状态${state}），删不掉（${errCode(e)}）：下次启动再删`);
     }
@@ -292,8 +295,8 @@ async function planDbStore(deps: ChannelDeps): Promise<Plan> {
     const env = currentRuntime().isHost ? envAccountFrom(process.env, tenantId) : null;
     const label = state === 'not_imported' ? '未导入（库里没有企微账号）' : `已导出（默认账号 ${wecomRows[0]!.key} 是 exported）`;
     const effects: (() => void)[] = [];
-    if (currentRuntime().isHost && hasRestoreSentinel(varDir))
-      effects.push(dropSentinel(varDir, state === 'not_imported' ? '未导入' : '已导出'));
+    if (hasRestoreSentinel(varDir, tenantId))
+      effects.push(dropSentinel(varDir, state === 'not_imported' ? '未导入' : '已导出', tenantId, (await standardTenants(db)).length > 1));
     return {
       mode: 'env',
       wecomState: state,
@@ -328,7 +331,7 @@ async function planDbStore(deps: ChannelDeps): Promise<Plan> {
       throw e;
     }
   }
-  const sentinel = currentRuntime().isHost && hasRestoreSentinel(varDir);
+  const sentinel = hasRestoreSentinel(varDir, tenantId);
   if (sentinel && active.length) {
     throw new ChannelStartupError(
       'channel_restore_pending',

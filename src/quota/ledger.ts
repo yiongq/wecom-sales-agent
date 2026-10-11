@@ -29,6 +29,7 @@ import { randomBytes } from 'node:crypto';
 import { accountForSession, type ChannelAccount } from '../channels/accounts.js';
 import { canMoveOutbound } from '../channels/transitions.js';
 import type { OutboundStatus } from '../shared/channel-types.js';
+import { withTenantScope } from '../tenancy/runtime.js';
 import {
   deliveryOfSegments,
   type DeliveryView,
@@ -46,8 +47,8 @@ import {
   isDemoClassId,
   markOutboundFailedInDb,
   markOutboundSendingInDb,
-  onOutboundCommitted,
-  onSessionSaved,
+  onAnyOutboundCommitted,
+  onAnySessionSaved,
   queueInboxState,
   queueOutboundRows,
   queueTelemetry,
@@ -348,10 +349,13 @@ function releaseAwaiting(msg: ChatMessage, timedOut: boolean): void {
 
 // 消息写进会话、分到 seq 的那一刻（saveSession 同步分配 seq 之后，db 存储下才有这个钩子）：等着它的账本行在下一个宏任务一起排进落库。
 // 不在 saveSession 里面排：同一段同步代码里还要记这一轮的 trace，分开排，trace 那几行写不进去（存档点回滚）时不连带丢账本行
-onSessionSaved(() => {
-  if (!awaitingSeq.size) return;
-  for (const msg of awaitingSeq.keys()) if (seqOf(msg) !== undefined) setImmediate(() => releaseAwaiting(msg, false));
-});
+onAnySessionSaved((rt, s) =>
+  withTenantScope(rt, () => {
+    if (!awaitingSeq.size) return;
+    for (const msg of awaitingSeq.keys())
+      if (s.messages.includes(msg) && seqOf(msg) !== undefined) setImmediate(() => releaseAwaiting(msg, false));
+  }),
+);
 
 /**
  * 一个分段最后的结果（settle 收到的那一个，只报一次）：02 spec 的 wecom_send 告警挂在这里（rejected 或 unknown 算最终发送失败）。
@@ -561,12 +565,14 @@ function pendingSettled(row: Row, ok: boolean): void {
   row.commitWaiters = [];
   for (const w of ws) w();
 }
-onOutboundCommitted((rows) => {
-  for (const w of rows) {
-    const r = pendingWrites.get(w);
-    if (r) pendingSettled(r, true);
-  }
-});
+onAnyOutboundCommitted((rt, rows) =>
+  withTenantScope(rt, () => {
+    for (const w of rows) {
+      const r = pendingWrites.get(w);
+      if (r) pendingSettled(r, true);
+    }
+  }),
+);
 
 /** 每段的 pending：会话在内存里就排进它的下一次落库（主事务），没有会话的单独一个短事务 */
 function writePending(rows: readonly Row[], hasSession: boolean): void {

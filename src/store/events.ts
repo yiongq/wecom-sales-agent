@@ -1,4 +1,4 @@
-import { currentRuntime } from '../tenancy/runtime.js';
+import { currentRuntime, withoutTenantScope } from '../tenancy/runtime.js';
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
 // 提交后的领域事件总线（docs/architecture/02-conversations-workbench/spec.md「通知」）。
@@ -41,6 +41,25 @@ export type DomainEventInput =
 export type DomainEvent = DomainEventInput & { tenantId: string };
 export type HandoffStartedInput = Extract<DomainEventInput, { type: 'handoff.started' }>;
 
+// 实例告警接线：不保存租户数据，允许在空作用域注册。
+const mismatchListeners = new Set<() => void>();
+export function onDomainEventMismatch(cb: () => void): () => void {
+  mismatchListeners.add(cb);
+  return () => void mismatchListeners.delete(cb);
+}
+function reportMismatch(): void {
+  console.error('[store] domain_event_tenant_mismatch：领域事件租户不匹配，已跳过');
+  withoutTenantScope(() => {
+    for (const cb of mismatchListeners) {
+      try {
+        cb();
+      } catch {
+        // 已提交的会话必须继续完成 afterCommit 与等待者唤醒。
+      }
+    }
+  });
+}
+
 export function onCommitted(cb: (ev: DomainEvent) => void): () => void {
   const set = state().subscribers;
   set.add(cb);
@@ -51,7 +70,10 @@ export function onCommitted(cb: (ev: DomainEvent) => void): () => void {
 export function deliverCommitted(events: readonly (DomainEventInput & { tenantId?: string })[]): void {
   const rt = currentRuntime();
   for (const input of events) {
-    if (input.tenantId !== undefined && input.tenantId !== rt.id) throw new Error('领域事件租户不匹配');
+    if (input.tenantId !== undefined && input.tenantId !== rt.id) {
+      reportMismatch();
+      continue;
+    }
     const ev: DomainEvent = { ...input, tenantId: rt.id };
     for (const cb of state().subscribers) {
       try {
@@ -82,7 +104,10 @@ export function onHandoffUnsaved(cb: (ev: HandoffStartedEvent) => void): () => v
 export function deliverHandoffUnsaved(events: readonly (DomainEventInput & { tenantId?: string })[]): void {
   const rt = currentRuntime();
   for (const input of events) {
-    if (input.tenantId !== undefined && input.tenantId !== rt.id) throw new Error('领域事件租户不匹配');
+    if (input.tenantId !== undefined && input.tenantId !== rt.id) {
+      reportMismatch();
+      continue;
+    }
     const ev: DomainEvent = { ...input, tenantId: rt.id };
     if (ev.type !== 'handoff.started') continue;
     for (const cb of state().unsavedSubscribers) {

@@ -24,7 +24,7 @@ process.env.CONFIG_SOURCE = 'file';
 process.env.ALERT_WEBHOOK_URL = '';
 
 const { parseUntil, RESTORE_CUTOFF_CLI_NOTE } = await import('../cli/channel-account.js');
-const { RESTORE_SENTINEL, CHANNELS_IN_DB_MARKER } = await import('./markers.js');
+const { RESTORE_SENTINEL, CHANNELS_IN_DB_MARKER, hasRestoreSentinel } = await import('./markers.js');
 const { sealSecrets, CHANNEL_KEY_ENV } = await import('./secrets.js');
 const { openTestDb, createRealPgFixture } = await import('../db/testing.js');
 const { holdTenantLock } = await import('../db/client.js');
@@ -606,10 +606,12 @@ async function cliScenarios(s: Suite): Promise<void> {
     assert.ok(!JSON.stringify(a.diff).includes('wm12'));
     assert.match(AUDIT_ACTIONS['channel.restore_cutoff']!.label, /\p{Script=Han}/u);
   });
-  await check(label('提交之后删恢复哨兵，标记不动'), async () => {
-    assert.ok(!fs.existsSync(path.join(varDir, RESTORE_SENTINEL)), '哨兵删了');
+  await check(label('提交之后只解除本租户保护，总哨兵与其他租户保护保留，标记不动'), async () => {
+    assert.ok(fs.existsSync(path.join(varDir, RESTORE_SENTINEL)), '共享哨兵保留');
+    assert.equal(hasRestoreSentinel(varDir, tid), false);
+    assert.equal(hasRestoreSentinel(varDir, other), true);
     assert.equal(fs.readFileSync(path.join(varDir, CHANNELS_IN_DB_MARKER), 'utf8'), filesBefore[CHANNELS_IN_DB_MARKER]);
-    assert.match(output, /已删恢复哨兵 restored-from-backup\.json/);
+    assert.match(output, /已解除本租户恢复保护，总哨兵保留/);
   });
   await check(label('同一截止点再跑一次：0，什么都不改、不加说明、不记审计，告诉你没有哨兵'), async () => {
     const out = await run(args(untilArg), 0);
@@ -734,7 +736,8 @@ async function sentinelEndToEnd(disk: string, s: Suite): Promise<void> {
     const t0 = Date.now();
     const r = await s.run(['restore-cutoff', '--tenant', 'rc12-e2e', '--until', 'now'], { env: { VAR_DIR: restoredVar } });
     assert.equal(r.status, 0, r.out);
-    assert.ok(!fs.existsSync(path.join(restoredVar, RESTORE_SENTINEL)), '哨兵删了');
+    assert.ok(fs.existsSync(path.join(restoredVar, RESTORE_SENTINEL)), '共享哨兵保留');
+    assert.equal(hasRestoreSentinel(restoredVar, tid), false);
     const ok = await init();
     assert.equal(ok.reason, null);
     assert.equal(ok.mode, 'db');
