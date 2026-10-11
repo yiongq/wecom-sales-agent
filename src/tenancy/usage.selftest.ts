@@ -11,6 +11,7 @@ process.env.VAR_DIR = dir;
 process.env.CONFIG_SOURCE = 'file';
 process.env.SERVER_SELFTEST = '1';
 process.env.LLM_MAX_RETRY = '1';
+process.env.LLM_MAX_INFLIGHT = '1';
 process.env.ALERT_WEBHOOK_URL = '';
 process.env.VISITOR_SESSION_LLM_CALLS = '1';
 const r = await import('./runtime.js');
@@ -18,7 +19,7 @@ const usage = await import('../usage.js');
 const visitor = await import('../budget.js');
 const daily = await import('../trace/usage-daily.js');
 const state = await import('./state.js');
-const { gatedFetch, gateStatus, BudgetExhausted } = await import('../llm-gate.js');
+const { gatedFetch, gateStatus, gateBusy, BudgetExhausted } = await import('../llm-gate.js');
 const { initializeStandardBudget } = await import('./budget.js');
 const a = r.hostRuntime();
 const b = r.createTenantRuntime({ id: 'usage-b', slug: 'usage-b' });
@@ -121,11 +122,64 @@ try {
     gatedFetch('http://test.invalid/chat/completions', request, () => AbortSignal.timeout(5000), { estimateMilli: 7 }),
   );
   assert.equal(result.attempts, 2);
-  assert.equal(((await result.res.json()) as { usage: { prompt_tokens: number } }).usage.prompt_tokens, 100, '结算不得消耗调用方 body');
+  const parsed = await result.res.json();
+  scope(b, () => {
+    result.settleUsage(parsed);
+    result.settleUsage(parsed);
+  });
+  assert.equal(parsed.usage.prompt_tokens, 100, '结算不得消耗调用方 body');
   const after = scope(b, () => b.budget.status());
   assert.equal(after.calls - statusBefore.calls, 2);
   assert.equal(after.costMilli - statusBefore.costMilli, 7 + usage.costOf('glm-5.2', 100, 10) * 1000);
   assert.equal(after.capCalls, null);
+  assert.equal(gateStatus().inflight, 0);
+
+  // 名额只占到响应头返回：第一份正文尚未完成时，第二次 fetch 必须已发出。
+  let body!: ReadableStreamDefaultController<Uint8Array>;
+  let receivedHeaders!: () => void;
+  const headers = new Promise<void>((resolve) => {
+    receivedHeaders = resolve;
+  });
+  let concurrentFetches = 0;
+  globalThis.fetch = async () => {
+    concurrentFetches++;
+    if (concurrentFetches === 1) {
+      const res = new Response(
+        new ReadableStream<Uint8Array>({
+          start(controller) {
+            body = controller;
+          },
+        }),
+      );
+      receivedHeaders();
+      return res;
+    }
+    return Response.json({ usage: { prompt_tokens: 100 } });
+  };
+  const first = scope(b, async () => {
+    const response = await gatedFetch('http://test.invalid/chat/completions', request, () => AbortSignal.timeout(5000));
+    const data = await response.res.json();
+    response.settleUsage(data);
+  });
+  await headers;
+  const second = scope(b, () => gatedFetch('http://test.invalid/chat/completions', request, () => AbortSignal.timeout(5000)));
+  let deadline: NodeJS.Timeout | undefined;
+  try {
+    const next = await Promise.race([
+      second,
+      new Promise<never>((_, reject) => {
+        deadline = setTimeout(() => reject(new Error('延迟正文不应阻塞第二次 fetch')), 1000);
+      }),
+    ]);
+    assert.equal(concurrentFetches, 2);
+    assert.equal(gateBusy(), false, '正文解析期间不改变对冲的 gateBusy 判定');
+    scope(b, () => next.settleUsage(null));
+  } finally {
+    clearTimeout(deadline);
+    body.enqueue(new TextEncoder().encode(JSON.stringify({ usage: { prompt_tokens: 100 } })));
+    body.close();
+    await Promise.allSettled([first, second]);
+  }
   assert.equal(gateStatus().inflight, 0);
 
   const denied = r.createTenantRuntime({ id: 'usage-denied', slug: 'usage-denied' });
@@ -176,6 +230,58 @@ try {
     '非宿主也要有自己的 PG writer',
   );
 
+  // 初始化持续失败时，80 厘仍刷进库；恢复后不得把这 80 厘再加一遍。
+  const recovering = r.createTenantRuntime({ id: 'usage-recovering', slug: 'usage-recovering' });
+  r.registerRuntime(recovering);
+  const readFixture = await scope(recovering, () => testing.installPgSessionStore(db!, { slug: recovering.slug, varDir: dir }));
+  await scope(recovering, () => testing.installSeededConfig(db!, { slug: recovering.slug, deps: { db: readFixture.deps.db } }));
+  const writeFixture = await scope(recovering, () => testing.installPgSessionStore(db!, { slug: recovering.slug, varDir: dir }));
+  await db.pg.transaction(async (tx) => {
+    await tx.exec('SET LOCAL ROLE NONE');
+    await tx.query('update tenants set llm_daily_alert_milli = 100 where id = $1', [recovering.id]);
+  });
+  readFixture.faults.acquire = new Error('test_budget_read_failure');
+  await scope(recovering, () => store.initSessionStore(writeFixture.deps));
+  scope(recovering, () => {
+    daily.__usageDailyTest.rearm(60_000);
+    recovering.budget.reserve('chat', 80)!.settle(80);
+    usage.recordUsage('glm-5.2', 10_000, 0); // 80 厘
+  });
+  await initializeStandardBudget(recovering);
+  await scope(recovering, daily.flushUsageDaily);
+  const recoveryCost = await db.pg.transaction(async (tx) => {
+    await tx.exec('SET LOCAL ROLE NONE');
+    return (
+      await tx.query<{ cost: number }>('select sum(cost_milli_cny)::int as cost from usage_daily where tenant_id = $1', [recovering.id])
+    ).rows[0]!.cost;
+  });
+  assert.equal(recoveryCost, 80, '故障期间费用确已写入库');
+  const alertsBeforeRecovery = warnings.filter((line) => line.includes('模型当日用量超过软上限')).length;
+  readFixture.faults.acquire = null;
+  await initializeStandardBudget(recovering);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(
+    warnings.filter((line) => line.includes('模型当日用量超过软上限')).length,
+    alertsBeforeRecovery,
+    '实花 80 厘不能按 160 厘误告警',
+  );
+  scope(recovering, () => recovering.budget.reserve('chat', 30)!.settle(30));
+  const recoveryDeadline = Date.now() + 5000;
+  while (
+    warnings.filter((line) => line.includes('模型当日用量超过软上限')).length === alertsBeforeRecovery &&
+    Date.now() < recoveryDeadline
+  )
+    await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(warnings.filter((line) => line.includes('模型当日用量超过软上限')).length, alertsBeforeRecovery + 1);
+  assert.ok(
+    warnings.some((line) => line.includes('110 厘，上限 100 厘')),
+    '真正越限时按 110 厘告警',
+  );
+  scope(recovering, () => recovering.budget.reserve('chat', 1)!.settle(1));
+  await new Promise((resolve) => setTimeout(resolve, 30));
+  assert.equal(warnings.filter((line) => line.includes('模型当日用量超过软上限')).length, alertsBeforeRecovery + 1, '当天只告警一次');
+  const previousAlerts = warnings.filter((line) => line.includes('模型当日用量超过软上限')).length;
+
   // 新运行时模拟重启，从库里读取软上限与已记用量；上限只影响告警。
   await db.pg.transaction(async (tx) => {
     await tx.exec('SET LOCAL ROLE NONE');
@@ -188,9 +294,9 @@ try {
   await initializeStandardBudget(restarted);
   for (let i = 0; i < 3; i++) scope(restarted, () => restarted.budget.reserve('chat', 1)!.settle(1));
   const alertDeadline = Date.now() + 5000;
-  while (!warnings.some((line) => line.includes('模型当日用量超过软上限')) && Date.now() < alertDeadline)
+  while (warnings.filter((line) => line.includes('模型当日用量超过软上限')).length === previousAlerts && Date.now() < alertDeadline)
     await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.equal(warnings.filter((line) => line.includes('模型当日用量超过软上限')).length, 1);
+  assert.equal(warnings.filter((line) => line.includes('模型当日用量超过软上限')).length, previousAlerts + 1);
   scope(restarted, () => assert.equal(restarted.budget.status().calls, 3, '越限后继续服务'));
   const realDate = globalThis.Date;
   const tomorrow = new realDate();
@@ -204,9 +310,9 @@ try {
       restarted.budget.reserve('embedding', 1)!.settle(1);
     });
     const nextDeadline = Date.now() + 5000;
-    while (warnings.filter((line) => line.includes('模型当日用量超过软上限')).length < 2 && Date.now() < nextDeadline)
+    while (warnings.filter((line) => line.includes('模型当日用量超过软上限')).length < previousAlerts + 2 && Date.now() < nextDeadline)
       await new Promise((resolve) => setTimeout(resolve, 30));
-    assert.equal(warnings.filter((line) => line.includes('模型当日用量超过软上限')).length, 2, '换天重新告警一次');
+    assert.equal(warnings.filter((line) => line.includes('模型当日用量超过软上限')).length, previousAlerts + 2, '换天重新告警一次');
   } finally {
     globalThis.Date = realDate;
   }

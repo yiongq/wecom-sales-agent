@@ -80,6 +80,8 @@ function retriable(status: number): boolean {
 export interface GateResult {
   res: Response;
   attempts: number;
+  /** 成功响应由调用方沿原有路径解析后结算；解析失败传 null。不会额外读取 body。 */
+  settleUsage(data: unknown): void;
   /** 错误响应的正文。重试时这里已经把 body 读掉了，调用方再 res.text() 会抛
    *  「Body is unusable」，把 429 的真实原因（配额说明、限频提示）整条吃掉，
    *  日志里只剩一个 TypeError。所以由本函数读一次并原样带出来。 */
@@ -116,10 +118,9 @@ function requestUsage(init: RequestInit, url: string, opts: GateUsage): { model:
     estimateMilli: opts.estimateMilli ?? costOf(model, inputTokens, body.max_tokens ?? body.max_completion_tokens ?? 0) * 1000,
   };
 }
-async function actualCost(res: Response, model: string): Promise<number | null> {
-  if (!res.ok) return null;
+function actualCost(data: unknown, model: string): number | null {
   try {
-    const data = (await res.clone().json()) as {
+    const parsed = data as {
       usage?: {
         prompt_tokens?: number;
         completion_tokens?: number;
@@ -127,8 +128,8 @@ async function actualCost(res: Response, model: string): Promise<number | null> 
         prompt_tokens_details?: { cached_tokens?: number };
       };
     };
-    if (!data.usage) return null;
-    const u = data.usage;
+    if (!parsed?.usage) return null;
+    const u = parsed.usage;
     return (
       costOf(
         model,
@@ -175,11 +176,20 @@ export async function gatedFetch(
       const reservation = rt.budget.reserve(usage.purpose, usage.estimateMilli);
       if (!reservation) throw new BudgetExhausted();
       let settled = false;
+      let handedOff = false;
+      const settleUsage = (data: unknown): void => {
+        if (settled) return;
+        reservation.settle(actualCost(data, usage.model));
+        settled = true;
+      };
       try {
         const res = await fetch(url, { ...init, signal });
-        reservation.settle(await actualCost(res, usage.model));
-        settled = true;
-        if (res.ok || !retriable(res.status)) return { res, attempts: attempt + 1 };
+        if (res.ok) {
+          handedOff = true;
+          return { res, attempts: attempt + 1, settleUsage };
+        }
+        settleUsage(null);
+        if (!retriable(res.status)) return { res, attempts: attempt + 1, settleUsage };
         last = res;
         // 读出来既是释放 body（避免连接悬挂），也是保住错误原因：这个 Response
         // 可能被当作最终结果返回，届时 body 已不可再读
@@ -190,10 +200,10 @@ export async function gatedFetch(
         last = null;
         lastBody = '';
       } finally {
-        if (!settled) reservation.settle(null);
+        if (!handedOff) settleUsage(null);
       }
     }
-    if (last) return { res: last, attempts: MAX_RETRY + 1, errorBody: lastBody };
+    if (last) return { res: last, attempts: MAX_RETRY + 1, errorBody: lastBody, settleUsage: () => {} };
     throw new Error('LLM 请求重试后仍失败');
   } finally {
     release();

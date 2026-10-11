@@ -1,6 +1,7 @@
 import { currentRuntime, withTenantScope, withoutTenantScope, backgroundEntry, type TenantRuntime } from '../tenancy/runtime.js';
 import { registerTenantState } from '../tenancy/state.js';
 import { initializeStandardBudget } from '../tenancy/budget.js';
+import { todayIso } from '../env.js';
 // usage_daily 的累加器（docs/architecture/02-conversations-workbench/spec.md「逐轮 trace、护栏事件与用量」、R16）。
 // 订阅 usage.ts 的 onUsage（所有模型调用的唯一汇聚点），内存里按（租户、天、模型、用途）累加；db 存储装上之后（store.ts 的
 // initSessionStore 调 startUsageDaily）每 30 秒与停机的 drain 段把累加的部分交给写入函数 upsert 进 usage_daily。
@@ -39,6 +40,9 @@ interface DailyState {
   lastDay: string;
   intervalMs: number | null;
   nextAt: number;
+  /** 本运行时已提交的当日金额；与库快照在同一写队列里核对，防止软上限重复计费。 */
+  persistedDay: string;
+  persistedMilli: number;
 }
 const states = new Map<string, DailyState>();
 // 唯一实例定时器在空作用域创建；每拍显式恢复各 writer 的租户。
@@ -59,7 +63,18 @@ function daily(): DailyState {
       }
   }
   if (!state) {
-    state = { owner: rt, acc: new Map(), writer: null, chain: Promise.resolve(), queued: 0, lastDay: '', intervalMs: null, nextAt: 0 };
+    state = {
+      owner: rt,
+      acc: new Map(),
+      writer: null,
+      chain: Promise.resolve(),
+      queued: 0,
+      lastDay: '',
+      intervalMs: null,
+      nextAt: 0,
+      persistedDay: '',
+      persistedMilli: 0,
+    };
     states.set(rt.id, state);
   }
   return state;
@@ -140,8 +155,34 @@ async function flushOnce(rt: TenantRuntime, state: DailyState): Promise<void> {
     );
     return;
   }
+  if (states.get(rt.id) !== state) return;
+  const day = todayIso();
+  if (state.persistedDay !== day) {
+    state.persistedDay = day;
+    state.persistedMilli = 0;
+  }
+  for (const { d } of batch) if (d.day === day) state.persistedMilli += d.costMilliCny;
   // 写完的、前一天的只剩零头（不到 1 厘）的项不再留着
   for (const [k, a] of acc) if (!a.calls && a.day !== state.lastDay) acc.delete(k);
+}
+
+/** 与 writer 串行读库；传入库快照中已包含的本运行时金额（只计成功提交）。 */
+export function withUsageDailySnapshot<T>(day: string, read: (persistedMilli: number) => Promise<T>): Promise<T> {
+  const rt = currentRuntime();
+  const state = daily();
+  state.queued++;
+  const run = state.chain.then(() =>
+    withTenantScope(rt, () => read(state.owner === rt && state.persistedDay === day ? state.persistedMilli : 0)),
+  );
+  state.chain = run
+    .then(
+      () => undefined,
+      () => undefined,
+    )
+    .finally(() => {
+      state.queued--;
+    });
+  return run;
 }
 
 /** 写一次累加的用量（定时器与 drain 段调用）；没装写入函数（文件存储）时什么都不做。不抛 */
@@ -204,7 +245,7 @@ function dailyRegistration(field: 'acc' | 'writer' | 'intervalMs' | 'queued' | '
     keyCount: (id: string) =>
       [...states]
         .filter(([, s]) => s.owner.id === id)
-        .reduce((n, [, s]) => n + (field === 'acc' ? s.acc.size : Number(Boolean(s[field]))), 0),
+        .reduce((n, [, s]) => n + (field === 'acc' ? s.acc.size + Number(s.persistedMilli > 0) : Number(Boolean(s[field]))), 0),
     drop,
     reset: () => {
       for (const s of states.values()) {

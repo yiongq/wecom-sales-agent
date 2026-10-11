@@ -2,6 +2,7 @@
 import type { UsagePurpose } from '../db/repo/usage.js';
 import { withTenant } from '../db/client.js';
 import { todayIso } from '../env.js';
+import { withUsageDailySnapshot } from '../trace/usage-daily.js';
 import { currentRuntime, tenantRuntimes, withTenantScope, withoutTenantScope, type TenantRuntime } from './runtime.js';
 import { registerTenantState } from './state.js';
 export interface Reservation {
@@ -69,33 +70,36 @@ export function initializeStandardBudget(rt: TenantRuntime): Promise<void> {
   if (!loaded) return Promise.resolve();
   const day = state.day;
   const work = withTenantScope(rt, () =>
-    withTenant(
-      loaded.deps.db,
-      {
-        tenantId: rt.id,
-        actor: { kind: 'system', userId: null, name: null, ip: null },
-      },
-      async (tx) => {
-        const tenant = state.capLoaded
-          ? undefined
-          : await tx.query.tenants.findFirst({
-              columns: { llmDailyAlertMilli: true },
-              where: (t, { eq }) => eq(t.id, rt.id),
-            });
-        const usage = await tx.query.usageDaily.findMany({
-          columns: { costMilliCny: true },
-          where: (t, { and, eq }) => and(eq(t.tenantId, rt.id), eq(t.day, day)),
-        });
-        if (state.dropped || state.day !== day || rt.state !== 'serving') return;
-        if (!state.capLoaded) {
-          state.alertMilli = tenant?.llmDailyAlertMilli ?? null;
-          state.capLoaded = true;
-        }
-        state.baselineMilli = usage.reduce((n, row) => n + row.costMilliCny, 0);
-        state.initializedDay = day;
-        checkAlert(rt, state);
-      },
-      { readOnly: true },
+    withUsageDailySnapshot(day, (persistedMilli) =>
+      withTenant(
+        loaded.deps.db,
+        {
+          tenantId: rt.id,
+          actor: { kind: 'system', userId: null, name: null, ip: null },
+        },
+        async (tx) => {
+          const tenant = state.capLoaded
+            ? undefined
+            : await tx.query.tenants.findFirst({
+                columns: { llmDailyAlertMilli: true },
+                where: (t, { eq }) => eq(t.id, rt.id),
+              });
+          const usage = await tx.query.usageDaily.findMany({
+            columns: { costMilliCny: true },
+            where: (t, { and, eq }) => and(eq(t.tenantId, rt.id), eq(t.day, day)),
+          });
+          if (state.dropped || state.day !== day || rt.state !== 'serving') return;
+          if (!state.capLoaded) {
+            state.alertMilli = tenant?.llmDailyAlertMilli ?? null;
+            state.capLoaded = true;
+          }
+          // 库总额包含初始化失败期间本运行时刷入的费用；扣掉后只留下启动前的基数。
+          state.baselineMilli = Math.max(0, usage.reduce((n, row) => n + row.costMilliCny, 0) - persistedMilli);
+          state.initializedDay = day;
+          checkAlert(rt, state);
+        },
+        { readOnly: true },
+      ),
     ),
   )
     .catch(() => {
