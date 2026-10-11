@@ -1,6 +1,8 @@
-import { withoutTenantScope } from '../tenancy/runtime.js';
+import { currentRuntime, withTenantScope, withoutTenantScope, backgroundEntry, type TenantRuntime } from '../tenancy/runtime.js';
+import { registerTenantState } from '../tenancy/state.js';
+import { initializeStandardBudget } from '../tenancy/budget.js';
 // usage_daily 的累加器（docs/architecture/02-conversations-workbench/spec.md「逐轮 trace、护栏事件与用量」、R16）。
-// 订阅 usage.ts 的 onUsage（所有模型调用的唯一汇聚点），内存里按（天、模型、用途）累加；db 存储装上之后（store.ts 的
+// 订阅 usage.ts 的 onUsage（所有模型调用的唯一汇聚点），内存里按（租户、天、模型、用途）累加；db 存储装上之后（store.ts 的
 // initSessionStore 调 startUsageDaily）每 30 秒与停机的 drain 段把累加的部分交给写入函数 upsert 进 usage_daily。
 // 不 import src/db/**：写入函数由 store 注入（PG 后端的 writeUsage）。文件存储下没有写入函数，不写库，只留当天的几项。
 // 天是 usage.ts 记账时的日期（服务器时区 TZ，与 usage.json 同一个口径）；金额按千分之一元取整，零头留到下一次（不按次四舍五入，
@@ -28,18 +30,50 @@ interface Acc extends Omit<UsageDailyDelta, 'costMilliCny'> {
 
 const COUNTERS = ['calls', 'promptTokens', 'completionTokens', 'cachedTokens', 'reasoningTokens'] as const;
 
-const acc = new Map<string, Acc>();
-let writer: ((deltas: UsageDailyDelta[]) => Promise<void>) | null = null;
+interface DailyState {
+  owner: TenantRuntime;
+  acc: Map<string, Acc>;
+  writer: ((deltas: UsageDailyDelta[]) => Promise<void>) | null;
+  chain: Promise<void>;
+  queued: number;
+  lastDay: string;
+  intervalMs: number | null;
+  nextAt: number;
+}
+const states = new Map<string, DailyState>();
+// 唯一实例定时器在空作用域创建；每拍显式恢复各 writer 的租户。
 let timer: NodeJS.Timeout | null = null;
-/** 写入串行：30 秒的定时与 drain 段可能撞在一起，同一批不能写两遍 */
-let chain: Promise<void> = Promise.resolve();
-let lastDay = '';
+// 实例拍的测试时序接线，不保存租户用量（第 1 步 armedMs 归类照旧）。
+let armedMs: number | null = null;
+function daily(): DailyState {
+  const rt = currentRuntime();
+  let state = states.get(rt.id);
+  // 文件兼容入口在 DB 启动时补身份；保留已累加的启动 embedding。
+  if (!state) {
+    for (const [id, entry] of states)
+      if (entry.owner === rt) {
+        states.delete(id);
+        state = entry;
+        states.set(rt.id, entry);
+        break;
+      }
+  }
+  if (!state) {
+    state = { owner: rt, acc: new Map(), writer: null, chain: Promise.resolve(), queued: 0, lastDay: '', intervalMs: null, nextAt: 0 };
+    states.set(rt.id, state);
+  }
+  return state;
+}
 
 onUsage((e: UsageEvent) => {
+  const rt = currentRuntime();
+  if (rt.state !== 'serving') return;
+  const state = daily();
+  const { acc, writer } = state;
   // 没有写入函数（文件存储）时只留当天的：换天就把前一天的丢掉，免得长期运行的文件存储实例越攒越多
-  if (!writer && e.day !== lastDay) acc.clear();
-  lastDay = e.day;
-  const key = JSON.stringify([e.day, e.model, e.purpose]);
+  if (!writer && e.day !== state.lastDay) acc.clear();
+  state.lastDay = e.day;
+  const key = JSON.stringify([rt.id, e.day, e.model, e.purpose]);
   let a = acc.get(key);
   if (!a) {
     a = {
@@ -64,8 +98,9 @@ onUsage((e: UsageEvent) => {
 });
 
 /** 把累加的部分写一次。先从累加器里扣掉再写（写入期间来的新用量另起一份），写失败就加回去、下一次再试 */
-async function flushOnce(): Promise<void> {
-  if (!writer) return;
+async function flushOnce(rt: TenantRuntime, state: DailyState): Promise<void> {
+  const { acc, writer } = state;
+  if (!writer || states.get(rt.id) !== state) return;
   const batch: { a: Acc; d: UsageDailyDelta }[] = [];
   for (const a of acc.values()) {
     // 加一点余量再取整：0.1 + 0.2 这类浮点零头不该让 1 厘变成 0
@@ -92,6 +127,7 @@ async function flushOnce(): Promise<void> {
   try {
     await writer(batch.map((b) => b.d));
   } catch (e) {
+    if (states.get(rt.id) !== state) return;
     for (const { a, d } of batch) {
       for (const c of COUNTERS) a[c] += d[c];
       a.milli += d.costMilliCny;
@@ -105,43 +141,99 @@ async function flushOnce(): Promise<void> {
     return;
   }
   // 写完的、前一天的只剩零头（不到 1 厘）的项不再留着
-  for (const [k, a] of acc) if (!a.calls && a.day !== lastDay) acc.delete(k);
+  for (const [k, a] of acc) if (!a.calls && a.day !== state.lastDay) acc.delete(k);
 }
 
 /** 写一次累加的用量（定时器与 drain 段调用）；没装写入函数（文件存储）时什么都不做。不抛 */
 export function flushUsageDaily(): Promise<void> {
-  const run = chain.then(flushOnce, flushOnce);
-  chain = run.catch(() => undefined);
-  return chain;
+  const rt = currentRuntime();
+  if (rt.state === 'closed') return Promise.resolve();
+  const state = daily();
+  state.queued++;
+  const run = state.chain.then(() => withTenantScope(rt, () => flushOnce(rt, state)));
+  state.chain = run
+    .catch(() => undefined)
+    .finally(() => {
+      state.queued--;
+    });
+  return state.chain;
 }
 
-/**
- * db 存储装上之后由 store.ts 调：此后每 intervalMs（默认 30 秒）写一次；停机的 drain 段由 store.ts 另挂钩子调 flushUsageDaily。
- * 装上之前记下的用量（启动时建检索索引的 embedding）随第一次写入
- */
-export function startUsageDaily(write: (deltas: UsageDailyDelta[]) => Promise<void>, intervalMs = 30_000): void {
-  writer = write;
-  arm(intervalMs);
+/** 每租户接一份 writer；启动、drain 均由所属 rt 调用。 */
+export function startUsageDaily(write: (deltas: UsageDailyDelta[]) => Promise<void>, intervalMs = 30_000): Promise<void> {
+  const rt = currentRuntime();
+  const state = daily();
+  state.writer = write;
+  state.intervalMs = intervalMs;
+  state.nextAt = Date.now() + intervalMs;
+  const ready = initializeStandardBudget(rt);
+  arm();
+  return ready;
 }
-
-let armedMs: number | null = null;
-function arm(ms: number): void {
+function arm(): void {
   if (timer) clearInterval(timer);
-  armedMs = ms;
-  timer = withoutTenantScope(() => setInterval(() => void flushUsageDaily(), ms));
+  timer = null;
+  armedMs = null;
+  const intervals = [...states.values()].flatMap((s) => (s.writer && s.intervalMs !== null ? [s.intervalMs] : []));
+  if (!intervals.length) return;
+  armedMs = Math.min(...intervals);
+  const period = armedMs;
+  timer = withoutTenantScope(() =>
+    setInterval(() => {
+      for (const state of states.values()) {
+        const rt = state.owner;
+        if (!state.writer || rt.state !== 'serving' || Date.now() < state.nextAt) continue;
+        state.nextAt = Date.now() + state.intervalMs!;
+        backgroundEntry(() => withTenantScope(rt, flushUsageDaily));
+      }
+    }, period),
+  );
   timer.unref();
 }
+function drop(id: string): void {
+  for (const [key, state] of states)
+    if (state.owner.id === id) {
+      state.writer = null;
+      state.acc.clear();
+      states.delete(key);
+    }
+  arm();
+}
+function dailyRegistration(field: 'acc' | 'writer' | 'intervalMs' | 'queued' | 'lastDay') {
+  return {
+    keyCount: (id: string) =>
+      [...states]
+        .filter(([, s]) => s.owner.id === id)
+        .reduce((n, [, s]) => n + (field === 'acc' ? s.acc.size : Number(Boolean(s[field]))), 0),
+    drop,
+    reset: () => {
+      for (const s of states.values()) {
+        s.writer = null;
+        s.acc.clear();
+      }
+      states.clear();
+      arm();
+    },
+  };
+}
+registerTenantState({ name: 'usage.daily.acc', ...dailyRegistration('acc') });
+registerTenantState({ name: 'usage.daily.writer', ...dailyRegistration('writer') });
+registerTenantState({ name: 'usage.daily.timer', ...dailyRegistration('intervalMs') });
+registerTenantState({ name: 'usage.daily.chain', ...dailyRegistration('queued') });
+registerTenantState({ name: 'usage.daily.lastDay', ...dailyRegistration('lastDay') });
 
-/** 仅供自测 */
+/** 仅供自测；读取的始终是当前租户。 */
 export const __usageDailyTest = {
-  /** 累加器里还没写进库的部分（金额是带小数的千分之一元） */
   pending(): (Omit<UsageDailyDelta, 'costMilliCny'> & { milli: number })[] {
-    return [...acc.values()].map((a) => ({ ...a }));
+    return [...daily().acc.values()].map((a) => ({ ...a }));
   },
-  /** 定时写入的间隔；还没装上写入函数为 null */
-  intervalMs: (): number | null => (writer ? armedMs : null),
-  /** 换一个间隔重新起定时器（写入函数不变）：自测里要排除定时写入插进来的那几段用 */
+  intervalMs: (): number | null => daily().intervalMs,
   rearm(ms: number): void {
-    if (writer) arm(ms);
+    const state = daily();
+    if (state.writer) {
+      state.intervalMs = ms;
+      state.nextAt = Date.now() + ms;
+      arm();
+    }
   },
 };

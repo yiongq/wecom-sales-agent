@@ -1,4 +1,5 @@
-import { withoutTenantScope } from './tenancy/runtime.js';
+import { currentRuntime, withoutTenantScope } from './tenancy/runtime.js';
+import { costOf, type UsagePurpose } from './usage.js';
 // LLM 请求的并发闸 + 退避重试。
 //
 // Node 的异步 I/O 解决的是「我们自己的服务器不被阻塞」：等 LLM 响应时线程去服务别的请求，
@@ -89,7 +90,65 @@ export interface GateResult {
  * 受控地发一次 LLM 请求：排队拿到名额 → 发请求 → 遇到可重试错误则退避重试。
  * 返回最终的 Response（可能仍是错误状态，由调用方决定怎么处理）。
  */
-export async function gatedFetch(url: string, init: RequestInit, signalFactory: () => AbortSignal): Promise<GateResult> {
+export class BudgetExhausted extends Error {
+  constructor() {
+    super('llm_budget_exhausted');
+    this.name = 'BudgetExhausted';
+  }
+}
+interface GateUsage {
+  purpose?: UsagePurpose;
+  estimateMilli?: number;
+}
+/** 第 20 步可传用途与保守预占；standard 不因这个值拒绝。 */
+function requestUsage(init: RequestInit, url: string, opts: GateUsage): { model: string; purpose: UsagePurpose; estimateMilli: number } {
+  let body: { model?: string; max_tokens?: number; max_completion_tokens?: number } = {};
+  try {
+    if (typeof init.body === 'string') body = JSON.parse(init.body);
+  } catch {
+    /* 请求格式仍由上游检查 */
+  }
+  const model = body.model ?? '';
+  const inputTokens = typeof init.body === 'string' ? Buffer.byteLength(init.body, 'utf8') : 0;
+  return {
+    model,
+    purpose: opts.purpose ?? (url.endsWith('/embeddings') ? 'embedding' : 'chat'),
+    estimateMilli: opts.estimateMilli ?? costOf(model, inputTokens, body.max_tokens ?? body.max_completion_tokens ?? 0) * 1000,
+  };
+}
+async function actualCost(res: Response, model: string): Promise<number | null> {
+  if (!res.ok) return null;
+  try {
+    const data = (await res.clone().json()) as {
+      usage?: {
+        prompt_tokens?: number;
+        completion_tokens?: number;
+        prompt_cache_hit_tokens?: number;
+        prompt_tokens_details?: { cached_tokens?: number };
+      };
+    };
+    if (!data.usage) return null;
+    const u = data.usage;
+    return (
+      costOf(
+        model,
+        u.prompt_tokens ?? 0,
+        u.completion_tokens ?? 0,
+        u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? 0,
+      ) * 1000
+    );
+  } catch {
+    return null;
+  }
+}
+export async function gatedFetch(
+  url: string,
+  init: RequestInit,
+  signalFactory: () => AbortSignal,
+  opts: GateUsage = {},
+): Promise<GateResult> {
+  const rt = currentRuntime();
+  const usage = requestUsage(init, url, opts);
   // 排队用的信号同样带着一个从此刻起算的单次超时，所以排队本身也不会超过 LLM_TIMEOUT_MS
   await acquire(signalFactory());
   try {
@@ -112,8 +171,14 @@ export async function gatedFetch(url: string, init: RequestInit, signalFactory: 
         signal = signalFactory();
         if (signal.aborted) throw signal.reason;
       }
+      // 预占在拿到实例名额后、每次真正发请求前；拒绝不进入重试分支。
+      const reservation = rt.budget.reserve(usage.purpose, usage.estimateMilli);
+      if (!reservation) throw new BudgetExhausted();
+      let settled = false;
       try {
         const res = await fetch(url, { ...init, signal });
+        reservation.settle(await actualCost(res, usage.model));
+        settled = true;
         if (res.ok || !retriable(res.status)) return { res, attempts: attempt + 1 };
         last = res;
         // 读出来既是释放 body（避免连接悬挂），也是保住错误原因：这个 Response
@@ -124,6 +189,8 @@ export async function gatedFetch(url: string, init: RequestInit, signalFactory: 
         if (attempt === MAX_RETRY) throw e;
         last = null;
         lastBody = '';
+      } finally {
+        if (!settled) reservation.settle(null);
       }
     }
     if (last) return { res: last, attempts: MAX_RETRY + 1, errorBody: lastBody };
