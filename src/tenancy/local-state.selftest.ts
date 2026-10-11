@@ -36,6 +36,7 @@ const { bindPack } = await import('../core/pack-api.js');
 const { handleMessage } = await import('../engine.js');
 const { openTestDb, installSeededConfig, installPgSessionStore } = await import('../db/testing.js');
 const db = await openTestDb();
+const fixtures = new Map<import('./runtime.js').TenantRuntime, import('../db/testing.js').PgStoreFixture>();
 const a = r.createTenantRuntime({ id: 'a', slug: 'state-a', publicBase: 'https://a.example' });
 const b = r.createTenantRuntime({ id: 'b', slug: 'state-b', publicBase: 'https://b.example' });
 r.registerRuntime(a);
@@ -98,6 +99,7 @@ try {
     await inside(rt, async () => {
       await installSeededConfig(db, { slug: rt.slug });
       const fixture = await installPgSessionStore(db, { slug: rt.slug, varDir: path.join(dir, rt.slug) });
+      fixtures.set(rt, fixture);
       await store.initSessionStore(fixture.deps);
     });
   const pack = inside(a, config.currentPack).runtime;
@@ -150,6 +152,73 @@ try {
   );
   count(a, 'ledger.bySession', 1);
   count(a, 'ledger.byMsgid', 2);
+  // closing 尚未 drop 时，迟到的 v2 发送结果也不能改内存或派发结算事件。
+  const [closingIntent] = inside(a, () =>
+    quota.adoptOpenOutbound('00000000-0000-0000-0000-000000000000', [
+      {
+        conversationId: sa.id,
+        channelMsgid: 'a'.repeat(32),
+        messageSeq: null,
+        kind: 'ai',
+        sentAt: new Date(),
+        status: 'sending',
+        accountId: null,
+        inboxId: null,
+        segment: 0,
+        attempts: 1,
+        payload: { msgtype: 'text', text: { content: '迟到结果' } },
+      },
+    ]),
+  );
+  const closingRows = inside(a, () => quota.__ledgerTest.rows());
+  let settlements = 0;
+  const offSettled = quota.onSendSettled(() => settlements++);
+  a.state = 'closing';
+  inside(a, () => {
+    quota.noteAttempt(closingIntent!);
+    quota.noteUnknown(closingIntent!, 1);
+    for (const result of ['accepted', 'rejected', 'unknown'] as const)
+      quota.settleIntent(closingIntent!, result, { attempts: 3, errcode: 1 });
+  });
+  assert.deepEqual(
+    inside(a, () => quota.__ledgerTest.rows()),
+    closingRows,
+  );
+  assert.equal(settlements, 0);
+  offSettled();
+  a.state = 'serving';
+  // 人工回复等提交期间关闭，必须释放准备好的发送与预占，且不调用传输。
+  await inside(a, () => store.flushSession(sa.id));
+  const commitGate = deferred();
+  const fixtureA = fixtures.get(a)!;
+  fixtureA.faults.gate = commitGate.promise;
+  let preparedReleases = 0;
+  let humanSends = 0;
+  takeover.setReplyTransport(async () => {
+    humanSends++;
+    return true;
+  });
+  takeover.setPrepareTransport({
+    prepare: (sessionId) => ({ sessionId, kind: 'human' }),
+    release: (_prepared, reason) => {
+      assert.equal(reason, 'aborted');
+      preparedReleases++;
+    },
+  });
+  const heldBefore = states.tenantKeys(a.id)['ledger.holds'];
+  const acquiring = fixtureA.stats.acquires;
+  const closingReply = inside(a, () => takeover.reply(sa.id, takeover.sharedActor(), '等待关闭', 'closing-reply'));
+  await until(() => fixtureA.stats.acquires > acquiring);
+  a.state = 'closing';
+  fixtureA.faults.gate = null;
+  commitGate.release();
+  assert.equal((await closingReply).sent, false);
+  assert.equal(humanSends, 0);
+  assert.equal(preparedReleases, 1);
+  assert.equal(states.tenantKeys(a.id)['ledger.holds'], heldBefore);
+  a.state = 'serving';
+  takeover.setPrepareTransport({ prepare: () => null, release: () => {} });
+  takeover.setReplyTransport(async () => true);
   // DB 写路径需要等待消息分配 seq；只测试等待注册，不启动真实写后端。
   inside(a, () => {
     const send = quota.recordSend('wecom:wmState', 'ai', { role: 'agent', content: '等 seq', at: Date.now() });
@@ -197,6 +266,35 @@ try {
   count(b, 'retrieval.retryTimer', 1);
   assert.equal(inside(a, retrieval.indexHealth).stale, false);
   failEmbed = false;
+  // var 下缓存只有宿主读写；普通 standard 即使指纹匹配也不读磁盘。
+  const cacheItems = inside(a, pack.retrievalItems);
+  const host = r.createTenantRuntime({ id: 'cache-host', slug: 'cache-host', isHost: true });
+  r.registerRuntime(host);
+  const cachePack = {
+    ...pack,
+    retrievalItems: () => cacheItems,
+    retrievalCacheFile: 'host-only.json',
+    retrievalText: (item: Parameters<typeof pack.retrievalText>[0]) => `宿主缓存 ${pack.retrievalText(item)}`,
+  };
+  inside(host, () => bindPack(cachePack, null));
+  await inside(host, retrieval.buildIndex);
+  const disk = fs.readFileSync(path.join(dir, 'host-only.json'), 'utf8');
+  inside(host, retrieval.__retrievalTest.reset);
+  const hostEmbeds = embeds;
+  await inside(host, retrieval.buildIndex);
+  assert.equal(embeds, hostEmbeds, '宿主可读自己的磁盘缓存');
+  inside(b, () => {
+    retrieval.__retrievalTest.reset();
+    bindPack(cachePack, null);
+  });
+  await inside(b, retrieval.buildIndex);
+  assert.equal(embeds, hostEmbeds + 1, '非宿主不能读取同指纹磁盘缓存');
+  inside(b, () => {
+    retrieval.__retrievalTest.reset();
+    bindPack({ ...cachePack, retrievalText: (item) => `乙缓存 ${pack.retrievalText(item)}` }, null);
+  });
+  await inside(b, retrieval.buildIndex);
+  assert.equal(fs.readFileSync(path.join(dir, 'host-only.json'), 'utf8'), disk, '非宿主不能覆盖宿主缓存');
   // 隐私轮询各自读取同 id 的版本，沙箱不轮询。
   await db.pg.exec('RESET ROLE');
   await db.pg.query('insert into privacy_notices (tenant_id, version, body) values ($1,1,$2),($3,1,$4)', [a.id, '甲隐私', b.id, '乙隐私']);
@@ -281,6 +379,49 @@ try {
   block.release();
   block = null;
   await Promise.all([first, second, other]);
+  // 真实网页入口在等待模型时登记请求观察器，结束后注销。
+  const { webRoutes } = await inside(a, () => import('../web/routes.js'));
+  const { installAccounts } = await import('../channels/accounts.js');
+  const { randomUUID } = await import('node:crypto');
+  const webAccountId = randomUUID();
+  await db.pg.exec('RESET ROLE');
+  await db.pg.query(
+    "insert into channel_accounts (tenant_id, id, key, kind, name, status) values ($1,$2,'review-web','web','自测','active')",
+    [a.id, webAccountId],
+  );
+  await db.pg.exec('SET ROLE agent_app');
+  inside(a, () =>
+    installAccounts([
+      {
+        id: webAccountId,
+        tenantId: a.id,
+        key: 'review-web',
+        kind: 'web',
+        name: '自测',
+        status: 'active',
+        source: 'db',
+        wecom: null,
+        web: { title: '自测', dailyNewConversations: 10, dailyTurns: 10 },
+        inactiveReason: null,
+      },
+    ]),
+  );
+  const observers = states.tenantKeys(a.id)['trace.endObservers'];
+  const webCallStart = calls.length;
+  block = deferred();
+  const webRequest = inside(a, () =>
+    webRoutes.request('/api/web/review-web/messages', {
+      method: 'POST',
+      headers: { 'x-web-chat': '1', 'content-type': 'application/json' },
+      body: JSON.stringify({ text: '你好' }),
+    }),
+  );
+  await until(() => calls.length > webCallStart);
+  assert.equal(states.tenantKeys(a.id)['trace.endObservers'], observers + 1, '网页观察器属于请求租户');
+  block.release();
+  block = null;
+  assert.equal((await webRequest).status, 200);
+  assert.equal(states.tenantKeys(a.id)['trace.endObservers'], observers);
   // 删除期间的旧结果不能恢复缓存；另一租户全部登记计数保持原样。
   sa.messages.push({ role: 'customer', content: '晚到', at: Date.now() });
   block = deferred();
@@ -296,6 +437,19 @@ try {
   for (const name of seen) assert.equal(states.tenantKeys(a.id)[name], 0, `drop ${name}`);
   handle.settle('accepted');
   assert.equal(states.tenantKeys(a.id)['ledger.byMsgid'], 0);
+  // 删除后的只读探测，以及返回值的临时修改，不得复活槽或 owners 强引用。
+  const { TenantLocal } = await import('./local-state.js');
+  const local = new TenantLocal(() => new Map<string, number>());
+  const registration = local.registration((value) => value.size);
+  local.get(a).set('late', 1);
+  assert.equal(registration.keyCount(a.id), 0);
+  assert.equal(local.get(a).size, 0);
+  inside(a, () => {
+    quota.__ledgerTest.rows();
+    takeover.takeoverGen(sa.id);
+    retrieval.indexHealth();
+  });
+  for (const name of seen) assert.equal(states.tenantKeys(a.id)[name], 0, `late read ${name}`);
   for (const rt of [a, b]) await inside(rt, () => store.drainStore(1000));
   states.resetTenantState();
   for (const name of seen) assert.equal(states.tenantKeys(b.id)[name], 0, `reset ${name}`);

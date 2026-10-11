@@ -15,6 +15,8 @@ const bodies: Record<string, string> = {
     if (timer) clearTimeout(timer);
     timer = null; state = blank(); warnedUnknown.clear();`,
   'core/retrieval.ts': 'shared.clear(); retryBackoff = RETRY_BACKOFF_MS;',
+  // 第 10 步登记 usage_daily 后由统一 reset 接管；第 11 步收掉此兼容补丁。
+  'trace/usage-daily.ts': 'acc.clear(); lastDay = ""; chain = Promise.resolve();',
   'core/llm/client.ts': `
     learnedThinking.clear(); warnedIgnoredDisabled.clear(); requestObserver = null;
     for (const k of Object.keys(stats)) stats[k] = 0;`,

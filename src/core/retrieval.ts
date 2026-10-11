@@ -125,7 +125,7 @@ const snapshotGeneration = (): number => (configMode() === 'db' ? currentCatalog
 /** 缓存先写临时文件再 rename：写到一半进程被杀，留下的是旧缓存而不是半个 JSON */
 function writeCache(fp: string, items: readonly Indexed[]): void {
   try {
-    if (currentRuntime().kind === 'sandbox' || process.env.APP_ROLE === 'sandbox') return;
+    if (!currentRuntime().isHost || process.env.APP_ROLE === 'sandbox') return;
     fs.mkdirSync(VAR_DIR, { recursive: true });
     const tmp = `${cacheFile()}.tmp-${process.pid}`;
     fs.writeFileSync(tmp, JSON.stringify({ fp, model: EMBED_MODEL, items }));
@@ -143,7 +143,7 @@ async function buildOnce(routes: CatalogItem[]): Promise<readonly Indexed[] | nu
   const local = state();
   const reusable = shared.get(key);
   if (reusable) return reusable;
-  if (rt.kind === 'standard' && process.env.APP_ROLE !== 'sandbox') {
+  if (rt.isHost && process.env.APP_ROLE !== 'sandbox') {
     try {
       const cached = JSON.parse(fs.readFileSync(cacheFile(), 'utf8')) as { fp: string; model: string; items: readonly Indexed[] };
       if (cached.fp === fp && cached.model === EMBED_MODEL && cached.items?.length === routes.length) {

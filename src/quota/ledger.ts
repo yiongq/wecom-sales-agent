@@ -541,10 +541,10 @@ export function holdSend(sessionId: string, kind: OutboundKind, message: ChatMes
   add(row);
   ledger.get().holds.set(message, row);
   return () => {
-    if (!liveRow(row)) return;
     withTenantScope(row.owner, () => {
-      if (ledger.get().holds.get(message) !== row) return;
-      ledger.get().holds.delete(message);
+      // 关闭时仍要释放预占；drop 已清空捕获的账本时不读取或重建槽。
+      if (row.ledger.holds.get(message) !== row) return;
+      row.ledger.holds.delete(message);
       remove(row);
     });
   };
@@ -807,27 +807,37 @@ function raceTimeout<T>(p: Promise<T>, ms: number, onTimeout: T): Promise<T> {
 /**
  * 等这一组的 pending 提交（有会话的随 flushSession 那一次落库，没有会话的短事务）：至多 5 秒，从 planOutbound 那一刻算起
  * （人工回复、跟进等调用方自己已经等过一次提交，不再叠一个 5 秒）。等到了返回 committed；超时、短事务没写成返回 timeout，
- * 调用方照发（R6）并计数。只在内存里的会话（demo 类）恒为 committed
+ * 调用方照发（R6）并计数。运行时关闭或账本被清理返回 deferred，调用方不得发；只在内存里的会话（demo 类）恒为 committed
  */
-export async function commitOutbound(intents: readonly OutboundIntent[]): Promise<'committed' | 'timeout'> {
-  const rows = intents.map((i) => ledger.get().byMsgid.get(i.msgid)).filter((r): r is Row => r !== undefined && r.v2);
+export async function commitOutbound(intents: readonly OutboundIntent[]): Promise<'committed' | 'timeout' | 'deferred'> {
+  const rt = currentRuntime();
+  if (rt.state !== 'serving') return 'deferred';
+  const state = ledger.get(rt);
+  const rows = intents.map((i) => state.byMsgid.get(i.msgid)).filter((r): r is Row => r !== undefined && r.v2);
+  if (rows.length !== intents.length) return 'deferred';
   const waiting = rows.filter((r) => r.commit === null);
   if (waiting.length) {
     const deadline = Math.min(...rows.map((r) => r.sentAt)) + waits.commitMs;
-    await new Promise<void>((resolve) => {
+    const outcome = await new Promise<'settled' | 'cancelled'>((resolve) => {
       let left = waiting.length;
-      const timer = scheduleLedger(deadline - Date.now(), resolve, resolve);
+      const timer = scheduleLedger(
+        deadline - Date.now(),
+        () => resolve('settled'),
+        () => resolve('cancelled'),
+      );
       for (const r of waiting) {
         r.commitWaiters.push(() => {
           left -= 1;
           if (left === 0) {
             clearLedgerTimer(timer);
-            resolve();
+            resolve('settled');
           }
         });
       }
     });
+    if (outcome === 'cancelled') return 'deferred';
   }
+  if (!ledger.owns(rt, state)) return 'deferred';
   return rows.every((r) => r.commit === 'committed') ? 'committed' : 'timeout';
 }
 
@@ -890,7 +900,7 @@ export function maySendAgain(intent: OutboundIntent): boolean {
 /** 一次尝试发出之前调（第一次也调）：记下这次尝试的时刻（窗口按最后一次尝试计数）与次数 */
 export function noteAttempt(intent: OutboundIntent): void {
   const row = ledger.get().byMsgid.get(intent.msgid);
-  if (!row?.v2) return;
+  if (!row?.v2 || !liveRow(row)) return;
   row.lastAttemptAt = Date.now();
   row.attempts += 1;
 }
@@ -906,7 +916,7 @@ function persistResult(row: Row): void {
  */
 export function noteUnknown(intent: OutboundIntent, errcode?: number): void {
   const row = ledger.get().byMsgid.get(intent.msgid);
-  if (!row?.v2 || !canMoveOutbound(row.status, 'unknown', ['settle'])) return;
+  if (!row?.v2 || !liveRow(row) || !canMoveOutbound(row.status, 'unknown', ['settle'])) return;
   row.status = 'unknown';
   row.errcode = errcode ?? null;
   persistResult(row);
@@ -924,7 +934,7 @@ function finishRow(row: Row): void {
  */
 export function settleIntent(intent: OutboundIntent, result: SendResult, detail: { errcode?: number; attempts: number }): void {
   const row = ledger.get().byMsgid.get(intent.msgid);
-  if (!row?.v2) return;
+  if (!row?.v2 || !liveRow(row)) return;
   row.attempts = Math.max(row.attempts, detail.attempts);
   const moved = canMoveOutbound(row.status, result, ['settle']);
   if (moved) {

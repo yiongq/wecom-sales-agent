@@ -12,6 +12,8 @@ export class TenantLocal<T> {
   get(rt = currentRuntime()): T {
     let value = Reflect.get(rt, this.slot) as T | undefined;
     if (value === undefined) {
+      // 关闭后的只读探测可取空值，但不能重新登记或强引用已删除的运行时。
+      if (rt.state !== 'serving') return this.create();
       value = this.create();
       Reflect.set(rt, this.slot, value);
       this.owners.add(rt);

@@ -1265,6 +1265,7 @@ async function runGroup(g: OutGroup): Promise<GroupOutcome> {
  */
 async function sendGroup(g: OutGroup): Promise<GroupOutcome> {
   const committed = await commitOutbound(g.intents);
+  if (committed === 'deferred') return { ok: false, stop: 'deferred' };
   for (const i of g.intents) if (!g.commit.has(i.msgid)) g.commit.set(i.msgid, committed);
   const queue = [...g.intents];
   let ok = true;

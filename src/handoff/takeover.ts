@@ -421,7 +421,11 @@ async function deliver(
     }
     throw e;
   }
-  if (rt.state !== 'serving') return { sent: false, seq, persisted };
+  if (rt.state !== 'serving') {
+    releasePrepared(prepared, 'aborted');
+    releaseHold();
+    return { sent: false, seq, persisted };
+  }
   let sent = false;
   try {
     sent = await pushToChannel(sessionId, message.content, { kind: 'human', message, prepared });
