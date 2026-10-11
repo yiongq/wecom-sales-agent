@@ -3298,14 +3298,15 @@ async function workbenchSuite(): Promise<void> {
       .filter((r) => r.method !== 'ALL' && !r.path.includes('*'))
       .map((r) => `${r.method} ${r.path.replace(/^\/api\/console/, '')}`),
   );
-  const known = new Set([...ROUTES_01, ...MATRIX.map((m) => m.route)]);
+  // 05 R23 新增的公开入口配置；其余路由仍必须登记在既有权限清单里。
+  const known = new Set([...ROUTES_01, 'GET /entry', ...MATRIX.map((m) => m.route)]);
   check(
-    '路由枚举：consoleApi 注册的每个路由都在 01 的清单或第 13 步的权限矩阵里（漏挂权限的新路由在这里现形）',
+    '路由枚举：consoleApi 的每个路由都在 01 清单、05 入口或第 13 步权限矩阵里（漏挂权限的新路由在这里现形）',
     [...registered].every((r) => known.has(r)),
     [...registered].filter((r) => !known.has(r)).join(','),
   );
   check(
-    '路由枚举：矩阵与 01 清单里的每个路由都注册了',
+    '路由枚举：矩阵、01 清单与 05 入口里的每个路由都注册了',
     [...known].every((r) => registered.has(r)),
     [...known].filter((r) => !registered.has(r)).join(','),
   );
@@ -3376,6 +3377,7 @@ async function workbenchSuite(): Promise<void> {
         /^GET \/privacy$/,
         /^GET \/console/,
         /^POST \/api\/console\/auth\/login$/,
+        /^GET \/api\/console\/entry$/, // 05 R23：prod 下也公开，只回 tryUrl: null
       ];
       const fill = (p: string): string =>
         p
