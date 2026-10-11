@@ -151,6 +151,7 @@ const PURGE_FNS: Record<string, 'agent_app' | 'agent_platform'> = {
   purge_expired_traces: 'agent_app',
   purge_finished_jobs: 'agent_app',
 };
+const SANDBOX_FNS = ['sandbox_tenant_create', 'sandbox_session_resolve', 'sandbox_tenant_expire', 'sandbox_tenant_purge'];
 const TENANT_POLICY = /^\(tenant_id = \(NULLIF\(current_setting\('app\.tenant_id'::text, true\), ''::text\)\)::uuid\)$/;
 /**
  * 按系统目录核对迁移的结果，PGlite 与真实 PG 各跑一遍。带 tenant_id 的表是从目录里找出来的，不是写死的清单：
@@ -164,7 +165,7 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
   );
   const names = tables.map((r) => r.relname).join(',');
   check(
-    `${label}迁移：01 的七张表加 02 的十二张、03 的两张`,
+    `${label}迁移：01 的七张表加 02 的十二张、03 的两张、05 的四张`,
     names ===
       [
         'audit_log',
@@ -183,6 +184,10 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
         'outbound_sends',
         'privacy_notices',
         'quick_replies',
+        'sandbox_pool_daily',
+        'sandbox_process_epoch',
+        'sandbox_wechat',
+        'sandbox_wecom_state',
         'sop_versions',
         'tenants',
         'turn_traces',
@@ -253,7 +258,7 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
     );
   }
   // 列级授权：真实 PG 的逐格表用 has_table_privilege，只看表级，多出来的列级 GRANT 它看不见。public 下带列级授权的
-  // 只能是 tenants 的三个保留期列与品牌列（只给 agent_platform 的 UPDATE，02 spec 授权表），与 channel_accounts 的九列（只给 agent_app 的
+  // 只能是 tenants 的三个保留期列、品牌列、Host 与预算列（只给 agent_platform 的 UPDATE，02 spec 授权表），与 channel_accounts 的九列（只给 agent_app 的
   // UPDATE，03 spec 授权表），以及 guard_verdicts（agent_app 的 SELECT、INSERT，04 R8）。按 JS 顺序比。
   const colAcl = await run<{ acl: string }>(
     `select c.relname || '.' || a.attname || ' ' || coalesce(r.rolname, 'PUBLIC') || ' ' || x.privilege_type as acl
@@ -264,13 +269,13 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
       order by 1`,
   );
   check(
-    `${label}授权：列级授权仅为 tenants 保留期/品牌 UPDATE、channel_accounts 九列 UPDATE 与 guard_verdicts SELECT/INSERT`,
+    `${label}授权：列级授权仅为 tenants 保留期/品牌/Host/预算 UPDATE、channel_accounts 九列 UPDATE 与 guard_verdicts SELECT/INSERT`,
     colAcl
       .map((r) => r.acl)
       .toSorted()
       .join(',') ===
       [
-        ...['brand', 'retention_customer_days', 'retention_lead_days', 'retention_trace_days'].map(
+        ...['brand', 'public_host', 'llm_daily_alert_milli', 'retention_customer_days', 'retention_lead_days', 'retention_trace_days'].map(
           (c) => `tenants.${c} agent_platform UPDATE`,
         ),
         ...CHANNEL_ACCOUNT_UPDATABLE.map((c) => `channel_accounts.${c} agent_app UPDATE`),
@@ -281,17 +286,18 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
         .join(','),
     colAcl.map((r) => r.acl).join(','),
   );
-  // 03 的两个触发器：各一个、BEFORE UPDATE、逐行（tgtype = ROW 1 | BEFORE 2 | UPDATE 16）
+  // 03 的两个 BEFORE UPDATE 触发器，05 加 channel_accounts 的 BEFORE INSERT（ROW 1 | BEFORE 2 | INSERT 4）
   const triggers = await run<{ rel: string; name: string; type: number }>(
     `select c.relname as rel, t.tgname as name, t.tgtype::int as type from pg_trigger t join pg_class c on c.oid = t.tgrelid
       where not t.tgisinternal and c.relname = any($1::text[]) order by 1, 2`,
     [CHANNEL_TABLES],
   );
   check(
-    `${label}触发器：channel_accounts、channel_inbox 各一个 BEFORE UPDATE 的逐行触发器`,
+    `${label}触发器：03 的两个 BEFORE UPDATE 与 05 的一个 BEFORE INSERT，均逐行`,
     JSON.stringify(triggers) ===
       JSON.stringify([
         { rel: 'channel_accounts', name: 'channel_accounts_guard', type: 19 },
+        { rel: 'channel_accounts', name: 'channel_accounts_sandbox_guard', type: 7 },
         { rel: 'channel_inbox', name: 'channel_inbox_guard', type: 19 },
       ]),
     JSON.stringify(triggers),
@@ -315,6 +321,13 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
     if (f.proname.startsWith('auth_')) {
       check(`${label}认证函数：${f.proname} 是 SECURITY DEFINER`, f.secdef);
       check(`${label}认证函数：${f.proname} 只授权给 agent_app，PUBLIC 不能执行`, f.acl.includes('agent_app=X/') && !publicExec, f.acl);
+    } else if (SANDBOX_FNS.includes(f.proname)) {
+      check(`${label}沙箱函数：${f.proname} 是 SECURITY DEFINER`, f.secdef);
+      check(
+        `${label}沙箱函数：${f.proname} 只授权给 agent_app`,
+        f.acl.includes('agent_app=X/') && !f.acl.includes('agent_platform=') && !publicExec,
+        f.acl,
+      );
     } else if (grantee) {
       const other = grantee === 'agent_app' ? 'agent_platform' : 'agent_app';
       check(`${label}清除与删除函数：${f.proname} 是 SECURITY DEFINER`, f.secdef);
@@ -4736,15 +4749,22 @@ async function realPostgres(superUrl: string): Promise<void> {
         verdictPriv.platform === false,
       JSON.stringify(verdictPriv),
     );
-    // tenants 的三个保留期列：agent_platform 列级 UPDATE，agent_app 一列都不能改
-    const UPDATABLE = ['retention_lead_days', 'retention_customer_days', 'retention_trace_days', 'brand'];
+    // tenants 的保留期、品牌、公开域名与预算告警列：agent_platform 列级 UPDATE，agent_app 一列都不能改
+    const UPDATABLE = [
+      'retention_lead_days',
+      'retention_customer_days',
+      'retention_trace_days',
+      'brand',
+      'public_host',
+      'llm_daily_alert_milli',
+    ];
     const colPriv = await sq<{ col: string; platform: boolean; app: boolean }>(
       `select a.attname as col, has_column_privilege('agent_platform', 'public.tenants', a.attname, 'UPDATE') as platform,
               has_column_privilege('agent_app', 'public.tenants', a.attname, 'UPDATE') as app
          from pg_attribute a where a.attrelid = 'public.tenants'::regclass and a.attnum > 0 and not a.attisdropped order by a.attnum`,
     );
     check(
-      '真实 PG：agent_platform 只能 UPDATE tenants 的三个保留期列与品牌列，agent_app 一列都不能',
+      '真实 PG：agent_platform 只能 UPDATE tenants 的保留期、品牌、公开域名与预算告警列，agent_app 一列都不能',
       colPriv
         .filter((c) => c.platform)
         .map((c) => c.col)
@@ -4781,7 +4801,11 @@ async function realPostgres(superUrl: string): Promise<void> {
     );
     for (const f of fnPriv) {
       const name = f.fn.slice(0, f.fn.indexOf('('));
-      const grantee = Object.hasOwn(PURGE_FNS, name) ? PURGE_FNS[name] : name.startsWith('auth_') ? 'agent_app' : null;
+      const grantee = Object.hasOwn(PURGE_FNS, name)
+        ? PURGE_FNS[name]
+        : name.startsWith('auth_') || SANDBOX_FNS.includes(name)
+          ? 'agent_app'
+          : null;
       const app = grantee === 'agent_app';
       const plat = grantee === 'agent_platform';
       check(
