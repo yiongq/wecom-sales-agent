@@ -488,7 +488,7 @@ function tick(): void {
           withTenantScope(rt, async () => {
             const local = tenants.get(rt);
             await refreshChannelObservability();
-            if (tenants.owns(rt, local)) checkChannels(t);
+            if (rt.state === 'serving' && !rt.cancel.aborted && tenants.owns(rt, local)) checkChannels(t);
           }),
         ),
     )

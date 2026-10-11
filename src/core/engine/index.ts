@@ -162,7 +162,7 @@ function serialize<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
   const rt = currentRuntime();
   const sessionChain = chains.get(rt);
   const run = (): Promise<T> => {
-    if (!chains.owns(rt, sessionChain)) return Promise.reject(new Error('tenant_closing'));
+    if (rt.cancel.aborted || !chains.owns(rt, sessionChain)) return Promise.reject(new Error('tenant_closing'));
     return fn();
   };
   const prev = sessionChain.get(sessionId) ?? Promise.resolve();
@@ -172,9 +172,11 @@ function serialize<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
   sessionChain.set(sessionId, tail);
   // 链尾跑完且没有新任务接上时删掉条目。此前比较的是 `=== undefined`，而刚 set 进去的
   // 是个 promise，条件恒为假 —— Map 只增不减，公开演示页每来一个访客就永久多一条。
-  void tail.finally(() => {
-    if (sessionChain.get(sessionId) === tail) sessionChain.delete(sessionId);
-  });
+  void tail
+    .finally(() => {
+      if (sessionChain.get(sessionId) === tail) sessionChain.delete(sessionId);
+    })
+    .catch(() => console.warn('[engine] 会话队列清理失败'));
   return next;
 }
 

@@ -315,6 +315,80 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   await reaper.tick();
   await zero(q, searching.rt.id, searching.slug);
 
+  // 实际引擎缓存重放：A 已预取，B 在飞时删除②，同一模型响应又调用 A。
+  const cachedSearch = await box();
+  const cachedStarted = deferred<void>();
+  const cachedResult = deferred<{ id: string; score: number }[] | null>();
+  let searches = 0;
+  const { runtime: cachedPack } = withTenantScope(cachedSearch.rt, () =>
+    createTravelRuntime({
+      ...packSources(),
+      indexReady: () => true,
+      semanticRecall: async () => {
+        if (++searches === 1) return null;
+        cachedStarted.resolve();
+        return cachedResult.promise;
+      },
+    }),
+  );
+  const argsA = { query: '预取查询 A', destination: '三亚', maxBudgetPerPerson: 20_000 };
+  let actualA: Record<string, unknown> = argsA;
+  cachedPack.prefetch = async (ctx) => {
+    const call = await ctx.callTool('search_routes', argsA);
+    actualA = call.args;
+    return { calls: [call], timings: [] };
+  };
+  cachedSearch.rt.pack = { ...cachedSearch.rt.pack, runtime: cachedPack };
+  const cachedSession = withTenantScope(cachedSearch.rt, () => getOrCreateSession('sbx-cache-cancel', 'simulator'));
+  const cachedFetchBefore = globalThis.fetch;
+  const cachedWarnBefore = console.warn;
+  const cachedWarnings: string[] = [];
+  const cachedUnhandled: unknown[] = [];
+  const onCachedUnhandled = (error: unknown) => cachedUnhandled.push(error);
+  process.env.LLM_MOCK = '0';
+  process.env.LLM_API_KEY = 'selftest';
+  globalThis.fetch = async () =>
+    Response.json({
+      choices: [
+        {
+          message: {
+            content: '',
+            tool_calls: [{ ...actualA, query: '在途查询 B' }, actualA].map((args, i) => ({
+              id: 'search_' + i,
+              type: 'function',
+              function: { name: 'search_routes', arguments: JSON.stringify(args) },
+            })),
+          },
+        },
+      ],
+    });
+  console.warn = (...args) => {
+    cachedWarnings.push(args.join(' '));
+  };
+  process.on('unhandledRejection', onCachedUnhandled);
+  try {
+    const turn = withTenantScope(cachedSearch.rt, () => handleMessage(cachedSession.id, '推荐一个三亚行程', 'simulator'));
+    check(await settleWithin(cachedStarted.promise, 2000), '缓存 A 已准备，搜索 B 在飞');
+    const before = JSON.stringify(cachedSession);
+    await reaper.end(cachedSearch.rt.id);
+    await reaper.tick();
+    check(cachedSearch.rt.cancel.aborted && cachedSearch.closed() === 0, '缓存场景已进入②且保留整轮屏障');
+    cachedResult.resolve(null);
+    check((await turn).silent, '取消的缓存场景不产生回复');
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    check(JSON.stringify(cachedSession) === before, 'B 续体和 A 缓存重放均不改会话');
+    check(cachedUnhandled.length === 0, '实际引擎取消重放没有 unhandledRejection，进程继续运行');
+    check(cachedWarnings.filter((line) => line.includes('工具缓存重放已取消或失败')).length === 1, '实际取消重放仅记一行');
+    await reaper.tick();
+    await zero(q, cachedSearch.rt.id, cachedSearch.slug);
+  } finally {
+    cachedResult.resolve(null);
+    globalThis.fetch = cachedFetchBefore;
+    console.warn = cachedWarnBefore;
+    process.off('unhandledRejection', onCachedUnhandled);
+    process.env.LLM_MOCK = '1';
+  }
+
   // 模型忽略 abort，30 秒后才返回；草稿缓存不能采纳迟到结果。
   const late = await box();
   const response = deferred<Response>();
@@ -581,6 +655,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
       import { markConfigShuttingDown } from './src/config/source.ts';
       import { getOrCreateSession, saveSession, flushSession, onCommitted } from './src/store.ts';
       import { handleMessage } from './src/core/engine/index.ts';
+      import { onTurnEnd } from './src/trace/recorder.ts';
       process.env.SESSION_STORE='db'; process.env.LLM_MOCK='0'; process.env.LLM_API_KEY='selftest';
       const c=await openDb(process.env.REAPER_TEST_URL);
       const row=(await listSandboxes(c.db)).find(r=>r.id===process.env.REAPER_TEST_ID);
@@ -588,14 +663,17 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
       const rt=await loadSandboxRuntime(deps,row,'sandbox.example.invalid',async()=>fakeLock());
       onShutdown(()=>{rt.state='closing'; withTenantScope(rt,markConfigShuttingDown);});
       onShutdown(async()=>{cancelTenantRuntime(rt);await c.close();},{phase:'late'});
-      let started; const ready=new Promise(r=>{started=r;});
-      globalThis.fetch=async()=>{started();await new Promise(r=>setTimeout(r,300));return new Response(JSON.stringify({choices:[{message:{content:'请先告诉我您的出发时间。'}}],usage:{prompt_tokens:20,completion_tokens:10}}));};
+      let started; const ready=new Promise(r=>{started=r;}); let calls=0;
+      globalThis.fetch=async()=>{const turn=++calls;console.log('FETCH '+turn+' '+rt.state);started();await new Promise(r=>setTimeout(r,300));return new Response(JSON.stringify({choices:[{message:{content:turn===1?'请先告诉我您的出发时间。':'还想了解您的旅行人数。'}}],usage:{prompt_tokens:20,completion_tokens:10}}));};
       withTenantScope(rt,()=>{
         onCommitted(()=>console.log('COMMITTED'));
+        onTurnEnd(()=>console.log('TURN_DONE'));
         const s=getOrCreateSession('sbx-shutdown','simulator');
         s.messages.push({role:'customer',content:'停机前脏消息',at:Date.now()});saveSession(s);
-        void flushSession(s.id).then(()=>console.log('WAITER'));
-        void handleMessage(s.id,'请帮我推荐行程','simulator').then(r=>console.log('REPLY '+String(!r.silent)));
+        void flushSession(s.id).then(()=>console.log('WAITER')).catch(()=>console.error('WAITER_FAILED'));
+        void handleMessage(s.id,'请帮我推荐行程','simulator').then(r=>console.log('REPLY 1 '+String(!r.silent))).catch(()=>console.error('REPLY_FAILED'));
+        void handleMessage(s.id,'我还没确定日期，请再问我一个问题','simulator').then(r=>console.log('REPLY 2 '+String(!r.silent))).catch(()=>console.error('REPLY_FAILED'));
+        console.log('QUEUED');
       });
       await ready;console.log('READY');setInterval(()=>{},1000);
     `,
@@ -624,9 +702,18 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
       check(await settleWithin(shutdownExited, 12_000), 'SIGTERM 子进程按 grace 退出');
       check((await shutdownExited) === 143, '真实 SIGTERM 退出码');
       check(
-        shutdownOutput.includes('COMMITTED') && shutdownOutput.includes('WAITER') && shutdownOutput.includes('REPLY true'),
-        'closing 后 afterCommit、waiter、AI 回复都完成',
+        shutdownOutput.includes('COMMITTED') &&
+          shutdownOutput.includes('WAITER') &&
+          shutdownOutput.includes('REPLY 1 true') &&
+          shutdownOutput.includes('REPLY 2 true'),
+        'closing 后 afterCommit、waiter、同会话排队的两轮 AI 回复都完成',
       );
+      check(
+        shutdownOutput.includes('QUEUED') && shutdownOutput.includes('FETCH 2 closing'),
+        '第二轮已登记，在 SIGTERM closing 后才开始模型调用',
+      );
+      check(!shutdownOutput.includes('REPLY_FAILED') && !shutdownOutput.includes('WAITER_FAILED'), '已接收轮次与 waiter 无取消异常');
+      check(shutdownOutput.split('TURN_DONE').length - 1 === 2, '正常停机两轮的结束通知照常派发');
       check(shutdownOutput.includes('未落库会话 0'), '已提交会话不计丢弃');
       check(
         (await q("select 1 from messages where tenant_id=$1 and content='停机前脏消息'", [shutdownBox.rt.id])).length === 1,
@@ -637,7 +724,11 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
         'grace 内 AI 回复实际落库',
       );
       check(
-        (await q('select calls from usage_daily where tenant_id=$1 and calls>0', [shutdownBox.rt.id])).length > 0,
+        (await q("select 1 from messages where tenant_id=$1 and content='还想了解您的旅行人数。'", [shutdownBox.rt.id])).length === 1,
+        'grace 内第二轮排队回复实际落库',
+      );
+      check(
+        (await q('select calls from usage_daily where tenant_id=$1 and calls>=2', [shutdownBox.rt.id])).length > 0,
         'grace 内完成的模型用量实际落库',
       );
     } finally {

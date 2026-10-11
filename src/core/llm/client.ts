@@ -642,10 +642,12 @@ async function realChat(opts: ChatOptions, runtime: LlmRuntime): Promise<string>
       const moved = lastKey.get(name) !== key;
       lastKey.set(name, key);
       if (hit && moved && opts.onReuse)
-        void hit.then(
-          (r) => opts.onReuse!(name, args, r),
-          () => {},
-        );
+        void hit
+          .then(
+            (r) => opts.onReuse!(name, args, r),
+            () => {},
+          )
+          .catch(() => console.warn('[llm] 工具缓存重放已取消或失败，跳过落地'));
       if (hit) {
         stats.toolReused += 1;
         trace.at(-1)?.reused.push(name);
@@ -655,9 +657,11 @@ async function realChat(opts: ChatOptions, runtime: LlmRuntime): Promise<string>
       const run = opts.executeTool(name, args);
       reusable.set(key, run);
       // 执行失败不缓存：同一个调用再来一次可能就成了（例如线路文件刚好在写）
-      run.catch(() => {
-        if (reusable.get(key) === run) reusable.delete(key);
-      });
+      void run
+        .catch(() => {
+          if (reusable.get(key) === run) reusable.delete(key);
+        })
+        .catch(() => console.warn('[llm] 工具缓存清理失败'));
       return run;
     },
   };

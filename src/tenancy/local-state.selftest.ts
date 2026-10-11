@@ -22,6 +22,7 @@ Object.assign(process.env, {
 });
 const r = await import('./runtime.js');
 const states = await import('./state.js');
+const { TenantLocal: ClosingLocal } = await import('./local-state.js');
 const { installPublicHost } = await import('./hosts.js');
 const store = await import('../store.js');
 const config = await import('../config/source.js');
@@ -98,6 +99,23 @@ function count(rt: import('./runtime.js').TenantRuntime, name: string, expected?
   return n;
 }
 try {
+  // owns 只判断归属；正常 closing 可继续登记排空所需状态，取消后不再登记。
+  const drainLocal = new ClosingLocal(() => new Map<string, number>());
+  const closing = r.createTenantRuntime({ id: 'local-closing', slug: 'local-closing' });
+  const value = drainLocal.get(closing);
+  closing.state = 'closing';
+  assert.ok(drainLocal.owns(closing, value));
+  assert.equal(drainLocal.get(closing), value);
+  const fresh = new ClosingLocal(() => new Map<string, number>());
+  const drainValue = fresh.get(closing);
+  drainValue.set('排空', 1);
+  assert.ok(fresh.owns(closing, drainValue), 'closing 排空的新状态仍属原运行时');
+  r.cancelTenantRuntime(closing);
+  assert.ok(drainLocal.owns(closing, value), '取消不改变归属，调用方单独核对取消信号');
+  fresh.registration((v) => v.size).drop(closing.id);
+  assert.ok(!fresh.owns(closing, fresh.get(closing)), '取消后不能重新登记状态');
+  drainLocal.registration((v) => v.size).reset();
+  assert.ok(!drainLocal.owns(closing, value), 'reset 后旧引用失去归属');
   for (const rt of [a, b])
     await inside(rt, async () => {
       await installSeededConfig(db, { slug: rt.slug });
@@ -430,6 +448,7 @@ try {
   await until(() => calls.at(-1)?.user.includes('晚到') === true);
   const bKeys = states.tenantKeys(b.id);
   a.state = 'closing';
+  r.cancelTenantRuntime(a); // 删除②取消后才 drop，与正常停机的 closing 分开。
   states.dropTenantState(a.id);
   block.release();
   block = null;

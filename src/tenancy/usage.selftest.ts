@@ -110,6 +110,25 @@ try {
   await Promise.all([scope(b, daily.flushUsageDaily), scope(b, daily.flushUsageDaily)]);
   assert.equal(retryWrites, 1, '重试与并发 flush 只提交一次');
 
+  // normal closing 的在途预算照常结算；删除取消才丢掉迟到结算。
+  const draining = r.createTenantRuntime({ id: 'budget-drain', slug: 'budget-drain', kind: 'sandbox' });
+  const completed = scope(draining, () => draining.budget.reserve('chat', 5)!);
+  draining.state = 'closing';
+  scope(draining, () => completed.settle(3));
+  assert.equal(
+    scope(draining, () => draining.budget.status().costMilli),
+    3,
+    '正常停机结算实际用量',
+  );
+  const cancelledCost = scope(draining, () => draining.budget.reserve('chat', 5)!);
+  r.cancelTenantRuntime(draining);
+  scope(draining, () => cancelledCost.settle(4));
+  assert.equal(
+    scope(draining, () => draining.budget.status().costMilli),
+    3,
+    '取消后不恢复预算状态',
+  );
+
   const request = { method: 'POST', body: JSON.stringify({ model: 'glm-5.2', max_tokens: 10, messages: [] }) };
   let fetches = 0;
   globalThis.fetch = async () => {

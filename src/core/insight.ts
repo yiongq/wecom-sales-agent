@@ -86,7 +86,7 @@ export async function getInsights(): Promise<string[]> {
     agg.stuckQuotes +
     ' 条。';
   const out = await rt.inflight.track(completeText(sys, user, { purpose: 'insight' }));
-  if (!caches.owns(rt, state)) return [];
+  if (rt.cancel.aborted || !caches.owns(rt, state)) return [];
   if (!out) return state.insightCache?.data ?? []; // LLM 不可用：返回旧缓存或空（前端回退规则版）
   let lines = out
     .split('\n')
@@ -137,7 +137,7 @@ async function suggest(s: Session, key: string, rt: TenantRuntime, state: Caches
   const sys = prompts().suggestion;
   const user = '销售阶段：' + s.stage + '\n客户画像：' + JSON.stringify(profileForPrompt(s.profile)) + '\n近期对话：\n' + recent;
   const out = await completeText(sys, user, { purpose: 'suggestion' });
-  if (!caches.owns(rt, state)) return '';
+  if (rt.cancel.aborted || !caches.owns(rt, state)) return '';
   const val = (out || '').split('\n')[0].trim();
   if (val) {
     state.sugCache.set(key, val);
@@ -168,7 +168,7 @@ async function draft(s: Session, key: string, rt: TenantRuntime, state: Caches):
   const user = '销售阶段：' + s.stage + '\n客户画像：' + JSON.stringify(profileForPrompt(s.profile)) + '\n近期对话：\n' + recent;
   const fallback = prompts().draftFallback[s.stage] || prompts().draftFallback[prompts().draftFallbackStage];
   const out = await completeText(sys, user, { purpose: 'draft' });
-  if (!caches.owns(rt, state)) return '';
+  if (rt.cancel.aborted || !caches.owns(rt, state)) return '';
   // 草稿是一键填进回复框、可能直接发给真实客户的文本：链接和订单号一律不许出现
   // （价格/订单只能来自工具，模型编的支付链接是钓鱼级风险）
   const cleaned = (out || '')

@@ -186,7 +186,7 @@ async function buildOnce(routes: CatalogItem[]): Promise<readonly Indexed[] | nu
     }
   }
   const vecs = await embed(routes.map((item) => currentPack().runtime.retrievalText(item)));
-  if (!indexes.owns(rt, local) || !vecs || vecs.length !== routes.length) return null;
+  if (rt.cancel.aborted || !indexes.owns(rt, local) || !vecs || vecs.length !== routes.length) return null;
   const items = freezeIndex(routes.map((r, i) => ({ id: r.code, vec: vecs[i] })));
   cacheShared(key, items);
   if (shared.size > 64) shared.delete(shared.keys().next().value!);
@@ -209,9 +209,9 @@ function scheduleRetry(): void {
   local.retryTimer = withoutTenantScope(() =>
     setTimeout(
       tenantCallback(rt, () => {
-        if (!indexes.owns(rt, local)) return;
+        if (rt.cancel.aborted || !indexes.owns(rt, local)) return;
         local.retryTimer = null;
-        void buildIndex();
+        void buildIndex().catch(() => console.warn('[retrieval] 索引构建已取消或失败，跳过落地'));
       }),
       wait,
     ),
@@ -227,7 +227,7 @@ async function buildLoop(): Promise<void> {
     for (;;) {
       const gen = snapshotGeneration();
       const items = await buildOnce(currentPack().runtime.retrievalItems());
-      if (!indexes.owns(rt, local)) return;
+      if (rt.cancel.aborted || !indexes.owns(rt, local)) return;
       if (gen !== snapshotGeneration()) continue;
       if (!items) {
         state().lastError = 'embedding 请求失败';
@@ -247,7 +247,7 @@ async function buildLoop(): Promise<void> {
     // 绝不能往外抛：调用方是启动流程里的 `void buildIndex()`，抛出去就是一个未捕获 rejection，Node 直接退出。
     // routes.json 手改坏一个逗号（高概率事故）会让容器进入无限重启，而本意是「退回关键词匹配继续服务」。
     if (e instanceof TenantScopeMissing) throw e;
-    if (!indexes.owns(rt, local)) return;
+    if (rt.cancel.aborted || !indexes.owns(rt, local)) return;
     state().lastError = e instanceof Error ? e.message : String(e);
     console.error('[retrieval] ⚠️ 语义索引构建失败，目录搜索 退回关键词匹配:', state().lastError);
     scheduleRetry();
@@ -270,10 +270,10 @@ export function buildIndex(): Promise<void> {
   }
   const rt = currentRuntime();
   const local = state();
-  if (rt.state !== 'serving') return Promise.resolve();
+  if (rt.cancel.aborted || rt.state === 'closed') return Promise.resolve();
   local.building = rt.inflight.track(
     buildLoop().finally(() => {
-      if (indexes.owns(rt, local)) local.building = null;
+      if (!rt.cancel.aborted && indexes.owns(rt, local)) local.building = null;
     }),
   );
   return local.building;
@@ -286,7 +286,7 @@ export function invalidateIndex(): void {
   if (state().retryTimer) clearTimeout(state().retryTimer!);
   state().retryTimer = null;
   state().retryAttempt = 0;
-  void buildIndex();
+  void buildIndex().catch(() => console.warn('[retrieval] 索引构建已取消或失败，跳过落地'));
 }
 
 export interface IndexHealth {
