@@ -22,6 +22,7 @@
 import '../overview/selftest-env.js';
 import { win } from '../fields/selftest-dom.js';
 import { register } from 'node:module';
+import { readFileSync } from 'node:fs';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, RouterProvider } from '@tanstack/react-router';
 import { App as AntApp } from 'antd';
@@ -949,6 +950,73 @@ const banners = (): Element[] =>
     ['light', 'false', true],
   );
   await m.unmount();
+}
+
+// 05 第 24 步评审回归：实际 CSS + 真实 Shell，防止反向纵向布局从底部开始滚动，以及换页重置错容器。
+{
+  const style = document.createElement('style');
+  style.textContent =
+    readFileSync(new URL('../shell/shell.css', import.meta.url), 'utf8') +
+    readFileSync(new URL('../sandbox/sandbox.css', import.meta.url), 'utf8');
+  document.head.append(style);
+  server = {
+    demo: false,
+    loggedIn: true,
+    login: 'check',
+    me: {
+      status: 200,
+      body: {
+        ...ME,
+        sandbox: { expiresAt: new Date(Date.now() + 86_400_000).toISOString(), wechat: 'off', steps: [false, false, false, false] },
+      },
+    },
+  };
+  const m = await mount('/console/catalog/route', [{ path: '/sop', component: () => createElement(PageHeader, { title: '话术页' }) }]);
+  try {
+    const body = m.$('.sandbox-body')!;
+    const inner = m.$('.shell-scroll')!;
+    const checklist = m.$('.sandbox-checklist')!;
+    eq(
+      '体验清单在 DOM 中位于内容前，同属实际滚动容器',
+      [body.firstElementChild === checklist, checklist.nextElementSibling === inner],
+      [true, true],
+    );
+    for (const width of [1440, 1439, 390]) {
+      await act(async () => win.happyDOM.setViewport({ width, height: 800 }));
+      const narrow = width <= 1439;
+      const css = (el: HTMLElement) => win.getComputedStyle(el as never);
+      eq(
+        `沙箱 ${width}px：布局方向正常，清单顺序正确`,
+        [css(body).flexDirection || 'row', css(checklist).order],
+        [narrow ? 'column' : 'row', narrow ? '0' : '1'],
+      );
+      eq(
+        `沙箱 ${width}px：滚动容器与当前布局一致`,
+        [css(body).overflow || 'visible', css(inner).overflow],
+        [narrow ? 'auto' : 'visible', narrow ? 'visible' : 'auto'],
+      );
+      // happy-dom 不排版；保留真实 CSS 判定，记录真实 DOM 元素收到的 scrollTo 调用。
+      const scroller = narrow ? body : inner;
+      let reset = false;
+      scroller.scrollTop = 600;
+      scroller.scrollTo = (options?: ScrollToOptions | number) => {
+        if (typeof options === 'object' && options.top === 0) {
+          reset = true;
+          scroller.scrollTop = 0;
+        }
+      };
+      await act(async () => {
+        if (m.router.state.location.pathname === '/sop') await m.router.navigate({ to: '/catalog/$kind', params: { kind: 'route' } });
+        else await m.router.navigate({ to: '/sop' });
+      });
+      await settle(m.qc);
+      eq(`沙箱 ${width}px：换页重置实际滚动容器`, [reset, scroller.scrollTop], [true, 0]);
+    }
+  } finally {
+    await m.unmount();
+    style.remove();
+    win.happyDOM.setViewport({ width: 1440, height: 1100 });
+  }
 }
 
 if (fails.length) {

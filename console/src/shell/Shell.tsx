@@ -14,6 +14,7 @@ import { Info, LogIn, LogOut, Menu, Moon, Sun, SunMoon } from 'lucide-react';
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { catalogKind } from '../api.js';
+import { SandboxBanner, SandboxChecklist } from '../sandbox/Sandbox.js';
 import { LoginPage } from '../pages/LoginPage.js';
 import { ErrorAlert } from '../parts/ErrorAlert.js';
 import { EmptyBlock, StateView } from '../parts/StateView.js';
@@ -102,6 +103,7 @@ export function Shell() {
       </Whole>
     );
   }
+  if (v.kind === 'redirect') return <BootSkeleton />;
   if (v.kind === 'login') return <LoginPage demo={v.demo} tryUrl={v.tryUrl} />;
   return <Frame viewer={v} />;
 }
@@ -110,6 +112,8 @@ type Framed = Extract<Viewer, { kind: 'member' | 'anon' }>;
 
 function Frame({ viewer: v }: { viewer: Framed }) {
   const qc = useQueryClient();
+  const progress = useViewer();
+  const sandbox = v.kind === 'member' ? v.me.sandbox : null;
   const navigate = useNavigate();
   const path = useRouterState({ select: (s) => s.location.pathname });
   const tier = useViewport();
@@ -130,13 +134,15 @@ function Frame({ viewer: v }: { viewer: Framed }) {
   const [drawerAt, setDrawerAt] = useState<string | null>(null);
   const drawerOpen = drawerAt === path;
   const menuRef = useRef<HTMLButtonElement>(null);
-  // 面板自己滚动（路由的滚动还原只管 window）：换了地址回到顶上
+  // 桌面滚动 shell-scroll；窄屏沙箱滚动外层 sandbox-body。换页时两者都回顶，覆盖跨断点后的残留位置。
   const scrollRef = useRef<HTMLDivElement>(null);
+  const sandboxScrollRef = useRef<HTMLDivElement>(null);
   const scrolledFor = useRef(path);
   useEffect(() => {
     if (scrolledFor.current === path) return;
     scrolledFor.current = path;
     scrollRef.current?.scrollTo({ top: 0 });
+    sandboxScrollRef.current?.scrollTo({ top: 0 });
   }, [path]);
   const mode = sidebarMode(tier, collapsed);
   // 换页以后焦点到主要内容（spec「可访问性与响应式 · 焦点」）：点了侧栏、⌘K、页面里的链接，或者后退前进，新的一页画出来以后
@@ -235,9 +241,13 @@ function Frame({ viewer: v }: { viewer: Framed }) {
       action: () => setReduceMotion(!getPrefs().reduceMotion),
     },
     { key: 'about', label: '关于', icon: Info, action: () => setAboutOpen(true) },
-    sv.kind === 'member'
-      ? { key: 'logout', label: '退出登录', icon: LogOut, action: () => void signOut() }
-      : { key: 'login', label: '登录', icon: LogIn, action: login },
+    ...(!sandbox
+      ? [
+          sv.kind === 'member'
+            ? { key: 'logout', label: '退出登录', icon: LogOut, action: () => void signOut() }
+            : { key: 'login', label: '登录', icon: LogIn, action: login },
+        ]
+      : []),
   ];
 
   const sidebar = (inDrawer: boolean) => (
@@ -273,15 +283,27 @@ function Frame({ viewer: v }: { viewer: Framed }) {
         sidebar(false)
       )}
       <div className="shell-panel">
-        <div className="shell-scroll" ref={scrollRef}>
-          <main id="main" tabIndex={-1} className="shell-content">
-            {sv.kind === 'member' && logoutError !== null && (
-              <div className="shell-alert">
-                <ErrorAlert error={logoutError} title="没退出登录" onRetry={() => void signOut()} />
-              </div>
-            )}
-            <Outlet />
-          </main>
+        {sandbox && <SandboxBanner sandbox={sandbox} />}
+        <div className={sandbox ? 'sandbox-body' : 'shell-body'} ref={sandbox ? sandboxScrollRef : undefined}>
+          {sandbox && v.kind === 'member' && (
+            <SandboxChecklist
+              key={v.me.tenantSlug}
+              slug={v.me.tenantSlug}
+              sandbox={sandbox}
+              error={progress.error}
+              onRetry={() => void progress.refetch()}
+            />
+          )}
+          <div className="shell-scroll" ref={scrollRef}>
+            <main id="main" tabIndex={-1} className="shell-content">
+              {sv.kind === 'member' && logoutError !== null && (
+                <div className="shell-alert">
+                  <ErrorAlert error={logoutError} title="没退出登录" onRetry={() => void signOut()} />
+                </div>
+              )}
+              <Outlet />
+            </main>
+          </div>
         </div>
       </div>
       {mode === 'hidden' && (
@@ -317,7 +339,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
         openConversation={(row) => window.open(workbenchHref(row.id), '_blank', 'noopener,noreferrer')}
       />
       <AboutDialog open={aboutOpen} onClose={() => setAboutOpen(false)} />
-      {sv.kind === 'member' && <SessionExpiredDialog />}
+      {sv.kind === 'member' && !sandbox && <SessionExpiredDialog />}
     </div>
   );
 }
