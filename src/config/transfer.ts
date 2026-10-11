@@ -2,13 +2,14 @@
 // 退出码：0 成功或已一致；2 库里已有不一致的内容；3 拿不到租户锁；1 其他错误。
 import fs from 'node:fs';
 import path from 'node:path';
-import { lockTenantConfig, withTenant, type Db, type TenantCtx, type TenantLock } from '../db/client.js';
+import { currentTenantCtx, lockTenantConfig, withTenant, type Db, type TenantCtx, type TenantLock, type Tx } from '../db/client.js';
 import { writeAudit } from '../db/repo/audit.js';
 import { countCatalogItems, insertActiveItems, readActiveCatalog, type CatalogKind } from '../db/repo/catalog.js';
 import { insertCatalogVersion } from '../db/repo/catalog-versions.js';
 import { countSopVersions, insertPublishedSop, readPublishedSop } from '../db/repo/sop.js';
 import { findTenantBySlug, readBrand } from '../db/repo/tenants.js';
 import { renderSystemPrompt } from '../prompt/system.js';
+import { renderSystemPrompt as renderPackSystemPrompt } from '../core/prompt.js';
 import { HotelSchema, RouteSchema } from '../shared/catalog.js';
 import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
 import { decodeSopFile, editableChars, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
@@ -71,6 +72,75 @@ function readItems(dir: string, file: string, kind: CatalogKind): Record<string,
 
 const itemKey = (kind: CatalogKind, code: string, ord: number, payload: unknown): string =>
   `${kind}|${code}|${ord}|${JSON.stringify(payload)}`;
+
+/** 05 R9：发布快照复制为新租户 v1；按本镜像与快照品牌渲染，不能复制待生效品牌或历史元数据。 */
+export async function writeTemplateConfig(
+  tx: Tx,
+  pub: NonNullable<Awaited<ReturnType<typeof readPublishedSop>>>,
+  items: Awaited<ReturnType<typeof readActiveCatalog>>,
+  imageSop: string,
+): Promise<PromptHashes> {
+  const { tenantId } = currentTenantCtx();
+  const runtime = runtimeById(pub.packId, packSources());
+  if (!runtime) throw new Error('pack_unknown');
+  const brand = publishedBrand(pub.renderInputs).brand;
+  const render = brand ? tenantRenderer(runtime, brand) : (sop: string) => renderPackSystemPrompt(sop, runtime.legacy.hardRequirements);
+  const imageSections = tenantImage(runtime, imageSop, brand);
+  const merged = mergeWithImage(pub.sections, imageSections);
+  const sop = joinSop(merged);
+  const rendered = render(sop);
+  const toolsJson = JSON.stringify(runtime.tools.map((t) => t.def));
+  const hashes = promptHashes(rendered, toolsJson, sop);
+  if (Object.entries(hashes).some(([key, value]) => pub[key as keyof PromptHashes] !== value) || pub.renderedPrompt !== rendered)
+    throw new Error('sandbox_template_unpublished_inputs');
+  const violations = checkSopContract({
+    sections: merged,
+    imageSections,
+    rendered,
+    toolNames: runtime.tools.map((t) => t.def.function.name),
+    knownFields: runtime.knownFields.names,
+    baselineEditableChars: editableChars(merged),
+    rules: runtime.contractRules(brand ? { brand } : 'legacy'),
+    brand,
+    hardRequirements: render(''),
+  });
+  if (violations.length) throw new Error('sandbox_template_contract_failed');
+  await insertPublishedSop(tx, {
+    tenantId,
+    versionNo: 1,
+    source: 'import',
+    packId: pub.packId,
+    sections: merged,
+    basedOn: null,
+    renderedPrompt: rendered,
+    ...hashes,
+    renderInputs: renderInputsFor(render, joinSop(imageSections), toolsJson, runtime.sopSections, brand),
+    changeNote: null,
+    createdBy: null,
+    createdByName: null,
+  });
+  for (const kind of ['route', 'hotel'] as const) {
+    const rows = items.filter((row) => row.kind === kind);
+    await insertActiveItems(
+      tx,
+      tenantId,
+      kind,
+      rows.map((row) => row.payload),
+      { userId: null, name: null },
+      rows.map((row) => row.ord),
+    );
+    for (const row of rows)
+      await insertCatalogVersion(tx, {
+        kind,
+        code: row.code,
+        version: 1,
+        payload: row.payload,
+        source: 'activate',
+        createdByName: null,
+      });
+  }
+  return hashes;
+}
 
 export interface ImportOptions {
   db: Db;

@@ -428,6 +428,15 @@ async function writeNew(tx: Tx, s: Session): Promise<void> {
   await insertMessages(tx, s.id, rows);
 }
 
+/** 05 R9：调用方已经创建新租户并持有同一个事务；复用首次导入的投影与写入。 */
+export async function writeSeedSessions(tx: Tx, sessions: readonly Session[], orders: readonly Order[]): Promise<void> {
+  for (const session of sessions) await writeNew(tx, normalizeForStore(session));
+  await writeOrders(
+    tx,
+    orders.map((order) => orderToRow(normalizeForStore(order))),
+  );
+}
+
 async function writeOrders(tx: Tx, rows: Parameters<typeof upsertOrders>[1]): Promise<void> {
   if (!rows.length) return;
   try {

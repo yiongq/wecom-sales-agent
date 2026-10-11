@@ -64,6 +64,13 @@
       "when": 1791687324325,
       "tag": "0008_tenancy_sandbox",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1791690000000,
+      "tag": "0009_sandbox_privacy_seed",
+      "breakpoints": true
     }
   ]
 }

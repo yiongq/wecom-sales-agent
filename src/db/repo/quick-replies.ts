@@ -30,6 +30,13 @@ export async function listQuickReplies(tx: Tx): Promise<QuickReplyRow[]> {
   return tx.select(columns).from(quickReplies).where(live).orderBy(asc(quickReplies.ord), asc(quickReplies.id));
 }
 
+/** 模板开通只复制内容与顺序，不带宿主的 id、成员与变更归属。 */
+export async function copyQuickReplies(tx: Tx, rows: readonly Pick<QuickReplyRow, 'ord' | 'title' | 'body'>[]): Promise<void> {
+  if (!rows.length) return;
+  const { tenantId } = currentTenantCtx();
+  await tx.insert(quickReplies).values(rows.map(({ ord, title, body }) => ({ tenantId, ord, title, body })));
+}
+
 /** 这个租户是不是一条快捷回复都没有过（含归档的，不止没归档的）：判断「空表」用（RLS 已经按租户过滤） */
 export async function anyQuickReplyRow(tx: Tx): Promise<boolean> {
   const [row] = await tx

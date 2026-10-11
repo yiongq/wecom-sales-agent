@@ -5,7 +5,6 @@ import {
   checkConfigDatabase,
   closeConfig,
   ConfigStartupError,
-  initConfig,
   markConfigShuttingDown,
   productionConfigDeps,
   type ConfigDeps,
@@ -22,31 +21,29 @@ import type { ProcessTenantLock } from '../../db/client.js';
 import { gateStatus } from '../../llm-gate.js';
 import { alert } from '../../ops/alert.js';
 import { profile } from '../../profile.js';
-import { initPrivacy } from '../../privacy/privacy.js';
-import { initSessionStore, storeHealth } from '../../store.js';
-import { dropShutdownHooks } from '../../shutdown.js';
-import { dropTenantState } from '../state.js';
+import { storeHealth } from '../../store.js';
 import { SessionStoreStartupError } from '../../store/backend.js';
 import { normalizeHost } from '../hosts.js';
 import {
   configureTenancy,
   createTenantRuntime,
   onTenantScopeMissing,
-  registerRuntime,
   tenantRuntimes,
   tenantStoreIfLoaded,
-  unregisterRuntime,
   withTenantScope,
   withoutTenantScope,
 } from '../runtime.js';
 import { assertSandboxRunning, sandboxStopped, stopSandboxProcess } from './lifecycle.js';
 import { resolveRole, sandboxFlags } from './role.js';
+import { loadSandboxRuntime } from './load.js';
+import { drainSandboxProvisioning, provisionSandbox, SandboxProvisionError, type ProvisionedSandbox } from './provision.js';
 
 export class SandboxProcess {
   private deps: ConfigDeps | null = null;
   private lock: ProcessTenantLock | null = null;
   private scopeMissing = 0;
   private unsubscribe: (() => void) | null = null;
+  private accepting = false;
   epoch: string | null = null;
 
   constructor(
@@ -86,39 +83,18 @@ export class SandboxProcess {
       const rows = await sandboxStartupRows(this.deps.db);
       for (const row of rows) {
         assertSandboxRunning();
-        const held = await this.lock.acquireTenant(row.id);
-        if (!held) {
-          console.error('[sandbox] sandbox_tenant_lock_held，跳过装载（不改到期）');
-          withoutTenantScope(() =>
-            alert('tenant_lock', `沙箱 ${row.slug} 的租户锁被其他进程持有，跳过装载（不改到期）`, {
-              instance: true,
-              scope: `sandbox:${row.id}`,
-            }),
-          );
-          continue;
-        }
-        const rt = createTenantRuntime({
-          id: row.id,
-          slug: row.slug,
-          kind: 'sandbox',
-          expiresAt: new Date(row.expiresAt).getTime(),
-          publicBase: `https://${normalizeHost(this.env.SANDBOX_HOST!)}`,
-          flags: sandboxFlags(profile().flags),
-        });
-        registerRuntime(rt);
         try {
-          await withTenantScope(rt, async () => {
-            await initConfig({ ...this.deps!, tenantSlug: row.slug, lock: async () => held, closeDb: undefined });
-            await initSessionStore({ db: this.deps!.db, tenantId: row.id, tenantSlug: row.slug, varDir: '' });
-            await initPrivacy(); // 不启动隐私轮询。
-          });
+          const rt = await loadSandboxRuntime(this.deps, row, this.env.SANDBOX_HOST!, (id) => this.lock!.acquireTenant(id));
+          if (!rt) {
+            console.error('[sandbox] sandbox_tenant_lock_held，跳过装载（不改到期）');
+            withoutTenantScope(() =>
+              alert('tenant_lock', `沙箱 ${row.slug} 的租户锁被其他进程持有，跳过装载（不改到期）`, {
+                instance: true,
+                scope: `sandbox:${row.id}`,
+              }),
+            );
+          }
         } catch (error) {
-          rt.state = 'closed';
-          tenantStoreIfLoaded(rt)?.pgBackend?.close();
-          await held.release();
-          dropTenantState(rt.id);
-          dropShutdownHooks(rt);
-          unregisterRuntime(rt.id);
           const broken =
             (error instanceof ConfigStartupError &&
               ['pack_unknown', 'no_published_sop', 'integrity', 'contract_failed', 'no_active_routes'].includes(error.reason)) ||
@@ -135,18 +111,44 @@ export class SandboxProcess {
         }),
       );
       console.log(`[sandbox] 已启动，装载沙箱 ${tenantRuntimes().length}`);
+      this.accepting = true;
     } catch (error) {
       await this.close();
       throw error;
     }
   }
 
+  /** 第 15 步的 POST 核心入口；同源检查、cookie 复用与签发由 HTTP 层负责。 */
+  provision(input: { ip: string | null; userAgent: string | null }): Promise<ProvisionedSandbox> {
+    if (!this.accepting || !this.deps || !this.lock || this.epoch === null)
+      return Promise.reject(new SandboxProvisionError(503, 'sandbox_unavailable'));
+    return provisionSandbox({
+      ...input,
+      deps: this.deps,
+      templateSlug: this.env.SANDBOX_TEMPLATE_SLUG!,
+      host: this.env.SANDBOX_HOST!,
+      epoch: this.epoch,
+      acquireTenant: (id) => this.lock!.acquireTenant(id),
+    });
+  }
+
   async close(): Promise<void> {
+    this.accepting = false;
+    await drainSandboxProvisioning();
     this.unsubscribe?.();
     this.unsubscribe = null;
-    for (const rt of tenantRuntimes()) await withTenantScope(rt, closeConfig);
+    for (const rt of tenantRuntimes()) {
+      if (rt.kind !== 'sandbox') continue;
+      rt.state = 'closed';
+      tenantStoreIfLoaded(rt)?.pgBackend?.close();
+      await withTenantScope(rt, closeConfig);
+      // 保留到 exit：store 的退出钩子还要统计未落库条数，且沙箱不写 spill。
+    }
     await this.lock?.release();
     await this.deps?.closeDb?.();
+    this.lock = null;
+    this.deps = null;
+    this.epoch = null;
   }
 
   async health() {

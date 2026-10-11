@@ -3,6 +3,7 @@ export const STATE_MANIFEST: Record<
   string,
   { kind: 'tenant'; state: string } | { kind: 'instance'; why: string } | { kind: 'object-keyed' }
 > = Object.freeze({
+  'src/tenancy/sandbox/provision.ts:provisioning': { kind: 'instance', why: '开通的进程互斥链；不缓存租户或令牌，失败后仍可继续。' },
   'src/server.ts:sandbox': { kind: 'instance', why: '沙箱进程的组合根；epoch、进程锁与停止策略只有一份。' },
   'src/server.ts:sandboxHttp': { kind: 'instance', why: '沙箱角色的 HTTP 路由能力；请求阶段才建立租户作用域。' },
   'src/tenancy/sandbox/lifecycle.ts:stopped': { kind: 'instance', why: '沙箱进程锁丢失后的永久停止闸；不按租户恢复。' },

@@ -154,7 +154,13 @@ const PURGE_FNS: Record<string, 'agent_app' | 'agent_platform'> = {
   purge_expired_traces: 'agent_app',
   purge_finished_jobs: 'agent_app',
 };
-const SANDBOX_FNS = ['sandbox_tenant_create', 'sandbox_session_resolve', 'sandbox_tenant_expire', 'sandbox_tenant_purge'];
+const SANDBOX_FNS = [
+  'sandbox_tenant_create',
+  'sandbox_session_resolve',
+  'sandbox_tenant_expire',
+  'sandbox_tenant_purge',
+  'sandbox_privacy_seed',
+];
 const TENANT_POLICY = /^\(tenant_id = \(NULLIF\(current_setting\('app\.tenant_id'::text, true\), ''::text\)\)::uuid\)$/;
 /**
  * 按系统目录核对迁移的结果，PGlite 与真实 PG 各跑一遍。带 tenant_id 的表是从目录里找出来的，不是写死的清单：
