@@ -1,5 +1,6 @@
 // 05 第 12 步组合根：不启动渠道注册表、任务、宿主文件状态或体验客服。
 import { Hono } from 'hono';
+import { assertSandboxWriteRate, validateSandboxLimits, SandboxLimitError } from './limits.js';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { consolePages } from '../../console-api/host.js';
 import { getCookie } from 'hono/cookie';
@@ -82,6 +83,7 @@ export class SandboxProcess {
 
   async start(): Promise<void> {
     if (resolveRole(this.env) !== 'sandbox') throw new Error('app_role_invalid');
+    validateSandboxLimits(this.env);
     configureTenancy({ role: 'sandbox', standardCount: 0 });
     // 第一把锁取不到时不打开配置、不装载、不改任何沙箱。
     this.lock = await acquireSandboxProcess(this.env.DATABASE_URL ?? '', this.failStop);
@@ -141,6 +143,7 @@ export class SandboxProcess {
       return Promise.reject(new SandboxProvisionError(503, 'sandbox_unavailable'));
     return provisionSandbox({
       ...input,
+      env: this.env,
       deps: this.deps,
       templateSlug: this.env.SANDBOX_TEMPLATE_SLUG!,
       host: this.env.SANDBOX_HOST!,
@@ -247,7 +250,10 @@ export function sandboxApp(process: Pick<SandboxProcess, 'health' | 'resolve' | 
       return next();
     }
     setSandboxSession(c, session);
-    return withTenantScope(session.runtime, next);
+    return withTenantScope(session.runtime, () => {
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) assertSandboxWriteRate();
+      return next();
+    });
   });
   // 第 16 步替换为完整开通页；GET 永远不建租户。
   app.get('/try', (c) =>
@@ -270,9 +276,13 @@ export function sandboxApp(process: Pick<SandboxProcess, 'health' | 'resolve' | 
   });
   if (routes) app.route('/', routes);
   app.onError((error, c) => {
+    if (error instanceof SandboxLimitError) {
+      c.header('Retry-After', String(error.retryAfter));
+      return c.json({ error: error.reason, retryAfter: error.retryAfter }, error.status);
+    }
     if (error instanceof SandboxProvisionError) {
       if (error.retryAfter) c.header('Retry-After', String(error.retryAfter));
-      return c.json({ error: error.reason }, error.status);
+      return c.json({ error: error.reason, ...(error.retryAfter === undefined ? {} : { retryAfter: error.retryAfter }) }, error.status);
     }
     console.error('[sandbox-http] 请求失败', error instanceof Error ? error.name : 'unknown');
     return c.json({ error: 'sandbox_unavailable' }, 503);
