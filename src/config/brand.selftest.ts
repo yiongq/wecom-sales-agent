@@ -83,7 +83,8 @@ try {
   const pages = {
     pay: '4bba75fa0132a1a726b593ff7386c2574b66b4ef3fefb782ebcfaeffbc4af7c6',
     proposal: '246366d7d5facb04e6892af8605a70304f7a7ec733ea0577f7ce6c34cf10fb7f',
-    chat: 'aba04f1d43216b8503067c6d81acae7899a5b9dfe391307402874a280220b8ec',
+    // 05 第 15 步评审修复：新会话删除 c 参数，更新已授权的页面基准。
+    chat: '39d1cc7d491928aa52cb09fc78f2c72bd471ffec6e583aaf2ab77a1a164714e7',
     web: '799e39e6ebfb08d8df905e1e3c60a55d5c9751ac9ed107c03434865dd9a44127',
   } as const;
   for (const [page, hash] of Object.entries(pages)) {

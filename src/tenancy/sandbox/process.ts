@@ -5,6 +5,7 @@ import { consolePages } from '../../console-api/host.js';
 import { getCookie } from 'hono/cookie';
 import { isIP } from 'node:net';
 import { clientKey, isCrossSite } from '../../http-guards.js';
+import { claimSessionLookup } from '../../auth/session.js';
 import { requestLogContext } from '../../log.js';
 import {
   sandboxCookie,
@@ -226,7 +227,18 @@ export function sandboxApp(process: Pick<SandboxProcess, 'health' | 'resolve' | 
       /^\/api\/sessions\/[^/]+\//.test(c.req.path)
     )
       return c.notFound();
-    const session = await process.resolve(getCookie(c, SANDBOX_COOKIE));
+    const token = getCookie(c, SANDBOX_COOKIE);
+    // 与宿主共用限流：查库前同步占名额，只有无效 cookie 保留计数。
+    const giveBack = token ? claimSessionLookup(clientKey(c), Date.now()) : undefined;
+    let session: SandboxSession;
+    try {
+      session = token && !giveBack ? { status: 'invalid' } : await process.resolve(token);
+    } catch (error) {
+      giveBack?.();
+      throw error;
+    }
+    if (session.status !== 'invalid') giveBack?.();
+    if (session.status === 'unavailable') return c.json({ error: 'sandbox_unavailable' }, 503);
     if (session.status !== 'ok') {
       if (c.req.path !== '/try' && !(c.req.path === '/api/sandbox' && c.req.method === 'POST')) return sandboxRefusal(c, session.status);
       clearSandboxCookie(c);

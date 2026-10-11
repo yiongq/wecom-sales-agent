@@ -9,14 +9,14 @@ import { runtimeOf, type TenantRuntime } from '../runtime.js';
 export const SANDBOX_COOKIE = '__Host-sbx';
 export type SandboxSession =
   | { status: 'ok'; token: string; user: AuthedUser; runtime: TenantRuntime; expiresAt: string }
-  | { status: 'invalid' | 'expired' };
+  | { status: 'invalid' | 'expired' | 'unavailable' };
 
 export async function resolveSandboxSession(db: Db, token: string | undefined): Promise<SandboxSession> {
   if (!token || !/^[A-Za-z0-9_-]{43}$/.test(token)) return { status: 'invalid' };
   const row = await sandboxSessionResolve(db, createHash('sha256').update(token).digest());
   if (row.status !== 'ok') return { status: row.status };
   const runtime = runtimeOf(row.tenantId);
-  if (runtime?.kind !== 'sandbox') return { status: 'invalid' };
+  if (runtime?.kind !== 'sandbox') return { status: 'unavailable' };
   if (runtime.state !== 'serving') return { status: 'expired' };
   return {
     status: 'ok',
@@ -55,6 +55,6 @@ export function sandboxRefusal(c: Context, status: 'invalid' | 'expired'): Respo
 /** 页面生成的 sim id 映射到可持久化的 sbx id；已有会话只在当前租户里读取。 */
 export function sandboxSimulatorId(id: string): string | null {
   if (/^sim-[0-9a-f]{24,64}$/.test(id)) return `sbx-${id.slice(4)}`;
-  if (/^sbx-[0-9a-f]{24,64}$/.test(id) || /^wecom:[A-Za-z0-9_-]+$/.test(id)) return id;
+  if (/^sbx-[0-9a-f]{24,64}$/.test(id)) return id;
   return null;
 }

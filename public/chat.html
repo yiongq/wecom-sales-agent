@@ -732,6 +732,9 @@
   });
   document.getElementById('newBtn').addEventListener('click', () => {
     localStorage.removeItem(LS_KEY);
+    const url = new URL(location.href);
+    url.searchParams.delete('c');
+    history.replaceState(null, '', url);
     location.reload();
   });
 

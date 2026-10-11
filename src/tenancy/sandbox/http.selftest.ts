@@ -1,7 +1,8 @@
 // R10 与验收 4/5/11：真实路由、数据库 cookie 解析、租户隔离与工作台闭环。
 import '../../selftest-env.js';
 import assert from 'node:assert/strict';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomFillSync, randomUUID } from 'node:crypto';
+import vm from 'node:vm';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -11,7 +12,7 @@ import { importConfig } from '../../config/transfer.js';
 import { closeConfig, initConfig, currentSop, currentCatalog } from '../../config/source.js';
 import { expireBrokenSandbox } from '../../db/sandbox-process.js';
 import { sandboxSessionResolve } from '../../db/repo/sandbox.js';
-import { csrfFor } from '../../auth/session.js';
+import { csrfFor, __authTest } from '../../auth/session.js';
 import { subscribe } from '../../adapters/simulator.js';
 import { dropShutdownHooks } from '../../shutdown.js';
 import { listSessions, listOrders, flushSession } from '../../store.js';
@@ -59,6 +60,7 @@ async function cleanup(): Promise<void> {
 }
 
 async function suite(db: Db, q: Query, real: boolean): Promise<void> {
+  __authTest.reset();
   configureTenancy({ role: 'sandbox', standardCount: 0 });
   const [template] = await q<{ id: string }>("select id from tenants where slug='template'");
   const host = createTenantRuntime({ id: template!.id, slug: 'template', isHost: true });
@@ -74,9 +76,13 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
     sop: await q('select to_jsonb(s) as row from sop_versions s where tenant_id=$1 order by id', [host.id]),
   });
   const originalTemplate = await templateSnapshot();
+  let resolutions = 0;
   const service = {
     health: () => new SandboxProcess({}).health(),
-    resolve: (token: string | undefined) => resolveSandboxSession(db, token),
+    resolve: (token: string | undefined) => {
+      resolutions++;
+      return resolveSandboxSession(db, token);
+    },
     provision: (input: { ip: string | null; userAgent: string | null }) =>
       provisionSandbox({
         ...input,
@@ -180,6 +186,35 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   check(() => assert.equal(me.csrf, csrfFor(token)));
   check(() => assert.equal(me.tenantSlug, a.slug));
   check(() => assert.deepEqual(me.sandbox, { expiresAt: openBody.expiresAt, wechat: 'off', steps: [false, false, false, false] }));
+  // 与宿主相同的 IP 桶：有效会话退回名额；无效 cookie 并发也最多查 60 次。
+  const goodIp = { 'x-forwarded-for': '198.51.100.151' };
+  for (let i = 0; i < 70; i++) await expect(await request('/api/console/me', token, { headers: goodIp }), 200);
+  const randomToken = randomBytes(32).toString('base64url');
+  const invalidIp = { 'x-forwarded-for': '198.51.100.152' };
+  const beforeBurst = resolutions;
+  const burst = await Promise.all(Array.from({ length: 70 }, () => request('/api/console/me', randomToken, { headers: invalidIp })));
+  check(() => assert.equal(resolutions - beforeBurst, 60, '并发请求在查库前占名额'));
+  for (const response of burst) await expect(response, 401, 'sandbox_required');
+  await expect(await request('/api/console/me', randomToken, { headers: invalidIp }), 401, 'sandbox_required');
+  check(() => assert.equal(resolutions - beforeBurst, 60, '第 61 次起不查库'));
+  await expect(await request('/api/console/me', randomToken, { headers: goodIp }), 401, 'sandbox_required');
+  check(() => assert.equal(resolutions - beforeBurst, 61, 'IP 桶相互独立且有效会话不耗额度'));
+  // 数据库认得会话，进程却没装载租户：暂不可用，保留 cookie，也不能再开通一个。
+  unregisterRuntime(a.id);
+  try {
+    for (let i = 0; i < 70; i++) {
+      const unavailable = await request(i === 0 ? '/api/sandbox' : '/console/', token, {
+        method: i === 0 ? 'POST' : 'GET',
+        headers: { 'content-type': 'application/json', ...goodIp },
+      });
+      await expect(unavailable, 503, 'sandbox_unavailable');
+      check(() => assert.equal(unavailable.headers.get('set-cookie'), null));
+    }
+    check(() => assert.equal(tenantRuntimes().length, 0, '暂不可用时不另开沙箱'));
+  } finally {
+    registerRuntime(a);
+  }
+  await expect(await request('/api/console/me', token, { headers: goodIp }), 200);
   const status = (await (await request('/api/console/status', token)).json()) as { channels: unknown[]; tenantSlug: string };
   check(() => assert.deepEqual(status.channels, []));
   check(() => assert.equal(status.tenantSlug, a.slug));
@@ -220,6 +255,9 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   for (const url of [`/api/sessions/${bId}`, `/api/stream/${bId}`, `/api/console/conversations/${bId}`])
     await expect(await request(url, token), 404);
   await expect(await post('/api/chat', token, { sessionId: bId, text: '你好' }), 404);
+  const wecomId = 'wecom:wmSbxTest';
+  await expect(await post('/api/chat', token, { sessionId: wecomId, text: '你好' }), 400);
+  for (const url of [`/api/sessions/${wecomId}`, `/api/stream/${wecomId}`]) await expect(await request(url, token), 404);
   await expect(await request(`/api/sessions/${bId}`), 401, 'sandbox_required');
   const simId = `sim-${randomBytes(12).toString('hex')}`;
   const sbxId = `sbx-${simId.slice(4)}`;
@@ -239,6 +277,62 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   check(() => assert.ok(html.includes(`ssj_session_id:${a.slug}`)));
   check(() => assert.ok(html.includes("new URLSearchParams(location.search).get('c')")));
   check(() => assert.ok(html.includes('(?:sim|sbx)-')));
+  // 执行真实页面的启动代码和按钮回调：?c 优先；新会话删 c、保留其余 URL，再启动产生新 id。
+  const key = /LS_KEY = '([^']+)'/.exec(html)![1]!;
+  const storage = new Map([[key, simId]]);
+  const location = {
+    href: `https://sandbox.example.invalid/chat.html?c=${sbxId}&from=console#messages`,
+    search: '',
+    reloads: 0,
+    reload() {
+      this.reloads++;
+    },
+  };
+  location.search = new URL(location.href).search;
+  let click = () => {};
+  const startup = /  const STRONG_ID_RE[\s\S]*?(?=  let lastTs)/.exec(html)![0];
+  const button = /  document.getElementById\('newBtn'\)[\s\S]*?\n  \}\);/.exec(html)![0];
+  const boot = () => {
+    const context = vm.createContext({
+      URL,
+      URLSearchParams,
+      location,
+      crypto: { getRandomValues: randomFillSync },
+      localStorage: {
+        getItem: (k: string) => storage.get(k) ?? null,
+        setItem: (k: string, v: string) => storage.set(k, v),
+        removeItem: (k: string) => storage.delete(k),
+      },
+      history: {
+        replaceState: (_state: unknown, _title: string, url: URL) => {
+          location.href = String(url);
+          location.search = new URL(location.href).search;
+        },
+      },
+      document: {
+        getElementById: () => ({
+          addEventListener: (_event: string, handler: () => void) => {
+            click = handler;
+          },
+        }),
+      },
+    });
+    vm.runInContext(`const LS_KEY = ${JSON.stringify(key)};\n${startup}\n${button}`, context);
+    return vm.runInContext('sessionId', context) as string;
+  };
+  check(() => assert.equal(boot(), sbxId));
+  click();
+  check(() => assert.equal(storage.has(key), false));
+  check(() => assert.equal(location.href, 'https://sandbox.example.invalid/chat.html?from=console#messages'));
+  check(() => assert.equal(location.reloads, 1));
+  const newId = boot();
+  check(() => assert.match(newId, /^sim-[0-9a-f]{24}$/));
+  check(() => assert.notEqual(newId, simId));
+  const newChat = await post('/api/chat', token, { sessionId: newId, text: '你好' });
+  await expect(newChat, 200);
+  const newChatBody = (await newChat.json()) as { sessionId: string };
+  check(() => assert.equal(newChatBody.sessionId, `sbx-${newId.slice(4)}`));
+  await withTenantScope(a, () => flushSession(`sbx-${newId.slice(4)}`, { timeoutMs: 5000 }));
 
   // 接手、回复、交还、模拟器继续、标已付与 reset 的耐久后端回归。
   const pushes: string[] = [];

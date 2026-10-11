@@ -464,7 +464,6 @@ app.post('/api/chat', simulatorOnly, async (c) => {
     ? sandboxSimulatorId(body?.sessionId || `sim-${randomBytes(12).toString('hex')}`)!
     : body?.sessionId || `sim-${randomBytes(12).toString('hex')}`;
   if (inSandbox && body?.sessionId?.startsWith('sbx-') && !getSession(sessionId)) return c.notFound();
-  if (inSandbox && sessionId.startsWith('wecom:') && !getSession(sessionId)) return c.notFound();
   const reply = await handleMessage(sessionId, text, 'simulator');
   return c.json({ sessionId, reply });
 });
