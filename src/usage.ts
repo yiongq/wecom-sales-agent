@@ -211,7 +211,7 @@ export function recordUsage(
   purpose: UsagePurpose = 'chat',
 ): void {
   const rt = currentRuntime();
-  if (rt.state !== 'serving') return;
+  if (rt.state === 'closed') return;
   const entry = hostUsage();
   const state = entry?.state;
   const cny = costOf(model, promptTokens, completionTokens, cachedTokens);

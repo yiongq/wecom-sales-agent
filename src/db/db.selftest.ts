@@ -160,6 +160,7 @@ const SANDBOX_FNS = [
   'sandbox_tenant_expire',
   'sandbox_tenant_purge',
   'sandbox_privacy_seed',
+  'sandbox_last_seen',
 ];
 const TENANT_POLICY = /^\(tenant_id = \(NULLIF\(current_setting\('app\.tenant_id'::text, true\), ''::text\)\)::uuid\)$/;
 /**

@@ -33,7 +33,7 @@ async function refresh(): Promise<void> {
   const state = notices.get(rt);
   const { db, tenantId } = configRuntime();
   const row = await withTenant(db, systemActor(tenantId), (tx) => readLatestPrivacyNotice(tx), { readOnly: true });
-  if (!notices.owns(rt, state)) return;
+  if (rt.cancel.aborted || rt.state === 'closed' || !notices.owns(rt, state)) return;
   state.current = row ? { version: row.version, body: row.body } : null;
 }
 
@@ -50,7 +50,7 @@ export async function initPrivacy(opts: { strict?: boolean } = {}): Promise<void
   } catch (e) {
     if (e instanceof TenantScopeMissing) throw e;
     if (opts.strict) throw e;
-    if (!notices.owns(rt, state)) return;
+    if (rt.cancel.aborted || rt.state === 'closed' || !notices.owns(rt, state)) return;
     console.error('[privacy] 启动读取隐私说明失败（先当没发布过，60 秒后重试）:', e instanceof Error ? e.message : e);
     state.current = null;
   }
@@ -64,7 +64,7 @@ export function startPrivacyPoll(intervalMs = 60_000): void {
   state.pollTimer = withoutTenantScope(() =>
     setInterval(
       tenantCallback(rt, () =>
-        !notices.owns(rt, state)
+        rt.cancel.aborted || rt.state === 'closed' || !notices.owns(rt, state)
           ? undefined
           : rt.inflight.track(refresh()).catch((e: unknown) => {
               if (e instanceof TenantScopeMissing) throw e;

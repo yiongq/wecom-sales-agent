@@ -71,6 +71,13 @@
       "when": 1791690000000,
       "tag": "0009_sandbox_privacy_seed",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1791700000000,
+      "tag": "0010_sandbox_last_seen",
+      "breakpoints": true
     }
   ]
 }

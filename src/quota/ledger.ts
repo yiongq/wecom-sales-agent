@@ -218,7 +218,7 @@ function scheduleLedger(ms: number, fn: () => void, cancel: () => void = () => {
     setTimeout(
       tenantCallback(rt, () => {
         state.timers.delete(timer);
-        if (ledger.owns(rt, state)) fn();
+        if (rt.state === 'serving' && !rt.cancel.aborted && ledger.owns(rt, state)) fn();
         else cancel();
       }),
       Math.max(0, ms),
@@ -240,7 +240,7 @@ function scheduleLedgerImmediate(fn: () => void): void {
     setImmediate(
       tenantCallback(rt, () => {
         state.timers.delete(timer);
-        if (ledger.owns(rt, state)) fn();
+        if (rt.state === 'serving' && !rt.cancel.aborted && ledger.owns(rt, state)) fn();
       }),
     ),
   );
@@ -252,7 +252,8 @@ const pendingWrites = new WeakMap<OutboundRow, Row>();
 /** 已用条数算哪几种：送达的、结果不明的，以及还在发的（可能已经送达）；03 的 pending、sending 也算（R18 的保守口径） */
 const COUNTED: ReadonlySet<Status> = new Set<Status>(['accepted', 'unknown', 'pending', 'sending']);
 
-const liveRow = (row: Row): boolean => ledger.owns(row.owner, row.ledger);
+// 渠道停机后停止出站派发；此策略单独判断，owns 仅负责归属。
+const liveRow = (row: Row): boolean => row.owner.state === 'serving' && !row.owner.cancel.aborted && ledger.owns(row.owner, row.ledger);
 
 function add(row: Row): void {
   const list = ledger.get().bySession.get(row.sessionId);
@@ -839,7 +840,7 @@ export async function commitOutbound(intents: readonly OutboundIntent[]): Promis
     });
     if (outcome === 'cancelled') return 'deferred';
   }
-  if (!ledger.owns(rt, state)) return 'deferred';
+  if (rt.state !== 'serving' || rt.cancel.aborted || !ledger.owns(rt, state)) return 'deferred';
   return rows.every((r) => r.commit === 'committed') ? 'committed' : 'timeout';
 }
 
@@ -1211,9 +1212,9 @@ async function markFailedInDb(
   const state = ledger.get(rt);
   const delays = inboxId === null ? [RECEIPT_RETRY_MS] : RECEIPT_INBOX_RETRY_MS;
   for (let i = 0; ; i++) {
-    if (!ledger.owns(rt, state)) return;
+    if (rt.state !== 'serving' || rt.cancel.aborted || !ledger.owns(rt, state)) return;
     const r = await markOutboundFailedInDb(channelMsgid, failType, inboxId, full);
-    if (!ledger.owns(rt, state)) return;
+    if (rt.state !== 'serving' || rt.cancel.aborted || !ledger.owns(rt, state)) return;
     if (r.ok) {
       if (explainHit && r.sessionId) explain(r.sessionId, failType);
       return;
@@ -1296,7 +1297,7 @@ async function receipt(channelMsgid: string, failType: number, inboxId: string |
     return;
   }
   if (waitFor !== null && getSession(waitFor)) await flushSession(waitFor, { timeoutMs: 5000 }).catch(() => undefined);
-  if (!ledger.owns(rt, state)) return;
+  if (rt.state !== 'serving' || rt.cancel.aborted || !ledger.owns(rt, state)) return;
   await markFailedInDb(channelMsgid, failType, explainHit, inboxId, full);
 }
 

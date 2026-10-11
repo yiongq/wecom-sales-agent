@@ -16,10 +16,19 @@ export type TenantKind = 'standard' | 'sandbox';
 /** 第 18 步在关闭屏障中使用；登记到完成为止，不能提前摘掉。 */
 export class InflightRegistry {
   private readonly entries = new Set<Promise<unknown>>();
-  track<T>(work: Promise<T>): Promise<T> {
-    this.entries.add(work);
-    void work.finally(() => this.entries.delete(work)).catch(() => undefined);
-    return work;
+  private sealed = false;
+  seal(): void {
+    this.sealed = true;
+  }
+  track<T>(work: Promise<T> | (() => Promise<T>), maintenance = false): Promise<T> {
+    if (this.sealed && !maintenance) {
+      if (typeof work !== 'function') void work.catch(() => undefined);
+      return Promise.reject(new Error('tenant_closing'));
+    }
+    const pending = typeof work === 'function' ? work() : work;
+    this.entries.add(pending);
+    void pending.finally(() => this.entries.delete(pending)).catch(() => undefined);
+    return pending;
   }
   get size(): number {
     return this.entries.size;
@@ -152,6 +161,10 @@ class Runtime implements TenantRuntime {
   state: TenantRuntime['state'] = 'serving';
   private readonly controller = new AbortController();
   readonly cancel = this.controller.signal;
+  abort(): void {
+    this.inflight.seal();
+    this.controller.abort(new Error('tenant_closing'));
+  }
   readonly inflight = new InflightRegistry();
   readonly config = createTenantConfig();
   pack!: PackBinding;
@@ -181,6 +194,10 @@ class Runtime implements TenantRuntime {
 }
 export function createTenantRuntime(opts: RuntimeOptions): TenantRuntime {
   return new Runtime({ ...opts });
+}
+/** R12 取消只发信号；登记的 promise 仍须真正落定。 */
+export function cancelTenantRuntime(rt: TenantRuntime): void {
+  if (rt instanceof Runtime) rt.abort();
 }
 /** 停机与删除证明不得为了检查存储而惰性装载文件。 */
 export function tenantStoreIfLoaded(rt: TenantRuntime): TenantStore | undefined {

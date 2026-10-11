@@ -1,5 +1,5 @@
 import { assertSandboxRunning } from '../tenancy/sandbox/lifecycle.js';
-import { withoutTenantScope } from '../tenancy/runtime.js';
+import { runtimeOf, scopedRuntime, withoutTenantScope } from '../tenancy/runtime.js';
 // 数据库连接、租户上下文与租户锁（docs/architecture/01-pg-config-console/spec.md「数据库 · withTenant」）。
 // 全仓只有 src/db/** 能 import pg / drizzle-orm / PGlite；租户 GUC 的名字也只出现在本文件和迁移 SQL 里（lint 守着）。
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -41,6 +41,8 @@ export function queryCount(): number {
 export interface DbConn {
   db: Db;
   release(destroy: boolean): Promise<void>;
+  /** 丢锁时立即断开当前连接，让 PostgreSQL 回滚正在执行的事务。 */
+  abort?(): void;
 }
 interface Driver {
   acquire(): Promise<DbConn>;
@@ -131,9 +133,16 @@ export async function openDb(url: string, opts: { max?: number } = {}): Promise<
         conn = drizzle(client, { schema, logger: countingLogger });
         perClient.set(client, conn);
       }
+      let released = false;
+      const release = (destroy: boolean): void => {
+        if (released) return;
+        released = true;
+        client.release(destroy);
+      };
       return {
         db: conn,
-        release: async (destroy) => client.release(destroy),
+        release: async (destroy) => release(destroy),
+        abort: () => release(true),
       };
     },
   });
@@ -217,6 +226,10 @@ export function withSandboxEpoch<T>(db: Db, epoch: string, fn: (tx: Tx) => Promi
 const tenantStore = new AsyncLocalStorage<TenantCtx>();
 
 export interface WithTenantOpts {
+  /** 运维锁丢失时中断事务。 */
+  signal?: AbortSignal;
+  /** R12 自己的 expire / usage flush / purge，不属于新业务事务。 */
+  sandboxMaintenance?: boolean;
   isolation?: 'read committed' | 'repeatable read';
   readOnly?: boolean;
   /**
@@ -232,14 +245,19 @@ export interface WithTenantOpts {
  * 仓储与审计函数。在 withTenant 里再嵌套 withTenant 会抛错，不管租户是否相同。
  */
 export async function withTenant<T>(db: Db, ctx: TenantCtx, fn: (tx: Tx) => Promise<T>, opts: WithTenantOpts = {}): Promise<T> {
-  return tenantTransaction(
-    db,
-    async (tx) => {
-      await tx.execute(sql`select set_config('app.tenant_id', ${ctx.tenantId}, true)`);
-      return tenantStore.run(ctx, () => fn(tx));
-    },
-    opts,
-  );
+  const scoped = scopedRuntime();
+  const rt = scoped?.id === ctx.tenantId ? scoped : runtimeOf(ctx.tenantId);
+  // 从借连接之前登记，直到 COMMIT / ROLLBACK 和归还连接完成；abort 不摘登记。
+  const work = () =>
+    tenantTransaction(
+      db,
+      async (tx) => {
+        await tx.execute(sql`select set_config('app.tenant_id', ${ctx.tenantId}, true)`);
+        return tenantStore.run(ctx, () => fn(tx));
+      },
+      opts,
+    );
+  return rt?.kind === 'sandbox' ? rt.inflight.track(work, opts.sandboxMaintenance) : work();
 }
 
 /** 开通与复制共用一个事务；创建函数返回后才建立新租户的 GUC 与异步上下文（05 R9）。 */
@@ -291,9 +309,13 @@ async function tenantTransaction<T>(db: Db, fn: (tx: Tx) => Promise<T>, opts: Wi
       ? { isolationLevel: opts.isolation, accessMode: opts.readOnly ? ('read only' as const) : undefined }
       : undefined;
   assertSandboxRunning();
+  opts.signal?.throwIfAborted();
   const conn = await driver.acquire();
   let leaked = false;
+  const abort = () => conn.abort?.();
+  opts.signal?.addEventListener('abort', abort, { once: true });
   try {
+    opts.signal?.throwIfAborted();
     assertSandboxRunning();
     return await conn.db.transaction(async (tx) => {
       // SET LOCAL 只管本事务，提交或回滚后回到角色的默认值，连接归还时不留痕
@@ -308,11 +330,13 @@ async function tenantTransaction<T>(db: Db, fn: (tx: Tx) => Promise<T>, opts: Wi
         throw new Error('这条连接上有会话级的 app.tenant_id（有人在事务外 SET 过），已销毁这条连接');
       }
       const result = await fn(tx);
+      opts.signal?.throwIfAborted();
       assertSandboxRunning();
       return result;
     }, config);
   } finally {
-    await conn.release(leaked);
+    opts.signal?.removeEventListener('abort', abort);
+    await conn.release(leaked || opts.signal?.aborted === true);
   }
 }
 

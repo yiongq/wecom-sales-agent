@@ -71,7 +71,7 @@ export async function readMetricsView(ctx: TenantCtx, days: number, now: number)
   const keep = await cached(retention, ctx.tenantId, now, () =>
     withTenant(db, ctx, (tx) => readTraceRetentionDays(tx, ctx.tenantId), { readOnly: true }),
   );
-  if (!metrics.owns(rt, state)) throw new Error('tenant_closing');
+  if (rt.cancel.aborted || !metrics.owns(rt, state)) throw new Error('tenant_closing');
   const effective = Math.min(days, keep);
   return cached(views, `${ctx.tenantId}|${effective}`, now, () => compute(ctx, effective, now));
 }

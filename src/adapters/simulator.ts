@@ -1,4 +1,5 @@
 import { scopedState } from '../tenancy/scoped-state.js';
+import { currentRuntime } from '../tenancy/runtime.js';
 import { registerTenantState } from '../tenancy/state.js';
 // 模拟器渠道：网页聊天经 SSE 收服务端推送。
 // server.ts 在 /api/stream/:sessionId 建立连接时调 subscribe 注册下发函数。
@@ -23,6 +24,10 @@ const state = tenantState.get;
 registerTenantState({ name: 'simulator.clients', ...tenantState.registration('clients') });
 
 type Send = ((text: string) => void) & { close?: () => void };
+export function closeSimulatorStreams(): void {
+  const owner = tenantState.peek(currentRuntime());
+  if (owner) for (const set of owner.clients.values()) for (const send of set) send.close?.();
+}
 
 /** sessionId → 该会话所有在线 SSE 连接的下发函数（同一会话可开多个标签页） */
 

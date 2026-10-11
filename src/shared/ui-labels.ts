@@ -88,6 +88,7 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'auth.logout': { label: '退出登录', group: 'account', icon: 'log-out', login: true },
   'config.import': { label: '导入初始配置', group: 'platform', icon: 'download' },
   'sandbox.create': { label: '开始体验', group: 'platform', icon: 'plus' },
+  'sandbox.end': { label: '结束体验', group: 'platform', icon: 'log-out' },
   'tenant.brand_set': { label: '设置企业信息', group: 'platform', icon: 'building' },
   'tenant.brand_clear': { label: '清除企业信息', group: 'platform', icon: 'building' },
   'platform.tenant_create': { label: '建租户', group: 'platform', icon: 'building' },
