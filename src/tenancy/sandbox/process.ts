@@ -4,6 +4,7 @@ import { serveStatic } from '@hono/node-server/serve-static';
 import { consolePages } from '../../console-api/host.js';
 import { getCookie } from 'hono/cookie';
 import { isIP } from 'node:net';
+import { readFile } from 'node:fs/promises';
 import { clientKey, isCrossSite } from '../../http-guards.js';
 import { claimSessionLookup } from '../../auth/session.js';
 import { requestLogContext } from '../../log.js';
@@ -53,6 +54,7 @@ import { assertSandboxRunning, sandboxStopped, stopSandboxProcess } from './life
 import { resolveRole, sandboxFlags } from './role.js';
 import { loadSandboxRuntime } from './load.js';
 import { drainSandboxProvisioning, provisionSandbox, SandboxProvisionError, type ProvisionedSandbox } from './provision.js';
+import { sandboxPage, sandboxTryLinks } from './pages.js';
 
 export class SandboxProcess {
   private deps: ConfigDeps | null = null;
@@ -205,6 +207,7 @@ export class SandboxProcess {
 /** 沙箱边界在共用路由之前运行；选择结果沿 Hono Context 传给 console 与公开页面。 */
 export function sandboxApp(process: Pick<SandboxProcess, 'health' | 'resolve' | 'provision' | 'end'>, host: string, routes?: Hono) {
   const app = new Hono();
+  const publicBaseUrl = globalThis.process.env.PUBLIC_BASE_URL;
   app.use('/*', requestLogContext);
   app.use('/*', async (c, next) => {
     if (sandboxStopped()) return c.json({ error: 'sandbox_process_stopped' }, 503);
@@ -212,9 +215,24 @@ export function sandboxApp(process: Pick<SandboxProcess, 'health' | 'resolve' | 
     if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method) && isCrossSite(c)) return c.json({ error: 'cross_site' }, 403);
     return next();
   });
+  app.use('/*', async (c, next) => {
+    await next();
+    // 包住共用路由：品牌、租户存储键与分享头部全部替换之后再算脚本 hash。
+    if (
+      !/^\/(?:try|(?:chat|pay|proposal|try)\.html|pay\/[^/]+|proposal\/.*)$/i.test(c.req.path) ||
+      !c.res.headers.get('content-type')?.startsWith('text/html')
+    )
+      return;
+    const { html, csp } = sandboxPage(await c.res.text());
+    const headers = new Headers(c.res.headers);
+    headers.set('Content-Security-Policy', csp);
+    headers.delete('Content-Length');
+    c.res = new Response(html, { status: c.res.status, headers });
+  });
   app.get('/healthz', async (c) => c.json(await process.health()));
   app.use('/console/assets/*', async (c) => consolePages.fetch(c.req.raw));
   app.get('/share-cover.png', serveStatic({ root: './public' }));
+  app.get('/sandbox-ui.js', serveStatic({ root: './public' }));
   app.get('/web.css', serveStatic({ root: './public' }));
   app.get('/web.js', serveStatic({ root: './public' }));
   app.use('/*', async (c, next) => {
@@ -247,10 +265,8 @@ export function sandboxApp(process: Pick<SandboxProcess, 'health' | 'resolve' | 
     setSandboxSession(c, session);
     return withTenantScope(session.runtime, next);
   });
-  // 第 16 步替换为完整开通页；GET 永远不建租户。
-  app.get('/try', (c) =>
-    c.html('<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>体验工作台</title><body>体验工作台</body></html>'),
-  );
+  // GET 永远不建租户；备用链接只来自部署配置，不读取请求的 Host / 转发头。
+  app.get('/try', async (c) => c.html(sandboxTryLinks(await readFile('public/try.html', 'utf8'), publicBaseUrl)));
   app.post('/api/sandbox', async (c) => {
     if (!/^application\/json\s*(?:;|$)/i.test(c.req.header('content-type') ?? '')) return c.json({ error: 'unsupported_media_type' }, 415);
     const session = sandboxSessionOf(c);
