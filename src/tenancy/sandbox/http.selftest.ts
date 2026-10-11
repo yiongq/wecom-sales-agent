@@ -32,6 +32,7 @@ import {
 import { dropTenantState } from '../state.js';
 import { SandboxProcess, sandboxApp } from './process.js';
 import { provisionSandbox } from './provision.js';
+import { __sandboxLimitsTest } from './limits.js';
 import { resolveSandboxSession, sandboxCookie } from './session.js';
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'sandbox-http-'));
@@ -61,6 +62,7 @@ async function cleanup(): Promise<void> {
 
 async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   __authTest.reset();
+  __sandboxLimitsTest.resetProvisioned();
   configureTenancy({ role: 'sandbox', standardCount: 0 });
   const [template] = await q<{ id: string }>("select id from tenants where slug='template'");
   const host = createTenantRuntime({ id: template!.id, slug: 'template', isHost: true });

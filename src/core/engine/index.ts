@@ -31,6 +31,7 @@ import type {
 } from '../pack-api.js';
 import { answerIdentity as coreAnswerIdentity } from '../guards/text.js';
 import { tryReserveVisitorLLM } from '../../budget.js';
+import { BudgetExhausted } from '../../llm-gate.js';
 import { numEnv, todayIso } from '../../env.js';
 import { profile } from '../../profile.js';
 import { configMode, currentSop, pinCatalogForTurn, currentPack, fileSopPath, renderFileSop } from '../../config/source.js';
@@ -648,12 +649,13 @@ async function callModel(state: TurnState, turnContext: TurnContext, runTool: Re
   const turn = turnPrefix();
   // 公开链接会被陌生人（和脚本）随便点，网页访客的真实 LLM 轮次有日预算上限。
   // 超额后降级到离线脚本回复——演示流程照样走得完，只是话术固定；
-  // 企微渠道是真实客户，永远不降级。
-  const visitor = channel === 'simulator';
+  // standard 的企微客户照旧不降级；沙箱所有渠道在尝试层预算拒绝后用同一个 forceMock。
+  const sandbox = currentRuntime().kind === 'sandbox';
+  const visitor = !sandbox && channel === 'simulator';
   // 「查额度」和「记一笔」必须是同一个同步动作：此前是 check-then-act，
   // 上千个并发请求会在第一个 chat() 返回前全部读到同一个未超限的计数，日预算整体失守。
   const reserved = visitor && tryReserveVisitorLLM(sessionId);
-  const degraded = visitor && !reserved;
+  let degraded = visitor && !reserved;
 
   // 会话状态在预取之前拼：预取的结果已经以工具消息的形式给了模型，不必在状态里再列一遍。
   // 三样齐全时附一句「这一轮报价」（见 quoteTimingNote）
@@ -677,27 +679,37 @@ async function callModel(state: TurnState, turnContext: TurnContext, runTool: Re
   const prefetchTimes = prefetched?.timings ?? [];
   const modelStart = Date.now();
   notePrefix(turn.sopVersion, turn.prefixHash());
-  const raw = await chat(
-    {
-      system: turn.system,
-      brand: state.binding.brand,
-      contextNote,
-      prefetch,
-      messages: history,
-      tools: runtime.tools.map((t) => t.def),
-      forceMock: degraded,
-      sessionId,
-      executeTool: (name, args) => runTool(name, args),
-      // 命中较早缓存后的展示状态重放由工具声明提供，门面适配旧回调签名。
-      onReuse: (name, _args, result) => {
-        currentRuntime().cancel.throwIfAborted();
-        return runtime.tools
-          .find((t) => t.def.function.name === name)
-          ?.onReuse?.(result, { session, hints: {}, text, args: _args, notes: {}, handoffDeclined: false });
+  const call = () => {
+    return chat(
+      {
+        system: turn.system,
+        brand: state.binding.brand,
+        contextNote,
+        prefetch,
+        messages: history,
+        tools: runtime.tools.map((t) => t.def),
+        forceMock: degraded,
+        sessionId,
+        executeTool: (name, args) => runTool(name, args),
+        // 命中较早缓存后的展示状态重放由工具声明提供，门面适配旧回调签名。
+        onReuse: (name, _args, result) => {
+          currentRuntime().cancel.throwIfAborted();
+          return runtime.tools
+            .find((t) => t.def.function.name === name)
+            ?.onReuse?.(result, { session, hints: {}, text, args: _args, notes: {}, handoffDeclined: false });
+        },
       },
-    },
-    { mock: runtime.mock, getToolSpec: (name) => runtime.tools.find((t) => t.def.function.name === name) },
-  );
+      { mock: runtime.mock, getToolSpec: (name) => runtime.tools.find((t) => t.def.function.name === name) },
+    );
+  };
+  let raw: string;
+  try {
+    raw = await call();
+  } catch (error) {
+    if (currentRuntime().cancel.aborted || !sandbox || !(error instanceof BudgetExhausted)) throw error;
+    degraded = true;
+    raw = await call();
+  }
   // 额度已在调用前占掉（tryReserveVisitorLLM），失败也不退还：token 是真花出去了
   const modelMs = Date.now() - modelStart;
   noteDraft(raw);

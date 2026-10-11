@@ -102,6 +102,8 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   async function box() {
     const b = await provisionSandbox({
       deps,
+      // 故障套件反复开通，不让第 19 步的小时/IP 准入上限截断删除验收。
+      env: { SANDBOX_PER_HOUR: '100', SANDBOX_PER_IP_DAY: '100' },
       templateSlug: hostRt.slug,
       host: 'sandbox.example.invalid',
       epoch: '0',

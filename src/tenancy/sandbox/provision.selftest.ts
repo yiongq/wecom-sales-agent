@@ -134,7 +134,9 @@ async function suite(
     return out;
   };
   const before = await snapshot();
+  // 本套件验原子开通与存活上限；小时 / IP 限额由限额套件独立验。
   const base: ProvisionOptions = {
+    env: { SANDBOX_PER_HOUR: '100', SANDBOX_PER_IP_DAY: '100' },
     deps,
     templateSlug: 'template',
     host: 'sandbox.example.invalid',
