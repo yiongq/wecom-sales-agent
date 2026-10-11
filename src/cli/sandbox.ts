@@ -26,6 +26,9 @@ export async function runSandbox(
     return 1;
   }
   let lock: ProcessTenantLock | null = null;
+  const controller = new AbortController();
+  const lost = () => controller.abort(new Error('sandbox_lock_lost'));
+  const signal = controller.signal;
   try {
     // purge 的第一步是进程锁：拿不到时不 expire、不查询或删除任何沙箱。
     if (command === 'purge') {
@@ -34,10 +37,14 @@ export async function runSandbox(
         console.error('[sandbox] sandbox_already_running');
         return 3;
       }
+      lock.onLost(lost);
     }
+    signal.throwIfAborted();
     const conn = await deps.connect();
     try {
+      signal.throwIfAborted();
       const all = await listSandboxes(conn.db);
+      signal.throwIfAborted();
       const rows = command === 'end' && target !== '--all' ? all.filter((r) => r.slug === target) : all;
       if (command === 'end' && target !== '--all' && !rows.length) {
         console.error('[sandbox] sandbox_not_found');
@@ -48,15 +55,20 @@ export async function runSandbox(
         return 0;
       }
       for (const row of rows) {
+        signal.throwIfAborted();
         const tenantLock = lock ? await lock.acquireTenant(row.id) : null;
         if (lock && !tenantLock) {
           console.error('[sandbox] sandbox_tenant_lock_held');
           return 3;
         }
         try {
-          await endSandbox(conn.db, row.id);
+          tenantLock?.onLost(lost);
+          signal.throwIfAborted();
+          await endSandbox(conn.db, row.id, { signal });
+          signal.throwIfAborted();
           if (command === 'purge') {
-            const result = await purgeSandbox(conn.db, row.id);
+            const result = await purgeSandbox(conn.db, row.id, { signal });
+            signal.throwIfAborted();
             console.log(
               `[sandbox] deleted ${row.slug.slice(-6)} lifetimeMs=${Math.max(0, Date.now() - new Date(row.createdAt).getTime())} turns=${result.turns} calls=${result.calls} costMilli=${result.costMilli} counts=${JSON.stringify(result.counts)}`,
             );

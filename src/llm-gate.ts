@@ -150,10 +150,10 @@ export async function gatedFetch(
   opts: GateUsage = {},
 ): Promise<GateResult> {
   const rt = currentRuntime();
-  if (rt.state !== 'serving') throw new Error('tenant_closing');
+  if (rt.cancel.aborted) throw new Error('tenant_closing');
   const signal = () => AbortSignal.any([rt.cancel, signalFactory()]);
-  const work = fetchThroughGate(url, init, signal, opts);
-  return rt.kind === 'sandbox' ? rt.inflight.track(work) : work;
+  const work = () => fetchThroughGate(url, init, signal, opts);
+  return rt.kind === 'sandbox' ? rt.inflight.track(work) : work();
 }
 
 async function fetchThroughGate(
@@ -188,7 +188,7 @@ async function fetchThroughGate(
       }
       // 预占在拿到实例名额后、每次真正发请求前；拒绝不进入重试分支。
       assertSandboxRunning();
-      if (rt.state !== 'serving') throw new Error('tenant_closing');
+      if (rt.cancel.aborted) throw new Error('tenant_closing');
       const reservation = rt.budget.reserve(usage.purpose, usage.estimateMilli);
       if (!reservation) throw new BudgetExhausted();
       let settled = false;
@@ -200,7 +200,7 @@ async function fetchThroughGate(
       };
       try {
         const res = await fetch(url, { ...init, signal });
-        if (rt.state !== 'serving') {
+        if (rt.cancel.aborted) {
           await res.body?.cancel().catch(() => {});
           throw new Error('tenant_closing');
         }

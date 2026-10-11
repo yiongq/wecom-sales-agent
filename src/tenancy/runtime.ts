@@ -16,10 +16,19 @@ export type TenantKind = 'standard' | 'sandbox';
 /** 第 18 步在关闭屏障中使用；登记到完成为止，不能提前摘掉。 */
 export class InflightRegistry {
   private readonly entries = new Set<Promise<unknown>>();
-  track<T>(work: Promise<T>): Promise<T> {
-    this.entries.add(work);
-    void work.finally(() => this.entries.delete(work)).catch(() => undefined);
-    return work;
+  private sealed = false;
+  seal(): void {
+    this.sealed = true;
+  }
+  track<T>(work: Promise<T> | (() => Promise<T>), maintenance = false): Promise<T> {
+    if (this.sealed && !maintenance) {
+      if (typeof work !== 'function') void work.catch(() => undefined);
+      return Promise.reject(new Error('tenant_closing'));
+    }
+    const pending = typeof work === 'function' ? work() : work;
+    this.entries.add(pending);
+    void pending.finally(() => this.entries.delete(pending)).catch(() => undefined);
+    return pending;
   }
   get size(): number {
     return this.entries.size;
@@ -153,6 +162,7 @@ class Runtime implements TenantRuntime {
   private readonly controller = new AbortController();
   readonly cancel = this.controller.signal;
   abort(): void {
+    this.inflight.seal();
     this.controller.abort(new Error('tenant_closing'));
   }
   readonly inflight = new InflightRegistry();

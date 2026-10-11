@@ -10,7 +10,6 @@ import { alert } from '../../ops/alert.js';
 import {
   cancelTenantRuntime,
   runtimeOf,
-  tenantRuntimes,
   tenantStoreIfLoaded,
   unregisterRuntime,
   withTenantScope,
@@ -66,8 +65,13 @@ export class SandboxReaper {
   touch(rt: TenantRuntime, now = Date.now()): void {
     if (rt.kind === 'sandbox' && rt.state === 'serving') this.lastAccess.set(rt.id, now);
   }
-  start(): void {
-    for (const rt of tenantRuntimes()) this.touch(rt);
+  async start(): Promise<void> {
+    const rows = await listSandboxes(this.deps.db);
+    assertSandboxRunning();
+    for (const row of rows) {
+      if (!this.lastAccess.has(row.id)) this.lastAccess.set(row.id, new Date(row.lastSeenAt).getTime());
+    }
+    this.stop();
     this.timer = withoutTenantScope(() =>
       setInterval(() => {
         void this.tick().catch(() => console.error('[sandbox] sandbox_reaper_failed'));
@@ -90,7 +94,7 @@ export class SandboxReaper {
     // expire 的行锁可能挂住：closing 在借连接之前已生效，事务也纳入屏障。
     if (this.endings.has(id)) return this.endings.get(id)!;
     const work = withoutTenantScope(() => endSandbox(this.deps.db, id));
-    const pending = (rt ? rt.inflight.track(work) : work).finally(() => {
+    const pending = (rt ? rt.inflight.track(work, true) : work).finally(() => {
       this.endings.delete(id);
     });
     this.endings.set(id, pending);
@@ -112,9 +116,9 @@ export class SandboxReaper {
       if (row.overdue) withoutTenantScope(() => alert('sandbox_purge', '有沙箱到期超过一小时仍未删除', { instance: true }));
       const rt = runtimeOf(row.id);
       if (!row.expired && rt?.state === 'serving') {
-        const seen = this.lastAccess.get(row.id);
-        if (seen === undefined) this.touch(rt);
-        if (seen === undefined || Date.now() - seen < this.deps.idleMs) continue;
+        const seen = this.lastAccess.get(row.id) ?? new Date(row.lastSeenAt).getTime();
+        this.lastAccess.set(row.id, seen);
+        if (Date.now() - seen < this.deps.idleMs) continue;
         void this.end(row.id).catch(() => {});
       } else if (!row.expired) {
         if (rt?.state !== 'closing') continue;

@@ -255,16 +255,20 @@ async function maybeAskConsent(sessionId: string, text: string): Promise<void> {
  * 同意菜单在同一段串行链里、这一轮的回复之后处理（R23）：失败只打日志，不影响这一轮已经算出的回复
  */
 export function handleMessage(sessionId: string, text: string, channel: string, opts: HandleOpts = {}): Promise<AgentReply> {
-  return serialize(sessionId, async () => {
-    const reply = await pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts)));
-    if (currentRuntime().state !== 'serving') return reply;
-    try {
-      await maybeAskConsent(sessionId, text);
-    } catch (e) {
-      console.error(`[engine] 同意菜单处理异常（会话 ${convLabel(sessionId)}）:`, e instanceof Error ? e.message : e);
-    }
-    return reply;
-  });
+  const rt = currentRuntime();
+  const work = () =>
+    serialize(sessionId, async () => {
+      rt.cancel.throwIfAborted();
+      const reply = await pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts)));
+      if (currentRuntime().cancel.aborted) return reply;
+      try {
+        await maybeAskConsent(sessionId, text);
+      } catch (e) {
+        console.error(`[engine] 同意菜单处理异常（会话 ${convLabel(sessionId)}）:`, e instanceof Error ? e.message : e);
+      }
+      return reply;
+    });
+  return rt.kind === 'sandbox' ? rt.inflight.track(work) : work();
 }
 
 async function handleMessageInner(sessionId: string, text: string, channel: string, opts: HandleOpts): Promise<AgentReply> {
@@ -295,10 +299,10 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   try {
     model = await callModel(state, turnContext, tools.runTool);
   } catch (error) {
-    if (currentRuntime().state !== 'serving') return state.unsentTakenOver();
+    if (currentRuntime().cancel.aborted) return state.unsentTakenOver();
     throw error;
   }
-  if (currentRuntime().state !== 'serving') return state.unsentTakenOver();
+  if (currentRuntime().cancel.aborted) return state.unsentTakenOver();
   return finishTurn(state, model, tools, stageAtStart, ordersBefore);
 }
 
@@ -335,9 +339,9 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
   // 接手代次（02 spec「接手、人工回复与交还」、不变量 28）：这一轮开始时记下，模型返回之后与 AI 回复 push 进会话之前各同步比一次，
   // 变了（这一轮里有人接手，含接手之后又交还）就不发，记一条「本轮未发送（顾问已接手）」
   const turnGen = takeoverGen(sessionId);
-  const takenOver = (): boolean => currentRuntime().state !== 'serving' || takeoverGen(sessionId) !== turnGen;
+  const takenOver = (): boolean => currentRuntime().cancel.aborted || takeoverGen(sessionId) !== turnGen;
   const unsentTakenOver = (): AgentReply => {
-    if (currentRuntime().state !== 'serving') return { text: '', stage: session.stage, silent: true };
+    if (currentRuntime().cancel.aborted) return { text: '', stage: session.stage, silent: true };
     session.messages.push({ role: 'system', content: TAKEN_OVER_NOTE, at: Date.now() });
     saveSession(session);
     return done('silent', { text: '', stage: session.stage, ...(session.handedOver ? { handoff: true } : {}), silent: true });
@@ -568,15 +572,20 @@ function turnTools(state: TurnState) {
         ...spec,
         // 完整结果在注册表记结果之前补上提醒，afterTool 只补会话状态。
         execute: async (args: unknown, ctx: TurnToolContext) => {
+          ctx.cancel?.throwIfAborted();
           ctx.hints = runtime.engineHooks.hintsFor(def.function.name, ctx);
-          return runtime.engineHooks.withNotes(await spec.execute(args, ctx), ctx.notes);
+          const result = await spec.execute(args, ctx);
+          ctx.cancel?.throwIfAborted();
+          return runtime.engineHooks.withNotes(result, ctx.notes);
         },
       };
     }),
     runtime,
   );
   const runTool = (name: string, modelArgs: Record<string, unknown>, meta?: ToolCallMeta): Promise<string> => {
-    const ctx: TurnToolContext = { session, text, hints: {}, args: modelArgs, notes: {}, handoffDeclined: false };
+    const cancel = currentRuntime().cancel;
+    if (cancel.aborted) return Promise.reject(cancel.reason);
+    const ctx: TurnToolContext = { session, text, hints: {}, args: modelArgs, notes: {}, handoffDeclined: false, cancel };
     let call: ToolCall | undefined;
     const running = toolRegistry.execute(name, modelArgs, ctx, {
       recordCall(toolName, actualArgs) {
@@ -678,10 +687,12 @@ async function callModel(state: TurnState, turnContext: TurnContext, runTool: Re
       sessionId,
       executeTool: (name, args) => runTool(name, args),
       // 命中较早缓存后的展示状态重放由工具声明提供，门面适配旧回调签名。
-      onReuse: (name, _args, result) =>
-        runtime.tools
+      onReuse: (name, _args, result) => {
+        currentRuntime().cancel.throwIfAborted();
+        return runtime.tools
           .find((t) => t.def.function.name === name)
-          ?.onReuse?.(result, { session, hints: {}, text, args: _args, notes: {}, handoffDeclined: false }),
+          ?.onReuse?.(result, { session, hints: {}, text, args: _args, notes: {}, handoffDeclined: false });
+      },
     },
     { mock: runtime.mock, getToolSpec: (name) => runtime.tools.find((t) => t.def.function.name === name) },
   );

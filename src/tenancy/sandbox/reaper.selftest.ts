@@ -14,8 +14,10 @@ import { currentCatalog } from '../../config/source.js';
 import { updateCatalogItem } from '../../config/catalog.js';
 import { getDraftReply } from '../../core/insight.js';
 import { handleMessage } from '../../core/engine/index.js';
+import { packSources } from '../../core/engine/sources.js';
+import { createTravelRuntime } from '../../packs/travel/runtime.js';
 import { buildIndex, indexReady } from '../../core/retrieval.js';
-import { listSessions, saveSession } from '../../store.js';
+import { getOrCreateSession, listSessions, saveSession } from '../../store.js';
 import { recordUsage } from '../../usage.js';
 import { gatedFetch, gateStatus } from '../../llm-gate.js';
 import { startUsageDaily, __usageDailyTest } from '../../trace/usage-daily.js';
@@ -28,6 +30,7 @@ import { onTurnEnd } from '../../trace/recorder.js';
 import { runSandbox } from '../../cli/sandbox.js';
 import {
   configureTenancy,
+  cancelTenantRuntime,
   createTenantRuntime,
   runtimeOf,
   tenantRuntimes,
@@ -35,7 +38,7 @@ import {
   unregisterRuntime,
   withTenantScope,
 } from '../runtime.js';
-import { dropTenantState, registerTenantState, tenantKeys } from '../state.js';
+import { dropTenantState, registerTenantState, resetTenantState, tenantKeys } from '../state.js';
 import { SandboxReaper, settleWithin } from './reaper.js';
 import { provisionSandbox } from './provision.js';
 import { resolveSandboxSession } from './session.js';
@@ -194,12 +197,26 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   await reaper.tick();
   check(blocked.rt.cancel.aborted && blocked.rt.inflight.size === 1 && blocked.closed() === 0, '② 超时不摘登记、不关后端');
   check(runtimeOf(blocked.rt.id) === blocked.rt, '② 超时不摘运行时');
+  let entered = false;
+  await assert.rejects(
+    withTenant(db, systemContext(blocked.rt.id), async () => {
+      entered = true;
+    }),
+    /tenant_closing/,
+  );
+  await assert.rejects(
+    blocked.rt.inflight.track(async () => {
+      entered = true;
+    }),
+    /tenant_closing/,
+  );
+  check(!entered && blocked.rt.inflight.size === 1, '② 封口后新事务和新任务不执行、不登记');
   gate.reject(new Error('rolled_back'));
   await blocked.rt.inflight.drain();
   await reaper.tick();
   await zero(q, blocked.rt.id, blocked.slug);
 
-  // closing 与取消信号之间的空窗：排队请求拿到名额后也不得发起 fetch。
+  // ② 后排队请求拿到名额也不得发起 fetch；normal closing 单独覆盖。
   const cap = gateStatus().maxInflight;
   if (cap > 0) {
     const holder = await box();
@@ -229,6 +246,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
       check(gateStatus().waiting === 1, '请求已在实例闸排队');
       await reaper.end(queued.rt.id); // 尚未 tick，因此 cancel 还没有触发。
       check(!queued.rt.cancel.aborted, 'closing 在 cancel 之前当刻生效');
+      cancelTenantRuntime(queued.rt);
       for (const response of responses) response.resolve(new Response('{}'));
       const completed = await Promise.all(requests);
       await assert.rejects(waiting, /tenant_closing/);
@@ -247,6 +265,55 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
       globalThis.fetch = beforeFetch;
     }
   }
+
+  // 搜索仍在 await 时进入②，真实旅游工具不落地，后续 mock 报价也不执行。
+  const searching = await box();
+  const searchStarted = deferred<void>();
+  const searchResult = deferred<{ id: string; score: number }[] | null>();
+  const { runtime: searchPack } = withTenantScope(searching.rt, () =>
+    createTravelRuntime({
+      ...packSources(),
+      indexReady: () => true,
+      semanticRecall: async () => {
+        searchStarted.resolve();
+        return searchResult.promise;
+      },
+    }),
+  );
+  searchPack.prefetch = async (ctx) => {
+    try {
+      await ctx.callTool('search_routes', { query: ctx.text, destination: '三亚', maxBudgetPerPerson: 20_000 });
+    } catch {
+      /* mock 仍将尝试后续工具 */
+    }
+    return { calls: [], timings: [] };
+  };
+  let quoteRejected = false;
+  searchPack.mock = {
+    chat: async (opts) => {
+      try {
+        await opts.executeTool('create_quote', { routeId: 'r-sanya', travelers: 2 });
+      } catch {
+        quoteRejected = true;
+      }
+      return '取消后的 mock 回复';
+    },
+  };
+  searching.rt.pack = { ...searching.rt.pack, runtime: searchPack };
+  const searchSession = withTenantScope(searching.rt, () => getOrCreateSession('sbx-search-flight', 'simulator'));
+  const searchTurn = withTenantScope(searching.rt, () =>
+    handleMessage(searchSession.id, '推荐一个三亚的行程，2个人，预算每人2万', 'simulator'),
+  );
+  check(await settleWithin(searchStarted.promise, 2000), '搜索请求已在飞');
+  const searchBefore = JSON.stringify(searchSession);
+  await reaper.end(searching.rt.id);
+  await reaper.tick();
+  check(searching.rt.cancel.aborted && searching.closed() === 0, '搜索在飞被整轮屏障保留');
+  searchResult.resolve(null);
+  check((await searchTurn).silent && JSON.stringify(searchSession) === searchBefore, '搜索返回后预算、已看线路、报价及消息均不改');
+  check(quoteRejected, '搜索取消后 mock 继续请求 create_quote 也被拒绝');
+  await reaper.tick();
+  await zero(q, searching.rt.id, searching.slug);
 
   // 模型忽略 abort，30 秒后才返回；草稿缓存不能采纳迟到结果。
   const late = await box();
@@ -341,7 +408,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     startUsageDaily(async (deltas) => {
       order.push('usage');
       if (writerFails) throw new Error('write_failed');
-      await withTenant(db, systemContext(usage.rt.id), (tx) => addUsage(tx, deltas));
+      await withTenant(db, systemContext(usage.rt.id), (tx) => addUsage(tx, deltas), { sandboxMaintenance: true });
     }),
   );
   const baseClose = usage.backend.close.bind(usage.backend);
@@ -471,7 +538,116 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   await zero(q, idle.rt.id, idle.slug);
   check(survivor.rt.state === 'serving', '活动租户不回收');
 
+  // 新 reaper 没有内存时间；旧访问与最近 resolve 的时间均来自 auth_sessions。
+  const idleRestart = await box();
+  const activeRestart = await box();
+  await q("update auth_sessions set last_seen_at=now()-interval '121 minutes' where tenant_id=$1 or tenant_id=$2", [
+    idleRestart.rt.id,
+    activeRestart.rt.id,
+  ]);
+  check((await resolveSandboxSession(db, activeRestart.token)).status === 'ok', 'resolve 持久更新访问时间');
+  const restartedIdle = new SandboxReaper({ db, acquireTenant: acquire, idleMs: 120 * 60_000, barrierMs: 15 });
+  await restartedIdle.start();
+  await restartedIdle.tick();
+  await zero(q, idleRestart.rt.id, idleRestart.slug);
+  check(activeRestart.rt.state === 'serving', '重启不清零闲置时间，刚访问的继续服务');
+  restartedIdle.stop();
+  await expire(activeRestart);
+  await reaper.tick();
+  await zero(q, activeRestart.rt.id, activeRestart.slug);
+
   if (realUrl) {
+    // 实际 SIGTERM：normal closing 不取消在途回复，提交事件与 waiter 均完成。
+    const shutdownBox = await box();
+    await withTenantScope(shutdownBox.rt, () => shutdownBox.backend.drain(Date.now() + 2000));
+    withTenantScope(shutdownBox.rt, () => shutdownBox.backend.close());
+    const shutdownUrl = new URL(realUrl);
+    shutdownUrl.searchParams.set('options', '-c role=agent_app');
+    const shutdownChild = spawn(
+      process.execPath,
+      [
+        '--import',
+        'tsx',
+        '--input-type=module',
+        '-e',
+        `
+      import './src/selftest-env.ts';
+      import { openDb } from './src/db/client.ts';
+      import { testConfigDeps, fakeLock } from './src/db/testing.ts';
+      import { listSandboxes } from './src/db/sandbox-reaper.ts';
+      import { loadSandboxRuntime } from './src/tenancy/sandbox/load.ts';
+      import { withTenantScope, cancelTenantRuntime } from './src/tenancy/runtime.ts';
+      import { onShutdown } from './src/shutdown.ts';
+      import { markConfigShuttingDown } from './src/config/source.ts';
+      import { getOrCreateSession, saveSession, flushSession, onCommitted } from './src/store.ts';
+      import { handleMessage } from './src/core/engine/index.ts';
+      process.env.SESSION_STORE='db'; process.env.LLM_MOCK='0'; process.env.LLM_API_KEY='selftest';
+      const c=await openDb(process.env.REAPER_TEST_URL);
+      const row=(await listSandboxes(c.db)).find(r=>r.id===process.env.REAPER_TEST_ID);
+      const deps=testConfigDeps(c,{tenantSlug:row.slug,usePackRuntime:true});
+      const rt=await loadSandboxRuntime(deps,row,'sandbox.example.invalid',async()=>fakeLock());
+      onShutdown(()=>{rt.state='closing'; withTenantScope(rt,markConfigShuttingDown);});
+      onShutdown(async()=>{cancelTenantRuntime(rt);await c.close();},{phase:'late'});
+      let started; const ready=new Promise(r=>{started=r;});
+      globalThis.fetch=async()=>{started();await new Promise(r=>setTimeout(r,300));return new Response(JSON.stringify({choices:[{message:{content:'请先告诉我您的出发时间。'}}],usage:{prompt_tokens:20,completion_tokens:10}}));};
+      withTenantScope(rt,()=>{
+        onCommitted(()=>console.log('COMMITTED'));
+        const s=getOrCreateSession('sbx-shutdown','simulator');
+        s.messages.push({role:'customer',content:'停机前脏消息',at:Date.now()});saveSession(s);
+        void flushSession(s.id).then(()=>console.log('WAITER'));
+        void handleMessage(s.id,'请帮我推荐行程','simulator').then(r=>console.log('REPLY '+String(!r.silent)));
+      });
+      await ready;console.log('READY');setInterval(()=>{},1000);
+    `,
+      ],
+      {
+        env: { ...process.env, APP_ROLE: 'sandbox', REAPER_TEST_URL: shutdownUrl.toString(), REAPER_TEST_ID: shutdownBox.rt.id },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      },
+    );
+    let shutdownOutput = '';
+    const ready = deferred<void>();
+    shutdownChild.stdout.on('data', (data) => {
+      shutdownOutput += String(data);
+      if (shutdownOutput.includes('READY')) ready.resolve();
+    });
+    shutdownChild.stderr.on('data', (data) => {
+      shutdownOutput += String(data);
+    });
+    const shutdownExited = new Promise<number | null>((resolve, reject) => {
+      shutdownChild.once('exit', resolve);
+      shutdownChild.once('error', reject);
+    });
+    try {
+      check(await settleWithin(ready.promise, 10_000), 'SIGTERM 子进程在途请求已启动');
+      shutdownChild.kill('SIGTERM');
+      check(await settleWithin(shutdownExited, 12_000), 'SIGTERM 子进程按 grace 退出');
+      check((await shutdownExited) === 143, '真实 SIGTERM 退出码');
+      check(
+        shutdownOutput.includes('COMMITTED') && shutdownOutput.includes('WAITER') && shutdownOutput.includes('REPLY true'),
+        'closing 后 afterCommit、waiter、AI 回复都完成',
+      );
+      check(shutdownOutput.includes('未落库会话 0'), '已提交会话不计丢弃');
+      check(
+        (await q("select 1 from messages where tenant_id=$1 and content='停机前脏消息'", [shutdownBox.rt.id])).length === 1,
+        'SIGTERM 脏消息实际落库',
+      );
+      check(
+        (await q("select 1 from messages where tenant_id=$1 and content='请先告诉我您的出发时间。'", [shutdownBox.rt.id])).length === 1,
+        'grace 内 AI 回复实际落库',
+      );
+      check(
+        (await q('select calls from usage_daily where tenant_id=$1 and calls>0', [shutdownBox.rt.id])).length > 0,
+        'grace 内完成的模型用量实际落库',
+      );
+    } finally {
+      shutdownChild.kill('SIGKILL');
+      await shutdownExited;
+    }
+    await expire(shutdownBox);
+    await reaper.tick();
+    await zero(q, shutdownBox.rt.id, shutdownBox.slug);
+
     // 被另一连接行锁挡住的真实配置事务，30 秒后仍停 ②。
     const config = await box();
     const blocker = await connectSuperQuery(realUrl);
@@ -626,6 +802,26 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   await zero(q, survivor.rt.id, survivor.slug);
   const startup = await box();
   await clean(); // 模拟重启：无运行时，未过期行仍在。
+  for (const loss of ['process', 'tenant'] as const) {
+    let subscribed = 0;
+    const losing = {
+      ...fakeLock(),
+      onLost: (fn: () => void) => {
+        subscribed++;
+        if (loss === 'process') fn();
+      },
+      acquireTenant: async () => ({
+        ...fakeLock(),
+        onLost: (fn: () => void) => {
+          subscribed++;
+          fn();
+        },
+      }),
+    };
+    check((await runSandbox(['purge', '--all'], { ...cli, lock: async () => losing })) === 1, `${loss} 锁丢失非零退出`);
+    check(subscribed === (loss === 'process' ? 1 : 2), 'CLI 订阅进程与租户锁');
+    check((await q('select id from tenants where id=$1 and expires_at>now()', [startup.rt.id])).length === 1, '丢锁不继续 expire / purge');
+  }
   const cliLock = { ...fakeLock(), acquireTenant: acquire };
   check((await runSandbox(['purge', '--all'], { ...cli, lock: async () => cliLock })) === 0, 'sandbox purge --all 到期并直接删');
   await zero(q, startup.rt.id, startup.slug);
@@ -646,6 +842,21 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     headers: { host: 'sandbox.example.invalid', cookie: `__Host-sbx=${startup.token}` },
   });
   check(deleted.status === 401, '删除后真实 HTTP 401');
+  const resetRt = createTenantRuntime({ id: 'shutdown-reset', slug: 'shutdown-reset' });
+  let resetHook = 0;
+  withTenantScope(resetRt, () =>
+    onShutdown(
+      () => {
+        resetHook++;
+      },
+      { phase: 'drain' },
+    ),
+  );
+  resetTenantState();
+  check(tenantKeys(resetRt.id)['shutdown.hooks'] === 1, '评测 reset 保留运行时停机钩子');
+  await runShutdownHooks(100);
+  check(resetHook === 1, 'reset 后停机钩子仍执行');
+  dropShutdownHooks(resetRt);
   reaper.stop();
   console.log(`SELFTEST ${realUrl ? '真实 PG' : 'PGlite'} R12 ①–⑥、结束与 idle 通过`);
 }
@@ -703,6 +914,62 @@ try {
       }
       check((await runSandbox(['list'], cli)) === 0, '真实 CLI list');
       check((await runSandbox(['end', '--all'], cli)) === 0, '真实 CLI end --all');
+      await withTenant(f.app.db, systemContext(created.tenantId), (tx) =>
+        addUsage(tx, [
+          {
+            day: '2026-10-11',
+            model: 'fixture',
+            purpose: 'chat',
+            calls: 2,
+            promptTokens: 10,
+            completionTokens: 5,
+            cachedTokens: 0,
+            reasoningTokens: 0,
+            costMilliCny: 19,
+          },
+        ]),
+      );
+      const poolBefore = await f.query('select * from sandbox_pool_daily order by day');
+      await f.query(
+        `create function selftest_cli_sleep() returns trigger language plpgsql as $$ begin perform pg_sleep(60); return old; end $$`,
+      );
+      await f.query('create trigger selftest_cli_sleep before delete on tenants for each row execute function selftest_cli_sleep()');
+      const losingPurge = runSandbox(['purge', '--all'], cli);
+      try {
+        let running = false;
+        const start = Date.now();
+        while (!running && Date.now() - start < 5000) {
+          running =
+            (
+              await f.query(
+                "select 1 from pg_stat_activity where datname=current_database() and wait_event='PgSleep' and query like '%sandbox_tenant_purge%'",
+              )
+            ).length > 0;
+          if (!running) await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        check(running, 'CLI purge 删除事务已在飞，尚未提交');
+        const [lockPid] = await f.query<{ pid: number }>(
+          "select distinct a.pid from pg_stat_activity a join pg_locks l on l.pid=a.pid where a.datname=current_database() and l.locktype='advisory' and l.granted",
+        );
+        check(lockPid, '找到 CLI 自己的锁连接');
+        await f.query('select pg_terminate_backend($1)', [lockPid!.pid]);
+        check(await settleWithin(losingPurge, 3000), '丢锁立即取消正在执行的 purge，无需等语句超时');
+        check((await losingPurge) === 1, '真实 PG 丢锁非零退出');
+        check((await f.query('select id from tenants where id=$1', [created.tenantId])).length === 1, '丢锁事务回滚，租户未删除');
+        check(
+          (await f.query('select token_hash from auth_sessions where tenant_id=$1', [created.tenantId])).length === 1,
+          '删除登录会话的操作也回滚',
+        );
+        check((await f.query('select calls from usage_daily where tenant_id=$1', [created.tenantId])).length === 1, '删除用量的操作也回滚');
+        check(
+          JSON.stringify(await f.query('select * from sandbox_pool_daily order by day')) === JSON.stringify(poolBefore),
+          '丢锁不提交池用量汇总',
+        );
+      } finally {
+        await f.query('drop trigger selftest_cli_sleep on tenants');
+        await f.query('drop function selftest_cli_sleep()');
+        await losingPurge;
+      }
       check((await runSandbox(['purge', '--all'], cli)) === 0, '真实 CLI purge --all');
       await zero(f.query, created.tenantId, 'sbx-cli-test');
     } finally {

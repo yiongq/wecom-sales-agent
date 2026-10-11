@@ -102,7 +102,6 @@ registerTenantState({
   drop: (id) => {
     for (const phase of PHASES) hooks[phase] = hooks[phase].filter((h) => h.runtime?.id !== id);
   },
-  reset: () => {
-    for (const phase of PHASES) hooks[phase] = hooks[phase].filter((h) => !h.runtime);
-  },
+  // 评测重置业务状态不能撤掉宿主的排空钩子；只在删除所属运行时时 drop。
+  reset: () => {},
 });

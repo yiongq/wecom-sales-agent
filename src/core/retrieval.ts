@@ -88,8 +88,8 @@ export function embedCfg(): { baseUrl: string; apiKey: string } {
 
 async function embed(texts: string[]): Promise<number[][] | null> {
   const rt = currentRuntime();
-  const work = readEmbedding(texts);
-  return rt.kind === 'sandbox' ? rt.inflight.track(work) : work;
+  const work = () => readEmbedding(texts);
+  return rt.kind === 'sandbox' ? rt.inflight.track(work) : work();
 }
 async function readEmbedding(texts: string[]): Promise<number[][] | null> {
   const { baseUrl, apiKey } = embedCfg();
@@ -116,12 +116,12 @@ async function readEmbedding(texts: string[]): Promise<number[][] | null> {
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
     settleUsage(d);
-    if (currentRuntime().state !== 'serving') throw new Error('tenant_closing');
+    if (currentRuntime().cancel.aborted) throw new Error('tenant_closing');
     recordUsage(EMBED_MODEL, d.usage?.prompt_tokens ?? 0, d.usage?.completion_tokens ?? 0, undefined, 0, 0, 'embedding');
     return d.data?.map((x) => x.embedding) ?? null;
   } catch (e) {
     if (e instanceof TenantScopeMissing) throw e;
-    if (currentRuntime().state !== 'serving') throw e;
+    if (currentRuntime().cancel.aborted) throw e;
     console.error('[retrieval] embedding 调用异常，本次退回关键词匹配:', e instanceof Error ? e.message : e);
     return null;
   }
@@ -336,9 +336,9 @@ export async function semanticRecall(query: string, topK = 8): Promise<{ id: str
   const rt = currentRuntime();
   const local = state();
   const index = local.index;
-  if (!index?.length || !query.trim() || rt.state !== 'serving') return null;
+  if (!index?.length || !query.trim() || rt.cancel.aborted) return null;
   const q = await rt.inflight.track(embed([query]));
-  if (rt.state !== 'serving') throw new Error('tenant_closing');
+  if (rt.cancel.aborted) throw new Error('tenant_closing');
   if (!indexes.owns(rt, local) || !q?.[0]) return null;
   return index
     .map((it) => ({ id: it.id, score: cosine(q[0], it.vec) }))

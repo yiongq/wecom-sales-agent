@@ -83,7 +83,7 @@ function daily(): DailyState {
 withoutTenantScope(() =>
   onUsage((e: UsageEvent) => {
     const rt = currentRuntime();
-    if (rt.state !== 'serving') return;
+    if (rt.state === 'closed') return;
     const state = daily();
     const { acc, writer } = state;
     // 没有写入函数（文件存储）时只留当天的：换天就把前一天的丢掉，免得长期运行的文件存储实例越攒越多

@@ -141,7 +141,7 @@ export class SandboxProcess {
       );
       console.log(`[sandbox] 已启动，装载沙箱 ${tenantRuntimes().length}`);
       this.accepting = true;
-      this.reaper.start();
+      await this.reaper.start();
       withoutTenantScope(() => onShutdown(() => this.reaper?.stop()));
     } catch (error) {
       await this.close();

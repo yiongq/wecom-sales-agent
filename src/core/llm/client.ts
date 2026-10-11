@@ -261,8 +261,8 @@ class LlmHttpError extends Error {
  */
 async function requestModel(ep: Endpoint, model: string, payload: Record<string, unknown>, signal: () => AbortSignal): Promise<Completion> {
   const rt = currentRuntime();
-  const work = readModel(ep, model, payload, signal);
-  return rt.kind === 'sandbox' ? rt.inflight.track(work) : work;
+  const work = () => readModel(ep, model, payload, signal);
+  return rt.kind === 'sandbox' ? rt.inflight.track(work) : work();
 }
 async function readModel(ep: Endpoint, model: string, payload: Record<string, unknown>, signal: () => AbortSignal): Promise<Completion> {
   const send = (forceThink: boolean) =>
@@ -303,7 +303,7 @@ async function readModel(ep: Endpoint, model: string, payload: Record<string, un
     throw e;
   }
   settleUsage(data);
-  if (currentRuntime().state !== 'serving') throw new Error('tenant_closing');
+  if (currentRuntime().cancel.aborted) throw new Error('tenant_closing');
   // 发了 disabled 却照样思考：多半是正则没收录的强制思考模型，在按默认最高档想，延迟会翻几倍。
   // 只告警不自动切：自动给老模型加 reasoning_effort 可能换来 400，那比慢更糟
   const think = thinkingParams(ep.baseUrl, model) as { thinking?: { type?: string } };

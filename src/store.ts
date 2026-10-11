@@ -332,9 +332,23 @@ async function loadSessionStore(deps: SessionStoreDeps | null): Promise<void> {
   if (currentRuntime().isHost) ensureMarker(deps);
   onShutdown(
     tenantCallback(currentRuntime(), async ({ deadline }: { deadline: number }) => {
+      if (currentRuntime().kind === 'sandbox') {
+        let timer: NodeJS.Timeout | undefined;
+        try {
+          await Promise.race([
+            currentRuntime().inflight.drain(),
+            new Promise<void>((resolve) => {
+              timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+      }
       const { undrained } = await drainStore(Math.max(0, deadline - Date.now()));
       const real = undrained.filter((id) => !isDemoClassId(id));
       if (currentRuntime().kind === 'sandbox') {
+        await flushUsageDaily();
         console.log(`[sandbox] 排空结束，未落库会话 ${real.length}（退出时丢弃）`);
         return;
       }
