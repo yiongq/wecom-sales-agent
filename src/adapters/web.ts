@@ -1,3 +1,5 @@
+import { scopedState } from '../tenancy/scoped-state.js';
+import { registerTenantState } from '../tenancy/state.js';
 // 正式网页渠道：凭据只在 HTTP 层，适配器只认推导出的会话 id。
 import { createHash } from 'node:crypto';
 import { partsOf, type ChannelCaps, type MessagePart } from '../core/pack-api.js';
@@ -6,12 +8,25 @@ import { consentMenuButtonId } from '../handoff/consent.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
 import type { ChannelAdapter } from '../types.js';
 
+const tenantState = scopedState(
+  () => ({
+    clients: new Map<string, Set<Client>>(),
+  }),
+  {
+    clients: (v) => {
+      for (const set of v.values()) for (const c of set) c.remove();
+      v.clear();
+    },
+  },
+);
+const state = tenantState.get;
+registerTenantState({ name: 'web.clients', ...tenantState.registration('clients') });
+
 export type WebEvent =
   | { type: 'push'; text: string; parts: MessagePart[] }
   | { type: 'menu'; text: string; parts: MessagePart[]; buttons: { id: string; label: string }[] };
 
 type Client = { send: (ev: WebEvent) => void; remove: () => void };
-const clients = new Map<string, Set<Client>>();
 const ips = new Map<string, number>();
 let total = 0;
 
@@ -20,8 +35,14 @@ export function webConversationId(accountId: string, token: string): string {
 }
 
 /** 同步占位：响应开始之前就判并发，取消可重复调用。 */
-export function subscribeWeb(sessionId: string, clientKey: string, send: (ev: WebEvent) => void): (() => void) | 'too_many' {
-  const set = clients.get(sessionId) ?? new Set<Client>();
+export function subscribeWeb(
+  sessionId: string,
+  clientKey: string,
+  send: (ev: WebEvent) => void,
+  close?: () => void,
+): (() => void) | 'too_many' {
+  const own = state();
+  const set = own.clients.get(sessionId) ?? new Set<Client>();
   if (
     set.size >= 3 ||
     (ips.get(clientKey) ?? 0) >= Math.max(1, numEnv('WEB_SSE_MAX_PER_IP', 10)) ||
@@ -33,15 +54,16 @@ export function subscribeWeb(sessionId: string, clientKey: string, send: (ev: We
     if (removed) return;
     removed = true;
     set.delete(client);
-    if (!set.size) clients.delete(sessionId);
+    if (!set.size) own.clients.delete(sessionId);
     const n = (ips.get(clientKey) ?? 1) - 1;
     if (n) ips.set(clientKey, n);
     else ips.delete(clientKey);
     total--;
+    close?.();
   };
   const client = { send, remove };
   set.add(client);
-  clients.set(sessionId, set);
+  own.clients.set(sessionId, set);
   ips.set(clientKey, (ips.get(clientKey) ?? 0) + 1);
   total++;
   return remove;
@@ -51,7 +73,8 @@ export const webAdapter: ChannelAdapter & { readonly caps: Readonly<ChannelCaps>
   name: 'web',
   caps: Object.freeze({ markdown: false }),
   async push(sessionId, text, opts): Promise<boolean> {
-    const set = clients.get(sessionId);
+    const own = state();
+    const set = own.clients.get(sessionId);
     const menu = opts?.kind === 'menu';
     if (menu && !opts.category) return false;
     const body = opts?.kind === 'human' ? withAdvisorPrefix(text) : text;

@@ -1996,6 +1996,22 @@ await captureAlertLogs(async () => {
   }
   process.env.ALERT_WEBHOOK_URL = hookUrl;
 
+  // 05：事件租户不匹配只丢该事件，实际告警接线仍发一条并按事故键去重。
+  {
+    const events = await import('../store/events.js');
+    const n0 = hook.bodies.length;
+    events.deliverCommitted([{ type: 'conversation.changed', id: 'sim-mismatch', tenantId: 'foreign' }]);
+    events.deliverCommitted([{ type: 'conversation.changed', id: 'sim-mismatch', tenantId: 'foreign' }]);
+    await A.settle();
+    check(
+      '领域事件租户不匹配：告警接线发送一次，同类事件去重',
+      hook.bodies.length === n0 + 1 && contents()[n0]!.includes('领域事件租户不匹配，已跳过该事件'),
+      json(contents().slice(n0)),
+    );
+    hook.bodies.length = n0;
+    A.reset();
+  }
+
   // ---------------- model_errors：连续 5 次失败、30 分钟去重、持续 30 分钟再发、连续 10 次成功恢复 ----------------
   {
     const ok = (sid: string, i: number) => say(sid, `好的第 ${i} 句`, [{ content: '好的～还有什么想了解的随时说。' }]);

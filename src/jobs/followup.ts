@@ -1,3 +1,5 @@
+import { scopedState } from '../tenancy/scoped-state.js';
+import { registerTenantState } from '../tenancy/state.js';
 // db 存储下的跟进（docs/architecture/02-conversations-workbench/spec.md「任务表与跟进」，R17、不变量 38）：
 // 排程——会话落库时（saveSession 的订阅者，与这次 saveSession 同一段同步代码，排出的任务随同一次落库提交）：
 //   满足 shouldFollowUp 的静态条件就排 followup:<会话>:<阶段>，runAt = 最后动静 + 该阶段阈值，落在夜间顺延；客户回话即取消。
@@ -24,6 +26,30 @@ import { shortIdOf } from '../shared/conversation.js';
 import { flushSession, getSession, jobOpApplied, onSessionSaved, queueJobs, saveSession, type JobOp } from '../store.js';
 import type { ChatMessage, PushOpts, Session } from '../types.js';
 import type { JobCtx, JobOutcome } from './runner.js';
+
+const tenantState = scopedState(
+  () => ({
+    known: new Map<string, { key: string; runAt: number } | null>(),
+    selfSaving: null as string | null,
+    installed: false,
+    stopping: false,
+    composeWaiters: new Set<() => void>(),
+  }),
+  {
+    composeWaiters: (v) => {
+      for (const wake of v) wake();
+      v.clear();
+    },
+  },
+);
+const state = tenantState.get;
+// 实例级能力接线：server 注入的适配器按调用方当前作用域选择账号。
+let push: PushFn | null = null;
+registerTenantState({ name: 'followup.jobs.known', ...tenantState.registration('known') });
+registerTenantState({ name: 'followup.jobs.selfSaving', ...tenantState.registration('selfSaving') });
+registerTenantState({ name: 'followup.jobs.installed', ...tenantState.registration('installed') });
+registerTenantState({ name: 'followup.jobs.stopping', ...tenantState.registration('stopping') });
+registerTenantState({ name: 'followup.jobs.composeWaiters', ...tenantState.registration('composeWaiters') });
 
 export type PushFn = (sessionId: string, text: string, opts?: PushOpts) => Promise<boolean>;
 
@@ -68,9 +94,7 @@ const statusOp = (
  * 本进程知道的、这个会话没结束的那个跟进任务（键与 runAt）。值为 null：确知没有；Map 里没有：不知道（重启之后还没落过库），
  * 这时客户回话按全部阶段的键取消，排程不先取消（库里已有的留着，到点时按活对象重判、早了就顺延）
  */
-const known = new Map<string, { key: string; runAt: number } | null>();
 /** 执行体自己的 saveSession：账与任务状态由执行体一并排，落库钩子跳过这一次 */
-let selfSaving: string | null = null;
 
 /** 跟进的排程时刻：最后动静 + 这个阶段的阈值，落在夜间顺延到 9:00 */
 export function followupRunAt(s: Session, idleMs: number, notBefore = 0): number {
@@ -79,19 +103,21 @@ export function followupRunAt(s: Session, idleMs: number, notBefore = 0): number
 
 /** 会话落库时排、取消跟进（db 存储的真实会话，store 只为它们调）。FOLLOWUP_ENABLED 不是 1 时什么都不排 */
 function onSaved(s: Session): void {
-  if (!followupEnabled() || selfSaving === s.id) return;
+  const own = state();
+  if (!followupEnabled() || own.selfSaving === s.id) return;
   const ops = planOps(s);
   if (ops.length) queueJobs(s.id, ops);
 }
 
 function planOps(s: SessionWithFollowup): JobOp[] {
-  const k = known.get(s.id);
+  const own = state();
+  const k = own.known.get(s.id);
   const last = (s.messages ?? []).filter((m) => m.role !== 'system').at(-1);
   const due = last?.role === 'customer' ? null : followupStage(s);
   if (!due) {
     // 客户回话（或会话不再满足资格：转了人工、成交了、说了「别发了」……）：取消排着的
     if (k === null) return [];
-    known.set(s.id, null);
+    own.known.set(s.id, null);
     if (k) return [cancelOp(k.key)];
     return FOLLOWUP_STAGES.map((st) => cancelOp(followupKey(s.id, st)));
   }
@@ -99,7 +125,7 @@ function planOps(s: SessionWithFollowup): JobOp[] {
   const runAt = followupRunAt(s, due.idleMs);
   // 同一个任务、排的时刻不早于该排的：不动（推送失败之后排的重试比「最后动静 + 阈值」晚，不能被拉回来）
   if (k && k.key === key && runAt <= k.runAt) return [];
-  known.set(s.id, { key, runAt });
+  own.known.set(s.id, { key, runAt });
   // 换了阶段，或最后动静往后挪了：先取消旧的再排（只取消 pending 的；唯一索引只拦没结束的）
   return [...(k ? [cancelOp(k.key)] : []), enqueueOp(s.id, due.stage, runAt)];
 }
@@ -109,46 +135,45 @@ function planOps(s: SessionWithFollowup): JobOp[] {
  * 恢复出的会话不知道；被 restore-cutoff 取消的那一阶段另在会话的 followup 记账里记成已跟过）。到点的任务照常在活对象上重判
  */
 export function saveSessionSkippingFollowup(s: Session, touch = true): void {
-  const prev = selfSaving;
-  selfSaving = s.id;
+  const own = state();
+  const prev = own.selfSaving;
+  own.selfSaving = s.id;
   try {
     saveSession(s, touch);
   } finally {
-    selfSaving = prev;
+    own.selfSaving = prev;
   }
 }
 
 /** 执行体的 saveSession：账与任务状态在同一段同步代码里排进这个会话的下一次落库 */
 function saveWith(s: Session, ops: JobOp[]): void {
-  selfSaving = s.id;
+  const own = state();
+  own.selfSaving = s.id;
   try {
     saveSession(s, false); // touch=false：跟进不刷新最后动静（与扫描器相同）
   } finally {
-    selfSaving = null;
+    own.selfSaving = null;
   }
   queueJobs(s.id, ops);
 }
 
 // ---------------- 执行 ----------------
 
-let push: PushFn | null = null;
-let installed = false;
-let stopping = false;
 /** 正在等话术生成的执行体：停机时叫醒，让它放弃这次（还没记账、什么都没发，停机钩子把任务改回 pending） */
-const composeWaiters = new Set<() => void>();
 
 async function composeUnlessStopping(s: Session): Promise<string | null> {
+  const own = state();
   const composing = followUpText(s);
   composing.catch(() => undefined);
   let wake!: () => void;
   const stopped = new Promise<null>((r) => {
     wake = () => r(null);
   });
-  composeWaiters.add(wake);
+  own.composeWaiters.add(wake);
   try {
     return await Promise.race([composing, stopped]);
   } finally {
-    composeWaiters.delete(wake);
+    own.composeWaiters.delete(wake);
   }
 }
 
@@ -164,6 +189,7 @@ export function followupQuotaAllows(s: Session, now: number): boolean {
 }
 
 async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
+  const own = state();
   const p = (job.payload ?? {}) as { sessionId?: unknown; stage?: unknown };
   const sid = typeof p.sessionId === 'string' ? p.sessionId : '';
   const s = sid ? (getSession(sid) as SessionWithFollowup | undefined) : undefined;
@@ -180,7 +206,7 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
   // 额度不够：不生成话术（不调模型），记 cancelled、之后不再排（见 afterSettle）
   if (!followupQuotaAllows(s, clock())) return { status: 'cancelled', lastError: 'quota' };
   const text = await composeUnlessStopping(s);
-  if (text === null || stopping) return { status: 'stopped' };
+  if (text === null || own.stopping) return { status: 'stopped' };
   // 生成话术要几秒到几十秒，这期间客户可能回了消息：在活对象上重判（spec：到点后在活对象上重判 shouldFollowUp）
   const fresh = getSession(sid) as SessionWithFollowup | undefined;
   if (!fresh || !shouldFollowUp(fresh, clock()) || fresh.stage !== p.stage) {
@@ -193,7 +219,7 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
   const message: ChatMessage = { role: 'agent', content: text, at: Date.now(), author: 'followup' };
   const release = holdSend(sid, 'followup', message);
   try {
-    return await sendAfterLedger({ job, ctx, fresh, sid, text, message, release, clock, push });
+    return await sendAfterLedger({ job, ctx, fresh, sid, text, message, release, clock, push: push });
   } finally {
     release();
   }
@@ -211,6 +237,7 @@ async function sendAfterLedger(a: {
   clock: () => number;
   push: PushFn;
 }): Promise<JobOutcome> {
+  const own = state();
   const { job, ctx, fresh, sid, text, message, release, clock } = a;
   // 这次发送开始时的接手代次（审查第 6 条，concurrency[2]）：记账、等提交要经一次 await，这段时间里会话可能被接手；
   // 推送前再比一次，变了就不推——不然刚接手、客户紧接着就收到一条 AI 跟进，违背不变量 28
@@ -227,7 +254,7 @@ async function sendAfterLedger(a: {
   // 03：库里的企微账号把这条跟进的分段 pending 排进同一次落库（记账、sending 与 pending 一起提交），推送时交回去
   const prepared = prepareChannel(sid, text, { kind: 'followup', message });
   ctx.markSending();
-  known.set(sid, null);
+  own.known.set(sid, null);
   try {
     await flushSession(sid, { timeoutMs: LEDGER_TIMEOUT_MS });
   } catch {
@@ -278,7 +305,7 @@ async function sendAfterLedger(a: {
     if (again && again.stage === stage) {
       const runAt = followupRunAt(fresh, again.idleMs, clock() + FOLLOWUP_RETRY_MS);
       ops.push(enqueueOp(sid, stage, runAt));
-      known.set(sid, { key: followupKey(sid, stage), runAt });
+      own.known.set(sid, { key: followupKey(sid, stage), runAt });
     }
     saveWith(fresh, ops);
     console.error(`[followup] 跟进消息未送达 ${short(sid)}（第 ${meta.failures} 次失败${again ? '' : '，不再重试'}）`);
@@ -300,21 +327,22 @@ async function sendAfterLedger(a: {
  * 落库时照正常排程再来：failed 之后立刻同键重排，max_attempts 就封顶不了；额度不够时重排，每 5 秒就要调一次模型
  */
 function afterSettle(job: JobRow, out: JobOutcome): void {
+  const own = state();
   const sid = (job.payload as { sessionId?: unknown } | null)?.sessionId;
   if (typeof sid !== 'string') return;
   if (out.status === 'pending') {
-    known.set(sid, { key: job.dedupeKey, runAt: out.runAt });
+    own.known.set(sid, { key: job.dedupeKey, runAt: out.runAt });
     return;
   }
   if (out.status === 'handled' || out.status === 'stopped') return;
-  const k = known.get(sid);
+  const k = own.known.get(sid);
   const same = k?.key === job.dedupeKey;
   if (out.status !== 'cancelled' || out.lastError !== 'changed') {
     // 不知道（重启之后）也记成没有：之后哪次与客户无关的落库都不会把它立刻再排出来
-    if (k === undefined || same) known.set(sid, null);
+    if (k === undefined || same) own.known.set(sid, null);
     return;
   }
-  if (same) known.delete(sid);
+  if (same) own.known.delete(sid);
   const s = getSession(sid);
   if (s && followupEnabled()) {
     const ops = planOps(s);
@@ -324,16 +352,18 @@ function afterSettle(job: JobRow, out: JobOutcome): void {
 
 /** 认领者的结果补写也没写进库（任务留在 running，等下次启动归位）：本进程不再自以为排着这个键 */
 function forget(job: JobRow): void {
+  const own = state();
   const sid = (job.payload as { sessionId?: unknown } | null)?.sessionId;
-  if (typeof sid === 'string' && known.get(sid)?.key === job.dedupeKey) known.delete(sid);
+  if (typeof sid === 'string' && own.known.get(sid)?.key === job.dedupeKey) own.known.delete(sid);
 }
 
 export const followupJobs = {
   /** startJobs 调：记下推送函数，装上落库钩子（只装一次） */
   install(fn: PushFn): void {
+    const own = state();
     push = fn;
-    if (installed) return;
-    installed = true;
+    if (own.installed) return;
+    own.installed = true;
     onSessionSaved(onSaved);
   },
   run,
@@ -341,14 +371,16 @@ export const followupJobs = {
   forget,
   /** 停机 normal 段：叫醒正在生成话术的执行体，此后不再进 sending */
   stop(): void {
-    stopping = true;
-    for (const wake of composeWaiters) wake();
+    const own = state();
+    own.stopping = true;
+    for (const wake of own.composeWaiters) wake();
   },
   /** 仅供自测：清回刚启动的样子（钩子不卸） */
   reset(): void {
-    stopping = false;
-    known.clear();
-    selfSaving = null;
+    const own = state();
+    own.stopping = false;
+    own.known.clear();
+    own.selfSaving = null;
   },
   /** 仅供自测：换掉额度判断（null 换回发送账本的判断） */
   setQuotaForTest(fn: ((s: Session, now: number) => boolean) | null): void {

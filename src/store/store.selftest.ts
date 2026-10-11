@@ -2617,7 +2617,7 @@ async function childPg(ck: Ck): Promise<void> {
       (await reasonOf(openPgBackend(probeDeps(tR, dir)))) === 'spill_conflict' && fs.existsSync(fB) && (await convRow(R))?.last_seq === 5,
     );
     fs.unlinkSync(fB);
-    // 别的租户的 spill：换成本租户就能干净写入的一条（接得上库里的 last_seq），照样拒绝，库里不多出消息
+    // 05 R6：共享目录里的别的租户 spill 原样留给所属租户，本租户不应用、不拒绝启动。
     const msgsBefore = (await dbMsgs(R)).length;
     const f6 = writeSpill(
       '2026-01-01T00-00-06-000Z',
@@ -2625,14 +2625,22 @@ async function childPg(ck: Ck): Promise<void> {
       'not-this-tenant',
     );
     let d6 = '';
+    let foreignApplied = -1;
+    const foreignBytes = fs.readFileSync(f6);
     try {
-      await openPgBackend(probeDeps(tR, dir));
+      const backend = await openPgBackend(probeDeps(tR, dir));
+      foreignApplied = backend.stats().replayed;
+      await backend.close();
     } catch (e) {
       d6 = e instanceof SessionStoreStartupError ? `${e.reason} ${e.detail}` : String(e);
     }
     ck(
-      'spill 回放：别的租户的 spill → spill_conflict，detail 写明不是本租户，库里没多出消息，文件留着',
-      d6.startsWith('spill_conflict') && d6.includes('不是本租户') && (await dbMsgs(R)).length === msgsBefore && fs.existsSync(f6),
+      'spill 回放：别的租户的 spill 跳过，库里没多出消息，文件字节不变',
+      d6 === '' &&
+        foreignApplied === 0 &&
+        (await dbMsgs(R)).length === msgsBefore &&
+        fs.existsSync(f6) &&
+        fs.readFileSync(f6).equals(foreignBytes),
       d6,
     );
     fs.unlinkSync(f6);

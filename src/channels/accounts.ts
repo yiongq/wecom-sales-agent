@@ -235,16 +235,18 @@ export function accountByKey(key: string, kind: ChannelKind, tenantId = currentR
  * env 账号）；网页没有默认账号，返回 undefined。别的渠道（sim-）返回 undefined
  */
 export function accountForSession(sessionId: string, s?: Pick<Session, 'channelAccountId'>): ChannelAccount | undefined {
+  const rt = currentRuntime();
+  const accounts = installed.filter((a) => a.tenantId === rt.id || (a.source === 'env' && a.tenantId === '' && rt.isHost));
   if (sessionId.startsWith('web:')) {
     const id = s?.channelAccountId;
-    return id ? installed.find((a) => a.kind === 'web' && a.id === id) : undefined;
+    return id ? accounts.find((a) => a.kind === 'web' && a.id === id) : undefined;
   }
   if (!sessionId.startsWith(DEFAULT_WECOM_PREFIX)) return undefined;
   let best: ChannelAccount | undefined;
-  for (const a of installed) {
+  for (const a of accounts) {
     const prefix = a.wecom?.idPrefix;
     if (!prefix || !sessionId.startsWith(prefix) || sessionId.length === prefix.length) continue;
     if (!best || prefix.length > (best.wecom?.idPrefix.length ?? 0)) best = a;
   }
-  return best ?? installed.find((a) => a.wecom?.idPrefix === DEFAULT_WECOM_PREFIX);
+  return best ?? accounts.find((a) => a.wecom?.idPrefix === DEFAULT_WECOM_PREFIX);
 }

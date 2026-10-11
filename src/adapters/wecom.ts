@@ -1,3 +1,7 @@
+import { scopedState } from '../tenancy/scoped-state.js';
+import { registerTenantState } from '../tenancy/state.js';
+import { currentRuntime, scopedRuntime, tenantRuntimes } from '../tenancy/runtime.js';
+import { installedChannelAccounts } from '../channels/registry.js';
 import { publicBase } from '../tenancy/hosts.js';
 import {
   runtimeOf,
@@ -97,15 +101,7 @@ import {
 } from '../store.js';
 import { routeForProposal } from '../tools.js';
 import { endTurn, startTurn, withTurnScope } from '../trace/recorder.js';
-import {
-  accountForSession,
-  DEFAULT_WECOM_PREFIX,
-  ENV_ACCOUNT_ID,
-  ENV_ACCOUNT_KEY,
-  isEnabled,
-  loadedAccounts,
-  type ChannelAccount,
-} from '../channels/accounts.js';
+import { DEFAULT_WECOM_PREFIX, ENV_ACCOUNT_ID, ENV_ACCOUNT_KEY, isEnabled, type ChannelAccount } from '../channels/accounts.js';
 import { AccountInbox, InboxRowGone, noteInboxAbandoned, type InboxRow } from '../channels/inbox.js';
 import {
   RecoveryGate,
@@ -138,7 +134,7 @@ const publicBaseUrl = (): string => publicBase();
  * 不写 var/wecom-cursor.json（不变量 13）。还没装载（自测、eval）与文件存储、未导入、已导出时为 false，照 02
  */
 function wecomInDb(): boolean {
-  return loadedAccounts().some((a) => a.kind === 'wecom_kf' && a.source === 'db');
+  return installedChannelAccounts().some((a) => a.kind === 'wecom_kf' && a.source === 'db');
 }
 
 /** env 账号的配置：每次现读 env（而非模块加载时快照），保证 server 先加载 .env 也能生效 */
@@ -283,6 +279,16 @@ class WecomRuntime {
   private readonly customWelcomeText: string | undefined;
   private readonly customWelcomeBackText: string | undefined;
   private readonly issuedWelcomeTexts = new Set<string>();
+  clearCachedState(): void {
+    this.issuedWelcomeTexts.clear();
+    this.token = null;
+    this.tokenExpireAt = 0;
+    this.tokenInflight = null;
+    this.thumbInflight = null;
+    this.userChains.clear();
+    this.eventTasks.clear();
+    if (this.state.kind === 'file') this.state.dispose();
+  }
   get welcomeText(): string {
     const binding = currentPack();
     const text = this.customWelcomeText ?? brandTexts(binding.runtime, binding.brand).welcomeText;
@@ -368,19 +374,52 @@ class WecomRuntime {
 }
 
 /** 进程里的企微运行时，按账号 uuid（env 账号在 ENV_ACCOUNT_ID 下，模块加载时就在） */
-const runtimes = new Map<string, WecomRuntime>();
-
-/** env 账号：02 的老路，状态在 var/wecom-cursor.json */
-const envRuntime = new WecomRuntime({
-  id: ENV_ACCOUNT_ID,
-  key: ENV_ACCOUNT_KEY,
-  tenantId: '',
-  prefix: DEFAULT_WECOM_PREFIX,
-  tag: '[wecom]',
-  config: readEnvConfig,
-  state: new FileWecomState(),
-});
-runtimes.set(envRuntime.id, envRuntime);
+const tenantState = scopedState(
+  () => ({
+    runtimes: new Map<string, WecomRuntime>(),
+    envRuntime: null as WecomRuntime | null,
+  }),
+  {
+    runtimes: (map) => {
+      for (const rt of map.values()) discardRuntime(rt);
+    },
+    envRuntime: (rt) => {
+      if (rt) discardRuntime(rt);
+    },
+  },
+);
+const state = tenantState.get;
+registerTenantState({ name: 'wecom.runtimes', ...tenantState.registration('runtimes') });
+registerTenantState({ name: 'wecom.envRuntime', ...tenantState.registration('envRuntime') });
+function envRuntime(): WecomRuntime {
+  const owner = currentRuntime();
+  if (!owner.isHost) throw new Error('只有宿主可使用 env 企微账号');
+  const own = state();
+  if (!own.envRuntime) {
+    own.envRuntime = new WecomRuntime({
+      id: ENV_ACCOUNT_ID,
+      key: ENV_ACCOUNT_KEY,
+      tenantId: owner.id,
+      prefix: DEFAULT_WECOM_PREFIX,
+      tag: '[wecom]',
+      config: readEnvConfig,
+      state: new FileWecomState(),
+    });
+    own.runtimes.set(ENV_ACCOUNT_ID, own.envRuntime);
+  }
+  return own.envRuntime;
+}
+function discardRuntime(rt: WecomRuntime): void {
+  rt.stopping = true;
+  rt.sendsClosedAt = 0;
+  if (rt.pollTimer) clearTimeout(rt.pollTimer);
+  rt.pollTimer = null;
+  rt.gate.cancel();
+  rt.clearCachedState();
+  rt.welcomeBackAt.clear();
+  rt.thumbCache = null;
+  rt.haltedChains.clear();
+}
 
 /** 库里账号的日志前缀 */
 const accountTag = (key: string): string => `[wecom acct=${key}]`;
@@ -407,7 +446,7 @@ function notePullSuccess(rt: WecomRuntime): void {
 }
 /** 只读运行时观测值，不暴露 token、cursor 与会话。 */
 export function wecomObservability(accountId: string) {
-  const rt = runtimes.get(accountId);
+  const rt = state().runtimes.get(accountId);
   if (!rt) return null;
   const failures = [rt.pullFailureAt, rt.tokenFailureAt].filter((v): v is number => v !== null);
   return {
@@ -969,7 +1008,7 @@ async function sendMenu(
 // 接手代次只对 AI 回复、跟进、同意菜单、欢迎语比；通知与人工回复只比停机截止（见 OutGroup.checksTakeover）
 
 /** 库里的企微账号走 03 的发送；env 账号照 02 */
-const isDbAccount = (rt: WecomRuntime): boolean => rt !== envRuntime;
+const isDbAccount = (rt: WecomRuntime): boolean => rt.state.kind !== 'file';
 
 /** 一组分段与发它要的：运行时、这一组开始时的接手代次、卡片原样的标题与地址、每段的 pending 落没落库 */
 interface OutGroup {
@@ -1055,7 +1094,7 @@ function payloadsFor(
 }
 
 /** 运行时的账号对象（planOutbound 要它校验会话与账号一致） */
-const accountOf = (rt: WecomRuntime): ChannelAccount | undefined => loadedAccounts().find((a) => a.id === rt.id);
+const accountOf = (rt: WecomRuntime): ChannelAccount | undefined => installedChannelAccounts().find((a) => a.id === rt.id);
 
 /**
  * planOutbound：每段一行 pending，排进这个会话的落库（没有会话的单独短事务）。校验没过抛 OutboundPlanError，调用方按发送失败处理
@@ -2586,26 +2625,28 @@ export async function syncFromCallback(syncToken: string): Promise<void> {
   await backgroundEntry(() => withTenantScope(hostRuntime(), () => syncFromCallbackInScope(syncToken)));
 }
 async function syncFromCallbackInScope(syncToken: string): Promise<void> {
-  const cfg = envRuntime.config();
+  const cfg = envRuntime().config();
   if (!cfg) return;
-  await pullFromCallback(envRuntime, cfg, syncToken);
+  await pullFromCallback(envRuntime(), cfg, syncToken);
 }
 
 /** 库里的企微账号：按账号的回调（adapters/wecom-callback.ts）验签、按 OpenKfId 找到账号之后调用 */
 export async function syncAccountFromCallback(accountId: string, syncToken: string): Promise<void> {
-  // 账号停用或启动尚未装载时保留原行为；只有存在账号却找不到所属租户才是作用域遗漏。
-  if (accountId === ENV_ACCOUNT_ID || !runtimes.has(accountId)) {
-    await syncAccountFromCallbackInScope(accountId, syncToken);
+  if (accountId === ENV_ACCOUNT_ID) return;
+  const scoped = scopedRuntime();
+  const owners = tenantState.owners().filter((rt) => tenantState.peek(rt)?.runtimes.has(accountId));
+  const owner = scoped && tenantState.peek(scoped)?.runtimes.has(accountId) ? scoped : owners.length === 1 ? owners[0] : undefined;
+  if (!owner) {
+    console.error('[wecom] 回调指向的企微账号没有运行时（没启用或没起来），这次不拉');
     return;
   }
-  await backgroundEntry(() =>
-    withTenantScope(ownerRuntime(accountId === ENV_ACCOUNT_ID ? envRuntime : runtimes.get(accountId)), () =>
-      syncAccountFromCallbackInScope(accountId, syncToken),
-    ),
-  );
+  await backgroundEntry(() => {
+    if (runtimeOf(owner.id) !== owner) throw new TenantScopeMissing();
+    return withTenantScope(owner, () => syncAccountFromCallbackInScope(accountId, syncToken));
+  });
 }
 async function syncAccountFromCallbackInScope(accountId: string, syncToken: string): Promise<void> {
-  const rt = accountId === ENV_ACCOUNT_ID ? undefined : runtimes.get(accountId);
+  const rt = accountId === ENV_ACCOUNT_ID ? undefined : state().runtimes.get(accountId);
   const cfg = rt?.config();
   if (!rt || !cfg) {
     console.error('[wecom] 回调指向的企微账号没有运行时（没启用或没起来），这次不拉');
@@ -2619,7 +2660,7 @@ async function syncAccountFromCallbackInScope(accountId: string, syncToken: stri
 /** 起轮询循环（不阻塞调用方）：先加载、重放，再补拉一次，之后兜底慢轮询 */
 function ownerRuntime(rt: WecomRuntime | undefined): TenantRuntime {
   if (!rt) throw new TenantScopeMissing();
-  const owner = rt.tenantId ? runtimeOf(rt.tenantId) : hostRuntime();
+  const owner = rt.state.kind === 'file' ? hostRuntime() : runtimeOf(rt.tenantId);
   if (!owner) throw new TenantScopeMissing();
   return owner;
 }
@@ -2659,7 +2700,7 @@ function startRuntimeInScope(rt: WecomRuntime): void {
     };
     // 启动先补拉一次，不等第一个轮询周期：上个进程停机收尾时回调只回了 success 没拉，
     // 重启空档里的回调也可能已经丢了，这些消息都还在 cursor 之后
-    void tick();
+    if (!rt.stopping) void tick();
   }).catch((err) =>
     withLogContext({ acct: rt.key }, () => console.error(`${rt.tag} 启动失败，仅靠回调拉取: errcode=${apiErrorCode(err)}`)),
   );
@@ -2667,7 +2708,7 @@ function startRuntimeInScope(rt: WecomRuntime): void {
 
 /** env 账号：未配齐 env 时静默不启动；配齐则起轮询循环（不阻塞调用方） */
 export function startWecom(): void {
-  startRuntime(envRuntime);
+  startRuntime(envRuntime());
 }
 
 /** startChannels 交进来的一个库里启用的企微账号 */
@@ -2748,7 +2789,7 @@ function startWecomAccountInScope(s: WecomAccountStart): void {
   const { account } = s;
   const w = account.wecom;
   if (account.source !== 'db' || account.kind !== 'wecom_kf' || !w) throw new Error('startWecomAccount 只收库里的企微账号');
-  if (runtimes.has(account.id)) throw new Error(`企微账号 ${account.key} 的运行时已经起过了`);
+  if (state().runtimes.has(account.id)) throw new Error(`企微账号 ${account.key} 的运行时已经起过了`);
   const tag = accountTag(account.key);
   // 兜底轮询间隔同 WECOM_POLL_INTERVAL_MS 的规则（实际生效 ≥30 秒），取账号设置，不读 env
   const pollIntervalMs = Math.max(1000, w.settings.pollIntervalMs || 3000);
@@ -2770,7 +2811,7 @@ function startWecomAccountInScope(s: WecomAccountStart): void {
     ...(w.settings.welcomeBackText !== undefined ? { welcomeBackText: w.settings.welcomeBackText } : {}),
     state: new AccountInbox({ id: account.id, idPrefix: w.idPrefix, tag }),
   });
-  runtimes.set(rt.id, rt);
+  state().runtimes.set(rt.id, rt);
   const cfg = rt.config()!;
   // 恢复与它补发的那几段按 eventTasks 跟踪：停机时等它（它自己看 stopping 停下），自测的 idle 也等它
   const task = withLogContext({ acct: rt.key }, () => runRecovery(rt, cfg, s)).catch((err) =>
@@ -2782,14 +2823,10 @@ function startWecomAccountInScope(s: WecomAccountStart): void {
 
 /** 停掉并注销库里账号的运行时（自测的 __channelsTest.reset 用）：不再拉取、轮询定时器清掉；env 账号不动 */
 export function stopWecomAccounts(): void {
-  for (const [id, rt] of runtimes) {
-    if (rt === envRuntime) continue;
-    rt.stopping = true;
-    if (rt.pollTimer) {
-      clearTimeout(rt.pollTimer);
-      rt.pollTimer = null;
-    }
-    runtimes.delete(id);
+  for (const [id, rt] of state().runtimes) {
+    if (rt === state().envRuntime) continue;
+    discardRuntime(rt);
+    state().runtimes.delete(id);
   }
 }
 
@@ -2824,20 +2861,27 @@ async function drainForShutdown(rt: WecomRuntime, ctx?: { deadline: number }): P
   await rt.state.close();
 }
 /** 每个账号的运行时一起收尾，一个账号出错不耽误别的账号 */
-onShutdown(async (ctx) => {
-  const results = await Promise.allSettled(
-    [...runtimes.values()].map((rt) => backgroundEntry(() => withTenantScope(ownerRuntime(rt), () => drainForShutdown(rt, ctx)))),
-  );
-  for (const r of results) if (r.status === 'rejected') console.error('[wecom] 停机收尾异常:', apiErrorCode(r.reason));
-});
+withoutTenantScope(() =>
+  onShutdown(async (ctx) => {
+    const results = await Promise.allSettled(
+      tenantRuntimes().flatMap((owner) =>
+        [...(tenantState.peek(owner)?.runtimes.values() ?? [])].map((rt) =>
+          backgroundEntry(() => withTenantScope(owner, () => drainForShutdown(rt, ctx))),
+        ),
+      ),
+    );
+    for (const r of results) if (r.status === 'rejected') console.error('[wecom] 停机收尾异常:', apiErrorCode(r.reason));
+  }),
+);
 /** 进程退出前把每个账号去抖窗口里的状态同步写出去（文件后端；库里的账号都在库里，没有要写的） */
 withoutTenantScope(() =>
   process.on('exit', () => {
-    for (const rt of runtimes.values())
-      if (rt.state.kind === 'file') {
-        const state = rt.state;
-        backgroundEntry(() => withTenantScope(ownerRuntime(rt), () => state.flushSync()));
-      }
+    for (const owner of tenantRuntimes())
+      for (const rt of tenantState.peek(owner)?.runtimes.values() ?? [])
+        if (rt.state.kind === 'file') {
+          const state = rt.state;
+          backgroundEntry(() => withTenantScope(ownerRuntime(rt), () => state.flushSync()));
+        }
   }),
 );
 
@@ -2851,16 +2895,29 @@ function pushRoute(sessionId: string, quiet = false): { rt: WecomRuntime; cfg: W
     if (!quiet) console.error(...args);
   };
   if (!wecomInDb()) {
-    const cfg = envRuntime.config();
+    if (!currentRuntime().isHost) {
+      err('[wecom] ⚠️ 非宿主租户没有库里的企微账号，不能使用宿主 env 账号，消息未送达:', convLabel(sessionId));
+      return null;
+    }
+    const cfg = envRuntime().config();
     if (!cfg) {
       // 历史 wecom 会话存在但企微 env 未配（如换服务器漏配）：必须出声，否则回复凭空消失
       err('[wecom] ⚠️ 收到发往 wecom 会话的消息但企微未配置（WECOM_* env 缺失），消息未送达:', convLabel(sessionId));
       return null;
     }
-    if (!sessionId.startsWith(envRuntime.prefix)) return null;
-    return { rt: envRuntime, cfg };
+    if (!sessionId.startsWith(envRuntime().prefix)) return null;
+    return { rt: envRuntime(), cfg };
   }
-  const account = accountForSession(sessionId, getSession(sessionId));
+  const account = installedChannelAccounts()
+    .filter(
+      (a) =>
+        a.tenantId === currentRuntime().id &&
+        a.kind === 'wecom_kf' &&
+        a.wecom &&
+        sessionId.startsWith(a.wecom.idPrefix) &&
+        sessionId.length > a.wecom.idPrefix.length,
+    )
+    .toSorted((a, b) => b.wecom!.idPrefix.length - a.wecom!.idPrefix.length)[0];
   if (account?.kind !== 'wecom_kf') {
     err('[wecom] ⚠️ 会话找不到所属的企微账号，消息未送达:', convLabel(sessionId));
     return null;
@@ -2870,12 +2927,13 @@ function pushRoute(sessionId: string, quiet = false): { rt: WecomRuntime; cfg: W
     err(`${tag} ⚠️ 账号已停用，发往它名下会话的消息未送达:`, convLabel(sessionId));
     return null;
   }
-  const rt = runtimes.get(account.id);
+  const rt = state().runtimes.get(account.id);
   const cfg = rt?.config();
   if (!rt || !cfg) {
     err(`${tag} ⚠️ 账号的运行时没有起来，消息未送达:`, convLabel(sessionId));
     return null;
   }
+  if (rt.tenantId !== currentRuntime().id) return null;
   return { rt, cfg };
 }
 
@@ -2901,6 +2959,7 @@ export const wecomAdapter: ChannelAdapter = {
     if (opts?.prepared) {
       const g = preparedGroups.get(opts.prepared);
       if (g !== undefined) {
+        if (g && g.rt.tenantId !== currentRuntime().id) return false;
         preparedGroups.delete(opts.prepared);
         if (!g) return false;
         if (!(await recovered(g.rt))) {
@@ -2936,6 +2995,7 @@ export const wecomAdapter: ChannelAdapter = {
   /** 拿了句柄、不发了：这一组没发的段记 cancelled */
   release(prepared: PreparedPush, reason: 'taken_over' | 'aborted'): void {
     const g = preparedGroups.get(prepared);
+    if (g && g.rt.tenantId !== currentRuntime().id) return;
     preparedGroups.delete(prepared);
     if (g) cancelIntents(g.intents, reason);
   },
@@ -2978,8 +3038,8 @@ export const __test = {
   extractCard,
   stripLink,
   wechatify,
-  resetForTest: (): Promise<void> => resetRuntime(envRuntime),
-  inspectForTest: () => inspectRuntime(envRuntime),
+  resetForTest: (): Promise<void> => resetRuntime(envRuntime()),
+  inspectForTest: () => inspectRuntime(envRuntime()),
   STATE_FILE,
   WELCOME_TEXT,
   WELCOME_BACK_TEXT,
@@ -2991,12 +3051,16 @@ export { __channelTest } from '../channels/recovery.js';
 
 /** 仅供自测（src/adapters/wecom-03.selftest.ts）：按账号看运行时 */
 export const __wecomTest = {
+  /** 实际推送路由选择的账号，用于验证同前缀的跨租户选择。 */
+  routeAccount(sessionId: string): string | null {
+    return pushRoute(sessionId, true)?.rt.id ?? null;
+  },
   setObservationClock(fn: (() => number) | null): void {
     observationClock = fn ?? (() => Date.now());
   },
   /** 这个账号的运行时（没有为 null）：拉取状态、是否忙、启动恢复、后端种类、恢复截止点 */
   inspect(accountId: string) {
-    const rt = runtimes.get(accountId);
+    const rt = state().runtimes.get(accountId);
     return rt
       ? {
           ...inspectRuntime(rt),
@@ -3012,7 +3076,7 @@ export const __wecomTest = {
    * （出队时照常判 poison、too_old、恢复截止与计次，再按入站恢复表处理）。返回派发了几行；没有这个账号的运行时为 -1
    */
   async dispatchOpen(accountId: string): Promise<number> {
-    const rt = runtimes.get(accountId);
+    const rt = state().runtimes.get(accountId);
     const cfg = rt?.config();
     if (!rt || !cfg || rt.state.kind !== 'channel_inbox') return -1;
     const { open, withOutbound } = await rt.state.loadForRecovery(rt.id);
@@ -3021,25 +3085,26 @@ export const __wecomTest = {
   },
   /** 进程里所有运行时都闲下来（没有拉取、处理链与欢迎语） */
   idle(): boolean {
-    return [...runtimes.values()].every((rt) => !inspectRuntime(rt).busy);
+    return [...state().runtimes.values()].every((rt) => !inspectRuntime(rt).busy);
   },
   /** 运行时的账号 uuid（含 env 账号） */
   ids(): string[] {
-    return [...runtimes.keys()];
+    if (currentRuntime().isHost) envRuntime();
+    return [...state().runtimes.keys()];
   },
   /**
    * 模拟停机中（drainForShutdown 置的 stopping）：只改这个标志（不截止发送、不收尾）。置回 false 时清掉停机时停下的处理链，
    * 像新进程那样可以重新派发
    */
   setStopping(accountId: string, on: boolean): void {
-    const rt = runtimes.get(accountId);
+    const rt = state().runtimes.get(accountId);
     if (!rt) return;
     rt.stopping = on;
     if (!on) rt.haltedChains.clear();
   },
   /** 模拟停机的 normal 段截止（drainForShutdown 设的那个时刻）：at 为 null 换回不截止。只改截止，不停拉取 */
   closeSends(accountId: string, at: number | null): void {
-    const rt = runtimes.get(accountId);
+    const rt = state().runtimes.get(accountId);
     if (rt) rt.sendsClosedAt = at ?? Number.POSITIVE_INFINITY;
   },
 };

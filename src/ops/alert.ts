@@ -1,4 +1,5 @@
 import { tenantRuntimes, withTenantScope, withoutTenantScope, onTenantScopeMissing, backgroundEntry } from '../tenancy/runtime.js';
+import { onDomainEventMismatch } from '../store/events.js';
 // 告警（docs/architecture/02-conversations-workbench/spec.md「可观测性与告警 · 告警」、R24、不变量 32、50）。
 // 推到 ALERT_WEBHOOK_URL（企微群机器人，text 消息），内容是「[实例名] 中文说明 · 时间」，只有计数、短码、错误码：不含客户原话、
 // external_userid、密钥和带凭据的地址（地址只在 env 文件里，日志里也不打它）。
@@ -389,11 +390,14 @@ function onJob(f: JobFailure): void {
 }
 
 function checkChannelStartup(): void {
-  const channelWarnings = channelStartupWarnings();
-  if (channelWarnings.length) alert('channel', `渠道账号启动检查：${channelWarnings.join('；')}`);
-  for (const { key, count } of channelRestartUnknown()) {
-    alert('channel', `企微账号 ${codeOf(key)} 重启时 ${count} 段 sending 转 unknown`, { scope: `restart:${key}` });
-  }
+  for (const rt of tenantRuntimes())
+    withTenantScope(rt, () => {
+      const channelWarnings = channelStartupWarnings();
+      if (channelWarnings.length) alert('channel', `渠道账号启动检查：${channelWarnings.join('；')}`);
+      for (const { key, count } of channelRestartUnknown()) {
+        alert('channel', `企微账号 ${codeOf(key)} 重启时 ${count} 段 sending 转 unknown`, { scope: `restart:${key}` });
+      }
+    });
 }
 
 // ---------------- channel：按账号的拉取与入站巡检（03 第 13 步） ----------------
@@ -430,8 +434,15 @@ function tick(): void {
         alert('wecom_send', `企微发送 10 分钟没有失败 · 账号 ${codeOf(account)}`, { ...wecomScope(account), resolved: true });
       }
     }
-    const p = Promise.all(tenantRuntimes().map((rt) => withTenantScope(rt, () => refreshChannelObservability())))
-      .then(() => checkChannels(t))
+    const p = Promise.all(
+      tenantRuntimes().map((rt) =>
+        withTenantScope(rt, async () => {
+          await refreshChannelObservability();
+          checkChannels(t);
+        }),
+      ),
+    )
+      .then(() => undefined)
       .finally(() => inflight.delete(p));
     inflight.add(p);
   } catch (e) {
@@ -454,6 +465,7 @@ export function startAlerts(): void {
   // 这里的 exit 控制注册分支、停机钩子与 timer，不改变同步订阅的发出方上下文；巡检逐 rt 进入作用域。
   withoutTenantScope(() => {
     onTenantScopeMissing(() => alert('tenant_scope_missing', '后台入口缺少租户作用域'));
+    onDomainEventMismatch(() => alert('store', '领域事件租户不匹配，已跳过该事件', { scope: 'domain_event_tenant_mismatch' }));
     onTurnEnd(onTurn);
     onSendSettled(onSettled);
     onUnsafeSend(onUnsafe);
@@ -461,7 +473,7 @@ export function startAlerts(): void {
     onInboxAbandoned(onInboxGivenUp);
     onTokenError(onToken);
     onLockEvent(onLock);
-    onStoreIncident(onIncident);
+    for (const rt of tenantRuntimes()) withTenantScope(rt, () => onStoreIncident(onIncident));
     onJobFailed(onJob);
     // 停机：在途的推送（store_conflict、锁被拿走、drain 段末尾的 spill）等到 late 段的截止时刻，再退出
     onShutdown(

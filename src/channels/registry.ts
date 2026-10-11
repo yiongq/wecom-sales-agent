@@ -1,5 +1,16 @@
+import { scopedState } from '../tenancy/scoped-state.js';
+import { registerTenantState } from '../tenancy/state.js';
 import { withoutTenantScope, tenantCallback } from '../tenancy/runtime.js';
-import { scopedRuntime, runtimeOf, hostRuntime, identifyRuntime, withTenantScope } from '../tenancy/runtime.js';
+import {
+  scopedRuntime,
+  runtimeOf,
+  hostRuntime,
+  identifyRuntime,
+  withTenantScope,
+  currentRuntime,
+  tenantRuntimes,
+  backgroundEntry,
+} from '../tenancy/runtime.js';
 // 渠道注册表与启动装载（docs/architecture/03-channels-v2/spec.md「接口与数据流」的 registry.ts 与启动顺序、R1、R7 的哨兵、R8、R15、
 // R19、不变量 13、14）。
 // initChannels 在 initSessionStore 之后、监听之前调一次：判企微状态（文件存储 / 未导入 / 已导出 / 在库里），按状态拼账号、解密、
@@ -31,7 +42,7 @@ import {
   hasChannelsMarker,
   hasRestoreSentinel,
   hasWecomStateFile,
-  removeRestoreSentinel,
+  clearTenantRestoreSentinel,
   RESTORE_SENTINEL,
   WECOM_STATE_FILE,
   writeChannelsMarker,
@@ -47,6 +58,29 @@ import {
   type WecomSecrets,
 } from './secrets.js';
 import { ChannelStartupError } from './startup-error.js';
+
+const tenantState = scopedState(
+  () => ({
+    registry: null as Registry | null,
+    restartUnknown: [] as { key: string; count: number }[],
+    observations: new Map<string, DbObservation>(),
+    refreshing: null as Promise<void> | null,
+    pendingRead: null as { expired: boolean } | null,
+    lastStatsAt: null as number | null,
+  }),
+  {
+    pendingRead: (v) => {
+      if (v) v.expired = true;
+    },
+  },
+);
+const state = tenantState.get;
+registerTenantState({ name: 'channels.registry.registry', ...tenantState.registration('registry') });
+registerTenantState({ name: 'channels.registry.restartUnknown', ...tenantState.registration('restartUnknown') });
+registerTenantState({ name: 'channels.registry.observations', ...tenantState.registration('observations') });
+registerTenantState({ name: 'channels.registry.refreshing', ...tenantState.registration('refreshing') });
+registerTenantState({ name: 'channels.registry.pendingRead', ...tenantState.registration('pendingRead') });
+registerTenantState({ name: 'channels.registry.lastStatsAt', ...tenantState.registration('lastStatsAt') });
 
 export { ChannelStartupError } from './startup-error.js';
 export type { ChannelStartupReason } from './startup-error.js';
@@ -90,12 +124,12 @@ interface Registry {
   warnings: string[];
   /** db 存储的库；文件存储为 null（库里企微账号的 cursor 与入站行经会话存储的短事务写，第 9 步） */
   db: Db | null;
+  accounts: readonly ChannelAccount[];
 }
 
-let registry: Registry | null = null;
+// 实例级启动时间与总巡检定时器；查询和账号观察值按所属租户分开。
 let startedAt = Date.now();
 let observationClock = (): number => Date.now();
-let restartUnknown: { key: string; count: number }[] = [];
 interface DbObservation {
   openInbox: number;
   oldestAt: number | null;
@@ -103,32 +137,36 @@ interface DbObservation {
   cursorAt: number | null;
   unknownSends24h: number;
 }
-const observations = new Map<string, DbObservation>();
-let refreshing: Promise<void> | null = null;
-let pendingRead: { expired: boolean } | null = null;
 let statsTimer: ReturnType<typeof setInterval> | null = null;
 let statsRefreshMs = 30_000;
 let statsTimeoutMs = 5_000;
-let lastStatsAt: number | null = null;
 
 function stopStatsRefresh(): void {
   if (statsTimer) clearInterval(statsTimer);
   statsTimer = null;
-  if (pendingRead) pendingRead.expired = true;
+  for (const rt of tenantRuntimes()) {
+    const own = tenantState.peek(rt);
+    if (own?.pendingRead) own.pendingRead.expired = true;
+  }
 }
 
 function startStatsRefresh(): void {
-  if (!registry?.db || statsTimer) return;
-  const rt = scopedRuntime() ?? hostRuntime();
-  void tenantCallback(rt, refreshChannelObservability)();
-  statsTimer = withoutTenantScope(() => setInterval(() => tenantCallback(rt, refreshChannelObservability)(), statsRefreshMs));
+  if (!state().registry?.db) return;
+  const refresh = (): void => {
+    for (const rt of tenantRuntimes())
+      if (rt.kind === 'standard' && rt.state === 'serving' && tenantState.peek(rt)?.registry?.db)
+        void tenantCallback(rt, refreshChannelObservability)();
+  };
+  refresh();
+  if (statsTimer) return;
+  statsTimer = withoutTenantScope(() => setInterval(refresh, statsRefreshMs));
   statsTimer.unref();
 }
 
-onShutdown(stopStatsRefresh);
+withoutTenantScope(() => onShutdown(stopStatsRefresh));
 
 /** 装载的结果：检查全部通过之后才由 commit 装上；effects 是装上之后才做的文件动作（补写标记、删哨兵），失败只记日志 */
-interface Plan extends Omit<Registry, 'db'> {
+interface Plan extends Omit<Registry, 'db' | 'accounts'> {
   accounts: ChannelAccount[];
   logs: string[];
   effects: (() => void)[];
@@ -163,11 +201,13 @@ const loadedOf = (account: ChannelAccount, extra: Partial<LoadedChannel> = {}): 
 });
 
 /** 渠道状态在文件里（文件存储、未导入、已导出）时有恢复哨兵：恢复照 02，只记一行并删掉它（R7） */
-function dropSentinel(varDir: string, state: string): () => void {
+function dropSentinel(varDir: string, state: string, tenantId = currentRuntime().id, shared = false): () => void {
   return () => {
     try {
-      removeRestoreSentinel(varDir);
-      console.log(`[channels] 有恢复哨兵 ${RESTORE_SENTINEL}：企微状态${state}，渠道状态在文件里、恢复照 02，已删掉`);
+      clearTenantRestoreSentinel(varDir, tenantId, shared);
+      console.log(
+        `[channels] 有恢复哨兵 ${RESTORE_SENTINEL}：企微状态${state}，渠道状态在文件里、恢复照 02，${shared ? '已解除本租户保护，总哨兵保留' : '已删掉'}`,
+      );
     } catch (e) {
       console.error(`[channels] ⚠️ 有恢复哨兵 ${RESTORE_SENTINEL}（企微状态${state}），删不掉（${errCode(e)}）：下次启动再删`);
     }
@@ -184,15 +224,15 @@ function webAccountsOf(rows: readonly ChannelAccountRow[], tenantId: string, war
 
 /** 文件存储（deps 为 null）：标记文件在就拒绝；否则 WECOM_* 配齐时拼一个 env 账号，状态在 var/wecom-cursor.json（照 02） */
 function planFileStore(varDir: string): Plan {
-  if (hasChannelsMarker(varDir)) {
+  if (currentRuntime().isHost && hasChannelsMarker(varDir)) {
     throw new ChannelStartupError(
       'channel_state_in_db',
       `文件存储下 ${varDir} 里有 ${CHANNELS_IN_DB_MARKER}：企微状态在库里，要回到文件存储先跑 channel-export`,
     );
   }
-  const env = envAccountFrom(process.env, '');
+  const env = currentRuntime().isHost ? envAccountFrom(process.env, '') : null;
   const effects: (() => void)[] = [];
-  if (hasRestoreSentinel(varDir)) effects.push(dropSentinel(varDir, '在文件存储下'));
+  if (currentRuntime().isHost && hasRestoreSentinel(varDir)) effects.push(dropSentinel(varDir, '在文件存储下'));
   return {
     mode: 'env',
     wecomState: 'file',
@@ -209,6 +249,8 @@ function planFileStore(varDir: string): Plan {
 /** db 存储：读本租户的全部账号（一个只读快照），按 R1 判企微状态 */
 async function planDbStore(deps: ChannelDeps): Promise<Plan> {
   const { db, tenantId, varDir } = deps;
+  // 只看本进程装载的 standard；库里的测试/演练租户不共享这个运行时的数据目录。
+  const shared = tenantRuntimes().filter((rt) => rt.kind === 'standard').length > 1;
   // 账号与启用企微账号没结束的入站、出站行在同一个快照里读：只读，库里什么都不改（拒绝时 cursor 也就不动）
   const { rows, open } = await withTenant(
     db,
@@ -243,7 +285,7 @@ async function planDbStore(deps: ChannelDeps): Promise<Plan> {
   const state: WecomState =
     wecomRows.length === 0 ? 'not_imported' : wecomRows.every((r) => r.status === 'exported') ? 'exported' : 'in_db';
   if (state !== 'in_db') {
-    if (hasChannelsMarker(varDir)) {
+    if (currentRuntime().isHost && hasChannelsMarker(varDir)) {
       throw new ChannelStartupError(
         'channel_state_in_db',
         state === 'exported'
@@ -251,10 +293,11 @@ async function planDbStore(deps: ChannelDeps): Promise<Plan> {
           : `库里没有企微账号，${varDir} 里却有 ${CHANNELS_IN_DB_MARKER}：标记与库对不上（库是不是恢复成了导入之前的备份？），核对之后重跑 channel-import`,
       );
     }
-    const env = envAccountFrom(process.env, tenantId);
+    const env = currentRuntime().isHost ? envAccountFrom(process.env, tenantId) : null;
     const label = state === 'not_imported' ? '未导入（库里没有企微账号）' : `已导出（默认账号 ${wecomRows[0]!.key} 是 exported）`;
     const effects: (() => void)[] = [];
-    if (hasRestoreSentinel(varDir)) effects.push(dropSentinel(varDir, state === 'not_imported' ? '未导入' : '已导出'));
+    if (hasRestoreSentinel(varDir, shared ? tenantId : undefined))
+      effects.push(dropSentinel(varDir, state === 'not_imported' ? '未导入' : '已导出', tenantId, shared));
     return {
       mode: 'env',
       wecomState: state,
@@ -289,15 +332,15 @@ async function planDbStore(deps: ChannelDeps): Promise<Plan> {
       throw e;
     }
   }
-  const sentinel = hasRestoreSentinel(varDir);
+  const sentinel = hasRestoreSentinel(varDir, tenantId);
   if (sentinel && active.length) {
     throw new ChannelStartupError(
       'channel_restore_pending',
       `${varDir} 里有恢复哨兵 ${RESTORE_SENTINEL}：从备份恢复之后还没跑 channel-account restore-cutoff（恢复手册），跑完再起`,
     );
   }
-  const marker = hasChannelsMarker(varDir);
-  if (hasWecomStateFile(varDir) && !marker) {
+  const marker = currentRuntime().isHost && hasChannelsMarker(varDir);
+  if (currentRuntime().isHost && hasWecomStateFile(varDir) && !marker) {
     throw new ChannelStartupError(
       'channel_state_in_file',
       `库里有企微账号，${varDir} 里还有没导入的 ${WECOM_STATE_FILE}：跑 channel-import（回退到 02 跑过一段就加 --resync）`,
@@ -317,7 +360,7 @@ async function planDbStore(deps: ChannelDeps): Promise<Plan> {
   for (const [id, c] of webChannels) channels.set(id, c);
 
   const effects: (() => void)[] = [];
-  if (!marker) {
+  if (currentRuntime().isHost && !marker) {
     const def = wecomRows.find((r) => r.idPrefix === DEFAULT_WECOM_PREFIX) ?? wecomRows[0]!;
     effects.push(() => {
       try {
@@ -354,13 +397,18 @@ async function planDbStore(deps: ChannelDeps): Promise<Plan> {
  * 检查全部通过之后才装上：账号表、注册表，再做文件动作、打日志。企微状态在库里时装上的账号里有库里的企微账号，适配器据此
  * 不再走 env 的老路（不读 WECOM_*、不写 var/wecom-cursor.json，不变量 13）
  */
+function publishAccountLookup(): void {
+  // 公开路由按租户过滤这份查找表；装载或重置一个租户不能覆盖其他租户的账号。
+  installAccounts(tenantRuntimes().flatMap((rt) => tenantState.peek(rt)?.registry?.accounts ?? []));
+}
+
 function commit(plan: Plan, db: Db | null): void {
-  installAccounts(plan.accounts);
+  const own = state();
   startedAt = observationClock();
-  lastStatsAt = null;
-  observations.clear();
+  own.lastStatsAt = null;
+  own.observations.clear();
   for (const c of plan.channels.values()) {
-    observations.set(c.account.id, {
+    own.observations.set(c.account.id, {
       openInbox: c.openInbox.length,
       oldestAt: c.openInbox.length ? Math.min(...c.openInbox.map((i) => i.receivedAt.getTime())) : null,
       staleOutbound: 0,
@@ -368,8 +416,16 @@ function commit(plan: Plan, db: Db | null): void {
       unknownSends24h: 0,
     });
   }
-  restartUnknown = [];
-  registry = { mode: plan.mode, wecomState: plan.wecomState, channels: plan.channels, warnings: plan.warnings, db };
+  own.restartUnknown = [];
+  own.registry = {
+    mode: plan.mode,
+    wecomState: plan.wecomState,
+    channels: plan.channels,
+    warnings: plan.warnings,
+    db,
+    accounts: Object.freeze([...plan.accounts]),
+  };
+  publishAccountLookup();
   for (const fx of plan.effects) fx();
   for (const line of plan.logs) console.log(line);
   for (const w of plan.warnings) console.warn(`[channels] ⚠️ ${w}`);
@@ -399,9 +455,25 @@ export async function initChannels(deps: ChannelDeps | null): Promise<void> {
     });
   }
   await withTenantScope(rt, () => initChannelsInScope(deps));
+  // boot 的宿主入口装载各 standard 渠道；独立渠道自测只提供自己的 deps。
+  if (rt.isHost && deps)
+    for (const owner of tenantRuntimes()) {
+      const loaded = owner.config.loaded;
+      if (owner === rt || owner.kind !== 'standard' || owner.state !== 'serving' || !loaded || tenantState.peek(owner)?.registry) continue;
+      await withTenantScope(owner, () =>
+        initChannelsInScope({
+          db: loaded.deps.db,
+          tenantId: owner.id,
+          tenantSlug: owner.slug,
+          varDir: deps.varDir,
+          keyRing: deps.keyRing,
+        }),
+      );
+    }
 }
 async function initChannelsInScope(deps: ChannelDeps | null): Promise<void> {
-  if (registry) throw new Error('initChannels 只能调一次');
+  const own = state();
+  if (own.registry) throw new Error('initChannels 只能调一次');
   const plan = deps === null ? planFileStore(storeVarDir()) : await planDbStore(deps);
   commit(plan, deps?.db ?? null);
 }
@@ -415,20 +487,25 @@ async function initChannelsInScope(deps: ChannelDeps | null): Promise<void> {
  * 按账号的独立告警（startAlerts 在起渠道后的第二次调用补查）
  */
 export function startChannels(): void {
-  if (!registry) return;
-  if (registry.mode === 'env') {
-    if ([...registry.channels.values()].some((c) => c.account.source === 'env')) startWecom();
+  for (const rt of tenantRuntimes())
+    if (rt.kind === 'standard' && rt.state === 'serving') backgroundEntry(() => withTenantScope(rt, startChannelsInScope));
+}
+function startChannelsInScope(): void {
+  const own = state();
+  if (!own.registry) return;
+  if (own.registry.mode === 'env') {
+    if ([...own.registry.channels.values()].some((c) => c.account.source === 'env')) startWecom();
     startStatsRefresh();
     return;
   }
-  if (!registry.db) return;
-  for (const c of registry.channels.values()) {
+  if (!own.registry.db) return;
+  for (const c of own.registry.channels.values()) {
     if (c.account.kind !== 'wecom_kf' || c.account.source !== 'db' || !c.secrets) continue;
     const unknown = unknownAtRestart(c.openOutbound, c.openInbox, c.account.wecom?.recordOnlyUntil ?? null);
     if (unknown) {
       const why = `企微账号 ${c.account.key} 重启时有 ${unknown} 段停在「发送中」，记 unknown、不补发（可能没送达，工作台已标出，请顾问核对）`;
       console.error(`[channels] ⚠️ ${why}`);
-      restartUnknown.push({ key: c.account.key, count: unknown });
+      own.restartUnknown.push({ key: c.account.key, count: unknown });
     }
     startWecomAccount({ account: c.account, secrets: c.secrets, open: { inbox: c.openInbox, outbound: c.openOutbound } });
   }
@@ -437,43 +514,49 @@ export function startChannels(): void {
 
 /** 装上的企微状态；还没装载（自测、eval）时为 null */
 export function wecomState(): WecomState | null {
-  return registry?.wecomState ?? null;
+  const own = state();
+  return own.registry?.wecomState ?? null;
 }
 
 /** 企微状态在库里是 db，其余是 env；还没装载时按 env（02 的老路） */
 export function channelsMode(): 'env' | 'db' {
-  return registry?.mode ?? 'env';
+  const own = state();
+  return own.registry?.mode ?? 'env';
 }
 
 /** 启用的账号（按账号 uuid）与它们的启动数据 */
 export function loadedChannels(): ReadonlyMap<string, LoadedChannel> {
-  return registry?.channels ?? new Map();
+  const own = state();
+  return own.registry?.channels ?? new Map();
 }
 
 /** 装载时的告警（只有账号 key 与原因），startAlerts 以 channel 键推一条 */
 export function channelStartupWarnings(): readonly string[] {
-  return registry?.warnings ?? [];
+  const own = state();
+  return own.registry?.warnings ?? [];
 }
 
 /** 重启的 sending → unknown 单独推送，免得挤进启动检查后被截断。 */
 export function channelRestartUnknown(): readonly { key: string; count: number }[] {
-  return restartUnknown;
+  const own = state();
+  return own.restartUnknown;
 }
 
 /** 后台巡检与成员状态共用只读刷新；整个读取最多等 5 秒，失败或超时保留旧快照。 */
 export function refreshChannelObservability(): Promise<void> {
-  if (refreshing) return refreshing;
+  const own = state();
+  if (own.refreshing) return own.refreshing;
   // Promise 超时不能取消正在借连接或运行的 SQL；它结束之前不叠加查询，迟到的结果不覆盖快照。
-  if (pendingRead) return Promise.resolve();
-  const r = registry;
+  if (own.pendingRead) return Promise.resolve();
+  const r = own.registry;
   if (!r?.db) return Promise.resolve();
-  const accounts = loadedAccounts();
+  const accounts = installedChannelAccounts();
   if (!accounts.length) return Promise.resolve();
   const now = observationClock();
   const tenantId = accounts[0]!.tenantId;
   const defaultId = accounts.find((a) => a.wecom?.idPrefix === DEFAULT_WECOM_PREFIX)?.id ?? null;
   const read = { expired: false };
-  pendingRead = read;
+  own.pendingRead = read;
   const query = withTenant(
     r.db,
     { tenantId, actor: SYSTEM_ACTOR },
@@ -489,12 +572,12 @@ export function refreshChannelObservability(): Promise<void> {
     { readOnly: true, isolation: 'repeatable read' },
   )
     .then((snapshot) => {
-      if (!snapshot || read.expired || registry !== r) return;
+      if (!snapshot || read.expired || own.registry !== r) return;
       const { inbox, outbound, cursors } = snapshot;
       for (const a of accounts) {
         const i = inbox.find((x) => x.accountId === a.id);
         const o = outbound.find((x) => x.accountId === a.id);
-        observations.set(a.id, {
+        own.observations.set(a.id, {
           openInbox: i?.openInbox ?? 0,
           oldestAt: i?.oldestAt?.getTime() ?? null,
           staleOutbound: o?.staleOutbound ?? 0,
@@ -502,13 +585,13 @@ export function refreshChannelObservability(): Promise<void> {
           cursorAt: cursors.find((x) => x.id === a.id)?.cursorAt?.getTime() ?? null,
         });
       }
-      lastStatsAt = observationClock();
+      own.lastStatsAt = observationClock();
     })
     .catch(() => {
       // 不把数据库错误正文（可能含凭据与地址）交进响应；恢复卡住仍由运行时判定。
     })
     .finally(() => {
-      if (pendingRead === read) pendingRead = null;
+      if (own.pendingRead === read) own.pendingRead = null;
     });
   let timeout!: ReturnType<typeof setTimeout>;
   const deadline = new Promise<void>((resolve) => {
@@ -520,17 +603,18 @@ export function refreshChannelObservability(): Promise<void> {
   });
   const bounded = Promise.race([query, deadline]).finally(() => {
     clearTimeout(timeout);
-    if (refreshing === bounded) refreshing = null;
+    if (own.refreshing === bounded) own.refreshing = null;
   });
-  refreshing = bounded;
-  return refreshing;
+  own.refreshing = bounded;
+  return own.refreshing;
 }
 
 /** 只交账号 key、计数、时刻与错误码；不交账号 uuid、cursor、企微标识与凭据。 */
 export function channelStatuses(now = observationClock()): ChannelStatus[] {
-  return loadedAccounts().map((a) => {
+  const own = state();
+  return installedChannelAccounts().map((a) => {
     const rt = a.kind === 'wecom_kf' && isEnabled(a) ? wecomObservability(a.id) : null;
-    const db = observations.get(a.id);
+    const db = own.observations.get(a.id);
     const age = (at: number | null | undefined): number | null => (at == null ? null : Math.max(0, (now - at) / 1000));
     return {
       key: a.key,
@@ -550,11 +634,12 @@ export function channelStatuses(now = observationClock()): ChannelStatus[] {
 
 /** 给巡检的只读判定；一个账号即使同时入站与恢复卡住，也只算一次。 */
 export function channelConditions(now = observationClock()) {
-  return loadedAccounts()
+  const own = state();
+  return installedChannelAccounts()
     .filter(isEnabled)
     .map((a) => {
       const rt = a.kind === 'wecom_kf' ? wecomObservability(a.id) : null;
-      const db = observations.get(a.id);
+      const db = own.observations.get(a.id);
       const graceOver = now - (rt?.startedAt ?? startedAt) > 60_000;
       return {
         key: a.key,
@@ -588,11 +673,12 @@ export const __channelsTest = {
     if (running) startStatsRefresh();
   },
   stats(): { ageSec: number | null; running: boolean; referenced: boolean; reading: boolean } {
+    const own = state();
     return {
-      ageSec: lastStatsAt === null ? null : Math.max(0, (observationClock() - lastStatsAt) / 1000),
+      ageSec: own.lastStatsAt === null ? null : Math.max(0, (observationClock() - own.lastStatsAt) / 1000),
       running: statsTimer !== null,
       referenced: statsTimer?.hasRef() ?? false,
-      reading: pendingRead !== null,
+      reading: own.pendingRead !== null,
     };
   },
   stopStatsRefresh,
@@ -601,16 +687,25 @@ export const __channelsTest = {
     observationClock = fn ?? (() => Date.now());
   },
   reset(): void {
+    const own = state();
     stopStatsRefresh();
-    refreshing = null;
-    pendingRead = null;
-    lastStatsAt = null;
+    own.refreshing = null;
+    own.pendingRead = null;
+    own.lastStatsAt = null;
     statsRefreshMs = 30_000;
     statsTimeoutMs = 5_000;
     stopWecomAccounts();
-    observations.clear();
-    restartUnknown = [];
-    registry = null;
-    installAccounts([]);
+    own.observations.clear();
+    own.restartUnknown = [];
+    own.registry = null;
+    publishAccountLookup();
   },
 };
+
+/** 注册表持有该租户全部账号（含停用的），供观测与出站匹配使用。 */
+export function installedChannelAccounts(): readonly ChannelAccount[] {
+  return (
+    state().registry?.accounts ??
+    loadedAccounts().filter((a) => a.tenantId === currentRuntime().id || (currentRuntime().isHost && a.tenantId === ''))
+  );
+}
