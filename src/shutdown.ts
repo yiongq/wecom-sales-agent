@@ -26,12 +26,13 @@ export function onShutdown(fn: ShutdownHook, opts: { phase?: ShutdownPhase } = {
   });
 }
 
-// 必须小于 deploy.sh 的 `docker stop -t 10`：超过宽限期 docker 直接 SIGKILL，
-// 连 'exit' 阶段的同步落盘都跑不到。留约 2s 给落盘和进程退出。
-const SHUTDOWN_TIMEOUT_MS = 8000;
+// 宿主留 2 秒给同步 spill；沙箱不写文件，至多用满 10 秒宽限期排空，未落库只计数。
+// 沙箱的 normal 只同步停止入口，主要时间留给 drain，late 释放进程锁与连接。
+const SHUTDOWN_TIMEOUT_MS = process.env.APP_ROLE === 'sandbox' ? 10_000 : 8000;
 
 /** 各段占总上限的份额：normal 最多到第 6 秒，drain 最多 1.5 秒，late 最多 0.5 秒（总上限 8 秒时） */
-const SHARE: Record<ShutdownPhase, number> = { normal: 6 / 8, drain: 1.5 / 8, late: 0.5 / 8 };
+const SHARE: Record<ShutdownPhase, number> =
+  process.env.APP_ROLE === 'sandbox' ? { normal: 0, drain: 0.95, late: 0.05 } : { normal: 6 / 8, drain: 1.5 / 8, late: 0.5 / 8 };
 
 async function runPhase(phase: ShutdownPhase, deadline: number): Promise<boolean> {
   const list = [...hooks[phase]];

@@ -967,7 +967,8 @@ export async function openPgBackend(d: PgBackendDeps): Promise<PgBackend> {
   const rt = d.runtime ?? currentRuntime();
   return withTenantScope(rt, async () => {
     let pre = await detached(() => preload(d));
-    const replay = await replaySpills(d);
+    const replay =
+      rt.kind === 'sandbox' ? { applied: 0, skipped: 0, failedFiles: 0, channelOnly: 0, channelWritten: 0 } : await replaySpills(d);
     if (replay.applied || replay.channelWritten) pre = await detached(() => preload(d));
     return createBackend(d, pre, replay);
   });
@@ -1960,6 +1961,11 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       return { undrained: [...entries.values()].filter(isDirty).map((e) => e.id) };
     },
     spillSync() {
+      if (rt.kind === 'sandbox') {
+        const count = [...entries.values()].filter((e) => isDirty(e) || hasChannelRows(e.pc) || e.pcRun !== null).length;
+        console.log(`[sandbox] 停机丢弃未落库会话 ${count}`);
+        return count;
+      }
       try {
         // poisoned 的会话总是脏的；渠道行还没写完的也一并写出（防御）
         const dirty = [...entries.values()].filter((e) => isDirty(e) || hasChannelRows(e.pc) || e.pcRun !== null);

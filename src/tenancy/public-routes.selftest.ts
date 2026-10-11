@@ -140,6 +140,17 @@ try {
     assert.equal((await request(url, 'other.example.invalid')).status, 404, `${url} 只给宿主`);
   // healthz 不参与 Host 选择，始终在宿主作用域投影。
   assert.equal((await request('/healthz', 'unknown.invalid')).status, 200);
+  const healthy = await (await request('/healthz', 'unknown.invalid')).json();
+  assert.equal(healthy.role, 'host');
+  assert.equal(healthy.ok, true, '只装载配置时健康检查不创建非宿主文件后端');
+  const lockState = other.config.lockState;
+  try {
+    other.config.lockState = 'lost';
+    assert.equal((await (await request('/healthz', 'unknown.invalid')).json()).ok, false, '其他 standard 丢锁也使宿主健康为 false');
+  } finally {
+    other.config.lockState = lockState;
+  }
+
   const web = (tenantId: string, id: string): ChannelAccount => ({
     id,
     tenantId,

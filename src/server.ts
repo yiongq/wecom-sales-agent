@@ -8,6 +8,7 @@ import { publicHostMiddleware, publicBase } from './tenancy/hosts.js';
 import {
   hostRuntime,
   tenantRuntimes,
+  tenantStoreIfLoaded,
   withTenantScope,
   withoutTenantScope,
   tenantCallback,
@@ -100,11 +101,17 @@ import { sandboxTryUrl } from './console-api/entry.js';
 import { convLabel, convLabelsIn, requestLogContext } from './log.js';
 import { startAlerts } from './ops/alert.js';
 import { consolePages } from './console-api/host.js';
+import { logRole } from './tenancy/sandbox/role.js';
+import { SandboxProcess, sandboxApp } from './tenancy/sandbox/process.js';
 import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
 const app = new Hono();
-// 每个请求一个 req（响应头 x-request-id），这个请求里的日志都带它（02 spec R24）。排在最前：413、411 这类拒绝也有
-app.use('/*', requestLogContext, publicHostMiddleware);
+const sandbox = process.env.APP_ROLE === 'sandbox' ? new SandboxProcess(process.env) : null;
+const sandboxHttp = sandbox ? sandboxApp(sandbox, process.env.SANDBOX_HOST ?? '') : null;
+// 每个请求一个 req（响应头 x-request-id），两个角色都在任何路由分派之前建立日志上下文。
+app.use('/*', requestLogContext);
+if (sandboxHttp) app.use('/*', async (c) => sandboxHttp.fetch(c.req.raw));
+app.use('/*', publicHostMiddleware);
 
 // channel 来自落盘的会话 JSON：数据改坏、或加了新渠道漏接这里，都会落到兜底。兜底此前是模拟器，
 // 没有 SSE 连接时它的 push 返回 true，后台显示「已回复」，实际什么也没发出去。现在兜底一律推送失败，
@@ -339,10 +346,25 @@ app.get('/healthz', (c) => {
     store.lagMs <= 120_000 &&
     config.lock !== 'lost' &&
     channels.failing === 0 &&
-    channels.stuck === 0;
+    channels.stuck === 0 &&
+    tenantRuntimes()
+      .filter((rt) => rt.kind === 'standard' && !rt.isHost)
+      .every((rt) =>
+        withTenantScope(rt, () => {
+          const otherStore = tenantStoreIfLoaded(rt)?.pgBackend?.health();
+          const otherChannels = channelsHealth();
+          return (
+            (!otherStore || (!otherStore.conflict && otherStore.poisoned.length === 0 && otherStore.lagMs <= 120_000)) &&
+            (configMode() !== 'db' || configHealth().lock !== 'lost') &&
+            otherChannels.failing === 0 &&
+            otherChannels.stuck === 0
+          );
+        }),
+      );
   return c.json({
     ok,
     revision: process.env.APP_REVISION || 'dev',
+    role: 'host',
     models: activeModels(),
     visitorLLM: budgetStatus(),
     llmGate: gateStatus(),
@@ -1040,6 +1062,7 @@ const port = Number(process.env.PORT) || 3200;
 /** 监听成功后先打的几行配置自检（与配置源无关，原样保留） */
 function logStartup(listeningPort: number): void {
   console.log(`[server] 已启动 http://localhost:${listeningPort}`);
+  logRole('host', profile().flags);
   // 02 新增的开关不进 profile-boot 那一行（那一行只列 00 的六个开关），生效值在这里另打一行
   console.log(`[profile] legacy_admin_writes=${profile().flags.legacy_admin_writes ? 'on' : 'off'}`);
   console.log(`[profile] web_channel=${profile().flags.web_channel ? 'on' : 'off'}`);
@@ -1092,7 +1115,29 @@ function pushFollowUp(sessionId: string, text: string, opts?: PushOpts): Promise
   return adapterFor(s?.channel ?? 'wecom').push(sessionId, text, opts);
 }
 
-if (!SELFTEST) {
+if (!SELFTEST && sandbox) {
+  try {
+    await sandbox.start();
+    onShutdown(() => {
+      for (const rt of tenantRuntimes()) {
+        rt.state = 'closing';
+        withTenantScope(rt, markConfigShuttingDown);
+      }
+    });
+    onShutdown(() => sandbox.close(), { phase: 'late' });
+    withoutTenantScope(() =>
+      serve({ fetch: app.fetch, port }, (info) => {
+        console.log(`[server] 沙箱已启动 http://localhost:${info.port}`);
+        logRole('sandbox', profile().flags);
+      }),
+    );
+  } catch (error) {
+    console.error('[sandbox] 启动失败：', error instanceof Error ? error.message : 'sandbox_startup_failed');
+    process.exit(1);
+  }
+}
+
+if (!SELFTEST && !sandbox) {
   // 配置源的停机：普通阶段起就忽略锁连接的事件，late 阶段（在途回复都结束后）才释放锁、关连接池
   onShutdown(() => {
     for (const rt of tenantRuntimes()) withTenantScope(rt, markConfigShuttingDown);

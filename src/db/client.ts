@@ -1,3 +1,4 @@
+import { assertSandboxRunning } from '../tenancy/sandbox/lifecycle.js';
 import { withoutTenantScope } from '../tenancy/runtime.js';
 // 数据库连接、租户上下文与租户锁（docs/architecture/01-pg-config-console/spec.md「数据库 · withTenant」）。
 // 全仓只有 src/db/** 能 import pg / drizzle-orm / PGlite；租户 GUC 的名字也只出现在本文件和迁移 SQL 里（lint 守着）。
@@ -74,7 +75,17 @@ export function redactUrl(url: string): string {
 /** 只接受 postgres:// 与 postgresql://；PGlite 只经 testing.ts 进来。打开时先连一次，连不上当场抛 */
 export async function openDb(url: string, opts: { max?: number } = {}): Promise<{ db: Db; close(): Promise<void> }> {
   assertPgUrl(url);
+  assertSandboxRunning();
   const pool = new pg.Pool({ connectionString: url, max: opts.max ?? 5 });
+  // 根 Db 的 execute / transaction 也不得在置停后借连接（不仅是 withTenant）。
+  if (process.env.APP_ROLE === 'sandbox') {
+    const connect = pool.connect.bind(pool);
+    pool.connect = ((...args: unknown[]) => {
+      assertSandboxRunning();
+      return Reflect.apply(connect, pool, args);
+    }) as typeof pool.connect;
+  }
+
   // EventEmitter 不捕获注册时 ALS；实例日志回调执行时 exit，租户锁通知由订阅者显式进入所属 rt。
   // 空闲连接断开时 Pool 会发 error 事件，没人监听会让进程崩掉；下次借连接时 Pool 自己会新建
   withoutTenantScope(() =>
@@ -84,6 +95,14 @@ export async function openDb(url: string, opts: { max?: number } = {}): Promise<
   // 没人监听就是整个进程崩掉。挂一个常驻监听，让出错只落在正在跑的那条查询上（它会 reject），归还时 Pool 丢弃这条连接
   withoutTenantScope(() =>
     pool.on('connect', (client) => {
+      // 在实际 SQL 发送边界拦截，覆盖 drizzle 自动发出的 COMMIT；ROLLBACK 仍允许收尾。
+      const query = client.query.bind(client);
+      client.query = ((...args: unknown[]) => {
+        const first = args[0];
+        const text = typeof first === 'string' ? first : (first as { text?: string })?.text;
+        if (!/^rollback\b/i.test(text ?? '')) assertSandboxRunning();
+        return Reflect.apply(query, client, args);
+      }) as typeof client.query;
       withoutTenantScope(() =>
         client.on('error', (err) => withoutTenantScope(() => console.warn(`[db] 连接出错（${redactUrl(url)}）：${err.message}`))),
       );
@@ -99,7 +118,14 @@ export async function openDb(url: string, opts: { max?: number } = {}): Promise<
   const perClient = new WeakMap<pg.PoolClient, Db>();
   registerDriver(db, {
     async acquire() {
+      assertSandboxRunning();
       const client = await pool.connect();
+      try {
+        assertSandboxRunning();
+      } catch (error) {
+        client.release(true);
+        throw error;
+      }
       let conn = perClient.get(client);
       if (!conn) {
         conn = drizzle(client, { schema, logger: countingLogger });
@@ -171,6 +197,23 @@ export function rowsOf<T>(result: unknown): T[] {
 
 // ---------------- 租户上下文 ----------------
 
+/** 05 R2：实例 epoch 的共享行锁持有到事务提交，bigint 不转成不精确的 JS number。 */
+export async function fenceSandboxEpoch(tx: Tx, epoch: string): Promise<void> {
+  assertSandboxRunning();
+  const [row] = rowsOf<{ epoch: string | number }>(
+    await tx.execute(sql`select epoch from public.sandbox_process_epoch where id = 1 for share`),
+  );
+  if (!row || String(row.epoch) !== epoch) throw new Error('sandbox_epoch_stale');
+}
+
+/** 供实例级 cursor / 名额状态以及开通前置写使用，同样经过停止闸与事务收尾检查。 */
+export function withSandboxEpoch<T>(db: Db, epoch: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
+  return tenantTransaction(db, async (tx) => {
+    await fenceSandboxEpoch(tx, epoch);
+    return fn(tx);
+  });
+}
+
 const tenantStore = new AsyncLocalStorage<TenantCtx>();
 
 export interface WithTenantOpts {
@@ -217,8 +260,11 @@ export async function withNewSandboxTenant<T>(
   db: Db,
   input: NewSandboxTenantInput,
   fn: (tx: Tx, created: NewSandboxTenant) => Promise<T>,
+  opts: { epoch?: string } = {},
 ): Promise<T> {
+  if (process.env.APP_ROLE === 'sandbox' && opts.epoch === undefined) throw new Error('sandbox_epoch_required');
   return tenantTransaction(db, async (tx) => {
+    if (opts.epoch !== undefined) await fenceSandboxEpoch(tx, opts.epoch);
     const [row] = rowsOf<{ o_tenant: string; o_user: string; o_expires_at: Date | string }>(
       await tx.execute(sql`
       select * from public.sandbox_tenant_create(${input.slug}, ${input.templateTenantId}::uuid,
@@ -244,9 +290,11 @@ async function tenantTransaction<T>(db: Db, fn: (tx: Tx) => Promise<T>, opts: Wi
     opts.isolation || opts.readOnly
       ? { isolationLevel: opts.isolation, accessMode: opts.readOnly ? ('read only' as const) : undefined }
       : undefined;
+  assertSandboxRunning();
   const conn = await driver.acquire();
   let leaked = false;
   try {
+    assertSandboxRunning();
     return await conn.db.transaction(async (tx) => {
       // SET LOCAL 只管本事务，提交或回滚后回到角色的默认值，连接归还时不留痕
       if (opts.longRunning) {
@@ -259,7 +307,9 @@ async function tenantTransaction<T>(db: Db, fn: (tx: Tx) => Promise<T>, opts: Wi
         leaked = true;
         throw new Error('这条连接上有会话级的 app.tenant_id（有人在事务外 SET 过），已销毁这条连接');
       }
-      return fn(tx);
+      const result = await fn(tx);
+      assertSandboxRunning();
+      return result;
     }, config);
   } finally {
     await conn.release(leaked);
@@ -299,6 +349,11 @@ export interface TenantLock {
   release(): Promise<void>;
 }
 
+export interface ProcessTenantLock extends TenantLock {
+  /** 沙箱装载 / 开通后在同一条进程锁连接上取租户锁。 */
+  acquireTenant(tenantId: string): Promise<TenantLock | null>;
+}
+
 /**
  * 在一条专用连接上执行 pg_try_advisory_lock；拿不到返回 null（锁在别人手里）。
  * 连接开 TCP keepalive（默认 10 秒）：对端消失时尽快收到 error 事件，而不是等到下一次查询。
@@ -312,9 +367,10 @@ export async function holdTenantLock(url: string, tenantId: string, opts: { keep
 export async function holdTenantLocks(
   url: string,
   tenantIds: readonly string[],
-  opts: { keepAliveMs?: number } = {},
-): Promise<TenantLock | null> {
+  opts: { keepAliveMs?: number; waitMs?: number } = {},
+): Promise<ProcessTenantLock | null> {
   assertPgUrl(url);
+  const started = Date.now();
   const keys = tenantIds.map((id) => `wecom-sales-agent:${id}`);
   const connect = async (): Promise<pg.Client> => {
     // 连接超时要比 5 秒一次的重取间隔短，免得一次重取拖过下一次
@@ -341,15 +397,6 @@ export async function holdTenantLocks(
   };
 
   let client = await connect();
-  // 查询本身出错（连接刚建好就断了）是连不上，不是锁在别人手里：照原样抛给调用方
-  const got = await tryLock(client).catch((err: unknown) => {
-    drop(client);
-    throw err;
-  });
-  if (!got) {
-    drop(client);
-    return null;
-  }
   const lostCallbacks: (() => void)[] = [];
   let released = false;
   let lost = false;
@@ -360,7 +407,8 @@ export async function holdTenantLocks(
       if (fired || released || c !== client) return;
       fired = true;
       lost = true;
-      for (const cb of lostCallbacks) cb();
+      const callbacks = lostCallbacks.slice();
+      for (const cb of callbacks) cb();
     };
     withoutTenantScope(() => {
       c.on('error', onLost);
@@ -368,6 +416,47 @@ export async function holdTenantLocks(
     });
   };
   watch(client);
+
+  // 查询本身出错（连接刚建好就断了）是连不上，不是锁在别人手里：照原样抛给调用方
+  const waitMs = Math.min(opts.waitMs ?? 0, 30_000);
+  let waitTimer: NodeJS.Timeout | undefined;
+  const attemptInitial = async (): Promise<boolean> => {
+    do {
+      if (await tryLock(client)) return true;
+      const remaining = started + waitMs - Date.now();
+      if (remaining <= 0) return false;
+      await new Promise<void>((resolve) => withoutTenantScope(() => setTimeout(resolve, Math.min(100, remaining))));
+    } while (Date.now() < started + waitMs);
+    return false;
+  };
+  const got = await (
+    waitMs > 0
+      ? Promise.race([
+          attemptInitial(),
+          new Promise<boolean>((resolve) => {
+            waitTimer = withoutTenantScope(() =>
+              setTimeout(
+                () => {
+                  drop(client); // 也终止迟迟不返回的锁查询，30 秒是整次取得锁的上限。
+                  resolve(false);
+                },
+                Math.max(0, started + waitMs - Date.now()),
+              ),
+            );
+          }),
+        ])
+      : attemptInitial()
+  )
+    .catch((err: unknown) => {
+      drop(client);
+      throw err;
+    })
+    .finally(() => clearTimeout(waitTimer));
+
+  if (!got) {
+    drop(client);
+    return null;
+  }
 
   const attempt = async (): Promise<'ok' | 'held_by_other' | 'unreachable'> => {
     let next: pg.Client;
@@ -397,6 +486,42 @@ export async function holdTenantLocks(
   };
 
   return {
+    async acquireTenant(tenantId) {
+      assertSandboxRunning();
+      if (lost || released) throw new Error('sandbox_process_stopped');
+      const key = `wecom-sales-agent:${tenantId}`;
+      if (keys.includes(key)) throw new Error('tenant_lock_duplicate');
+      const result = await client.query<{ ok: boolean }>('select pg_try_advisory_lock(hashtextextended($1, 0)) as ok', [key]);
+      if (!result.rows[0]?.ok) return null;
+      keys.push(key);
+      let tenantReleased = false;
+      const callbacks: (() => void)[] = [];
+      return {
+        onLost: (cb) => {
+          if (tenantReleased) return;
+          const notify = (): void => {
+            if (!tenantReleased) cb();
+          };
+          callbacks.push(notify);
+          lostCallbacks.push(notify);
+          if (lost && !released) cb();
+        },
+        reacquire: async () => {
+          throw new Error('sandbox_lock_reacquire_forbidden');
+        },
+        release: async () => {
+          if (tenantReleased) return;
+          tenantReleased = true;
+          for (const callback of callbacks) {
+            const index = lostCallbacks.indexOf(callback);
+            if (index >= 0) lostCallbacks.splice(index, 1);
+          }
+          callbacks.length = 0;
+          keys.splice(keys.indexOf(key), 1);
+          if (!lost && !released) await client.query('select pg_advisory_unlock(hashtextextended($1, 0))', [key]);
+        },
+      };
+    },
     onLost(cb) {
       lostCallbacks.push(cb);
       // 断开事件只发一次：订阅时已经断了（还没重取回来）就当场补一次，晚订阅的不会永远以为持着锁

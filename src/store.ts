@@ -334,6 +334,10 @@ async function loadSessionStore(deps: SessionStoreDeps | null): Promise<void> {
     tenantCallback(currentRuntime(), async ({ deadline }: { deadline: number }) => {
       const { undrained } = await drainStore(Math.max(0, deadline - Date.now()));
       const real = undrained.filter((id) => !isDemoClassId(id));
+      if (currentRuntime().kind === 'sandbox') {
+        console.log(`[sandbox] 排空结束，未落库会话 ${real.length}（退出时丢弃）`);
+        return;
+      }
       if (real.length) {
         console.error(
           `[store] drain 段结束时还有 ${real.length} 个会话没落库（${real.map((id) => shortIdOf(id)).join('、')}），退出时写进 spill`,

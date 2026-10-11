@@ -3,6 +3,9 @@ export const STATE_MANIFEST: Record<
   string,
   { kind: 'tenant'; state: string } | { kind: 'instance'; why: string } | { kind: 'object-keyed' }
 > = Object.freeze({
+  'src/server.ts:sandbox': { kind: 'instance', why: '沙箱进程的组合根；epoch、进程锁与停止策略只有一份。' },
+  'src/server.ts:sandboxHttp': { kind: 'instance', why: '沙箱角色的 HTTP 路由能力；请求阶段才建立租户作用域。' },
+  'src/tenancy/sandbox/lifecycle.ts:stopped': { kind: 'instance', why: '沙箱进程锁丢失后的永久停止闸；不按租户恢复。' },
   'src/adapters/simulator.ts:simulatorAdapter': { kind: 'instance', why: '固定适配器能力对象；所引用租户状态另登记' },
   'src/adapters/simulator.ts:state': { kind: 'tenant', state: 'simulator.clients' },
   'src/adapters/simulator.ts:tenantState': { kind: 'tenant', state: 'simulator.clients' },
@@ -557,6 +560,7 @@ export const STATE_MANIFEST: Record<
   'src/shared/ui-labels.ts:SOP_CHECKS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/shared/ui-labels.ts:SOP_CHECK_LABEL': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/shutdown.ts:PHASES': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
+  'src/shutdown.ts:SHUTDOWN_TIMEOUT_MS': { kind: 'instance', why: '按启动角色固定的停机时限；宿主 8 秒、沙箱至多 10 秒。' },
   'src/shutdown.ts:SHARE': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/shutdown.ts:hooks': { kind: 'instance', why: '进程停机编排；租户钩子归所属 rt，drop 注销（见表后）' },
   'src/shutdown.ts:shuttingDown': { kind: 'instance', why: '进程停机编排；租户钩子由第 6 步逐运行时执行' },
