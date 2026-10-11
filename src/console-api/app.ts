@@ -1,3 +1,4 @@
+import { SandboxLimitError } from '../tenancy/sandbox/limits.js';
 import { publicHostMiddleware } from '../tenancy/hosts.js';
 import { sandboxSessionOf, resolveSandboxSession } from '../tenancy/sandbox/session.js';
 import { currentRuntime, withoutTenantScope, tenantCallback, withTenantScope } from '../tenancy/runtime.js';
@@ -360,6 +361,7 @@ function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503
   // 02「后台接口」的新错误码：角色不够 403，角色够但会话不归你 409（不变量 23 与权限表的分界）
   if (e instanceof ForbiddenError) return { status: 403, body: { error: 'forbidden', detail: e.message } };
   if (e instanceof ConversationNotFoundError) return { status: 404, body: { error: 'conversation_not_found', detail: e.message } };
+  if (e instanceof SandboxLimitError) return { status: 429, body: { error: e.reason } };
   if (e instanceof OrderNotFoundError) return { status: 404, body: { error: 'not_found', detail: e.message } };
   if (e instanceof AssignedToOtherError)
     return { status: 409, body: { error: 'assigned_to_other', detail: e.message, assigneeName: e.assigneeName } };

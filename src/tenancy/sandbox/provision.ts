@@ -5,7 +5,7 @@ import { publishedBrand } from '../../config/hashes.js';
 import { writeTemplateConfig } from '../../config/transfer.js';
 import { writeSeedSessions } from '../../cli/session-transfer.js';
 import { withNewSandboxTenant, type NewSandboxTenant, type TenantLock } from '../../db/client.js';
-import { expireBrokenSandbox, sandboxStartupRows } from '../../db/sandbox-process.js';
+import { expireBrokenSandbox, sandboxStartupRows, sandboxPoolHealth } from '../../db/sandbox-process.js';
 import { writeAudit } from '../../db/repo/audit.js';
 import { readSandboxTemplate, insertSandboxWechat, seedSandboxPrivacy } from '../../db/repo/sandbox.js';
 import { copyQuickReplies } from '../../db/repo/quick-replies.js';
@@ -15,6 +15,7 @@ import { withoutTenantScope } from '../runtime.js';
 import { assertSandboxRunning } from './lifecycle.js';
 import { loadSandboxRuntime } from './load.js';
 import { sandboxSeeds } from './seeds.js';
+import { assertSandboxProvisionAllowed, recordSandboxProvision, SandboxLimitError } from './limits.js';
 
 // 实例互斥链：包括判限额、读快照、提交与预载；失败不能毒化下一次开通。
 let provisioning: Promise<void> = Promise.resolve();
@@ -37,7 +38,8 @@ export interface ProvisionOptions {
   acquireTenant(tenantId: string): Promise<TenantLock | null>;
   ip: string | null;
   userAgent: string | null;
-  /** 第 19、20 步在锁内接全量限额与池预算；当前至少判同时存活 20 个。 */
+  env?: NodeJS.ProcessEnv;
+  /** 第 20 步在锁内接池预算；拒绝时尚未提交开通计数。 */
   admit?: () => Promise<void>;
 }
 export interface ProvisionedSandbox extends NewSandboxTenant {
@@ -100,7 +102,8 @@ function reportFailure(stage: 'provision' | 'expire', error: unknown): void {
 async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
   try {
     assertSandboxRunning();
-    if ((await sandboxStartupRows(o.deps.db)).length >= 20) throw new SandboxProvisionError(429, 'sandbox_limited', 60);
+    const [live, pool] = await Promise.all([sandboxStartupRows(o.deps.db), sandboxPoolHealth(o.deps.db)]);
+    assertSandboxProvisionAllowed({ live: live.length, provisioned: pool.provisioned, day: pool.day, ip: o.ip }, o.env);
     await o.admit?.();
     const template = await readSandboxTemplate(o.deps.db, o.templateSlug);
     const slug = `sbx-${[...randomBytes(20)].map((n) => 'abcdefghijklmnopqrstuvwxyz234567'[n & 31]).join('')}`;
@@ -130,6 +133,7 @@ async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
       },
       { epoch: o.epoch },
     );
+    recordSandboxProvision(o.ip, pool.day);
     try {
       const rt = await loadSandboxRuntime(o.deps, { id: created.tenantId, slug, expiresAt: created.expiresAt }, o.host, o.acquireTenant);
       if (!rt) throw new Error('sandbox_tenant_lock_held');
@@ -149,6 +153,7 @@ async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
       user: { userId: created.userId, tenantId: created.tenantId, role: 'owner', displayName: '体验访客' },
     };
   } catch (error) {
+    if (error instanceof SandboxLimitError) throw new SandboxProvisionError(429, 'sandbox_limited', error.retryAfter);
     if (error instanceof SandboxProvisionError) throw error;
     reportFailure('provision', error);
     throw new SandboxProvisionError(503, 'sandbox_unavailable', undefined, { cause: error });

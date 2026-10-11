@@ -1,3 +1,5 @@
+import { scopedRuntime } from '../tenancy/runtime.js';
+import { assertSandboxWriteCapacity } from '../tenancy/sandbox/limits.js';
 // 产品库的编辑流程（docs/architecture/01-pg-config-console/spec.md「产品库 · 编辑规则」）。
 // 每个写函数在 withTenant 里第一句取配置写锁；更新按 rev 乐观锁；写库的是「旧 payload 应用补丁」按旧键序递归合并的对象，
 // 值取请求原文，不取 zod 的输出；合并后的整条再过一遍 schema。提交之后用 RETURNING 的行更新快照，结果不明时整体重读。
@@ -98,6 +100,7 @@ async function nextVersion(
 ): Promise<number | undefined> {
   if (cur.status !== 'active' || JSON.stringify(next) === JSON.stringify(cur.payload)) return undefined;
   const version = (await maxCatalogVersion(tx, cur.kind, cur.code)) + 1;
+  assertSandboxWriteCapacity('versionsPerItem', version - 1);
   await insertCatalogVersion(tx, { kind: cur.kind, code: cur.code, version, payload: next, source, createdByName: name });
   return version;
 }
@@ -136,6 +139,13 @@ async function write(ctx: TenantCtx, fn: (tx: Tx) => Promise<CatalogRow>): Promi
   return toItem(row);
 }
 
+async function checkSandboxCatalogSize(tx: Tx, add: number): Promise<void> {
+  if (scopedRuntime()?.kind !== 'sandbox') return;
+  const routes = await readCatalogOfKind(tx, 'route');
+  const hotels = await readCatalogOfKind(tx, 'hotel');
+  assertSandboxWriteCapacity('catalogItems', routes.length + hotels.length, add);
+}
+
 // ---------------- 读 ----------------
 
 /** 按 ord 排序，含 draft；v0 条目只有几十条，不分页 */
@@ -158,6 +168,7 @@ export async function createCatalogItem(ctx: TenantCtx, kind: CatalogKind, paylo
   validate(kind, payload);
   return write(ctx, async (tx) => {
     if (await readCatalogItem(tx, kind, String(payload.id))) throw new CatalogCodeTakenError('这个 code 已经有了');
+    await checkSandboxCatalogSize(tx, 1);
     const row = await insertDraftItem(tx, { tenantId: ctx.tenantId, kind, ord: (await maxOrd(tx, kind)) + 1, payload, by: by(ctx) });
     await writeAudit(tx, { action: 'catalog.create', targetType: kind, targetId: row.code, diff: topLevelDiff({}, payload) });
     return row;
@@ -220,6 +231,7 @@ export async function activateCatalogItem(ctx: TenantCtx, kind: CatalogKind, cod
  */
 export async function importCatalogCsv(ctx: TenantCtx, kind: CatalogKind, csv: string, labels?: CsvLabels): Promise<CatalogItem[]> {
   const payloads = prepareCatalogCsv(kind, csv, labels);
+  assertSandboxWriteCapacity('importRows', 0, payloads.length);
   assertConfigWritable();
   const rt = runtimeFor(ctx);
   try {
@@ -230,6 +242,7 @@ export async function importCatalogCsv(ctx: TenantCtx, kind: CatalogKind, csv: s
         existing.has(String(p.id)) ? [{ row: i + 1, issues: [{ path: 'id', message: '这个编号已经有了' }] }] : [],
       );
       if (taken.length) throw new CatalogCsvError(taken);
+      await checkSandboxCatalogSize(tx, payloads.length);
       let ord = await maxOrd(tx, kind);
       const out: CatalogRow[] = [];
       for (const payload of payloads) {

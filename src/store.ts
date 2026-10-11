@@ -1,3 +1,4 @@
+import { assertSandboxNewConversation } from './tenancy/sandbox/limits.js';
 import { scopedState } from './tenancy/scoped-state.js';
 import {
   currentRuntime,
@@ -878,6 +879,7 @@ export function getOrCreateSession(id: string, channel: string): Session {
   const state = storeState();
   let s = state.sessions.get(id);
   if (!s) {
+    assertSandboxNewConversation(state.sessions.values());
     const now = Date.now();
     s = {
       id,
