@@ -49,8 +49,8 @@ try {
         ...(suite === 'eval/run.ts' ? { CONFIG_SOURCE: 'file', CONFIG_TEST_DB: 'pglite', LLM_MOCK: '1' } : {}),
       },
     });
-    // 渠道套件含数百个 CLI 子进程，真实 PG 与严格预载均增加启动成本；仍设硬超时。
-    const timer = setTimeout(() => child.kill('SIGKILL'), 300_000);
+    // 渠道套件含数百个 CLI 子进程，真实 PG 与严格预载均增加启动成本；CI 机器上单套已超过 5 分钟，硬超时放到 15 分钟。
+    const timer = setTimeout(() => child.kill('SIGKILL'), 900_000);
     const code = await new Promise<number | null>((resolve, reject) => {
       child.once('error', reject);
       child.once('close', resolve);
