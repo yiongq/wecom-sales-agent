@@ -1,3 +1,4 @@
+import { scopedRuntime, withTenantScope, withoutTenantScope, backgroundEntry, type TenantRuntime } from './tenancy/runtime.js';
 // 优雅停机（docs/architecture/02-conversations-workbench/spec.md「两种会话存储与启动」）：信号接线与三段停机钩子。
 // 从 store.ts 搬来，store.ts 原样再导出 onShutdown、runShutdownHooks、gracefulExit；两种会话存储下都在导入期注册。
 //
@@ -14,11 +15,15 @@ const PHASES: readonly ShutdownPhase[] = ['normal', 'drain', 'late'];
 /** 钩子收到这一段的截止时刻（毫秒时间戳），要排空写队列的钩子按它算剩余预算 */
 export type ShutdownHook = (ctx: { deadline: number }) => unknown;
 
-const hooks: Record<ShutdownPhase, ShutdownHook[]> = { normal: [], drain: [], late: [] };
+const hooks: Record<ShutdownPhase, { fn: ShutdownHook; runtime: TenantRuntime | undefined }[]> = { normal: [], drain: [], late: [] };
 
 /** 注册停机收尾钩子，默认进 normal 段 */
 export function onShutdown(fn: ShutdownHook, opts: { phase?: ShutdownPhase } = {}): void {
-  hooks[opts.phase ?? 'normal'].push(fn);
+  const rt = scopedRuntime();
+  hooks[opts.phase ?? 'normal'].push({
+    runtime: rt,
+    fn: (ctx) => backgroundEntry(() => (rt ? withTenantScope(rt, () => fn(ctx)) : withoutTenantScope(() => fn(ctx)))),
+  });
 }
 
 // 必须小于 deploy.sh 的 `docker stop -t 10`：超过宽限期 docker 直接 SIGKILL，
@@ -32,12 +37,12 @@ async function runPhase(phase: ShutdownPhase, deadline: number): Promise<boolean
   const list = [...hooks[phase]];
   if (!list.length) return true;
   let timer: NodeJS.Timeout | undefined;
-  const all = Promise.allSettled(list.map((fn) => Promise.resolve().then(() => fn({ deadline })))).then((rs) => {
+  const all = Promise.allSettled(list.map(({ fn }) => Promise.resolve().then(() => fn({ deadline })))).then((rs) => {
     for (const r of rs) if (r.status === 'rejected') console.error(`[shutdown] ${phase} 段的停机钩子异常:`, r.reason);
     return true;
   });
   const timeout = new Promise<boolean>((resolve) => {
-    timer = setTimeout(() => resolve(false), Math.max(0, deadline - Date.now()));
+    timer = withoutTenantScope(() => setTimeout(() => resolve(false), Math.max(0, deadline - Date.now())));
   });
   try {
     const ok = await Promise.race([all, timeout]);
@@ -82,5 +87,10 @@ export function gracefulExit(code: number, why = `退出码 ${code}`): void {
 }
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(sig, () => gracefulExit(sig === 'SIGINT' ? 130 : 143, `收到 ${sig}`));
+  withoutTenantScope(() => process.on(sig, () => gracefulExit(sig === 'SIGINT' ? 130 : 143, `收到 ${sig}`)));
+}
+
+/** R12 删除租户时同时撤掉捕获它的停机闭包；实例钩子保留。 */
+export function dropShutdownHooks(rt: TenantRuntime): void {
+  for (const phase of PHASES) hooks[phase] = hooks[phase].filter((h) => h.runtime !== rt);
 }

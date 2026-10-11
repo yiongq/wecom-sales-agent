@@ -10,10 +10,12 @@ const key = Symbol.for('wecom.eval.v2.resets');
 Object.defineProperty(globalThis, key, { value: resets, configurable: true });
 const bodies: Record<string, string> = {
   'store.ts': `
+    const state = currentRuntime().store;
+    const { sessions, orders, pgBackend, fileBackend } = state;
     for (const id of sessions.keys()) pgBackend?.forget(id);
     sessions.clear(); orders.clear();
-    if (changeTimer) clearTimeout(changeTimer);
-    changeTimer = null;
+    if (state.changeTimer) clearTimeout(state.changeTimer);
+    state.changeTimer = null;
     fileBackend.flushNow();`,
   'store/pg-backend.ts': `
     for (const e of entries.values()) {

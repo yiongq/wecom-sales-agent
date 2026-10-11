@@ -1,3 +1,4 @@
+import { withoutTenantScope } from '../tenancy/runtime.js';
 // 后台会话（docs/architecture/01-pg-config-console/spec.md「鉴权」）。
 // cookie 是 32 字节随机数的 base64url，库里只存它的 sha256；空闲 12 小时、绝对 7 天过期，失效的在下一次被访问时删行。
 // 登录只接纳本实例租户（DEFAULT_TENANT_SLUG）的成员。限流都在进程内（单副本），键数到上限按 LRU 淘汰。
@@ -152,7 +153,7 @@ export async function login(input: {
   }
   const byEmail = failByEmail.claim(email, input.now);
   try {
-    if (byEmail.count > 10) await new Promise((r) => setTimeout(r, slowDelayMs));
+    if (byEmail.count > 10) await new Promise((r) => withoutTenantScope(() => setTimeout(r, slowDelayMs)));
     const found = await authLoginLookup(db, tenantId, email);
     const { ok, needsRehash } = await verifyPassword(input.password, found?.passwordHash ?? fakeHash());
     if (!found || !ok) {

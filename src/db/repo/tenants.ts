@@ -74,3 +74,11 @@ export async function updateRetention(db: Db, tenantId: string, patch: Partial<R
   if (Object.keys(set).length === 0) return;
   await db.update(tenants).set(set).where(eq(tenants.id, tenantId));
 }
+
+/** 05 宿主启动清单：不装沙箱；无 public_host 的非宿主只记录并跳过。 */
+export async function standardTenants(db: Db): Promise<{ id: string; slug: string; publicHost: string | null }[]> {
+  return db
+    .select({ id: tenants.id, slug: tenants.slug, publicHost: tenants.publicHost })
+    .from(tenants)
+    .where(eq(tenants.kind, 'standard'));
+}

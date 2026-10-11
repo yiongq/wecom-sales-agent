@@ -1,3 +1,4 @@
+import { scopedRuntime, runtimeOf, hostRuntime, identifyRuntime, withTenantScope } from '../tenancy/runtime.js';
 // 渠道注册表与启动装载（docs/architecture/03-channels-v2/spec.md「接口与数据流」的 registry.ts 与启动顺序、R1、R7 的哨兵、R8、R15、
 // R19、不变量 13、14）。
 // initChannels 在 initSessionStore 之后、监听之前调一次：判企微状态（文件存储 / 未导入 / 已导出 / 在库里），按状态拼账号、解密、
@@ -382,6 +383,22 @@ function commit(plan: Plan, db: Db | null): void {
  * 每个账号的 inactiveReason 与欢迎语，读出每个启用企微账号没结束的入站行与没结果的出站行。任何一步失败都不留半装载状态
  */
 export async function initChannels(deps: ChannelDeps | null): Promise<void> {
+  const rt = scopedRuntime() ?? (deps ? runtimeOf(deps.tenantId) : undefined) ?? hostRuntime();
+  if (deps && rt.id !== deps.tenantId) {
+    if (rt.config.loaded || rt.store.pgBackend) throw new Error('渠道与已装载运行时的租户不一致');
+    // 独立的 03 装载入口也按明确的依赖身份建作用域。
+    identifyRuntime(rt, {
+      id: deps.tenantId,
+      slug: deps.tenantSlug,
+      kind: rt.kind,
+      isHost: rt.isHost,
+      publicBase: rt.publicBase,
+      expiresAt: rt.expiresAt,
+    });
+  }
+  await withTenantScope(rt, () => initChannelsInScope(deps));
+}
+async function initChannelsInScope(deps: ChannelDeps | null): Promise<void> {
   if (registry) throw new Error('initChannels 只能调一次');
   const plan = deps === null ? planFileStore(storeVarDir()) : await planDbStore(deps);
   commit(plan, deps?.db ?? null);

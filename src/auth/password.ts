@@ -1,3 +1,4 @@
+import { withoutTenantScope } from '../tenancy/runtime.js';
 // 口令哈希（docs/architecture/01-pg-config-console/spec.md「鉴权 · 口令」）。
 // 'scrypt$<logN>$<r>$<p>$<salt>$<hash>'（base64url）：参数随哈希存，换参数不需要迁移，旧哈希照样能校验，
 // 登录成功时按当前参数重新哈希（needsRehash）。当前参数 N = 2^17、r = 8、p = 1，16 字节盐、64 字节输出，
@@ -34,11 +35,13 @@ function acquire(): Promise<void> {
       running++;
       resolve();
     };
-    const timer = setTimeout(() => {
-      const i = waiting.indexOf(go);
-      if (i >= 0) waiting.splice(i, 1);
-      reject(new PasswordBusyError());
-    }, QUEUE_WAIT_MS);
+    const timer = withoutTenantScope(() =>
+      setTimeout(() => {
+        const i = waiting.indexOf(go);
+        if (i >= 0) waiting.splice(i, 1);
+        reject(new PasswordBusyError());
+      }, QUEUE_WAIT_MS),
+    );
     waiting.push(go);
   });
 }

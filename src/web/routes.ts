@@ -1,3 +1,4 @@
+import { tenantScopeMiddleware, withoutTenantScope, tenantCallback, currentRuntime } from '../tenancy/runtime.js';
 import { currentPack } from '../config/source.js';
 import { brandTexts, renderBrandPage } from '../core/brand.js';
 // 03 R14：正式网页渠道。每次读写的会话都只由账号与 HttpOnly cookie 推导。
@@ -119,6 +120,7 @@ const webOnly = async (c: Context, next: () => Promise<void>): Promise<Response 
   if (!profile().flags.web_channel || !accountByKey(c.req.param('key') ?? '', 'web')) return c.notFound();
   return next();
 };
+webRoutes.use('*', tenantScopeMiddleware);
 webRoutes.use('/w/:key', webOnly);
 webRoutes.use('/api/web/:key/*', webOnly);
 webRoutes.get('/w/:key', async (c) => {
@@ -187,9 +189,11 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
   processing.add(s.id);
   let reservation: Daily | null = null;
   let usedModel = false;
-  const unsubscribeTurn = onTurnEnd(({ turn }) => {
-    if (turn.conversationId === s.id && turn.llm.length > 0) usedModel = true;
-  });
+  const unsubscribeTurn = withoutTenantScope(() =>
+    onTurnEnd(({ turn }) => {
+      if (turn.conversationId === s.id && turn.llm.length > 0) usedModel = true;
+    }),
+  );
   try {
     const count = daily(account);
     if (count.turns >= account.web!.dailyTurns && (!s.handedOver || s.webTurnLimited)) {
@@ -241,13 +245,14 @@ webRoutes.get('/api/web/:key/events', lookupLimit, (c) => {
   const account = accountByKey(c.req.param('key'), 'web')!;
   const s = ownSession(account, visitorToken(c));
   if (!s) return c.json({ error: 'unauthorized' }, 401);
+  const rt = currentRuntime();
   const encoder = new TextEncoder();
   let controller: ReadableStreamDefaultController<Uint8Array>;
   let timer: NodeJS.Timeout | undefined;
   let lastActivity = Date.now();
   let closed = false;
   let cancelSubscription = (): void => {};
-  const close = (): void => {
+  const close = tenantCallback(rt, (): void => {
     if (closed) return;
     closed = true;
     if (timer) clearInterval(timer);
@@ -259,7 +264,7 @@ webRoutes.get('/api/web/:key/events', lookupLimit, (c) => {
     } catch {
       // ReadableStream.cancel 已先关闭控制器；订阅与定时器仍须释放。
     }
-  };
+  });
   const send = (event: string, data: unknown): void => {
     if (closed) throw new Error('closed');
     // 客户不读时关闭连接，防止慢连接无限积压正文与心跳。
@@ -294,13 +299,18 @@ webRoutes.get('/api/web/:key/events', lookupLimit, (c) => {
       start(ctrl) {
         controller = ctrl;
         streams.add(connection);
-        c.req.raw.signal.addEventListener('abort', close, { once: true });
+        withoutTenantScope(() => c.req.raw.signal.addEventListener('abort', close, { once: true }));
         if (c.req.raw.signal.aborted) {
           close();
           return;
         }
         send('ping', Date.now());
-        timer = setInterval(() => connection.tick(Date.now()), PING_MS);
+        timer = withoutTenantScope(() =>
+          setInterval(
+            tenantCallback(rt, () => connection.tick(Date.now())),
+            PING_MS,
+          ),
+        );
         timer.unref();
       },
       cancel: close,
@@ -322,9 +332,11 @@ webRoutes.post('/api/web/:key/end', (c) => {
   setVisitorCookie(c, '', 0);
   return c.json({ ok: true });
 });
-onShutdown(() => {
-  for (const stream of streams) stream.close();
-});
+withoutTenantScope(() =>
+  onShutdown(() => {
+    for (const stream of streams) stream.close();
+  }),
+);
 
 /** 自测手动触发生产用的心跳巡检，不缩短生产超时。 */
 export const __webTest = {

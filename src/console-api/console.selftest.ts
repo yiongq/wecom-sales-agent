@@ -2169,16 +2169,20 @@ check(
     PACK_IDS.join() === 'travel' && packById('renovation') === null && packById('toString') === null && packById('__proto__') === null,
   );
 
-  // 包不在注册表里时拒绝启动：用一份全新的配置源模块实例装载，不动本进程已装好的这份
+  // 包不在注册表里时拒绝启动：配置归运行时，另建启动作用域，不动本进程已装好的这份
   await asSuper(() => t.pg.query(`insert into tenants (slug, name, pack_id) values ('nopack', '没有包的租户', 'renovation')`));
-  const fresh = (await import(new URL('../config/source.js?pack-unknown', import.meta.url).href)) as typeof import('../config/source.js');
+  const { createTenantRuntime, withTenantScope, unregisterRuntime } = await import('../tenancy/runtime.js');
+  const fresh = createTenantRuntime({ id: 'pack-unknown', slug: 'nopack' });
+  const before = cfg.currentSop();
   let reason = 'ok';
   try {
-    await fresh.initConfig(testConfigDeps(t, { tenantSlug: 'nopack' }));
+    await withTenantScope(fresh, () => cfg.initConfig(testConfigDeps(t, { tenantSlug: 'nopack' })));
   } catch (e) {
     reason = e instanceof Error && 'reason' in e ? String(e.reason) : String(e);
   }
+  unregisterRuntime(fresh.id);
   check('启动：租户的行业包不在注册表里 → 以 pack_unknown 拒绝启动', reason === 'pack_unknown', reason);
+  check('启动失败不改已装载租户的配置', cfg.currentSop() === before);
 
   // tenant-create 的 --pack 读注册表：包名检查在连库之前，不设连接串也跑得到
   const { spawnSync } = await import('node:child_process');

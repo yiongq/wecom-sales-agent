@@ -1,3 +1,4 @@
+import { withoutTenantScope } from '../tenancy/runtime.js';
 // OpenTelemetry 导出（docs/architecture/02-conversations-workbench/spec.md「可观测性与告警 · OpenTelemetry（默认关闭）」、R24、
 // 不变量 49）。只在设了 OTEL_EXPORTER_OTLP_ENDPOINT 时由 boot() 经 src/ops/otel.ts 动态 import：没设端点时这个文件与
 // @opentelemetry/* 一个都不加载、不起导出线程、不向外连接（lint 的 check-boundaries 管着：src/otel/ 之外不许静态 import 它们）。
@@ -112,11 +113,11 @@ export async function startOtel(): Promise<void> {
   exporter = new LoggedExporter(new OTLPTraceExporter());
   provider = new BasicTracerProvider({
     resource: resourceFromAttributes({ 'service.name': SERVICE, 'service.version': process.env.APP_REVISION || 'dev' }),
-    spanProcessors: [new BatchSpanProcessor(exporter)],
+    spanProcessors: [withoutTenantScope(() => new BatchSpanProcessor(exporter!))],
   });
   tracer = provider.getTracer(SERVICE, process.env.APP_REVISION || 'dev');
   // drain 段：normal 段等完在途的轮次之后，这时每一轮都已交给导出器。按这一段的截止时刻自己守预算（见 shutdownOtel）
-  onShutdown(({ deadline }) => shutdownOtel(deadline), { phase: 'drain' });
+  withoutTenantScope(() => onShutdown(({ deadline }) => shutdownOtel(deadline), { phase: 'drain' }));
 }
 
 /**
@@ -149,7 +150,7 @@ async function shutdownOtel(deadline: number): Promise<void> {
   );
   const budget = Math.max(0, Math.min(deadline - Date.now() - SHUTDOWN_MARGIN_MS, SHUTDOWN_MAX_MS));
   const late = new Promise<false>((resolve) => {
-    timer = setTimeout(() => resolve(false), budget);
+    timer = withoutTenantScope(() => setTimeout(() => resolve(false), budget));
     timer.unref();
   });
   try {

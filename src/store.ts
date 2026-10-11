@@ -1,3 +1,17 @@
+import {
+  currentRuntime,
+  hostRuntime,
+  scopedRuntime,
+  tenantRuntimes,
+  withTenantScope,
+  withoutTenantScope,
+  tenantCallback,
+  installTenantStoreFactory,
+  identifyRuntime,
+  type TenantRuntime,
+} from './tenancy/runtime.js';
+import { registerTenantState } from './tenancy/state.js';
+import type { FileBackend } from './store/file-backend.js';
 // 会话存储门面（docs/architecture/02-conversations-workbench/spec.md「两种会话存储与启动」）。
 // 内存里的两张 Map 是本进程的权威，getSession / getOrder / saveSession 都是同步的；持久化交给后端：
 // 文件存储是 var/sessions.json、var/orders.json 的整文件重写（src/store/file-backend.ts）；db 存储（SESSION_STORE=db）
@@ -19,7 +33,7 @@ import { convLabel, setConvRefResolver } from './log.js';
 import { profile } from './profile.js';
 import { INBOX_ABANDON_REASONS, type InboxAbandonReason } from './shared/channel-types.js';
 import { shortIdOf } from './shared/conversation.js';
-import { gracefulExit, onShutdown } from './shutdown.js';
+import { gracefulExit, onShutdown, dropShutdownHooks } from './shutdown.js';
 import {
   SessionStoreStartupError,
   StoreLaggingError,
@@ -79,8 +93,13 @@ export type OutboundRow = NonNullable<TelemetryRows['outbound']>[number];
 export type OutboundFailResult = { ok: true; sessionId: string | null } | { ok: false };
 
 // 数据变更事件：SSE 后台看板据此实时推送（发 'change'）
-export const storeEvents = new EventEmitter();
-storeEvents.setMaxListeners(100);
+export const storeEvents = new Proxy(new EventEmitter(), {
+  get(_target, key) {
+    const emitter = currentRuntime().events.storeEvents;
+    const value: unknown = Reflect.get(emitter, key);
+    return typeof value === 'function' ? value.bind(emitter) : value;
+  },
+});
 
 /**
  * 写库的事故（02 spec「可观测性与告警」的 store 告警，startAlerts 订阅）：conflict 是落库撞上另一写者（随后优雅停机），
@@ -110,51 +129,94 @@ export function varDir(): string {
   return VAR_DIR;
 }
 
-const sessions = new Map<string, Session>();
-const orders = new Map<string, Order>();
-/** 被保留期清理或行权删除移出内存的会话对象（第 16 步）：拿着旧对象的 saveSession 记一行日志、不执行 */
-const tombstoned = new WeakSet<Session>();
+// 模块订阅能力留给第 9 步搬迁；发出时同步沿用所属运行时作用域。
+const saveHooks = new Set<(s: Session) => void>();
+const outboundCommitHooks = new Set<(rows: readonly OutboundRow[]) => void>();
+let forgetSessionProbe: ((sessionId: string) => void) | null = null;
+export interface TenantStore {
+  sessions: Map<string, Session>;
+  orders: Map<string, Order>;
+  tombstoned: WeakSet<Session>;
+  pgBackend: PgBackend | null;
+  fileBackend: FileBackend;
+  changeTimer: NodeJS.Timeout | null;
+  maintenanceTimer: NodeJS.Timeout | null;
+}
+function storeState(): TenantStore {
+  return currentRuntime().store;
+}
+export function createTenantStore(rt: TenantRuntime): TenantStore {
+  // 后端的 owns 回调只闭包捕获本租户状态，不读取触发者。
+  const state: TenantStore = {
+    sessions: new Map(),
+    orders: new Map(),
+    tombstoned: new WeakSet(),
+    pgBackend: null,
+    fileBackend: null!,
+    changeTimer: null,
+    maintenanceTimer: null,
+  };
+  const sessions = state.sessions;
+  const orders = state.orders;
+  /** 被保留期清理或行权删除移出内存的会话对象（第 16 步）：拿着旧对象的 saveSession 记一行日志、不执行 */
 
-/** PG 后端，db 存储下由 initSessionStore 装上；装上之前与文件存储下都是 null */
-let pgBackend: PgBackend | null = null;
+  /** PG 后端，db 存储下由 initSessionStore 装上；装上之前与文件存储下都是 null */
 
-const fileBackend = createFileBackend({
-  varDir: VAR_DIR,
-  sessions,
-  orders,
-  owns: (id) => !pgBackend || isDemoClassId(id),
-  // 孤儿订单（所属会话不在内存里）也留在 JSON，由文件后端原样保留（spec「导入、导出与切换」）；同 id 的会话建出来、
-  // 订单被 PG 后端收养之后，在它随会话在库里提交过一次之前仍归文件后端（崩溃不丢），提交之后 ordersTaken 才让 JSON 去掉它
-  ownsOrder: (o) => !pgBackend || isDemoClassId(o.sessionId) || !sessions.has(o.sessionId) || pgBackend.adoptedUncommitted(o.id),
-  isReal: (id) => !isDemoClassId(id),
-  afterPersist: () => storeEvents.emit('change'),
-});
-fileBackend.load();
-fileBackend.probe();
+  state.fileBackend = createFileBackend({
+    runtime: rt,
+    varDir: VAR_DIR,
+    sessions,
+    orders,
+    owns: (id) => !state.pgBackend || isDemoClassId(id),
+    // 孤儿订单（所属会话不在内存里）也留在 JSON，由文件后端原样保留（spec「导入、导出与切换」）；同 id 的会话建出来、
+    // 订单被 PG 后端收养之后，在它随会话在库里提交过一次之前仍归文件后端（崩溃不丢），提交之后 ordersTaken 才让 JSON 去掉它
+    ownsOrder: (o) =>
+      !state.pgBackend || isDemoClassId(o.sessionId) || !sessions.has(o.sessionId) || state.pgBackend.adoptedUncommitted(o.id),
+    isReal: (id) => !isDemoClassId(id),
+    afterPersist: tenantCallback(rt, () => rt.events.storeEvents.emit('change')),
+  });
+  if (rt.isHost) {
+    state.fileBackend.load();
+    state.fileBackend.probe();
+  }
 
+  return state;
+}
+
+installTenantStoreFactory(createTenantStore);
 /** 这个会话的改动交给哪个后端：db 存储下真实会话走 PG，其余（demo 类、文件存储）走文件 */
-const backendFor = (sessionId: string): StoreBackend => (pgBackend && !isDemoClassId(sessionId) ? pgBackend : fileBackend);
+const backendFor = (sessionId: string): StoreBackend => {
+  const state = storeState();
+  return state.pgBackend && !isDemoClassId(sessionId) ? state.pgBackend : state.fileBackend;
+};
 /** 只管内存里有的会话的 PG 后端：db 存储下的真实会话；孤儿订单（所属会话不在内存里）与 demo 类归文件后端 */
 const pgFor = (sessionId: string): PgBackend | null =>
-  pgBackend && !isDemoClassId(sessionId) && sessions.has(sessionId) ? pgBackend : null;
+  storeState().pgBackend && !isDemoClassId(sessionId) && storeState().sessions.has(sessionId) ? storeState().pgBackend : null;
 
-let changeTimer: NodeJS.Timeout | null = null;
 /**
  * db 存储下真实会话的提交：旧的 /api/admin/stream 照样收到 storeEvents 的 change（与文件后端一样约 200ms 合并一次），
  * 只在提交之后（不变量 10）。文件存储下 change 仍由文件后端在每次去抖落盘之后发
  */
 function committedChange(): void {
-  if (changeTimer) return;
-  changeTimer = setTimeout(() => {
-    changeTimer = null;
-    storeEvents.emit('change');
-  }, 200);
-  changeTimer.unref();
+  const state = storeState();
+  const rt = currentRuntime();
+  if (state.changeTimer) return;
+  state.changeTimer = withoutTenantScope(() =>
+    setTimeout(
+      tenantCallback(rt, () => {
+        state.changeTimer = null;
+        storeEvents.emit('change');
+      }),
+      200,
+    ),
+  );
+  state.changeTimer.unref();
 }
 
 /** 当前装着的会话存储：装上 PG 后端之后是 'db'，否则 'file'。SESSION_STORE 的取值由 01 的 initConfigFromEnv 校验 */
 export function sessionStoreMode(): SessionStoreMode {
-  return pgBackend ? 'db' : 'file';
+  const state = storeState();
+  return state.pgBackend ? 'db' : 'file';
 }
 
 export interface SessionStoreDeps {
@@ -176,6 +238,24 @@ export interface SessionStoreDeps {
  * 任何一步失败都以 SessionStoreStartupError reject，不留半装载状态，绝不回落到文件存储。
  */
 export async function initSessionStore(deps: SessionStoreDeps | null): Promise<void> {
+  const rt = scopedRuntime() ?? hostRuntime();
+  if (deps && rt.id !== deps.tenantId) {
+    if (rt.config.loaded) throw new Error('会话存储与已装载配置的租户不一致');
+    // 02 的 file 配置 + PG 存储评测入口只有存储依赖，也由显式 tenantId 补运行时身份。
+    identifyRuntime(rt, {
+      id: deps.tenantId,
+      slug: deps.tenantSlug,
+      kind: rt.kind,
+      isHost: rt.isHost,
+      publicBase: rt.publicBase,
+      expiresAt: rt.expiresAt,
+    });
+  }
+  return withTenantScope(rt, () => loadSessionStore(deps));
+}
+async function loadSessionStore(deps: SessionStoreDeps | null): Promise<void> {
+  const state = storeState();
+  startStoreMaintenance(currentRuntime());
   if (deps === null) {
     if (fs.existsSync(path.join(VAR_DIR, SESSIONS_IN_DB_MARKER))) {
       throw new SessionStoreStartupError(
@@ -186,8 +266,8 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
     return;
   }
   // 装过一次再调：会话已经由库管着（只可能是调用方调了两次，自测与 eval 才会碰到）
-  if (pgBackend) throw new SessionStoreStartupError('sessions_in_db', 'PG 会话存储已经装上了，initSessionStore 只能调一次');
-  const real = [...sessions.keys()].filter((id) => !isDemoClassId(id));
+  if (state.pgBackend) throw new SessionStoreStartupError('sessions_in_db', 'PG 会话存储已经装上了，initSessionStore 只能调一次');
+  const real = [...state.sessions.keys()].filter((id) => !isDemoClassId(id));
   if (real.length) {
     const shown = real.slice(0, 5).map((id) => shortIdOf(id) || '?');
     throw new SessionStoreStartupError(
@@ -197,16 +277,19 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
     );
   }
   const backend = await openPgBackend({
+    runtime: currentRuntime(),
     ...deps,
-    sessions,
-    orders,
+    sessions: state.sessions,
+    orders: state.orders,
     onConflict: (detail) => {
       incident({ kind: 'conflict', detail });
       gracefulExit(1, `store_conflict（${detail}）：落库撞上另一写者`);
     },
     writable: () => !tenantLockTaken(),
     afterCommit: committedChange,
-    ordersTaken: (ids) => fileBackend.markChanged(ids),
+    ordersTaken: (ids) => {
+      if (currentRuntime().isHost) state.fileBackend.markChanged(ids);
+    },
     outboundCommitted: (rows) => {
       for (const cb of outboundCommitHooks) {
         try {
@@ -218,10 +301,10 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
     },
   });
   backend.install();
-  pgBackend = backend;
-  ensureMarker(deps);
+  state.pgBackend = backend;
+  if (currentRuntime().isHost) ensureMarker(deps);
   onShutdown(
-    async ({ deadline }) => {
+    tenantCallback(currentRuntime(), async ({ deadline }: { deadline: number }) => {
       const { undrained } = await drainStore(Math.max(0, deadline - Date.now()));
       const real = undrained.filter((id) => !isDemoClassId(id));
       if (real.length) {
@@ -230,13 +313,24 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
         );
         incident({ kind: 'spill', sessions: real.length });
       }
-    },
+    }),
     { phase: 'drain' },
   );
-  onShutdown(() => backend.close(), { phase: 'late' });
+  onShutdown(
+    tenantCallback(currentRuntime(), () => backend.close()),
+    { phase: 'late' },
+  );
   // 用量：每 30 秒与 drain 段累加进 usage_daily（spec「逐轮 trace、护栏事件与用量」），不经会话写队列。已冲突、租户锁在别人手里时不写
-  startUsageDaily((deltas) => backend.writeUsage(deltas));
-  onShutdown(() => flushUsageDaily(), { phase: 'drain' });
+  if (currentRuntime().isHost)
+    startUsageDaily(
+      tenantCallback(currentRuntime(), (deltas) => backend.writeUsage(deltas)) as (
+        deltas: import('./db/repo/usage.js').UsageDelta[],
+      ) => Promise<void>,
+    );
+  onShutdown(
+    tenantCallback(currentRuntime(), () => flushUsageDaily()),
+    { phase: 'drain' },
+  );
 }
 
 /**
@@ -246,9 +340,10 @@ export async function initSessionStore(deps: SessionStoreDeps | null): Promise<v
  * 回滚前检查另外看 .env 的 SESSION_STORE，下次启动再补
  */
 function ensureMarker(deps: SessionStoreDeps): void {
+  const state = storeState();
   const file = path.join(deps.varDir, SESSIONS_IN_DB_MARKER);
   if (fs.existsSync(file)) return;
-  const real = [...sessions.keys()].filter((id) => !isDemoClassId(id)).length;
+  const real = [...state.sessions.keys()].filter((id) => !isDemoClassId(id)).length;
   const tmp = `${file}.tmp`;
   try {
     fs.writeFileSync(tmp, `${JSON.stringify({ tenant: deps.tenantSlug, at: new Date().toISOString(), sessions: real })}\n`);
@@ -268,13 +363,15 @@ export function flushSession(id: string, opts?: { timeoutMs?: number }): Promise
 
 /** drain 阶段调用：排空所有写队列；超时返回还没落库的会话 id（日志只写短码） */
 export async function drainStore(timeoutMs: number): Promise<{ undrained: string[] }> {
-  const parts = await Promise.all([fileBackend, ...(pgBackend ? [pgBackend] : [])].map((b) => b.drain(timeoutMs)));
+  const state = storeState();
+  const parts = await Promise.all([state.fileBackend, ...(state.pgBackend ? [state.pgBackend] : [])].map((b) => b.drain(timeoutMs)));
   return { undrained: parts.flatMap((p) => p.undrained) };
 }
 
 /** 改动随这个会话的下一次落库提交；提交后才交给 onCommitted 的订阅者 */
 export function emitAfterCommit(sessionId: string, ev: DomainEvent): void {
-  (pgFor(sessionId) ?? fileBackend).emitAfterCommit(sessionId, ev);
+  const state = storeState();
+  (pgFor(sessionId) ?? state.fileBackend).emitAfterCommit(sessionId, ev);
 }
 
 // ---------------- 排进「这个会话下一次落库」的附带行 ----------------
@@ -287,18 +384,20 @@ export function emitAfterCommit(sessionId: string, ev: DomainEvent): void {
  * 文件配置模式没有审计表，不写
  */
 export function queueAudit(sessionId: string, actor: AuditActor, entry: AuditEntry): void {
+  const state = storeState();
   const pg = pgFor(sessionId);
   if (pg) pg.queueAudit(sessionId, { actor, entry });
-  else if (pgBackend) void pgBackend.writeStandaloneAudit({ actor, entry });
+  else if (state.pgBackend) void state.pgBackend.writeStandaloneAudit({ actor, entry });
   else if (configMode() === 'db') void writeFileModeAudit(actor, entry);
 }
 
 /** 文件存储下审计的短事务在空的异步上下文里起：调用方在 withTenant 回调里排审计也不会嵌套（同 PG 后端的写队列） */
 const detachedAudit = AsyncLocalStorage.snapshot();
 async function writeFileModeAudit(actor: AuditActor, entry: AuditEntry): Promise<void> {
+  const rt = currentRuntime();
   try {
     const { db, tenantId } = configRuntime();
-    await detachedAudit(() => withTenant(db, { tenantId, actor }, (tx) => writeAuditAs(tx, actor, entry)));
+    await detachedAudit(() => withTenantScope(rt, () => withTenant(db, { tenantId, actor }, (tx) => writeAuditAs(tx, actor, entry))));
   } catch (e) {
     const code = (e as { code?: unknown }).code;
     console.error(`[store] 审计没写进去（${typeof code === 'string' ? code : e instanceof Error ? e.name : 'unknown'}）：${entry.action}`);
@@ -310,9 +409,10 @@ async function writeFileModeAudit(actor: AuditActor, entry: AuditEntry): Promise
  * 人工回复与订单动作在改动之前查它，是真就 503 store_lagging、什么都不改
  */
 export function storeLagging(sessionId: string): boolean {
+  const state = storeState();
   const b = backendFor(sessionId);
   const h = b.health();
-  return h.lagMs > 5000 || h.conflict || (pgBackend !== null && b === pgBackend && pgBackend.isPoisoned(sessionId));
+  return h.lagMs > 5000 || h.conflict || (state.pgBackend !== null && b === state.pgBackend && state.pgBackend.isPoisoned(sessionId));
 }
 
 /**
@@ -322,9 +422,10 @@ export function storeLagging(sessionId: string): boolean {
  * 等提交之后的分支（人工回复、付款确认）据此区分「真超时，照发，persisted:false」与「不会再提交，不发，503」
  */
 export function storeUnrecoverable(sessionId: string): boolean {
+  const state = storeState();
   const b = backendFor(sessionId);
   const h = b.health();
-  return h.conflict || (pgBackend !== null && b === pgBackend && pgBackend.isPoisoned(sessionId));
+  return h.conflict || (state.pgBackend !== null && b === state.pgBackend && state.pgBackend.isPoisoned(sessionId));
 }
 /**
  * 这个会话有没有未落库的改动，或正在落库（第 16 步保留期清理据此跳过有动静的会话：库里读到的候选可能已经过期）。
@@ -350,17 +451,18 @@ export function holdForPurge(sessionId: string): PurgeHold | null {
  * 后台 `/orders`、成交额 KPI 都是从 identity map 算的，清理之后自然看不到这张单了（与种子/访客会话清理同一种做法）
  */
 export function forgetSession(sessionId: string): void {
-  const s = sessions.get(sessionId);
+  const state = storeState();
+  const s = state.sessions.get(sessionId);
   if (s) {
-    tombstoned.add(s);
-    for (const oid of s.orderIds ?? []) orders.delete(oid);
+    state.tombstoned.add(s);
+    for (const oid of s.orderIds ?? []) state.orders.delete(oid);
   }
-  sessions.delete(sessionId);
+  state.sessions.delete(sessionId);
   pgFor(sessionId)?.forget(sessionId);
   forgetSessionProbe?.(sessionId);
 }
 /** 仅供自测：forgetSession 每次真的摘掉一个会话时同步调一次，见 __storeTest.setForgetSessionProbe */
-let forgetSessionProbe: ((sessionId: string) => void) | null = null;
+
 /** 任务的排程与状态变化（第 10 步）：db 存储的真实会话随它的下一次落库写，其余不入库 */
 export function queueJobs(sessionId: string, ops: readonly JobOp[]): void {
   pgFor(sessionId)?.queueJobs(sessionId, ops);
@@ -401,11 +503,12 @@ setConvRefResolver(conversationRef);
  * 文件存储下以 JobsTxRefused('closed') reject（文件存储没有任务表，跟进由扫描器驱动）
  */
 export function withJobsTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
-  return pgBackend ? pgBackend.jobsTx(fn) : Promise.reject(new JobsTxRefused('closed'));
+  const state = storeState();
+  return state.pgBackend ? state.pgBackend.jobsTx(fn) : Promise.reject(new JobsTxRefused('closed'));
 }
 
 /** saveSession 之后的订阅者：只为 db 存储的真实会话调（排、取消跟进，src/jobs/followup.ts）。与 saveSession 同一段同步代码，排出的附带行进同一次落库 */
-const saveHooks = new Set<(s: Session) => void>();
+
 export function onSessionSaved(cb: (s: Session) => void): () => void {
   saveHooks.add(cb);
   return () => saveHooks.delete(cb);
@@ -422,18 +525,19 @@ export function recentMsgids(sessionId: string): ReadonlySet<string> {
 
 /** 预载的账本行（各会话最后一条客户消息之后的），按会话分组；取走一次。文件存储下为空 */
 export function takePreloadedOutbound(): Map<string, OutboundRow[]> {
-  return pgBackend?.takePreloadedOutbound() ?? new Map();
+  const state = storeState();
+  return state.pgBackend?.takePreloadedOutbound() ?? new Map();
 }
 /** 还没有会话的账本行（老客户补发的欢迎语）：db 存储下单独一个短事务，失败记一行；文件存储下什么都不做 */
 export function writeStandaloneOutbound(rows: readonly OutboundRow[]): Promise<void> {
-  return pgBackend ? pgBackend.writeStandaloneOutbound(rows) : Promise.resolve();
+  const state = storeState();
+  return state.pgBackend ? state.pgBackend.writeStandaloneOutbound(rows) : Promise.resolve();
 }
 // ---------------- 03 先落库后发送（src/quota/ledger.ts 的 planOutbound 等）的入口 ----------------
 // 库里企微账号的出站：pending 插入与 cancelled 随会话的下一次落库写进主事务（R21），结果写在存档点里（queueTelemetry）；
 // 标 sending、迁回 pending、没有会话可挂的几行各是一个短事务；会话 poisoned 之后它的出站行（含结果）也改走单独短事务，
 // 还没提交的随会话进 spill 的渠道段（第 11 步）。只在 db 存储下有，文件存储下这几个入口什么都不做
 
-const outboundCommitHooks = new Set<(rows: readonly OutboundRow[]) => void>();
 /** 主事务里的出站行随会话提交之后调（poisoned 之后的短事务提交了也调；行对象就是 queueOutboundRows 交进来的那几个） */
 export function onOutboundCommitted(cb: (rows: readonly OutboundRow[]) => void): () => void {
   outboundCommitHooks.add(cb);
@@ -448,15 +552,18 @@ export function queueOutboundRows(sessionId: string, rows: readonly OutboundRow[
 }
 /** 没有会话可挂的出站行：单独一个短事务，写成了 true。文件存储下 false */
 export function writeOutboundNow(rows: readonly OutboundRow[]): Promise<boolean> {
-  return pgBackend ? pgBackend.writeOutboundNow(rows) : Promise.resolve(false);
+  const state = storeState();
+  return state.pgBackend ? state.pgBackend.writeOutboundNow(rows) : Promise.resolve(false);
 }
 /** markSending 的库里那一步（单独一个短事务，至多等 timeoutMs）。文件存储下 db_unavailable（调用方不该走到这里） */
 export function markOutboundSendingInDb(channelMsgid: string, timeoutMs: number): Promise<MarkSendingResult> {
-  return pgBackend ? pgBackend.markOutboundSending(channelMsgid, timeoutMs) : Promise.resolve('db_unavailable');
+  const state = storeState();
+  return state.pgBackend ? state.pgBackend.markOutboundSending(channelMsgid, timeoutMs) : Promise.resolve('db_unavailable');
 }
 /** sending 迁回 pending（停机截止之后、还没发请求的那一段）：单独一个短事务，写成了 true */
 export function unmarkOutboundInDb(channelMsgid: string): Promise<boolean> {
-  return pgBackend ? pgBackend.unmarkOutbound(channelMsgid) : Promise.resolve(false);
+  const state = storeState();
+  return state.pgBackend ? state.pgBackend.unmarkOutbound(channelMsgid) : Promise.resolve(false);
 }
 
 /**
@@ -471,7 +578,10 @@ export function markOutboundFailedInDb(
   inboxId?: string | null,
   full?: OutboundRow | null,
 ): Promise<OutboundFailResult> {
-  return pgBackend ? pgBackend.markOutboundFailed(channelMsgid, failType, inboxId, full) : Promise.resolve({ ok: true, sessionId: null });
+  const state = storeState();
+  return state.pgBackend
+    ? state.pgBackend.markOutboundFailed(channelMsgid, failType, inboxId, full)
+    : Promise.resolve({ ok: true, sessionId: null });
 }
 
 // ---------------- 03 入站：channel_inbox 的状态变化（src/channels/inbox.ts 与企微适配器、引擎） ----------------
@@ -522,11 +632,12 @@ function inboxWriteOf(change: InboxChange): InboxStateWrite | null {
  * （InboxStateWrite 只有 JSON 能装的值）
  */
 export function queueInboxState(sessionId: string, change: InboxChange): void {
+  const state = storeState();
   const w = inboxWriteOf(change);
-  if (!w || !pgBackend) return;
+  if (!w || !state.pgBackend) return;
   const pg = pgFor(sessionId);
   if (pg?.queueInbox(sessionId, [w])) return;
-  void pgBackend.writeInboxNow([w]);
+  void state.pgBackend.writeInboxNow([w]);
 }
 
 /**
@@ -537,9 +648,10 @@ export function writeInboxStateNow(change: {
   state: 'done' | 'abandoned';
   reason?: InboxAbandonReason;
 }): Promise<boolean> {
+  const state = storeState();
   const w = inboxWriteOf(change);
-  if (!w || !pgBackend) return Promise.resolve(false);
-  return pgBackend.writeInboxNow([w]);
+  if (!w || !state.pgBackend) return Promise.resolve(false);
+  return state.pgBackend.writeInboxNow([w]);
 }
 
 /**
@@ -547,12 +659,14 @@ export function writeInboxStateNow(change: {
  * 时以 JobsTxRefused reject；文件存储下以 JobsTxRefused('closed') reject（文件存储没有 channel_inbox）
  */
 export function withChannelTx<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
-  return pgBackend ? pgBackend.channelTx(fn) : Promise.reject(new JobsTxRefused('closed'));
+  const state = storeState();
+  return state.pgBackend ? state.pgBackend.channelTx(fn) : Promise.reject(new JobsTxRefused('closed'));
 }
 
 /** 写库健康：db 存储下是 PG 后端的（只数真实会话），文件存储下是文件后端的 */
 export function storeHealth(): StoreHealth {
-  return (pgBackend ?? fileBackend).health();
+  const state = storeState();
+  return (state.pgBackend ?? state.fileBackend).health();
 }
 
 /**
@@ -560,8 +674,9 @@ export function storeHealth(): StoreHealth {
  * 的 spill 文件数。只在 db 存储下有，文件存储下为 null
  */
 export function storeCounters(): { telemetryDropped: number; replayFailedFiles: number } | null {
-  if (!pgBackend) return null;
-  const s = pgBackend.stats();
+  const state = storeState();
+  if (!state.pgBackend) return null;
+  const s = state.pgBackend.stats();
   return { telemetryDropped: s.telemetryDropped, replayFailedFiles: s.replayFailedFiles };
 }
 
@@ -570,14 +685,20 @@ export function storeCounters(): { telemetryDropped: number; replayFailedFiles: 
  * 记账还在去抖窗口里时进程被 SIGKILL / OOM 杀掉，重启后同一条跟进会再发一遍。
  */
 export function flushStoreNow(): void {
-  fileBackend.flushNow();
+  const state = storeState();
+  state.fileBackend.flushNow();
 }
 
 // 退出兜底：没落盘的变更在进程结束前同步写出（文件），没落库的真实会话写进 spill 文件（PG）
-process.on('exit', () => {
-  fileBackend.spillSync();
-  pgBackend?.spillSync();
-});
+withoutTenantScope(() =>
+  process.on('exit', () => {
+    for (const rt of tenantRuntimes())
+      tenantCallback(rt, () => {
+        rt.store.fileBackend.spillSync();
+        rt.store.pgBackend?.spillSync();
+      })();
+  }),
+);
 
 // ---------------- demo 数据保鲜 ----------------
 // 种子演示会话（id 形如 wecom:cust_B01，真实企微 external_userid 不会长这样）的时间戳
@@ -587,8 +708,9 @@ process.on('exit', () => {
 const DEMO_SESSION_RE = /^wecom:cust_/;
 
 export function freshenDemoData(): void {
+  const state = storeState();
   if (!profile().flags.seed_freshen) return;
-  const demo = [...sessions.values()].filter((s) => DEMO_SESSION_RE.test(s.id));
+  const demo = [...state.sessions.values()].filter((s) => DEMO_SESSION_RE.test(s.id));
   if (!demo.length) return;
   const newest = Math.max(...demo.map((s) => s.updatedAt));
   const delta = Date.now() - 5 * 60_000 - newest; // 最新演示会话恒定在 5 分钟前
@@ -603,7 +725,7 @@ export function freshenDemoData(): void {
     if (s.firstHandoffAt != null) s.firstHandoffAt += delta;
     if (s.assignee) s.assignee.at += delta;
   }
-  for (const o of orders.values()) {
+  for (const o of state.orders.values()) {
     if (DEMO_SESSION_RE.test(o.sessionId)) {
       o.createdAt += delta;
       if (o.paidAt) o.paidAt += delta;
@@ -611,7 +733,7 @@ export function freshenDemoData(): void {
       if (o.confirmedAt != null) o.confirmedAt += delta;
     }
   }
-  fileBackend.markChanged(demo.map((s) => s.id));
+  state.fileBackend.markChanged(demo.map((s) => s.id));
   console.log(`[store] demo 保鲜：${demo.length} 个演示会话时间前移 ${(delta / 3_600_000).toFixed(1)} 小时`);
 }
 
@@ -636,11 +758,13 @@ const VISITOR_SESSION_RE = /^sim-/;
 const VISITOR_SESSION_MAX = Math.max(100, numEnv('VISITOR_SESSION_MAX', 5000));
 
 function hasPaidOrder(s: Session): boolean {
-  return (s.orderIds ?? []).some((oid) => orders.get(oid)?.status === 'paid');
+  const state = storeState();
+  return (s.orderIds ?? []).some((oid) => state.orders.get(oid)?.status === 'paid');
 }
 
 function evictExcessVisitorSessions(): void {
-  const visitors = [...sessions.values()].filter((s) => VISITOR_SESSION_RE.test(s.id) && s.channel === 'simulator');
+  const state = storeState();
+  const visitors = [...state.sessions.values()].filter((s) => VISITOR_SESSION_RE.test(s.id) && s.channel === 'simulator');
   const excess = visitors.length - VISITOR_SESSION_MAX;
   if (excess <= 0) return;
   const victims = visitors
@@ -648,44 +772,57 @@ function evictExcessVisitorSessions(): void {
     .toSorted((a, b) => a.updatedAt - b.updatedAt)
     .slice(0, excess);
   for (const s of victims) {
-    sessions.delete(s.id);
-    for (const oid of s.orderIds ?? []) orders.delete(oid);
+    state.sessions.delete(s.id);
+    for (const oid of s.orderIds ?? []) state.orders.delete(oid);
   }
-  fileBackend.markChanged(victims.map((s) => s.id));
+  state.fileBackend.markChanged(victims.map((s) => s.id));
   if (victims.length) {
     console.warn(`[store] 网页访客会话超过上限 ${VISITOR_SESSION_MAX}，已淘汰最旧的 ${victims.length} 个`);
   }
 }
 
 export function pruneStaleVisitorData(): void {
+  const state = storeState();
   if (!PRUNE_MS) return;
   const cutoff = Date.now() - PRUNE_MS;
   const gone: string[] = [];
-  for (const s of sessions.values()) {
+  for (const s of state.sessions.values()) {
     if (!VISITOR_SESSION_RE.test(s.id) || s.channel !== 'simulator') continue;
     if (s.updatedAt >= cutoff) continue;
     if (hasPaidOrder(s)) continue; // 有成交记录，保留
-    sessions.delete(s.id);
-    for (const oid of s.orderIds ?? []) orders.delete(oid); // 连同订单一起删，不留孤儿
+    state.sessions.delete(s.id);
+    for (const oid of s.orderIds ?? []) state.orders.delete(oid); // 连同订单一起删，不留孤儿
     gone.push(s.id);
   }
   const n = gone.length;
   if (n) {
-    fileBackend.markChanged(gone);
+    state.fileBackend.markChanged(gone);
     console.log(`[store] 已清理 ${n} 个闲置网页访客会话（阈值 ${PRUNE_MS / 3_600_000}h，仅 sim-）`);
   }
 }
 
 // 启动即保鲜/清理一次，此后每小时一次（unref 不阻退出）
-freshenDemoData();
-pruneStaleVisitorData();
-setInterval(() => {
-  freshenDemoData();
-  pruneStaleVisitorData();
-}, 60 * 60_000).unref();
+export function startStoreMaintenance(rt: TenantRuntime): void {
+  withTenantScope(rt, () => {
+    if (!rt.isHost || rt.store.maintenanceTimer) return;
+    freshenDemoData();
+    pruneStaleVisitorData();
+    rt.store.maintenanceTimer = withoutTenantScope(() =>
+      setInterval(
+        tenantCallback(rt, () => {
+          freshenDemoData();
+          pruneStaleVisitorData();
+        }),
+        60 * 60_000,
+      ),
+    );
+    rt.store.maintenanceTimer.unref();
+  });
+}
 
 export function getOrCreateSession(id: string, channel: string): Session {
-  let s = sessions.get(id);
+  const state = storeState();
+  let s = state.sessions.get(id);
   if (!s) {
     const now = Date.now();
     s = {
@@ -699,7 +836,7 @@ export function getOrCreateSession(id: string, channel: string): Session {
       createdAt: now,
       updatedAt: now,
     };
-    sessions.set(id, s);
+    state.sessions.set(id, s);
     // 新建访客会话时顺手检查总量，别等到下一次整点清理才发现已经被灌爆
     if (VISITOR_SESSION_RE.test(id) && channel === 'simulator') evictExcessVisitorSessions();
     backendFor(id).schedule(s);
@@ -708,11 +845,13 @@ export function getOrCreateSession(id: string, channel: string): Session {
 }
 
 export function getSession(id: string): Session | undefined {
-  return sessions.get(id);
+  const state = storeState();
+  return state.sessions.get(id);
 }
 
 export function listSessions(): Session[] {
-  return [...sessions.values()].toSorted((a, b) => b.updatedAt - a.updatedAt);
+  const state = storeState();
+  return [...state.sessions.values()].toSorted((a, b) => b.updatedAt - a.updatedAt);
 }
 
 /**
@@ -722,20 +861,21 @@ export function listSessions(): Session[] {
  * 否则后台「N 小时未回应」失真、介入队列会漏掉真正该救的客户。
  */
 export function saveSession(s: Session, touch = true): void {
+  const state = storeState();
   // 这个对象已经被保留期清理或行权删除摘掉（第 16 步）：库里那一行已经没了，不能再落库；日志一行、什么都不改
-  if (tombstoned.has(s)) {
+  if (state.tombstoned.has(s)) {
     console.log(`[store] 会话已被清理，忽略这次落库（会话 ${convLabel(s.id)}）`);
     return;
   }
   const b = backendFor(s.id);
   // db 存储下 identity map 里的对象是唯一的（不变量 3）：同 id 的另一个对象，PG 后端记一行日志、不落库，也不换掉 map 里的
-  if (b === pgBackend && !pgBackend.accepts(s)) return;
+  if (b === state.pgBackend && !state.pgBackend.accepts(s)) return;
   if (touch) s.updatedAt = Date.now();
-  sessions.set(s.id, s);
+  state.sessions.set(s.id, s);
   const unseq = unseqTail(s);
   b.schedule(s);
   emitSaved(s, unseq);
-  if (b !== pgBackend) return;
+  if (b !== state.pgBackend) return;
   for (const cb of saveHooks) {
     try {
       cb(s);
@@ -766,7 +906,8 @@ const authorOf = (m: ChatMessage): MessageAuthor => (m.role === 'agent' ? (m.aut
  * 会话本身一个 conversation.changed。只有 id、seq 与作者，不带正文（不变量 31）。停写（poisoned）的会话不再提交，不排
  */
 function emitSaved(s: Session, unseq: readonly ChatMessage[]): void {
-  if (pgBackend?.isPoisoned(s.id)) return;
+  const state = storeState();
+  if (state.pgBackend?.isPoisoned(s.id)) return;
   for (const m of unseq) {
     const seq = seqOf(m);
     if (seq !== undefined) emitAfterCommit(s.id, { type: 'message.appended', id: s.id, seq, author: authorOf(m) });
@@ -790,13 +931,15 @@ function emitOrder(o: Order): void {
  * 排进订单所属会话的下一次落库，提交后发 order.changed
  */
 export function saveOrder(o: Order): void {
-  if (orders.get(o.id) !== o) return;
-  (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(o.id);
+  const state = storeState();
+  if (state.orders.get(o.id) !== o) return;
+  (pgFor(o.sessionId) ?? state.fileBackend).scheduleOrder(o.id);
   emitOrder(o);
 }
 
 /** 入参不含 id/createdAt/status，由 store 统一生成 */
 export function createOrder(o: Omit<Order, 'id' | 'createdAt' | 'status'>): Order {
+  const state = storeState();
   const order: Order = {
     ...o,
     // 订单号即凭据：/api/orders/:id 与 /pay 都是匿名可访问的（支付页要用），
@@ -805,14 +948,15 @@ export function createOrder(o: Omit<Order, 'id' | 'createdAt' | 'status'>): Orde
     status: 'pending_payment',
     createdAt: Date.now(),
   };
-  orders.set(order.id, order);
-  (pgFor(order.sessionId) ?? fileBackend).scheduleOrder(order.id);
+  state.orders.set(order.id, order);
+  (pgFor(order.sessionId) ?? state.fileBackend).scheduleOrder(order.id);
   emitOrder(order);
   return order;
 }
 
 export function getOrder(id: string): Order | undefined {
-  return orders.get(id);
+  const state = storeState();
+  return state.orders.get(id);
 }
 
 /** 只有待付款的单能付。被新订单替代的旧单（superseded）不能再付：此前 status !== 'paid' 就置为已付，
@@ -820,14 +964,15 @@ export function getOrder(id: string): Order | undefined {
  *  付款时记下会话是否曾经转过人工（handoffBeforePaid，R9）：转人工的标记交还时会清，firstHandoffAt 不清。
  *  02 之前转的人工没有 firstHandoffAt（导入不回填），付款时正在转人工中的也算转过（不变量 26） */
 export function markOrderPaid(id: string): Order | undefined {
-  const o = orders.get(id);
+  const state = storeState();
+  const o = state.orders.get(id);
   if (!o) return undefined;
   if (o.status === 'pending_payment') {
     o.status = 'paid';
     o.paidAt = Date.now();
-    const s = sessions.get(o.sessionId);
+    const s = state.sessions.get(o.sessionId);
     o.handoffBeforePaid = s?.firstHandoffAt != null || s?.handedOver === true;
-    (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(id);
+    (pgFor(o.sessionId) ?? state.fileBackend).scheduleOrder(id);
     emitOrder(o);
   }
   return o;
@@ -835,11 +980,12 @@ export function markOrderPaid(id: string): Order | undefined {
 
 /** 把待付款的旧单标成被 byId 替代。已付款的单绝不动（返回 false），调用方只拿这个结果决定要不要告诉客户旧链接失效 */
 export function supersedeOrder(id: string, byId: string): boolean {
-  const o = orders.get(id);
+  const state = storeState();
+  const o = state.orders.get(id);
   if (!o || o.status !== 'pending_payment') return false;
   o.status = 'superseded';
   o.supersededBy = byId;
-  (pgFor(o.sessionId) ?? fileBackend).scheduleOrder(id);
+  (pgFor(o.sessionId) ?? state.fileBackend).scheduleOrder(id);
   emitOrder(o);
   return true;
 }
@@ -852,39 +998,46 @@ export function supersedeOrder(id: string, byId: string): boolean {
  * db 存储的真实会话：库里不删，记作废（voided_at、void_reason='reset'），内存里照样移出，之后 getOrder 返回 undefined（R5）
  */
 export function deleteOrdersOfSession(sessionId: string): number {
+  const state = storeState();
   const pg = pgFor(sessionId);
   let n = 0;
-  for (const [id, o] of orders) {
+  for (const [id, o] of state.orders) {
     if (o.sessionId === sessionId) {
       pg?.voidOrder(o, 'reset');
-      orders.delete(id);
+      state.orders.delete(id);
       n += 1;
     }
   }
-  if (n && !pg) fileBackend.markChanged([sessionId]);
+  if (n && !pg) state.fileBackend.markChanged([sessionId]);
   return n;
 }
 
 export function listOrders(): Order[] {
-  return [...orders.values()].toSorted((a, b) => b.createdAt - a.createdAt);
+  const state = storeState();
+  return [...state.orders.values()].toSorted((a, b) => b.createdAt - a.createdAt);
 }
 
 /** 仅供自测：PG 后端的计数（落库次数、认出已提交、慢事务、丢掉的存档点批次等）；文件存储下为 null */
 export const __storeTest = {
+  committedChange,
   pgStats(): PgStoreStats | null {
-    return pgBackend?.stats() ?? null;
+    const state = storeState();
+    return state.pgBackend?.stats() ?? null;
   },
   /** db 存储下这个会话还留在内存里的遥测行数；文件存储下为 0 */
   pgQueuedTelemetry(sessionId: string): number {
-    return pgBackend?.queuedTelemetry(sessionId) ?? 0;
+    const state = storeState();
+    return state.pgBackend?.queuedTelemetry(sessionId) ?? 0;
   },
   /** db 存储下这个会话还留在内存里的主事务出站行数（03）；文件存储下为 0 */
   pgQueuedChannel(sessionId: string): number {
-    return pgBackend?.queuedChannel(sessionId) ?? 0;
+    const state = storeState();
+    return state.pgBackend?.queuedChannel(sessionId) ?? 0;
   },
   /** db 存储下这个会话还留在内存里的主事务入站状态变化数（03 第 9 步）；文件存储下为 0 */
   pgQueuedInbox(sessionId: string): number {
-    return pgBackend?.queuedInbox(sessionId) ?? 0;
+    const state = storeState();
+    return state.pgBackend?.queuedInbox(sessionId) ?? 0;
   },
   /** 交给事故的订阅者（store_conflict 会走优雅停机，自测进程里造不出来） */
   emitIncident(i: StoreIncident): void {
@@ -902,3 +1055,52 @@ export const __storeTest = {
     forgetSessionProbe = fn;
   },
 };
+
+function storeRegistration(name: 'store.sessions' | 'store.orders' | 'store.fileBackend' | 'store.pgBackend') {
+  return {
+    keyCount: (id: string) => {
+      const rt = tenantRuntimes().find((r) => r.id === id);
+      if (!rt) return 0;
+      const s = rt.store;
+      return name === 'store.sessions'
+        ? s.sessions.size
+        : name === 'store.orders'
+          ? s.orders.size
+          : name === 'store.pgBackend'
+            ? Number(s.pgBackend !== null)
+            : s.fileBackend.keyCount();
+    },
+    drop: (id: string) => {
+      const rt = tenantRuntimes().find((r) => r.id === id);
+      if (!rt) return;
+      const s = rt.store;
+      if (name === 'store.sessions') s.sessions.clear();
+      else if (name === 'store.orders') s.orders.clear();
+      else if (name === 'store.fileBackend') s.fileBackend.reset();
+      else {
+        dropShutdownHooks(rt);
+        void s.pgBackend?.close();
+        s.pgBackend = null;
+      }
+      if (s.changeTimer) clearTimeout(s.changeTimer);
+      if (s.maintenanceTimer) clearInterval(s.maintenanceTimer);
+      s.changeTimer = s.maintenanceTimer = null;
+    },
+    reset: () => {
+      for (const rt of tenantRuntimes()) {
+        rt.store.sessions.clear();
+        rt.store.orders.clear();
+        rt.store.fileBackend.reset();
+      }
+    },
+  };
+}
+registerTenantState({ name: 'store.sessions', ...storeRegistration('store.sessions') });
+registerTenantState({ name: 'store.orders', ...storeRegistration('store.orders') });
+registerTenantState({ name: 'store.fileBackend', ...storeRegistration('store.fileBackend') });
+registerTenantState({ name: 'store.pgBackend', ...storeRegistration('store.pgBackend') });
+
+// 文件兼容入口显式装载宿主：旧自测只 import store 也保留启动清理行为。
+if (process.env.TENANCY_STRICT !== '1' && process.env.APP_ROLE !== 'sandbox') {
+  startStoreMaintenance(hostRuntime());
+}

@@ -1,3 +1,4 @@
+import { tenantScopeMiddleware, currentRuntime, withoutTenantScope, tenantCallback, withTenantScope } from '../tenancy/runtime.js';
 import { brandTexts } from '../core/brand.js';
 // 后台接口子应用（docs/architecture/01-pg-config-console/spec.md「后台 API 与页面」）。
 // 必须链式注册，Hono RPC 才推得出类型（ADR-002）；console/src 只用 import type 引 ConsoleApp。
@@ -396,7 +397,7 @@ function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503
 export const consoleApi = new Hono<ConsoleEnv>()
   .basePath('/api/console')
   // requestLogContext：req 与 x-request-id（02 spec R24）；挂在 server.ts 下时沿用外层生成的那个
-  .use('*', requestLogContext, securityHeaders, requireDbMode, loadSession, guardWrites)
+  .use('*', requestLogContext, tenantScopeMiddleware, securityHeaders, requireDbMode, loadSession, guardWrites)
 
   // ---------------- 登录 ----------------
   .post('/auth/login', zValidator('json', LoginBody, badRequest), async (c) => {
@@ -850,6 +851,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
   // 成员才能连（viewer 也行），匿名 401。只带 id、状态、类型、seq 与时间。连上时先补 Last-Event-ID 之后的（接不上就 resync），
   // 没带 Last-Event-ID 的先收一条当前的 counts；之后每 20 秒一行注释心跳，每 50 秒复核登录（留查库余量，保证 60 秒内关闭），失效就发 auth 并关闭
   .get('/events', canSeeCustomers, (c) => {
+    const rt = currentRuntime();
     ensureEventHub(() => conversationCounts(clock()));
     const token = c.var.token!;
     const lastEventId = c.req.header('last-event-id');
@@ -865,18 +867,22 @@ export const consoleApi = new Hono<ConsoleEnv>()
       let wake = (): void => {};
       const wait = (ms: number): Promise<void> =>
         new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, ms);
+          const timer = withoutTenantScope(() => setTimeout(resolve, ms));
           timer.unref();
           wake = () => {
             clearTimeout(timer);
             resolve();
           };
         });
-      stream.onAbort(() => {
-        open = false;
-        off();
-        wake();
-      });
+      withoutTenantScope(() =>
+        stream.onAbort(
+          tenantCallback(rt, () => {
+            open = false;
+            off();
+            wake();
+          }),
+        ),
+      );
       if (missed === null) void stream.writeSSE({ id: tailId(), event: 'resync', data: '{}' });
       else if (!lastEventId) void stream.writeSSE({ id: tailId(), event: 'counts', data: JSON.stringify(conversationCounts(clock())) });
       else for (const b of missed) write(b);
@@ -892,7 +898,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
           let alive = true;
           try {
             // 01 的 auth_session_touch：开着的事件流算活动，7 天的绝对期限照旧；过期、被移出、停用都是 null
-            alive = (await resolveSession(token, clock())) !== null;
+            alive = (await withTenantScope(rt, () => resolveSession(token, clock()))) !== null;
           } catch (e) {
             // 库一时连不上：认不出失效，下一次再复核（不因库故障把所有人踢回登录页）
             console.error('[console-api] 事件流复核登录失败:', e instanceof Error ? e.name : e);

@@ -4,6 +4,7 @@
 // demo 与 prod 的差别只经 profile().flags 的开关体现（00 spec「部署 profile 与开关」），每次用到时现读。
 import './env.js'; // 必须第一个 import：加载 .env（此前 .env 从未被读取，README 的跑法照做即挂）
 import './profile-boot.js'; // 紧接着解析部署 profile：配置错误时打一行原因退出，必须排在任何会 import store 的模块之前
+import { tenantScopeMiddleware, hostRuntime, tenantRuntimes, withTenantScope } from './tenancy/runtime.js';
 import { currentPack } from './config/source.js';
 import { renderBrandPage } from './core/brand.js';
 import { serve } from '@hono/node-server';
@@ -94,7 +95,7 @@ import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
 const app = new Hono();
 // 每个请求一个 req（响应头 x-request-id），这个请求里的日志都带它（02 spec R24）。排在最前：413、411 这类拒绝也有
-app.use('/*', requestLogContext);
+app.use('/*', requestLogContext, tenantScopeMiddleware);
 
 // channel 来自落盘的会话 JSON：数据改坏、或加了新渠道漏接这里，都会落到兜底。兜底此前是模拟器，
 // 没有 SSE 连接时它的 push 返回 true，后台显示「已回复」，实际什么也没发出去。现在兜底一律推送失败，
@@ -1028,52 +1029,59 @@ function pushFollowUp(sessionId: string, text: string, opts?: PushOpts): Promise
 
 if (!SELFTEST) {
   // 配置源的停机：普通阶段起就忽略锁连接的事件，late 阶段（在途回复都结束后）才释放锁、关连接池
-  onShutdown(markConfigShuttingDown);
-  onShutdown(closeConfig, { phase: 'late' });
-  await boot({
-    initConfig: () => initConfigFromEnv(process.env, (code) => gracefulExit(code, '租户锁被另一个进程拿走')),
-    // SESSION_STORE 的取值已由 initConfigFromEnv 校验；db 存储要求 DB 配置模式，库与租户取自装好的配置源
-    initSessionStore: () => {
-      if (process.env.SESSION_STORE !== 'db') return initSessionStore(null);
-      const { db, tenantId, deps } = configRuntime();
-      return initSessionStore({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir() });
-    },
-    // 03：渠道账号与企微状态（R1）。密钥环只在 db 存储下读，格式不对以 channel_key_invalid 拒绝（同步抛出，boot 一并接住）
-    initChannels: () => {
-      if (process.env.SESSION_STORE !== 'db') return initChannels(null);
-      const { db, tenantId, deps } = configRuntime();
-      return initChannels({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir(), keyRing: channelKeyRing(process.env) });
-    },
-    serve: (onListening) =>
-      void serve({ fetch: app.fetch, port }, (info) => {
-        logStartup(info.port);
-        onListening();
-      }),
-    // 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见
-    preflight: () => {
-      try {
-        loadRoutes();
-        loadHotels();
-      } catch (e) {
-        console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
-      }
-    },
-    // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配
-    buildIndex,
-    storeMode: sessionStoreMode,
-    // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）。文件存储是扫描器，db 存储由任务表驱动
-    startFollowUpScheduler: () => startFollowUpScheduler(pushFollowUp),
-    startJobs: () => startJobs(pushFollowUp),
-    startChannels,
-    exit: (code) => process.exit(code),
-    // 设了 OTEL_EXPORTER_OTLP_ENDPOINT 才由 boot() 调（动态 import 导出器）
-    startOtel: startOtelExport,
-    // 告警（02 spec R24）：起渠道之后挂上各处的订阅，推送只在后台
-    startAlerts,
-    // 隐私说明（02 第 16 步）：读进内存、起 60 秒后台轮询；文件配置模式什么都不做
-    startPrivacy: async () => {
-      await initPrivacy();
-      startPrivacyPoll();
-    },
+  onShutdown(() => {
+    for (const rt of tenantRuntimes()) withTenantScope(rt, markConfigShuttingDown);
   });
+  onShutdown(() => Promise.all(tenantRuntimes().map((rt) => withTenantScope(rt, closeConfig))), { phase: 'late' });
+  await withTenantScope(hostRuntime(), () =>
+    boot({
+      initConfig: () => initConfigFromEnv(process.env, (code) => gracefulExit(code, '租户锁被另一个进程拿走')),
+      // SESSION_STORE 的取值已由 initConfigFromEnv 校验；db 存储要求 DB 配置模式，库与租户取自装好的配置源
+      initSessionStore: async () => {
+        if (process.env.SESSION_STORE !== 'db') return initSessionStore(null);
+        for (const rt of tenantRuntimes())
+          await withTenantScope(rt, () => {
+            const { db, tenantId, deps } = configRuntime();
+            return initSessionStore({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir() });
+          });
+      },
+      // 03：渠道账号与企微状态（R1）。密钥环只在 db 存储下读，格式不对以 channel_key_invalid 拒绝（同步抛出，boot 一并接住）
+      initChannels: () => {
+        if (process.env.SESSION_STORE !== 'db') return initChannels(null);
+        const { db, tenantId, deps } = configRuntime();
+        return initChannels({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir(), keyRing: channelKeyRing(process.env) });
+      },
+      serve: (onListening) =>
+        void serve({ fetch: app.fetch, port }, (info) => {
+          logStartup(info.port);
+          onListening();
+        }),
+      // 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见
+      preflight: () => {
+        try {
+          loadRoutes();
+          loadHotels();
+        } catch (e) {
+          console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
+        }
+      },
+      // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配
+      buildIndex,
+      storeMode: sessionStoreMode,
+      // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）。文件存储是扫描器，db 存储由任务表驱动
+      startFollowUpScheduler: () => startFollowUpScheduler(pushFollowUp),
+      startJobs: () => startJobs(pushFollowUp),
+      startChannels,
+      exit: (code) => process.exit(code),
+      // 设了 OTEL_EXPORTER_OTLP_ENDPOINT 才由 boot() 调（动态 import 导出器）
+      startOtel: startOtelExport,
+      // 告警（02 spec R24）：起渠道之后挂上各处的订阅，推送只在后台
+      startAlerts,
+      // 隐私说明（02 第 16 步）：读进内存、起 60 秒后台轮询；文件配置模式什么都不做
+      startPrivacy: async () => {
+        await initPrivacy();
+        startPrivacyPoll();
+      },
+    }),
+  );
 }
