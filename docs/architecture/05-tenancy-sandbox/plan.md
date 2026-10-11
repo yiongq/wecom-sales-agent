@@ -1497,7 +1497,7 @@ C 已在 00、01、02、03、04、后台 UX spec 的文件头追加 05 的反向
 
 ## Open
 
-- **体验客服「已配、凭据还没生效」时的表现（第 25 步开工前请 owner 确认）。** 企微后台要先填回调 URL（保存时当场校验 echostr），才能配可信 IP、给 API 权限、拿到 Secret；open_kfid 后台若不显示，也要等有了 API 权限才查得到。而 R16 要求五个 `SANDBOX_WECOM_*` 全有或全无，缺一部分就拒绝启动。所以第 32 步的空当里只能先放真的 CorpID、Token、EncodingAESKey，Secret 与 OPEN_KFID 放占位值；R21 只说启动时取客服链接，没写取不到怎么办。推荐：回调的 URL 校验只用 Token、EncodingAESKey、CorpID；取 token 或客服链接失败时进程照常起（R19 已定体验客服失败不影响 `ok`），`/healthz.wecom.failing` 为真，不签码，`Me.sandbox.wechat` 按 `off` 处理、体验清单第一步是模拟器，每分钟重试，取到即恢复；持续 10 分钟的 `channel` 告警照发（空当里预期有一条）。owner 同意后在 spec 顶部记一条 `Revisions:` 再做第 25 步；不同意就停在第 25 步，另议上线顺序。
+- **（已定）体验客服「已配、凭据还没生效」时的表现。** owner 2026-10-12 照推荐，spec 顶部已记 `Revisions:`；以下是原文。 企微后台要先填回调 URL（保存时当场校验 echostr），才能配可信 IP、给 API 权限、拿到 Secret；open_kfid 后台若不显示，也要等有了 API 权限才查得到。而 R16 要求五个 `SANDBOX_WECOM_*` 全有或全无，缺一部分就拒绝启动。所以第 32 步的空当里只能先放真的 CorpID、Token、EncodingAESKey，Secret 与 OPEN_KFID 放占位值；R21 只说启动时取客服链接，没写取不到怎么办。推荐：回调的 URL 校验只用 Token、EncodingAESKey、CorpID；取 token 或客服链接失败时进程照常起（R19 已定体验客服失败不影响 `ok`），`/healthz.wecom.failing` 为真，不签码，`Me.sandbox.wechat` 按 `off` 处理、体验清单第一步是模拟器，每分钟重试，取到即恢复；持续 10 分钟的 `channel` 告警照发（空当里预期有一条）。owner 同意后在 spec 顶部记一条 `Revisions:` 再做第 25 步；不同意就停在第 25 步，另议上线顺序。
 
 ## 交接记录
 
