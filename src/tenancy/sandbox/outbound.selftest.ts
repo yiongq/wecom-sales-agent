@@ -11,9 +11,23 @@ import type { Db } from '../../db/client.js';
 import { importConfig } from '../../config/transfer.js';
 import { shanhaiBrand } from '../../packs/travel/brand-fixture.js';
 import { closeConfig } from '../../config/source.js';
-import { configureTenancy, createTenantRuntime, runtimeOf, tenantRuntimes, withTenantScope, unregisterRuntime } from '../runtime.js';
+import {
+  configureTenancy,
+  createTenantRuntime,
+  identifyRuntime,
+  registerRuntime,
+  currentRuntime,
+  runtimeOf,
+  tenantRuntimes,
+  withTenantScope,
+  withoutTenantScope,
+  unregisterRuntime,
+} from '../runtime.js';
 import { dropTenantState } from '../state.js';
 import { dropShutdownHooks } from '../../shutdown.js';
+import { Redacted } from '../../channels/secrets.js';
+import type { KfMessage } from '../../adapters/wecom-state.js';
+import { SandboxProcess, sandboxApp } from './process.js';
 import { provisionSandbox } from './provision.js';
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'sandbox-outbound-'));
@@ -31,7 +45,7 @@ const simulator = await import('../../adapters/simulator.js');
 const web = await import('../../adapters/web.js');
 const wecom = await import('../../adapters/wecom.js');
 const accounts = await import('../../channels/accounts.js');
-const { alert, __alertTest } = await import('../../ops/alert.js');
+const { alert, watchStoreAlerts, __alertTest } = await import('../../ops/alert.js');
 const notify = await import('../../notify/handoff.js');
 const events = await import('../../store/events.js');
 const hub = await import('../../console-api/events.js');
@@ -42,6 +56,7 @@ type Query = <T = Record<string, unknown>>(sql: string, params?: unknown[]) => P
 
 async function cleanup(): Promise<void> {
   for (const rt of tenantRuntimes()) {
+    await withTenantScope(rt, () => store.drainStore(5000));
     rt.state = 'closed';
     rt.store.pgBackend?.close();
     await withTenantScope(rt, closeConfig);
@@ -80,6 +95,12 @@ async function suite(
   const faults = await faultsFor(rt);
   const actor = { userId: opened.userId, name: '体验访客', role: 'owner' as const };
   const requests: { url: string; body: string }[] = [];
+  let incoming: KfMessage[] = [];
+  const waitIdle = async () => {
+    const until = Date.now() + 10000;
+    while (!wecom.__wecomTest.idle() && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(wecom.__wecomTest.idle(), true, '企微夹具必须完成真实启动恢复与处理链');
+  };
   const logs: string[] = [];
   const originalFetch = globalThis.fetch;
   const originalWarn = console.warn;
@@ -95,6 +116,15 @@ async function suite(
     const url = String(input);
     requests.push({ url, body: String(init?.body ?? '') });
     if (url === process.env.ALERT_WEBHOOK_URL) return Response.json({ errcode: 0 });
+    if (url.startsWith('https://qyapi.weixin.qq.com/')) {
+      if (url.includes('/gettoken')) return Response.json({ errcode: 0, access_token: 'fixture-token', expires_in: 7200 });
+      if (url.includes('/kf/sync_msg')) {
+        const page = incoming;
+        incoming = [];
+        return Response.json({ errcode: 0, next_cursor: randomUUID(), has_more: 0, msg_list: page });
+      }
+      return Response.json({ errcode: 0, msgid: randomUUID() });
+    }
     throw new Error('sandbox_unexpected_outbound');
   };
   console.warn = (...args) => {
@@ -191,39 +221,119 @@ async function suite(
       ]);
       store.saveSession(wechat);
       await store.flushSession(wechat.id, { timeoutMs: 5000 });
-      for (const source of ['env', 'db'] as const) {
-        accounts.installAccounts(
-          source === 'env'
-            ? []
-            : [
-                {
-                  id: randomUUID(),
-                  tenantId: rt.id,
-                  key: 'main',
-                  name: '夹具账号',
-                  kind: 'wecom_kf',
-                  status: 'active',
-                  source,
-                  wecom: { corpId: 'fixture-corp', openKfId: 'fixture-kf', idPrefix: 'wecom:', recordOnlyUntil: null, settings: {} },
-                  web: null,
-                  inactiveReason: null,
-                },
-              ],
-        );
-        assert.equal(wecom.__wecomTest.routeAccount(wechat.id), null);
-        assert.equal(wecom.wecomAdapter.prepare!(wechat.id, '不能经宿主发送', { kind: 'notice' }), null);
-        assert.equal(await wecom.wecomAdapter.push(wechat.id, '不能经宿主发送'), false);
-        assert.equal(
-          await wecom.wecomAdapter.push(wechat.id, '不能经句柄绕过', {
-            kind: 'notice',
-            prepared: { sessionId: wechat.id, kind: 'notice' },
-          }),
-          false,
-        );
-      }
+      assert.equal(requests.length, 0, '种子回复、建单与落库故障阶段的所有外发必须为零');
+      // 先证明 env 能发；沙箱身份故意保留 isHost，不能借旧的非宿主检查假通过。
+      identifyRuntime(rt, { id: rt.id, slug: rt.slug, kind: 'standard', isHost: true });
+      accounts.installAccounts([]);
+      assert.equal(await wecom.wecomAdapter.push(wechat.id, 'env 正向对照'), true);
+      assert.ok(requests.some((r) => r.url.includes('/kf/send_msg')));
+      requests.length = 0;
+      identifyRuntime(rt, { id: rt.id, slug: rt.slug, kind: 'sandbox', isHost: true });
+      assert.equal(wecom.__wecomTest.routeAccount(wechat.id), null);
+      assert.equal(wecom.wecomAdapter.prepare!(wechat.id, 'env 拒绝', { kind: 'notice' }), null);
+      assert.equal(await wecom.wecomAdapter.push(wechat.id, 'env 拒绝'), false);
+      assert.equal(requests.length, 0);
+
+      // 独立测试库里暂时转成 standard，登记真实账号后还原；生产的 INSERT 触发器始终启用。
+      const accountId = randomUUID();
+      await query("update tenants set kind='standard',expires_at=null where id=$1", [rt.id]);
+      await query(
+        `insert into channel_accounts(tenant_id,id,key,name,kind,id_prefix,corp_id,open_kfid,secrets_ct,secrets_key_id,cursor)
+        values($1,$2,'main','夹具账号','wecom_kf','wecom:','fixture-corp','fixture-kf',$3,'fixture','fixture-cursor')`,
+        [rt.id, accountId, Buffer.from('fixture-ciphertext')],
+      );
+      await query("update tenants set kind='sandbox',expires_at=$2 where id=$1", [rt.id, new Date(rt.expiresAt!)]);
+      const start: import('../../adapters/wecom.js').WecomAccountStart = {
+        account: {
+          id: accountId,
+          tenantId: rt.id,
+          key: 'main',
+          name: '夹具账号',
+          kind: 'wecom_kf',
+          status: 'active',
+          source: 'db',
+          wecom: { corpId: 'fixture-corp', openKfId: 'fixture-kf', idPrefix: 'wecom:', recordOnlyUntil: null, settings: {} },
+          web: null,
+          inactiveReason: null,
+        },
+        secrets: new Redacted({ appSecret: randomUUID(), callbackToken: randomUUID(), callbackAesKey: randomUUID() }),
+        open: { inbox: [], outbound: [] },
+      };
+      assert.throws(() => wecom.startWecomAccount(start), /sandbox_wecom_account_forbidden/);
+      assert.equal(wecom.__wecomTest.inspect(accountId), null);
+      assert.equal(requests.length, 0);
+      identifyRuntime(rt, { id: rt.id, slug: rt.slug, kind: 'standard', isHost: true });
+      accounts.installAccounts([start.account]);
+      wecom.startWecomAccount(start);
+      await waitIdle();
+      assert.equal(wecom.__wecomTest.inspect(accountId)?.recovery, 'done');
+      assert.equal(wecom.__wecomTest.inspect(accountId)?.backend, 'channel_inbox');
+      assert.equal(wecom.__wecomTest.routeAccount(wechat.id), accountId);
+      const positive = wecom.wecomAdapter.prepare!(wechat.id, 'DB 句柄正向对照', { kind: 'notice' });
+      assert.ok(positive);
+      await store.flushSession(wechat.id, { timeoutMs: 5000 });
+      assert.equal(await wecom.wecomAdapter.push(wechat.id, 'DB 句柄正向对照', { kind: 'notice', prepared: positive }), true);
+      assert.equal(await takeover.pushToChannel(wechat.id, 'DB 接线正向对照', { kind: 'notice' }), true);
+      const page = (suffix: string): KfMessage[] => [
+        {
+          msgid: `message-${suffix}`,
+          open_kfid: 'fixture-kf',
+          external_userid: 'wmSbxAuto',
+          send_time: Math.floor(Date.now() / 1000),
+          origin: 3,
+          msgtype: 'text',
+          text: { content: '你好' },
+        },
+        {
+          msgid: `welcome-${suffix}`,
+          open_kfid: 'fixture-kf',
+          external_userid: 'wmSbxWelcome',
+          send_time: Math.floor(Date.now() / 1000),
+          origin: 4,
+          msgtype: 'event',
+          event: { event_type: 'enter_session', external_userid: 'wmSbxWelcome', welcome_code: `fixture-${suffix}` },
+        },
+      ];
+      requests.length = 0;
+      incoming = page('standard');
+      await wecom.syncAccountFromCallback(accountId, 'fixture-sync');
+      await waitIdle();
+      assert.ok(
+        requests.some((r) => r.url.includes('/kf/send_msg?')),
+        '自动回复的正向对照必须真实发出',
+      );
+      assert.ok(
+        requests.some((r) => r.url.includes('/kf/send_msg_on_event')),
+        '欢迎语的正向对照必须真实发出',
+      );
+      const prepared = wecom.wecomAdapter.prepare!(wechat.id, '沙箱句柄绕过尝试', { kind: 'notice' });
+      assert.ok(prepared, '必须使用 WeakMap 真正登记的句柄');
+      await store.flushSession(wechat.id, { timeoutMs: 5000 });
+      identifyRuntime(rt, { id: rt.id, slug: rt.slug, kind: 'sandbox', isHost: true });
+      requests.length = 0;
+      assert.equal(wecom.__wecomTest.routeAccount(wechat.id), null);
+      assert.equal(wecom.wecomAdapter.prepare!(wechat.id, 'DB 拒绝', { kind: 'notice' }), null);
+      assert.equal(await wecom.wecomAdapter.push(wechat.id, 'DB 拒绝'), false);
+      assert.equal(await wecom.wecomAdapter.push(wechat.id, '沙箱句柄绕过尝试', { kind: 'notice', prepared }), false);
+      incoming = page('sandbox');
+      await wecom.syncAccountFromCallback(accountId, 'fixture-sync');
+      await waitIdle();
+      assert.equal(incoming.length, 2, '沙箱拒绝拉取，自动回复与 welcome_code 欢迎语均不可达');
+      assert.equal(requests.length, 0, '真实运行时与登记句柄在沙箱作用域下零企微请求');
+      assert.throws(
+        () => wecom.startWecomAccount({ ...start, account: { ...start.account, id: randomUUID() } }),
+        /sandbox_wecom_account_forbidden/,
+      );
+      wecom.wecomAdapter.release!(prepared, 'aborted');
+      await store.flushSession(wechat.id, { timeoutMs: 5000 });
+      wecom.stopWecomAccounts();
+      await query('delete from outbound_sends where tenant_id=$1 and account_id=$2', [rt.id, accountId]);
+      await query('delete from channel_inbox where tenant_id=$1 and account_id=$2', [rt.id, accountId]);
+      await query('delete from channel_accounts where tenant_id=$1 and id=$2', [rt.id, accountId]);
       accounts.installAccounts([]);
       // 经过 server 的实际人工/付款共同发送接线，web 即使有订阅者也不能收到沙箱消息。
       const badWeb = store.getOrCreateSession(`sbx-${'f'.repeat(24)}`, 'web');
+      await store.flushSession(badWeb.id, { timeoutMs: 5000 });
       let webPushes = 0;
       const offWeb = web.subscribeWeb(badWeb.id, 'fixture-ip', () => {
         webPushes++;
@@ -247,8 +357,84 @@ async function suite(
         [process.env.ALERT_WEBHOOK_URL],
       );
       assert.ok(requests[0]!.body.includes('进程级告警'));
-      const callback = await app.request('/wecom/callback', { headers: { host: 'sandbox.example.invalid' } });
+      // 两个沙箱同时遇到共享 PG 故障：汇总告警、部分恢复不报好、全部恢复再报；局部 poisoned 只记日志。
+      const sibling = createTenantRuntime({ id: randomUUID(), slug: 'fixture-sibling', kind: 'sandbox' });
+      registerRuntime(sibling);
+      const base = {
+        mode: 'db' as const,
+        conversations: 1,
+        dirty: 0,
+        lagMs: 0,
+        lastError: null as string | null,
+        conflict: false,
+        poisoned: [] as string[],
+      };
+      let first: typeof base = { ...base, dirty: 2, lagMs: 61000, lastError: '08006' };
+      let second: typeof base = { ...base, dirty: 3, lagMs: 70000, lastError: '08006' };
+      __alertTest.reset();
+      __alertTest.setProbe({
+        health: () => (currentRuntime().id === rt.id ? first : currentRuntime().id === sibling.id ? second : base),
+        counters: () => null,
+      });
+      const alertCount = () => requests.filter((r) => r.url === process.env.ALERT_WEBHOOK_URL).length;
+      const before = alertCount();
+      try {
+        withoutTenantScope(() => __alertTest.tick());
+        withoutTenantScope(() => __alertTest.tick());
+        await __alertTest.settle();
+        assert.equal(alertCount(), before + 1, '两个沙箱的库不可达/积压只推一次');
+        assert.ok(requests.at(-1)!.body.includes('5 个会话'));
+        first = { ...base };
+        withoutTenantScope(() => __alertTest.tick());
+        await __alertTest.settle();
+        assert.equal(alertCount(), before + 1, '不能因一个沙箱恢复而提前报恢复');
+        second = { ...base };
+        withoutTenantScope(() => __alertTest.tick());
+        await __alertTest.settle();
+        assert.equal(alertCount(), before + 2);
+        assert.ok(requests.at(-1)!.body.includes('已恢复'));
+        first = { ...base, poisoned: ['AB12'], lastError: '23514' };
+        withoutTenantScope(() => __alertTest.tick());
+        await __alertTest.settle();
+        assert.equal(alertCount(), before + 2, '某个沙箱 poisoned 不推群');
+        watchStoreAlerts();
+        store.__storeTest.emitIncident({ kind: 'conflict', detail: '会话 AB12' });
+        withTenantScope(sibling, () => {
+          watchStoreAlerts();
+          store.__storeTest.emitIncident({ kind: 'conflict', detail: '会话 CD34' });
+        });
+        first = { ...base, conflict: true };
+        second = { ...base, conflict: true };
+        withoutTenantScope(() => __alertTest.tick());
+        await __alertTest.settle();
+        assert.equal(alertCount(), before + 3, '即时冲突事件与巡检共用实例去重');
+        __alertTest.onLock('lost');
+        withTenantScope(sibling, () => __alertTest.onLock('lost'));
+        __alertTest.onLock('taken');
+        withTenantScope(sibling, () => __alertTest.onLock('taken'));
+        await __alertTest.settle();
+        assert.equal(alertCount(), before + 5, '锁断开与确认他人持有分别只发一次');
+        assert.ok(requests.at(-1)!.body.includes('开始停机'));
+      } finally {
+        __alertTest.setProbe(null);
+        dropTenantState(sibling.id);
+        unregisterRuntime(sibling.id);
+        __alertTest.stopTimer();
+      }
+      assert.equal(requests.filter((r) => r.url.startsWith('https://qyapi.weixin.qq.com/')).length, 0);
+      const sandbox = sandboxApp(
+        {
+          health: () => new SandboxProcess({}).health(),
+          resolve: async () => ({ status: 'invalid' as const }),
+          provision: async () => opened,
+          end: async () => {},
+        },
+        'sandbox.example.invalid',
+        app,
+      );
+      const callback = await sandbox.request('/wecom/callback', { headers: { host: 'sandbox.example.invalid' } });
       assert.equal(callback.status, 404);
+      assert.deepEqual(store.storeHealth().poisoned, []);
     });
     for (const table of ['jobs', 'channel_accounts']) {
       const [count] = await query<{ n: number }>(`select count(*)::int as n from ${table} where tenant_id=$1`, [rt.id]);
@@ -263,6 +449,8 @@ async function suite(
       /沙箱租户不可建渠道账号/,
     );
   } finally {
+    withTenantScope(rt, () => wecom.stopWecomAccounts());
+    accounts.installAccounts([]);
     globalThis.fetch = originalFetch;
     console.warn = originalWarn;
     envNames.forEach((name, i) => {

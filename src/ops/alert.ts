@@ -72,6 +72,7 @@ const tenants = new TenantLocal(
     lagAlerted: false,
     dropSamples: [] as { at: number; n: number }[],
     replayFailedSeen: 0,
+    storeSubscribed: false,
   }),
   (s) => {
     s.states.clear();
@@ -92,7 +93,9 @@ registerTenantState({ name: 'alert.inboxAlerted', ...tenants.registration((s) =>
 registerTenantState({ name: 'alert.poisonedSeen', ...tenants.registration((s) => s.poisonedSeen.size) });
 registerTenantState({
   name: 'alert.storeSamples',
-  ...tenants.registration((s) => s.dropSamples.length + Number(s.lagAlerted) + Number(s.replayFailedSeen !== 0)),
+  ...tenants.registration(
+    (s) => s.dropSamples.length + Number(s.lagAlerted) + Number(s.replayFailedSeen !== 0) + Number(s.storeSubscribed),
+  ),
 });
 const sentAt: number[] = [];
 let lastThrottleLog = 0;
@@ -182,7 +185,7 @@ function deliver(content: string, t: number): void {
 export function alert(key: AlertKey, text: string, opts: AlertOpts = {}): void {
   try {
     const owner = scopedRuntime();
-    if (owner && owner.state !== 'serving') return;
+    if (owner && owner.state !== 'serving' && !opts.instance) return;
     const t = clock();
     const states = statesFor(key, opts.instance);
     const stateKey = opts.scope ? `${key}:${opts.scope}` : key;
@@ -364,6 +367,17 @@ function onInboxGivenUp(e: InboxAbandoned): void {
 // ---------------- tenant_lock ----------------
 
 function onLock(ev: LockEvent): void {
+  if (currentRuntime().kind === 'sandbox') {
+    if (ev === 'taken') alert('tenant_lock', '租户锁已被另一个进程持有，本进程开始停机', { instance: true, scope: 'lock_taken' });
+    else if (ev === 'lost') alert('tenant_lock', '沙箱租户锁连接断开：配置写入暂停，正在重取', { instance: true, scope: 'lock_lost' });
+    else if (
+      tenantRuntimes()
+        .filter((rt) => rt.kind === 'sandbox' && rt.state === 'serving')
+        .every((rt) => withTenantScope(rt, () => configHealth().lock !== 'lost'))
+    )
+      alert('tenant_lock', '沙箱租户锁重新取得，配置写入恢复', { instance: true, scope: 'lock_lost', resolved: true });
+    return;
+  }
   if (ev === 'lost') alert('tenant_lock', '租户锁连接断开：配置写入暂停、对话照常，正在重取');
   else if (ev === 'held') alert('tenant_lock', '租户锁重新取得，配置写入恢复', { resolved: true });
   else alert('tenant_lock', '租户锁已被另一个进程持有，本进程开始停机', { escalate: true });
@@ -383,7 +397,11 @@ let probe: { health: () => StoreHealth; counters: () => ReturnType<typeof storeC
 
 function onIncident(i: StoreIncident): void {
   if (i.kind === 'conflict')
-    alert('store', `store_conflict：落库撞上另一写者（${safeCodes(i.detail)}），本进程优雅停机，没落库的写进 spill`);
+    alert(
+      'store',
+      `store_conflict：落库撞上另一写者（${safeCodes(i.detail)}），本进程优雅停机，没落库的写进 spill`,
+      currentRuntime().kind === 'sandbox' ? { instance: true, scope: 'store_conflict' } : {},
+    );
   else alert('store', `停机时 ${i.sessions} 个会话没落库，退出时写进 spill 文件（下次启动先回放）`);
 }
 
@@ -393,7 +411,7 @@ const safeCodes = (s: string): string => s.replace(/[^\w\s·:\-\p{Script=Han}]/g
 function checkStore(t: number): void {
   const local = tenantAlerts();
   const h = probe.health();
-  if (h.conflict) alert('store', 'store_conflict：落库撞上另一写者，本进程优雅停机');
+  if (currentRuntime().kind !== 'sandbox' && h.conflict) alert('store', 'store_conflict：落库撞上另一写者，本进程优雅停机');
   const fresh = h.poisoned.filter((c) => !local.poisonedSeen.has(c));
   if (fresh.length) {
     for (const c of fresh) local.poisonedSeen.add(c);
@@ -402,10 +420,10 @@ function checkStore(t: number): void {
       `会话 ${fresh.map(codeOf).join('、')} 停止落库（poisoned，${safeCodes(h.lastError ?? '原因见日志')}），内存照旧服务客户`,
     );
   }
-  if (h.lagMs > LAG_ALERT_MS) {
+  if (currentRuntime().kind !== 'sandbox' && h.lagMs > LAG_ALERT_MS) {
     local.lagAlerted = true;
     alert('store', `写库积压 ${Math.round(h.lagMs / 1000)} 秒（${h.dirty} 个会话有没落库的改动）`);
-  } else if (local.lagAlerted && h.lagMs <= LAG_OK_MS) {
+  } else if (currentRuntime().kind !== 'sandbox' && local.lagAlerted && h.lagMs <= LAG_OK_MS) {
     local.lagAlerted = false;
     if (!h.conflict && h.poisoned.length === 0) alert('store', '写库积压回到 5 秒以内', { resolved: true });
   }
@@ -423,6 +441,31 @@ function checkStore(t: number): void {
   if (prev !== undefined && c.telemetryDropped > prev) {
     alert('store', `最近 10 分钟有 ${c.telemetryDropped - before} 批遥测行（trace、护栏事件、发送账本）没写进库，已丢弃`);
   }
+}
+
+/** 沙箱共用 PG：汇总后按故障种类使用实例去重，单个 poisoned 等仍由 checkStore 只记日志。 */
+function checkSandboxStores(health: StoreHealth[]): void {
+  if (!health.length) return;
+  const lagMs = Math.max(...health.map((h) => h.lagMs));
+  const dirty = health.reduce((n, h) => n + h.dirty, 0);
+  if (health.some((h) => h.conflict))
+    alert('store', 'store_conflict：落库撞上另一写者，本进程优雅停机', { instance: true, scope: 'store_conflict' });
+  if (lagMs > LAG_ALERT_MS)
+    alert('store', `沙箱写库积压 ${Math.round(lagMs / 1000)} 秒（${dirty} 个会话有没落库的改动，可能库不可达）`, {
+      instance: true,
+      scope: 'store_lag',
+    });
+  else if (lagMs <= LAG_OK_MS && health.every((h) => !h.conflict && !h.poisoned.length))
+    alert('store', '沙箱写库积压回到 5 秒以内', { instance: true, scope: 'store_lag', resolved: true });
+}
+
+/** 新开通的沙箱也必须收到写者冲突的即时通知，不等下一次巡检。 */
+export function watchStoreAlerts(): void {
+  if (currentRuntime().state !== 'serving') return;
+  const local = tenantAlerts();
+  if (local.storeSubscribed) return;
+  onStoreIncident(onIncident);
+  local.storeSubscribed = true;
 }
 
 // ---------------- jobs ----------------
@@ -465,8 +508,16 @@ function checkChannels(now: number): void {
 function tick(): void {
   try {
     const t = clock();
+    const sandboxHealth: StoreHealth[] = [];
     for (const rt of tenantRuntimes().filter((rt) => rt.state === 'serving'))
-      backgroundEntry(() => withTenantScope(rt, () => checkStore(t)));
+      backgroundEntry(() =>
+        withTenantScope(rt, () => {
+          watchStoreAlerts();
+          checkStore(t);
+          if (rt.kind === 'sandbox') sandboxHealth.push(probe.health());
+        }),
+      );
+    withoutTenantScope(() => checkSandboxStores(sandboxHealth));
     flushRestoreCutoff(t, false);
     for (const rt of tenantRuntimes().filter((rt) => rt.state === 'serving'))
       withTenantScope(rt, () => {
@@ -522,7 +573,7 @@ export function startAlerts(): void {
     onInboxAbandoned(onInboxGivenUp);
     onTokenError(onToken);
     onLockEvent(onLock);
-    for (const rt of tenantRuntimes()) withTenantScope(rt, () => onStoreIncident(onIncident));
+    for (const rt of tenantRuntimes()) withTenantScope(rt, watchStoreAlerts);
     onJobFailed(onJob);
     // 停机：在途的推送（store_conflict、锁被拿走、drain 段末尾的 spill）等到 late 段的截止时刻，再退出
     onShutdown(
@@ -546,6 +597,12 @@ export function startAlerts(): void {
   });
 }
 
+/** 沙箱进程关闭后停止巡检；已经开始的告警仍可排空。 */
+export function stopAlertPolling(): void {
+  if (timer) clearInterval(timer);
+  timer = null;
+}
+
 /** 仅供自测 */
 export const __alertTest = {
   setClock(fn: (() => number) | null): void {
@@ -565,6 +622,7 @@ export const __alertTest = {
     timer = null;
   },
   tick,
+  onLock,
   checkChannelStartup,
   /** 等在途的推送都结束 */
   async settle(): Promise<void> {
@@ -573,7 +631,11 @@ export const __alertTest = {
   inflight: () => inflight.size,
   /** 清掉去重、限流与各键的计数（订阅不动） */
   reset(): void {
+    const subscriptions = tenantRuntimes()
+      .filter((rt) => rt.state === 'serving')
+      .map((rt) => ({ rt, subscribed: tenants.get(rt).storeSubscribed }));
     tenants.registration(() => 0).reset();
+    for (const { rt, subscribed } of subscriptions) if (subscribed) tenants.get(rt).storeSubscribed = true;
     instanceStates.clear();
     sentAt.length = 0;
     lastThrottleLog = 0;

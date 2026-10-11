@@ -2455,7 +2455,7 @@ function dispatch(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage, replay = f
 // 记 pending，本轮拉完立刻补拉。
 
 function syncOnce(rt: WecomRuntime, cfg: WecomConfig, syncToken?: string): Promise<void> {
-  if (rt.stopping || rt.recovery !== 'done') return Promise.resolve();
+  if (currentRuntime().kind === 'sandbox' || rt.stopping || rt.recovery !== 'done') return Promise.resolve();
   if (rt.syncTask) {
     rt.pendingRequested = true;
     if (syncToken) rt.pendingToken = syncToken;
@@ -2599,6 +2599,7 @@ function ensureReady(rt: WecomRuntime, cfg: WecomConfig): Promise<void> {
 
 /** 回调带来的 token 立即拉一次（两种账号共用） */
 async function pullFromCallback(rt: WecomRuntime, cfg: WecomConfig, syncToken: string): Promise<void> {
+  if (currentRuntime().kind === 'sandbox') return;
   const task = withLogContext({ acct: rt.key }, async () => {
     if (rt.stopping) {
       // 回调照样回 success（server.ts），只是不拉：消息还在 cursor 之后，新进程启动补拉时会拿到
@@ -2791,10 +2792,12 @@ export function startWecomAccount(s: WecomAccountStart): void {
   backgroundEntry(() => {
     const owner = runtimeOf(s.account.tenantId);
     if (!owner) throw new TenantScopeMissing();
+    if (owner.kind === 'sandbox') throw new Error('sandbox_wecom_account_forbidden');
     withTenantScope(owner, () => startWecomAccountInScope(s));
   });
 }
 function startWecomAccountInScope(s: WecomAccountStart): void {
+  if (currentRuntime().kind === 'sandbox') throw new Error('sandbox_wecom_account_forbidden');
   const { account } = s;
   const w = account.wecom;
   if (account.source !== 'db' || account.kind !== 'wecom_kf' || !w) throw new Error('startWecomAccount 只收库里的企微账号');
