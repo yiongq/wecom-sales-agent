@@ -2455,7 +2455,7 @@ function dispatch(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage, replay = f
 // 记 pending，本轮拉完立刻补拉。
 
 function syncOnce(rt: WecomRuntime, cfg: WecomConfig, syncToken?: string): Promise<void> {
-  if (rt.stopping || rt.recovery !== 'done') return Promise.resolve();
+  if (currentRuntime().kind === 'sandbox' || rt.stopping || rt.recovery !== 'done') return Promise.resolve();
   if (rt.syncTask) {
     rt.pendingRequested = true;
     if (syncToken) rt.pendingToken = syncToken;
@@ -2599,6 +2599,7 @@ function ensureReady(rt: WecomRuntime, cfg: WecomConfig): Promise<void> {
 
 /** 回调带来的 token 立即拉一次（两种账号共用） */
 async function pullFromCallback(rt: WecomRuntime, cfg: WecomConfig, syncToken: string): Promise<void> {
+  if (currentRuntime().kind === 'sandbox') return;
   const task = withLogContext({ acct: rt.key }, async () => {
     if (rt.stopping) {
       // 回调照样回 success（server.ts），只是不拉：消息还在 cursor 之后，新进程启动补拉时会拿到
@@ -2791,10 +2792,12 @@ export function startWecomAccount(s: WecomAccountStart): void {
   backgroundEntry(() => {
     const owner = runtimeOf(s.account.tenantId);
     if (!owner) throw new TenantScopeMissing();
+    if (owner.kind === 'sandbox') throw new Error('sandbox_wecom_account_forbidden');
     withTenantScope(owner, () => startWecomAccountInScope(s));
   });
 }
 function startWecomAccountInScope(s: WecomAccountStart): void {
+  if (currentRuntime().kind === 'sandbox') throw new Error('sandbox_wecom_account_forbidden');
   const { account } = s;
   const w = account.wecom;
   if (account.source !== 'db' || account.kind !== 'wecom_kf' || !w) throw new Error('startWecomAccount 只收库里的企微账号');
@@ -2903,6 +2906,10 @@ function pushRoute(sessionId: string, quiet = false): { rt: WecomRuntime; cfg: W
   const err = (...args: unknown[]): void => {
     if (!quiet) console.error(...args);
   };
+  if (currentRuntime().kind === 'sandbox') {
+    err('[wecom] ⚠️ 宿主企微账号拒绝沙箱会话，消息未送达:', convLabel(sessionId));
+    return null;
+  }
   if (!wecomInDb()) {
     if (!currentRuntime().isHost) {
       err('[wecom] ⚠️ 非宿主租户没有库里的企微账号，不能使用宿主 env 账号，消息未送达:', convLabel(sessionId));
@@ -2965,6 +2972,11 @@ export const wecomAdapter: ChannelAdapter = {
    * 库里的企微账号走 03 的先落库后发送：给了 prepare 的句柄就发那一组，否则在这里切分、排 pending、等提交再发
    */
   async push(sessionId: string, text: string, opts?: PushOpts): Promise<boolean> {
+    // prepared 会绕过 pushRoute，必须在读取句柄之前同样拒绝沙箱。
+    if (currentRuntime().kind === 'sandbox') {
+      console.error('[wecom] ⚠️ 宿主企微账号拒绝沙箱会话，消息未送达:', convLabel(sessionId));
+      return false;
+    }
     if (opts?.prepared) {
       const g = preparedGroups.get(opts.prepared);
       if (g !== undefined) {

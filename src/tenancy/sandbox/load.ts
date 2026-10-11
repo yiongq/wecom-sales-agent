@@ -1,6 +1,7 @@
 // 开通和启动共用同一个预载入口；取锁之后才装配置、会话和隐私说明。
 import { closeConfig, initConfig, type ConfigDeps } from '../../config/source.js';
 import type { TenantLock } from '../../db/client.js';
+import { watchStoreAlerts } from '../../ops/alert.js';
 import { initPrivacy } from '../../privacy/privacy.js';
 import { initSessionStore } from '../../store.js';
 import { dropShutdownHooks } from '../../shutdown.js';
@@ -49,6 +50,7 @@ export async function loadSandboxRuntime(
       await initConfig({ ...deps, tenantSlug: row.slug, lock: async () => held, closeDb: undefined });
       await initSessionStore({ db: deps.db, tenantId: row.id, tenantSlug: row.slug, varDir: '' });
       await initPrivacy({ strict: true });
+      watchStoreAlerts();
     });
     assertSandboxRunning();
     return rt;

@@ -118,13 +118,16 @@ app.use('/*', publicHostMiddleware);
 // 调用方按「没送达」各自处理（人工回复与付款记备注、跟进退账）。不能 throw：付款路由在 markOrderPaid
 // 之后才调它，抛出会让一个已经付款成功的请求返回 500
 function adapterFor(channel: string): ChannelAdapter {
-  if (channel === 'wecom') return wecomAdapter;
+  const sandboxTenant = currentRuntime().kind === 'sandbox';
+  if (!sandboxTenant && channel === 'wecom') return wecomAdapter;
   if (channel === 'simulator') return simulatorAdapter;
-  if (channel === 'web') return webAdapter;
+  if (!sandboxTenant && channel === 'web') return webAdapter;
   return {
     name: 'unknown',
     push(sessionId) {
-      console.error(`[server] ⚠️ 会话 ${convLabel(sessionId)} 的渠道「${channel}」未知，消息未送达`);
+      console.error(
+        `[server] ⚠️ 会话 ${convLabel(sessionId)} 的渠道「${channel}」${sandboxTenant ? '不允许用于沙箱' : '未知'}，消息未送达`,
+      );
       return Promise.resolve(false);
     },
   };
