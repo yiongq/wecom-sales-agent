@@ -108,6 +108,8 @@ export function deliverHandoffUnsaved(events: readonly (DomainEventInput & { ten
       reportMismatch();
       continue;
     }
+    // 沙箱的转人工只留在自己的工作台，不进入落库失败的外部通知通道。
+    if (rt.kind === 'sandbox') continue;
     const ev: DomainEvent = { ...input, tenantId: rt.id };
     if (ev.type !== 'handoff.started') continue;
     for (const cb of state().unsavedSubscribers) {

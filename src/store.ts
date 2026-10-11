@@ -497,6 +497,8 @@ export function forgetSession(sessionId: string): void {
 
 /** 任务的排程与状态变化（第 10 步）：db 存储的真实会话随它的下一次落库写，其余不入库 */
 export function queueJobs(sessionId: string, ops: readonly JobOp[]): void {
+  // 沙箱不执行跟进或群通知；丢弃任务而不拒绝整次会话落库（05 R11）。
+  if (currentRuntime().kind === 'sandbox') return;
   pgFor(sessionId)?.queueJobs(sessionId, ops);
 }
 /**

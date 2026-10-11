@@ -2903,6 +2903,10 @@ function pushRoute(sessionId: string, quiet = false): { rt: WecomRuntime; cfg: W
   const err = (...args: unknown[]): void => {
     if (!quiet) console.error(...args);
   };
+  if (currentRuntime().kind === 'sandbox') {
+    err('[wecom] ⚠️ 宿主企微账号拒绝沙箱会话，消息未送达:', convLabel(sessionId));
+    return null;
+  }
   if (!wecomInDb()) {
     if (!currentRuntime().isHost) {
       err('[wecom] ⚠️ 非宿主租户没有库里的企微账号，不能使用宿主 env 账号，消息未送达:', convLabel(sessionId));
@@ -2965,6 +2969,11 @@ export const wecomAdapter: ChannelAdapter = {
    * 库里的企微账号走 03 的先落库后发送：给了 prepare 的句柄就发那一组，否则在这里切分、排 pending、等提交再发
    */
   async push(sessionId: string, text: string, opts?: PushOpts): Promise<boolean> {
+    // prepared 会绕过 pushRoute，必须在读取句柄之前同样拒绝沙箱。
+    if (currentRuntime().kind === 'sandbox') {
+      console.error('[wecom] ⚠️ 宿主企微账号拒绝沙箱会话，消息未送达:', convLabel(sessionId));
+      return false;
+    }
     if (opts?.prepared) {
       const g = preparedGroups.get(opts.prepared);
       if (g !== undefined) {

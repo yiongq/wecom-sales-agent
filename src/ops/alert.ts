@@ -196,7 +196,12 @@ export function alert(key: AlertKey, text: string, opts: AlertOpts = {}): void {
       st.lastSentAt = t;
     }
     states.set(stateKey, st);
-    deliver(`[${instanceLabel()}] ${opts.resolved ? '已恢复：' : ''}${safeText(text)} · ${stamp(t)}`, t);
+    const content = `[${instanceLabel()}] ${opts.resolved ? '已恢复：' : ''}${safeText(text)} · ${stamp(t)}`;
+    if (owner?.kind === 'sandbox' && !opts.instance && key !== 'model_errors' && key !== 'tenant_scope_missing') {
+      console.warn(`[alert] 沙箱租户告警只记在日志里：${content}`);
+      return;
+    }
+    deliver(content, t);
   } catch (e) {
     if (e instanceof TenantScopeMissing) throw e;
     console.error(`[alert] 告警处理出错（${errName(e)}），已忽略`);
