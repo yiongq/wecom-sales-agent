@@ -249,8 +249,8 @@ try {
           .filter((p) => p.platform)
           .map((p) => p.col)
           .sort(),
-        ['brand', 'retention_customer_days', 'retention_lead_days', 'retention_trace_days'],
-        '真实 PG 平台只可更新品牌和原保留期列',
+        ['brand', 'llm_daily_alert_milli', 'public_host', 'retention_customer_days', 'retention_lead_days', 'retention_trace_days'],
+        '真实 PG 平台只可更新品牌、原保留期列与 05 的 public_host、软上限列',
       );
       equal(
         permissions.every((p) => !p.app),
