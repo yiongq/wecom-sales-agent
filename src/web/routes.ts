@@ -1,5 +1,6 @@
+import { publicHostMiddleware } from '../tenancy/hosts.js';
 import { TenantScopeMissing } from '../tenancy/runtime.js';
-import { tenantScopeMiddleware, withoutTenantScope, tenantCallback, currentRuntime } from '../tenancy/runtime.js';
+import { withoutTenantScope, tenantCallback, currentRuntime } from '../tenancy/runtime.js';
 import { currentPack } from '../config/source.js';
 import { brandTexts, renderBrandPage } from '../core/brand.js';
 // 03 R14：正式网页渠道。每次读写的会话都只由账号与 HttpOnly cookie 推导。
@@ -118,14 +119,14 @@ export const webRoutes = new Hono();
 const webOnly = async (c: Context, next: () => Promise<void>): Promise<Response | void> => {
   c.header('Cache-Control', 'no-store');
   c.header('X-Content-Type-Options', 'nosniff');
-  if (!profile().flags.web_channel || !accountByKey(c.req.param('key') ?? '', 'web')) return c.notFound();
+  if (!profile().flags.web_channel || !accountByKey(c.req.param('key') ?? '', 'web', currentRuntime().id)) return c.notFound();
   return next();
 };
-webRoutes.use('*', tenantScopeMiddleware);
+webRoutes.use('*', publicHostMiddleware);
 webRoutes.use('/w/:key', webOnly);
 webRoutes.use('/api/web/:key/*', webOnly);
 webRoutes.get('/w/:key', async (c) => {
-  const account = accountByKey(c.req.param('key'), 'web')!;
+  const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
   const binding = currentPack();
   const welcome = account.web!.welcomeText ?? brandTexts(binding.runtime, binding.brand).webWelcome;
   const config = JSON.stringify({
@@ -151,7 +152,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
   const parsed = bodySchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'invalid_message' }, 400);
   const body = parsed.data;
-  const account = accountByKey(c.req.param('key'), 'web')!;
+  const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
   let token = visitorToken(c);
   let s = ownSession(account, token);
   // 点击必须属于已问过的同意菜单，不凭匿名点击创建会话或捏造同意。
@@ -229,7 +230,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
 });
 
 webRoutes.get('/api/web/:key/history', lookupLimit, (c) => {
-  const account = accountByKey(c.req.param('key'), 'web')!;
+  const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
   const s = ownSession(account, visitorToken(c));
   const messages: WebMessage[] = (s?.messages ?? []).flatMap((m) => {
     if (m.role === 'system') return [];
@@ -245,7 +246,7 @@ webRoutes.get('/api/web/:key/events', lookupLimit, (c) => {
     c.header('Allow', 'GET');
     return c.body(null, 405);
   }
-  const account = accountByKey(c.req.param('key'), 'web')!;
+  const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
   const s = ownSession(account, visitorToken(c));
   if (!s) return c.json({ error: 'unauthorized' }, 401);
   const rt = currentRuntime();

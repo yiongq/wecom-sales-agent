@@ -1,3 +1,4 @@
+import { publicBase } from '../tenancy/hosts.js';
 import {
   runtimeOf,
   hostRuntime,
@@ -129,8 +130,8 @@ interface WecomConfig {
   publicBaseUrl: string;
 }
 
-/** 回复里的 /pay/、/proposal/ 拼成完整 URL 用的公网前缀（不是企微凭据，所有账号共用，每次现读） */
-const publicBaseUrl = (): string => (process.env.PUBLIC_BASE_URL ?? '').replace(/\/+$/, '');
+/** 回复里的绝对链接属于发送账号的租户；env 账号属于宿主。 */
+const publicBaseUrl = (): string => publicBase();
 
 /**
  * 企微状态在库里（03 spec R1）：装上的账号里有库里的企微账号（任何状态）。这时 env 账号整条不走：不读 WECOM_*、不拉、
@@ -2764,7 +2765,7 @@ function startWecomAccountInScope(s: WecomAccountStart): void {
       secret: s.secrets.reveal().appSecret,
       openKfId: w.openKfId,
       pollIntervalMs,
-      publicBaseUrl: publicBaseUrl(),
+      publicBaseUrl: publicBase(runtimeOf(account.tenantId)),
     }),
     ...(w.settings.welcomeText !== undefined ? { welcomeText: w.settings.welcomeText } : {}),
     ...(w.settings.welcomeBackText !== undefined ? { welcomeBackText: w.settings.welcomeBackText } : {}),

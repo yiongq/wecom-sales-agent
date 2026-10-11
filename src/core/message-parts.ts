@@ -1,7 +1,8 @@
+import { publicBase } from '../tenancy/hosts.js';
 import type { MessagePart } from './pack-api.js';
 
 /** R15：只投影最终文本，不清洗正文、不读取会话、不保存部件。 */
-export function partsOf(text: string, base = process.env.PUBLIC_BASE_URL ?? ''): MessagePart[] {
+export function partsOf(text: string, base = publicBase()): MessagePart[] {
   const parts: MessagePart[] = [];
   const ownBase = base.replace(/\/+$/, '');
   // 消费完整 URL，避免把站外 URL 或伪协议里的站内路径单独挖出来。

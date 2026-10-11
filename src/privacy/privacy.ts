@@ -1,3 +1,4 @@
+import { publicBase } from '../tenancy/hosts.js';
 import { currentRuntime, withoutTenantScope, tenantCallback, TenantScopeMissing } from '../tenancy/runtime.js';
 import { TenantLocal } from '../tenancy/local-state.js';
 import { registerTenantState } from '../tenancy/state.js';
@@ -83,9 +84,7 @@ export function currentPrivacyNotice(): PrivacyNotice | null {
 /** 发布过时的 /privacy 完整链接；没发布过是 null */
 export function privacyLink(): string | null {
   if (!notices.get().current) return null;
-  const rt = currentRuntime();
-  // 文件 demo 沿用可替换的进程配置；DB 租户只用自己的公开地址。
-  const base = (configMode() === 'file' && rt.isHost ? (process.env.PUBLIC_BASE_URL ?? rt.publicBase) : rt.publicBase).replace(/\/+$/, '');
+  const base = publicBase();
   return `${base}/privacy`;
 }
 
