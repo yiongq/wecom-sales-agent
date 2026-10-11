@@ -49,8 +49,8 @@ import {
   isDemoClassId,
   markOutboundFailedInDb,
   markOutboundSendingInDb,
-  onOutboundCommitted,
-  onSessionSaved,
+  onAnyOutboundCommitted,
+  onAnySessionSaved,
   queueInboxState,
   queueOutboundRows,
   queueTelemetry,
@@ -417,11 +417,11 @@ function releaseAwaiting(msg: ChatMessage, timedOut: boolean): void {
 
 // 消息写进会话、分到 seq 的那一刻（saveSession 同步分配 seq 之后，db 存储下才有这个钩子）：等着它的账本行在下一个宏任务一起排进落库。
 // 不在 saveSession 里面排：同一段同步代码里还要记这一轮的 trace，分开排，trace 那几行写不进去（存档点回滚）时不连带丢账本行
-withoutTenantScope(() =>
-  onSessionSaved(() => {
-    if (!ledger.get().awaitingSeq.size) return;
-    for (const msg of ledger.get().awaitingSeq.keys())
-      if (seqOf(msg) !== undefined) scheduleLedgerImmediate(() => releaseAwaiting(msg, false));
+onAnySessionSaved((rt, s) =>
+  withTenantScope(rt, () => {
+    if (rt.state !== 'serving') return;
+    for (const msg of ledger.get(rt).awaitingSeq.keys())
+      if (s.messages.includes(msg) && seqOf(msg) !== undefined) scheduleLedgerImmediate(() => releaseAwaiting(msg, false));
   }),
 );
 
@@ -647,11 +647,12 @@ function pendingSettled(row: Row, ok: boolean): void {
   row.commitWaiters = [];
   for (const w of ws) w();
 }
-withoutTenantScope(() =>
-  onOutboundCommitted((rows) => {
+onAnyOutboundCommitted((rt, rows) =>
+  withTenantScope(rt, () => {
+    if (rt.state !== 'serving') return;
     for (const w of rows) {
       const r = pendingWrites.get(w);
-      if (r && r.owner === currentRuntime()) pendingSettled(r, true);
+      if (r && r.owner === rt) pendingSettled(r, true);
     }
   }),
 );

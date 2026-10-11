@@ -40,7 +40,7 @@ import { addUsage, type UsageDelta } from '../db/repo/usage.js';
 import { shortIdOf } from '../shared/conversation.js';
 import type { ChatMessage, Order, Session } from '../types.js';
 import { SessionStoreStartupError, StoreConflictError, StoreLaggingError, type StoreBackend, type StoreHealth } from './backend.js';
-import { deliverCommitted, deliverHandoffUnsaved, type DomainEvent } from './events.js';
+import { deliverCommitted, deliverHandoffUnsaved, type DomainEventInput as DomainEvent } from './events.js';
 import {
   conversationValuesFrom,
   isDemoClassId,
@@ -896,6 +896,9 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
   let doc: SpillDoc | null = null;
   try {
     const parsed = JSON.parse(raw) as Partial<SpillDoc> | null;
+    // 未装载租户与别的版本也留给所属租户处理，不校验或改名它的文件。
+    if (parsed && typeof parsed.tenant === 'string' && parsed.tenant !== d.tenantId)
+      return { applied: 0, skipped: 0, failedFiles: 0, channelOnly: 0, channelWritten: 0 };
     if (parsed && typeof parsed === 'object' && parsed.version === 1 && Array.isArray(parsed.sessions)) doc = parsed as SpillDoc;
   } catch {
     doc = null;
@@ -907,7 +910,7 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
     );
     return { applied: 0, skipped: 0, failedFiles: 1, channelOnly: 0, channelWritten: 0 };
   }
-  if (doc.tenant !== d.tenantId) throw new SessionStoreStartupError('spill_conflict', `${name} 不是本租户的 spill`);
+  if (doc.tenant !== d.tenantId) return { applied: 0, skipped: 0, failedFiles: 0, channelOnly: 0, channelWritten: 0 };
   let applied = 0;
   let skipped = 0;
   let channelOnly = 0;
@@ -1946,7 +1949,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
         }
         if (!out.length) return 0;
         const doc: SpillDoc = { version: 1, tenant: d.tenantId, at: Date.now(), sessions: out };
-        const file = path.join(d.varDir, `store-spill-${stamp()}.json`);
+        const file = path.join(d.varDir, `store-spill-${stamp()}-${d.tenantId}-${randomUUID()}.json`);
         fs.mkdirSync(d.varDir, { recursive: true });
         fs.writeFileSync(`${file}.tmp`, JSON.stringify(doc));
         fs.renameSync(`${file}.tmp`, file);

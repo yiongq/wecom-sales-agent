@@ -29,8 +29,16 @@ export function hasChannelsMarker(varDir: string): boolean {
   return exists(varDir, CHANNELS_IN_DB_MARKER);
 }
 
-export function hasRestoreSentinel(varDir: string): boolean {
-  return exists(varDir, RESTORE_SENTINEL);
+const restoreReceipt = (varDir: string, tenantId: string): string =>
+  path.join(varDir, `${RESTORE_SENTINEL}.${encodeURIComponent(tenantId)}.cleared`);
+
+export function hasRestoreSentinel(varDir: string, tenantId?: string): boolean {
+  const sentinel = path.join(varDir, RESTORE_SENTINEL);
+  if (!fs.existsSync(sentinel)) return false;
+  if (tenantId === undefined) return true;
+  const receipt = restoreReceipt(varDir, tenantId);
+  // 完成凭据只对本次备份有效；新备份的哨兵内容不同，旧凭据不能放行。
+  return !fs.existsSync(receipt) || fs.readFileSync(receipt, 'utf8') !== fs.readFileSync(sentinel, 'utf8');
 }
 
 export function hasWecomStateFile(varDir: string): boolean {
@@ -92,4 +100,14 @@ export function removeChannelsMarker(varDir: string): void {
 /** 删恢复哨兵：企微状态在库里时只有 restore-cutoff 调；未导入、已导出时启动装载调（渠道状态在文件里，恢复照 02） */
 export function removeRestoreSentinel(varDir: string): void {
   removeDurably(path.join(varDir, RESTORE_SENTINEL));
+}
+
+/** 单租户维持 03 的删哨兵行为；多租户只解除自己的保护，总哨兵保留。 */
+export function clearTenantRestoreSentinel(varDir: string, tenantId: string, shared: boolean): void {
+  if (!hasRestoreSentinel(varDir)) return;
+  if (!shared) {
+    removeRestoreSentinel(varDir);
+    return;
+  }
+  writeAtomic(restoreReceipt(varDir, tenantId), fs.readFileSync(path.join(varDir, RESTORE_SENTINEL), 'utf8'));
 }

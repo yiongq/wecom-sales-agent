@@ -1,4 +1,13 @@
-import { hostRuntime, scopedRuntime, withoutTenantScope, tenantCallback } from '../tenancy/runtime.js';
+import { scopedState } from '../tenancy/scoped-state.js';
+import { registerTenantState } from '../tenancy/state.js';
+import {
+  tenantStoreIfLoaded,
+  withoutTenantScope,
+  tenantCallback,
+  currentRuntime,
+  tenantRuntimes,
+  withTenantScope,
+} from '../tenancy/runtime.js';
 // 沉默唤醒 / 自动跟进：资格判断、话术生成与出口护栏（两种存储共用），以及文件存储下的扫描器。
 //
 // 此前所有主动外发都要人点（顾问在后台点发送、或有人点了支付按钮触发回执），
@@ -24,6 +33,30 @@ import { shortIdOf } from '../shared/conversation.js';
 import { convLabel, logQuote } from '../log.js';
 import type { ChatMessage, PushOpts, Session, SalesStage } from '../types.js';
 import { profileForPrompt } from '../types.js';
+
+const tenantState = scopedState(
+  () => ({
+    stopping: false,
+    scanTask: null as Promise<number> | null,
+    scanTimer: null as NodeJS.Timeout | null,
+    composeWaiters: new Set<() => void>(),
+  }),
+  {
+    scanTimer: (v) => {
+      if (v) clearInterval(v);
+    },
+    composeWaiters: (v) => {
+      for (const wake of v) wake();
+      v.clear();
+    },
+  },
+);
+const state = tenantState.get;
+registerTenantState({ name: 'followup.scan.stopping', ...tenantState.registration('stopping') });
+registerTenantState({ name: 'followup.scan.scanTask', ...tenantState.registration('scanTask') });
+registerTenantState({ name: 'followup.scan.scanTimer', ...tenantState.registration('scanTimer') });
+registerTenantState({ name: 'followup.scan.composeWaiters', ...tenantState.registration('composeWaiters') });
+
 const templates = () => currentPack().runtime.followupTemplates;
 
 /** 连续推送失败多少次后放弃该会话的这个阶段，不再每轮重试 */
@@ -138,38 +171,44 @@ export function followUpText(s: Session): Promise<string> {
 // 停机时：不再起新扫描，进行中的扫描不再推下一条，手上这条推送尽量等它回来（好把消息记进对话），
 // 但等不等得到都不影响会不会重发。正在生成话术的那条直接放弃：还没记账、没发出去，下次启动再追；
 // 生成要调 LLM（超时 45s 起），等它只会把 8 秒的停机宽限期耗光，连企微那边的收尾一起被强杀。
-let stopping = false;
-let scanTask: Promise<number> | null = null;
-let scanTimer: NodeJS.Timeout | null = null;
 /** 正在等话术生成的扫描：停机时逐个叫醒，让它们放弃这次生成。生成结束就移除，不随扫描次数累积 */
-const composeWaiters = new Set<() => void>();
 
 /** 生成话术（含出口护栏），但停机时提前返回 null（生成本身继续跑完，结果不用） */
 async function composeUnlessStopping(s: Session): Promise<string | null> {
+  const own = state();
   const composing = followUpText(s);
   composing.catch(() => undefined); // 停机时被弃用的那次生成，失败也别变成未捕获 rejection
   let wake!: () => void;
   const stopped = new Promise<null>((r) => {
     wake = () => r(null);
   });
-  composeWaiters.add(wake);
+  own.composeWaiters.add(wake);
   try {
     return await Promise.race([composing, stopped]);
   } finally {
-    composeWaiters.delete(wake);
+    own.composeWaiters.delete(wake);
   }
 }
 
 async function drainForShutdown(): Promise<void> {
-  stopping = true;
-  for (const wake of composeWaiters) wake();
-  if (scanTimer) {
-    clearInterval(scanTimer);
-    scanTimer = null;
+  const own = state();
+  own.stopping = true;
+  for (const wake of own.composeWaiters) wake();
+  if (own.scanTimer) {
+    clearInterval(own.scanTimer);
+    own.scanTimer = null;
   }
-  await scanTask?.catch(() => undefined);
+  await own.scanTask?.catch(() => undefined);
 }
-onShutdown(drainForShutdown);
+withoutTenantScope(() =>
+  onShutdown(async () => {
+    await Promise.all(
+      tenantRuntimes()
+        .filter((rt) => tenantState.peek(rt))
+        .map((rt) => withTenantScope(rt, drainForShutdown)),
+    );
+  }),
+);
 
 /**
  * 扫描一轮。push 由调用方注入（server 传 adapterFor），便于测试。
@@ -179,27 +218,29 @@ export function runFollowUpScan(
   push: (sessionId: string, text: string, opts?: PushOpts) => Promise<boolean>,
   now = new Date(),
 ): Promise<number> {
-  if (!followupEnabled() || stopping) return Promise.resolve(0);
+  const own = state();
+  if (currentRuntime().kind !== 'standard' || !followupEnabled() || own.stopping) return Promise.resolve(0);
   if (sessionStoreMode() === 'db') return Promise.resolve(0);
   if (inQuietHours(now)) return Promise.resolve(0);
   // 上一轮还没扫完就不叠一轮：生成话术慢（每条要调一次 LLM），会话一多就会跨过扫描间隔。
   // 两轮并发时同一个会话在两边都还没记账，各生成一条、各推一次
-  if (scanTask) return Promise.resolve(0);
+  if (own.scanTask) return Promise.resolve(0);
   const task = scanOnce(push).finally(() => {
-    if (scanTask === task) scanTask = null;
+    if (own.scanTask === task) own.scanTask = null;
   });
-  scanTask = task;
+  own.scanTask = task;
   return task;
 }
 
 async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts) => Promise<boolean>): Promise<number> {
+  const own = state();
   let sent = 0;
   for (const s of listSessions() as SessionWithFollowup[]) {
-    if (stopping) break;
+    if (own.stopping) break;
     if (!shouldFollowUp(s, Date.now())) continue;
     try {
       const text = await composeUnlessStopping(s);
-      if (text === null || stopping) {
+      if (text === null || own.stopping) {
         console.log(`[followup] 停机中，放弃尚未发出的跟进 ${convLabel(s.id)}（下次启动再追）`);
         break;
       }
@@ -267,21 +308,30 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
 }
 
 export function startFollowUpScheduler(push: (sessionId: string, text: string, opts?: PushOpts) => Promise<boolean>): void {
+  for (const rt of tenantRuntimes())
+    if (rt.kind === 'standard' && rt.state === 'serving' && tenantStoreIfLoaded(rt))
+      withTenantScope(rt, () => {
+        if (sessionStoreMode() === 'file') startSchedulerInScope(push);
+      });
+}
+function startSchedulerInScope(push: (sessionId: string, text: string, opts?: PushOpts) => Promise<boolean>): void {
+  const own = state();
   if (!followupEnabled()) {
     console.log('[followup] 未启用（设 FOLLOWUP_ENABLED=1 开启自动跟进）');
     return;
   }
   console.log(`[followup] 自动跟进已启用：每 ${SCAN_MS / 60000} 分钟扫描一次，${QUIET_START}:00-${QUIET_END}:00 不打扰`);
-  if (stopping) return;
-  const rt = scopedRuntime() ?? hostRuntime();
-  scanTimer = withoutTenantScope(() => setInterval(() => tenantCallback(rt, () => runFollowUpScan(push))(), SCAN_MS));
-  scanTimer.unref();
+  if (own.stopping || own.scanTimer) return;
+  const rt = currentRuntime();
+  own.scanTimer = withoutTenantScope(() => setInterval(() => tenantCallback(rt, () => runFollowUpScan(push))(), SCAN_MS));
+  own.scanTimer.unref();
 }
 
 /** 仅供自测：把停机状态清回刚启动的样子 */
 function resetForTest(): void {
-  stopping = false;
-  scanTask = null;
+  const own = state();
+  own.stopping = false;
+  own.scanTask = null;
 }
 
 export const __followupTest = {

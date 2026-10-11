@@ -1,3 +1,5 @@
+import { scopedState } from '../tenancy/scoped-state.js';
+import { registerTenantState } from '../tenancy/state.js';
 import { publicHostMiddleware } from '../tenancy/hosts.js';
 import { TenantScopeMissing } from '../tenancy/runtime.js';
 import { withoutTenantScope, tenantCallback, currentRuntime } from '../tenancy/runtime.js';
@@ -27,6 +29,14 @@ import { getOrCreateSession, getSession, onShutdown, recentMsgids, saveSession }
 import { onTurnEnd } from '../trace/recorder.js';
 import type { Session } from '../types.js';
 
+const tenantState = scopedState(() => ({
+  processing: new Set<string>(),
+  dailyCounts: new Map<string, Daily>(),
+}));
+const state = tenantState.get;
+registerTenantState({ name: 'web.routes.processing', ...tenantState.registration('processing') });
+registerTenantState({ name: 'web.routes.dailyCounts', ...tenantState.registration('dailyCounts') });
+
 const COOKIE = '__Host-wv';
 const MAX_AGE = 30 * 24 * 60 * 60;
 const IDLE_MS = 30 * 60_000;
@@ -42,21 +52,19 @@ const bodySchema = z.union([
 ]);
 // 状态随 conversations.state 落库：即使顾问交还、重启或消息窗口推进，也不重复触发预算转人工。
 type WebSession = Session & { webTurnLimited?: true };
-const processing = new Set<string>();
 const streams = new Set<{ tick: (now: number) => void; close: () => void }>();
 const messageLimited = makeLimiter(Math.max(1, numEnv('WEB_RATE_PER_MIN', 20)));
 const newIpHits = new Map<string, number[]>();
 type Daily = { day: string; newConversations: number; turns: number; alerted: boolean };
-const dailyCounts = new Map<string, Daily>();
 
 function daily(account: ChannelAccount): Daily {
   // 自然日用服务器时区，与定时清理、告警的日期口径相同。
   const d = new Date();
   const day = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-  let counter = dailyCounts.get(account.id);
+  let counter = state().dailyCounts.get(account.id);
   if (!counter || counter.day !== day) {
     counter = { day, newConversations: 0, turns: 0, alerted: false };
-    dailyCounts.set(account.id, counter);
+    state().dailyCounts.set(account.id, counter);
   }
   return counter;
 }
@@ -146,6 +154,7 @@ webRoutes.get('/w/:key', async (c) => {
 });
 
 webRoutes.post('/api/web/:key/messages', async (c) => {
+  const owner = currentRuntime();
   if (c.req.header('x-web-chat') !== '1') return c.json({ error: 'forbidden' }, 403);
   const ip = clientKey(c);
   if (messageLimited(ip)) return c.json({ error: 'rate_limited' }, 429);
@@ -162,7 +171,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
     if (!s || !notice || !menu || body.menu !== consentMenuButtonId(menu.category, menu.decision) || !s.consent?.[menu.category]) {
       return c.json({ error: 'invalid_menu' }, 400);
     }
-    if (processing.has(s.id)) return c.json({ error: 'in_progress' }, 409);
+    if (state().processing.has(s.id)) return c.json({ error: 'in_progress' }, 409);
     setVisitorCookie(c, token!);
     const changed = applyConsentDecision(s, menu.category, menu.decision, body.menu, notice.version);
     if (changed && menu.decision === 'declined') s.messages.push({ role: 'agent', content: CONSENT_DECLINED_REPLY, at: Date.now() });
@@ -177,7 +186,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
     s.channelAccountId = account.id;
     saveSession(s);
   }
-  if (processing.has(s.id)) return c.json({ error: 'in_progress' }, 409);
+  if (state().processing.has(s.id)) return c.json({ error: 'in_progress' }, 409);
   setVisitorCookie(c, token!);
   const at = body.cid ? s.messages.findIndex((m) => m.role === 'customer' && m.msgid === body.cid) : -1;
   if (at >= 0) {
@@ -188,14 +197,14 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
     }
     if (s.handedOver && !s.webTurnLimited) return c.json({ reply: null });
   } else if (body.cid && recentMsgids(s.id).has(body.cid)) return c.json({ reply: null });
-  processing.add(s.id);
+  state().processing.add(s.id);
   let reservation: Daily | null = null;
   let usedModel = false;
   const unsubscribeTurn = onTurnEnd(
     ({ turn }) => {
       if (turn.llm.length > 0) usedModel = true;
     },
-    { owner: currentRuntime(), conversationId: s.id },
+    { owner, conversationId: s.id },
   );
   try {
     const count = daily(account);
@@ -225,7 +234,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
   } finally {
     unsubscribeTurn();
     if (reservation && !usedModel) reservation.turns--;
-    processing.delete(s.id);
+    state().processing.delete(s.id);
   }
 });
 
@@ -278,11 +287,16 @@ webRoutes.get('/api/web/:key/events', lookupLimit, (c) => {
     }
     controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
   };
-  const unsubscribe = subscribeWeb(s.id, clientKey(c), (ev: WebEvent) => {
-    lastActivity = Date.now();
-    const { type, ...data } = ev;
-    send(type, data);
-  });
+  const unsubscribe = subscribeWeb(
+    s.id,
+    clientKey(c),
+    (ev: WebEvent) => {
+      lastActivity = Date.now();
+      const { type, ...data } = ev;
+      send(type, data);
+    },
+    close,
+  );
   if (unsubscribe === 'too_many') return c.json({ error: 'too_many' }, 429);
   cancelSubscription = unsubscribe;
   const connection = {

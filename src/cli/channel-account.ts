@@ -20,7 +20,7 @@ import {
   WEB_DEFAULT_DAILY_NEW,
   WEB_DEFAULT_DAILY_TURNS,
 } from '../channels/accounts.js';
-import { hasRestoreSentinel, removeRestoreSentinel, RESTORE_SENTINEL } from '../channels/markers.js';
+import { hasRestoreSentinel, clearTenantRestoreSentinel, RESTORE_SENTINEL } from '../channels/markers.js';
 import { CHANNEL_KEY_ENV, Redacted, keyRingFromEnv, sealSecrets, type KeyRing, type WecomSecrets } from '../channels/secrets.js';
 import { holdTenantLock, openDb, withTenant, type Db, type TenantLock, type Tx } from '../db/client.js';
 import { writeAudit, type AuditEntry } from '../db/repo/audit.js';
@@ -29,7 +29,7 @@ import { readOpenInboxUntil } from '../db/repo/channel-inbox.js';
 import { appendSystemNote, markFollowupStages } from '../db/repo/conversations.js';
 import { cancelFollowupsUntil } from '../db/repo/jobs.js';
 import { readOpenOutboundUntil, transitionOutbound } from '../db/repo/outbound.js';
-import { findTenantBySlug } from '../db/repo/tenants.js';
+import { findTenantBySlug, standardTenants } from '../db/repo/tenants.js';
 import { profile } from '../profile.js';
 import { SPILL_FILE_RE } from '../store/project.js';
 
@@ -406,20 +406,23 @@ async function restoreCutoff(db: Db, tenantId: string, until: Date, varDir: stri
           `截止点之前没结束的入站 ${counts.inbox} 条（启动时只补记、不回复）；出站 pending 记 cancelled ${counts.cancelled} 段、` +
           `sending 记 unknown ${counts.unknown} 段；跟进任务记 cancelled ${counts.jobs} 个；${counts.notes} 个会话加了说明`,
   );
-  if (!hasRestoreSentinel(varDir)) {
+  if (!hasRestoreSentinel(varDir, tenantId)) {
     console.log(`[channel-account] 数据目录里没有恢复哨兵 ${RESTORE_SENTINEL}（不是从备份恢复的，或已删过）；重启应用生效`);
     return 0;
   }
+  const shared = (await standardTenants(db)).length > 1;
   try {
-    removeRestoreSentinel(varDir);
+    clearTenantRestoreSentinel(varDir, tenantId, shared);
   } catch (e) {
     console.error(
       `[channel-account] 数据库已提交，恢复哨兵 ${RESTORE_SENTINEL} 删不掉（${(e as NodeJS.ErrnoException).code ?? 'unknown'}）：` +
-        '手动删掉它再起应用；别用 --until now 重跑（截止点会往后挪）',
+        '修复目录权限后以相同 --until 重跑；别用 --until now 重跑（截止点会往后挪）',
     );
     return 1;
   }
-  console.log(`[channel-account] 已删恢复哨兵 ${RESTORE_SENTINEL}；现在可以起应用`);
+  console.log(
+    `[channel-account] ${shared ? '已解除本租户恢复保护，总哨兵保留；其他租户也须分别跑 restore-cutoff' : `已删恢复哨兵 ${RESTORE_SENTINEL}；现在可以起应用`}`,
+  );
   return 0;
 }
 
