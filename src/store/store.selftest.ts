@@ -811,15 +811,24 @@ const childEnv = (env: Record<string, string | undefined>): NodeJS.ProcessEnv =>
 };
 const runFile = (file: string, env: Record<string, string | undefined>) => {
   const t0 = Date.now();
+  // 严格预载在入口执行前先加载 runtime 依赖；启动预算包含这段时间，不能把慢启动误算成 exit / probe 失败。
+  const timeoutMs = process.env.TENANCY_STRICT === '1' ? 60_000 : 15_000;
   // 单进程：node 自己带 tsx 加载器；超时用 SIGKILL（子进程装了 SIGTERM 的处理，SIGTERM 杀不掉卡住的它），不留孤儿
   const r = spawnSync(process.execPath, ['--import', 'tsx', file], {
     cwd: process.cwd(),
     env: childEnv(env),
-    timeout: 15_000,
+    timeout: timeoutMs,
     killSignal: 'SIGKILL',
     encoding: 'utf8',
   });
-  return { ...r, took: Date.now() - t0 };
+  const took = Date.now() - t0;
+  if (r.error) {
+    console.error(
+      `[store selftest] 子进程 ${path.basename(file)} 启动/执行失败：${(r.error as NodeJS.ErrnoException).code ?? r.error.name}，` +
+        `耗时 ${took}ms，上限 ${timeoutMs}ms，信号 ${r.signal ?? 'none'}`,
+    );
+  }
+  return { ...r, took };
 };
 const runChild = (name: string, code: string, env: Record<string, string | undefined>) => {
   const file = path.join(VAR_DIR, `${name}.mts`);
