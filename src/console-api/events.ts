@@ -105,6 +105,10 @@ export function ensureEventHub(counts: () => ConsoleEventMap['counts']): void {
 }
 
 type EventListener = ((b: Buffered) => void) & { close?: () => void };
+/** R12 ①：物理关闭连接，环与配置等状态留到 ⑥ 才释放。 */
+export function closeTenantEventStreams(): void {
+  for (const listener of hub().listeners) (listener as EventListener).close?.();
+}
 export function addListener(fn: (b: Buffered) => void, close?: () => void): () => void {
   const listeners = hub().listeners;
   const listener: EventListener = (event) => fn(event);

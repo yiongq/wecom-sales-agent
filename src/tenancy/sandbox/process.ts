@@ -1,5 +1,6 @@
 // 05 第 12 步组合根：不启动渠道注册表、任务、宿主文件状态或体验客服。
 import { Hono } from 'hono';
+import { assertSandboxWriteRate, validateSandboxLimits, SandboxLimitError } from './limits.js';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { consolePages } from '../../console-api/host.js';
 import { getCookie } from 'hono/cookie';
@@ -36,13 +37,15 @@ import {
 } from '../../db/sandbox-process.js';
 import type { ProcessTenantLock } from '../../db/client.js';
 import { gateStatus } from '../../llm-gate.js';
-import { alert } from '../../ops/alert.js';
+import { alert, startAlerts, stopAlertPolling } from '../../ops/alert.js';
 import { profile } from '../../profile.js';
 import { storeHealth } from '../../store.js';
 import { SessionStoreStartupError } from '../../store/backend.js';
+import { onShutdown } from '../../shutdown.js';
 import { normalizeHost } from '../hosts.js';
 import {
   configureTenancy,
+  cancelTenantRuntime,
   createTenantRuntime,
   onTenantScopeMissing,
   tenantRuntimes,
@@ -53,6 +56,7 @@ import {
 import { assertSandboxRunning, sandboxStopped, stopSandboxProcess } from './lifecycle.js';
 import { resolveRole, sandboxFlags } from './role.js';
 import { loadSandboxRuntime } from './load.js';
+import { SandboxReaper } from './reaper.js';
 import { drainSandboxProvisioning, provisionSandbox, SandboxProvisionError, type ProvisionedSandbox } from './provision.js';
 import { sandboxPage, sandboxTryLinks } from './pages.js';
 
@@ -62,6 +66,7 @@ export class SandboxProcess {
   private scopeMissing = 0;
   private unsubscribe: (() => void) | null = null;
   private accepting = false;
+  private reaper: SandboxReaper | null = null;
   epoch: string | null = null;
 
   constructor(
@@ -73,8 +78,10 @@ export class SandboxProcess {
   failStop = (): void => {
     if (sandboxStopped()) return;
     stopSandboxProcess();
+    this.reaper?.stop();
     for (const rt of tenantRuntimes()) {
       rt.state = 'closed';
+      cancelTenantRuntime(rt);
       withTenantScope(rt, markConfigShuttingDown);
       tenantStoreIfLoaded(rt)?.pgBackend?.close();
     }
@@ -84,6 +91,7 @@ export class SandboxProcess {
 
   async start(): Promise<void> {
     if (resolveRole(this.env) !== 'sandbox') throw new Error('app_role_invalid');
+    validateSandboxLimits(this.env);
     configureTenancy({ role: 'sandbox', standardCount: 0 });
     // 第一把锁取不到时不打开配置、不装载、不改任何沙箱。
     this.lock = await acquireSandboxProcess(this.env.DATABASE_URL ?? '', this.failStop);
@@ -97,6 +105,13 @@ export class SandboxProcess {
       await checkConfigDatabase(this.deps);
       await checkSandboxStartup(this.deps.db, this.env.SANDBOX_TEMPLATE_SLUG!, this.env.SANDBOX_WECOM_OPEN_KFID);
       this.epoch = await advanceSandboxEpoch(this.deps.db);
+      this.reaper = new SandboxReaper({
+        db: this.deps.db,
+        acquireTenant: (id) => this.lock!.acquireTenant(id),
+        idleMs: Number(this.env.SANDBOX_IDLE_MINUTES ?? 120) * 60_000,
+      });
+      // R2：先删已到期的，不装载它们；失败留给每分钟的重试。
+      await this.reaper.tick();
       // epoch UPDATE 等旧 FOR SHARE 事务落定后，才可读取装载 / 重建所用的数据。
       const rows = await sandboxStartupRows(this.deps.db);
       for (const row of rows) {
@@ -130,6 +145,9 @@ export class SandboxProcess {
       );
       console.log(`[sandbox] 已启动，装载沙箱 ${tenantRuntimes().length}`);
       this.accepting = true;
+      await this.reaper.start();
+      withoutTenantScope(() => onShutdown(() => this.reaper?.stop()));
+      withoutTenantScope(startAlerts);
     } catch (error) {
       await this.close();
       throw error;
@@ -142,6 +160,7 @@ export class SandboxProcess {
       return Promise.reject(new SandboxProvisionError(503, 'sandbox_unavailable'));
     return provisionSandbox({
       ...input,
+      env: this.env,
       deps: this.deps,
       templateSlug: this.env.SANDBOX_TEMPLATE_SLUG!,
       host: this.env.SANDBOX_HOST!,
@@ -150,25 +169,33 @@ export class SandboxProcess {
     });
   }
 
-  resolve(token: string | undefined): Promise<SandboxSession> {
+  async resolve(token: string | undefined): Promise<SandboxSession> {
     if (!this.deps) return Promise.reject(new SandboxProvisionError(503, 'sandbox_unavailable'));
-    return withoutTenantScope(() => resolveSandboxSession(this.deps!.db, token));
+    const session = await withoutTenantScope(() => resolveSandboxSession(this.deps!.db, token));
+    if (session.status === 'ok') this.reaper?.touch(session.runtime);
+    return session;
   }
 
   async end(tenantId: string): Promise<void> {
     assertSandboxRunning();
     if (!this.deps) throw new SandboxProvisionError(503, 'sandbox_unavailable');
-    await withoutTenantScope(() => expireBrokenSandbox(this.deps!.db, tenantId));
+    if (!this.reaper) throw new SandboxProvisionError(503, 'sandbox_unavailable');
+    await this.reaper.end(tenantId);
   }
 
   async close(): Promise<void> {
     this.accepting = false;
+    stopAlertPolling();
+    this.reaper?.stop();
+    await this.reaper?.drain();
+    this.reaper = null;
     await drainSandboxProvisioning();
     this.unsubscribe?.();
     this.unsubscribe = null;
     for (const rt of tenantRuntimes()) {
       if (rt.kind !== 'sandbox') continue;
       rt.state = 'closed';
+      cancelTenantRuntime(rt);
       tenantStoreIfLoaded(rt)?.pgBackend?.close();
       await withTenantScope(rt, closeConfig);
       // 保留到 exit：store 的退出钩子还要统计未落库条数，且沙箱不写 spill。
@@ -184,17 +211,19 @@ export class SandboxProcess {
     const health = tenantRuntimes().map((rt) => withTenantScope(rt, storeHealth));
     let reachable = !!this.deps;
     let pool = { day: '', provisioned: 0, costMilli: 0 };
+    let purgeOverdue = 0;
     try {
       if (this.deps) pool = await sandboxPoolHealth(this.deps.db);
+      purgeOverdue = (await this.reaper?.overdue()) ?? 0;
     } catch {
       reachable = false;
     }
     return {
-      ok: reachable && !sandboxStopped(),
+      ok: reachable && !sandboxStopped() && purgeOverdue === 0,
       revision: this.env.APP_REVISION || 'dev',
       role: 'sandbox' as const,
       sandboxes: tenantRuntimes().filter((rt) => rt.kind === 'sandbox').length,
-      purgeOverdue: 0,
+      purgeOverdue,
       scopeMissing: this.scopeMissing,
       pool: { ...pool, capMilli: Number(this.env.SANDBOX_POOL_DAILY_CNY ?? 10) * 1000 },
       llmGate: gateStatus(),
@@ -263,7 +292,10 @@ export function sandboxApp(process: Pick<SandboxProcess, 'health' | 'resolve' | 
       return next();
     }
     setSandboxSession(c, session);
-    return withTenantScope(session.runtime, next);
+    return withTenantScope(session.runtime, () => {
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) assertSandboxWriteRate();
+      return next();
+    });
   });
   // GET 永远不建租户；备用链接只来自部署配置，不读取请求的 Host / 转发头。
   app.get('/try', async (c) => c.html(sandboxTryLinks(await readFile('public/try.html', 'utf8'), publicBaseUrl)));
@@ -284,9 +316,13 @@ export function sandboxApp(process: Pick<SandboxProcess, 'health' | 'resolve' | 
   });
   if (routes) app.route('/', routes);
   app.onError((error, c) => {
+    if (error instanceof SandboxLimitError) {
+      c.header('Retry-After', String(error.retryAfter));
+      return c.json({ error: error.reason, retryAfter: error.retryAfter }, error.status);
+    }
     if (error instanceof SandboxProvisionError) {
       if (error.retryAfter) c.header('Retry-After', String(error.retryAfter));
-      return c.json({ error: error.reason }, error.status);
+      return c.json({ error: error.reason, ...(error.retryAfter === undefined ? {} : { retryAfter: error.retryAfter }) }, error.status);
     }
     console.error('[sandbox-http] 请求失败', error instanceof Error ? error.name : 'unknown');
     return c.json({ error: 'sandbox_unavailable' }, 503);

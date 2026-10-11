@@ -145,6 +145,8 @@ export interface ToolHints {
 export interface ToolContext {
   session: Session;
   hints: ToolHints;
+  /** R12 删除取消；正常停机排空不会触发。异步工具在落地前检查。 */
+  cancel?: AbortSignal;
 }
 
 export interface ToolHooks<Context = ToolContext> {

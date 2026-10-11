@@ -172,6 +172,7 @@ const sleep = (ms: number): Promise<void> =>
 const codeOf = (e: unknown): string => (e instanceof NotifySendError ? e.code : e instanceof Error ? e.name : 'unknown');
 
 function noteUnsaved(ev: HandoffStartedEvent): void {
+  if (currentRuntime().kind === 'sandbox') return;
   const own = state();
   const key = unsavedKey(ev.id, ev.at);
   if (own.unsaved.has(key) || own.waiting.has(key)) return;
@@ -241,6 +242,7 @@ async function fireUnsaved(ev: HandoffStartedEvent, key: string): Promise<void> 
 
 /** db 存储下由 startJobs 装上（文件存储没有库写不进去这回事）：订阅 PG 后端报来的没落库的转人工与提交成功的事件 */
 export function installUnsavedNotices(): void {
+  if (currentRuntime().kind === 'sandbox') return;
   const own = state();
   if (own.installed) return;
   own.installed = true;

@@ -312,6 +312,7 @@ export function configDrift(): ConfigDrift {
 
 /** 配置写入前调：锁连接断开期间一律拒绝（第 7、8 步的写函数用） */
 export function assertConfigWritable(): void {
+  if (currentRuntime().state !== 'serving') throw new Error('tenant_closing');
   const state = configState();
   if (!state.loaded) throw new ConfigNotReadyError();
   if (state.lockState !== 'held') throw new ConfigLockLostError();
@@ -891,6 +892,7 @@ export function configRuntime(): {
 
 /** 只给 src/config/{sop,catalog}.ts 在事务提交之后调用；next.versionNo 不大于当前值时忽略 */
 export function replacePublishedSop(next: PublishedSop): void {
+  if (currentRuntime().state !== 'serving') return;
   const state = configState();
   if (!state.loaded || next.versionNo <= state.loaded.sop.versionNo) return;
   state.loaded.sop = next;
@@ -910,6 +912,7 @@ export function applyCatalogRow(row: {
   version: number;
   payload: unknown;
 }): void {
+  if (currentRuntime().state !== 'serving') return;
   const state = configState();
   const cur = state.loaded;
   if (!cur || row.status !== 'active') return;
@@ -998,7 +1001,7 @@ async function reloadOnce(cur: Loaded): Promise<boolean> {
   );
   if (!row) throw new Error('库里没有已发布的 SOP');
   assertIntegrity(row);
-  if (state.loaded !== cur) return true;
+  if (currentRuntime().state !== 'serving' || state.loaded !== cur) return true;
   if (state.catalogWrites !== writesBefore) return false;
   // 版本号只增不减（不变式 13）
   if (row.versionNo! > cur.sop.versionNo) cur.sop = toPublishedSop(cur.tenantId, row, mergeWithImage(row.sections, cur.imageSections));
@@ -1035,6 +1038,7 @@ function setCatalog(cur: Loaded, snap: CatalogSnapshot): void {
  * 单飞：进行中再被调用只置位，结束后再跑一遍；失败按 5 秒、30 秒、2 分钟退避重试，之后每 2 分钟一次
  */
 export function reloadFromDb(): Promise<void> {
+  if (currentRuntime().state !== 'serving') return Promise.resolve();
   const state = configState();
   const cur = state.loaded;
   if (!cur) return Promise.reject(new ConfigNotReadyError());

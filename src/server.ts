@@ -103,6 +103,7 @@ import { startAlerts } from './ops/alert.js';
 import { consolePages } from './console-api/host.js';
 import { logRole } from './tenancy/sandbox/role.js';
 import { SandboxProcess, sandboxApp } from './tenancy/sandbox/process.js';
+import { claimSandboxStream, SandboxLimitError } from './tenancy/sandbox/limits.js';
 import { sandboxSessionOf, sandboxSimulatorId } from './tenancy/sandbox/session.js';
 import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
@@ -117,13 +118,16 @@ app.use('/*', publicHostMiddleware);
 // 调用方按「没送达」各自处理（人工回复与付款记备注、跟进退账）。不能 throw：付款路由在 markOrderPaid
 // 之后才调它，抛出会让一个已经付款成功的请求返回 500
 function adapterFor(channel: string): ChannelAdapter {
-  if (channel === 'wecom') return wecomAdapter;
+  const sandboxTenant = currentRuntime().kind === 'sandbox';
+  if (!sandboxTenant && channel === 'wecom') return wecomAdapter;
   if (channel === 'simulator') return simulatorAdapter;
-  if (channel === 'web') return webAdapter;
+  if (!sandboxTenant && channel === 'web') return webAdapter;
   return {
     name: 'unknown',
     push(sessionId) {
-      console.error(`[server] ⚠️ 会话 ${convLabel(sessionId)} 的渠道「${channel}」未知，消息未送达`);
+      console.error(
+        `[server] ⚠️ 会话 ${convLabel(sessionId)} 的渠道「${channel}」${sandboxTenant ? '不允许用于沙箱' : '未知'}，消息未送达`,
+      );
       return Promise.resolve(false);
     },
   };
@@ -474,7 +478,10 @@ app.get('/api/stream/:sessionId', simulatorOnly, lookupLimit, (c) => {
   const sessionId = sandboxSessionOf(c) ? sandboxSimulatorId(rawId) : rawId;
   if (!sessionId || (sandboxSessionOf(c) && !rawId.startsWith('sim-') && !getSession(sessionId))) return c.notFound();
   const rt = currentRuntime();
+  let close = (): void => {};
+  const release = claimSandboxStream(() => close());
   return streamSSE(c, async (stream) => {
+    close = () => stream.abort();
     let wake = (): void => {};
     const unsubscribe = subscribe(
       sessionId,
@@ -491,6 +498,7 @@ app.get('/api/stream/:sessionId', simulatorOnly, lookupLimit, (c) => {
       stream.onAbort(
         tenantCallback(rt, () => {
           unsubscribe();
+          release();
           wake();
         }),
       ),
@@ -510,6 +518,7 @@ app.get('/api/stream/:sessionId', simulatorOnly, lookupLimit, (c) => {
       }
     } finally {
       unsubscribe();
+      release();
     }
   });
 });
@@ -1064,6 +1073,10 @@ app.use('/*', serveStatic({ root: './public' }));
 // 会直接冒成 500 纯文本——压测实测约 3% 的请求命中，而这正是公开演示链接被点的那条路径。
 // 企微渠道早有 catch（adapters/wecom.ts），网页端一直漏着。
 app.onError((err, c) => {
+  if (err instanceof SandboxLimitError) {
+    c.header('Retry-After', String(err.retryAfter));
+    return c.json({ error: err.reason, retryAfter: err.retryAfter }, 429);
+  }
   // 日志不打会话原 id（不变量 48）：convLabelsIn 把实际路径（含 external_userid）里形如会话原 id 的串换成短码
   console.error(`[server] 未捕获异常 ${c.req.method} ${convLabelsIn(c.req.path)}:`, err instanceof Error ? err.message : err);
   // 聊天接口返回可直接展示给客户的话术，前端拿到的始终是合法 JSON
