@@ -1164,8 +1164,8 @@ const failNotes = (id: string) => (getSession(id)?.messages ?? []).filter((m) =>
     }
     const home = await hit('/');
     check(
-      'visitor_simulator 关（prod）：/ 跳到 /admin.html',
-      home.status === 302 && home.location === '/admin.html',
+      'visitor_simulator 关（prod）：/ 跳到 /console/',
+      home.status === 302 && home.location === '/console/',
       `${home.status} ${home.location}`,
     );
     const health = await hit('/healthz');
@@ -1193,8 +1193,8 @@ const failNotes = (id: string) => (getSession(id)?.messages ?? []).filter((m) =>
     const b = jsonBody({ text: '想去三亚' });
     const post = await hit('/api/chat', { method: 'POST', ...b });
     check(
-      'demo 下 FLAG_VISITOR_SIMULATOR=off：/chat.html 与 /api/chat 404，/ 跳 /admin.html',
-      chat.status === 404 && post.status === 404 && home.location === '/admin.html',
+      'demo 下 FLAG_VISITOR_SIMULATOR=off：/chat.html 与 /api/chat 404，/ 跳 /console/',
+      chat.status === 404 && post.status === 404 && home.location === '/console/',
       `${chat.status} ${post.status} ${home.location}`,
     );
     // 前面几组又加了几个种子会话，这里只看「有种子、全是种子」
@@ -1207,13 +1207,9 @@ const failNotes = (id: string) => (getSession(id)?.messages ?? []).filter((m) =>
   });
   {
     const home = await hit('/');
-    check('demo：/ 仍跳 /guide.html', home.status === 302 && home.location === '/guide.html', `${home.status} ${home.location}`);
+    check('demo：/ 跳 /console/', home.status === 302 && home.location === '/console/', `${home.status} ${home.location}`);
     const pages = await Promise.all(['/chat.html', '/guide.html'].map(async (u) => (await hit(u)).status));
-    check(
-      'demo：/chat.html 与 /guide.html 照常 200',
-      pages.every((x) => x === 200),
-      pages.join(','),
-    );
+    check('demo：/chat.html 照常 200，/guide.html 返回 404', pages[0] === 200 && pages[1] === 404, pages.join(','));
     const sse = await hit(`/api/stream/${V.id}`);
     check(
       'demo：GET /api/stream/:id 照常是 SSE',
