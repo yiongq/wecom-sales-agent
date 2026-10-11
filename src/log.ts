@@ -84,7 +84,7 @@ export function logError(e: unknown): unknown {
 
 // 企微可带账号 key；每个冒号独立允许 URL 编码。web id 只认完整的 32 位小写十六进制，不截取更长 id 的前缀。
 const RAW_CONV_ID =
-  /\b(?:wecom(?::|%3[Aa])(?:[a-z][a-z0-9-]{1,30}(?::|%3[Aa]))?[A-Za-z0-9_-]+|web(?::|%3[Aa])[0-9a-f]{32}(?![A-Za-z0-9_-])|sim-[A-Za-z0-9_-]+)/g;
+  /\b(?:wecom(?::|%3[Aa])(?:[a-z][a-z0-9-]{1,30}(?::|%3[Aa]))?[A-Za-z0-9_-]+|web(?::|%3[Aa])[0-9a-f]{32}(?![A-Za-z0-9_-])|sim-[A-Za-z0-9_-]+|sbx-[0-9a-f]{24,64}(?![A-Za-z0-9_-]))/g;
 
 /** 文本里形如会话原 id 的串换成 convCode（JSON 输出的兜底与 prod 下的请求路径都用它） */
 export function scrubConvIds(text: string): string {

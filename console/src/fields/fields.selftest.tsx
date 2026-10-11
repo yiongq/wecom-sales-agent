@@ -2373,7 +2373,7 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
 // 8.9 整页（pages/CatalogPage.tsx）：路由的 kind 按行业包取，身份决定页头的入口、列和页签。查询缓存里先放好身份和列表
 {
   const me = (role: 'owner' | 'agent') =>
-    ({ userId: 'u1', displayName: '小林', role, csrf: 'c', tenantSlug: 't', tenantName: '云途定制旅行' }) as const;
+    ({ userId: 'u1', displayName: '小林', role, csrf: 'c', tenantSlug: 't', tenantName: '云途定制旅行', sandbox: null }) as const;
   const owner = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('owner'), pack });
   const agent = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('agent'), pack });
   const anonOf = (pack: IndustryPack): Viewer => ({ kind: 'anon', pack });
@@ -2792,7 +2792,7 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
 
 // 9.4 与第 10 节共用：挂真的路由和查询缓存，身份、条目、列表先放进缓存
 const me = (role: 'owner' | 'agent') =>
-  ({ userId: 'u1', displayName: '小林', role, csrf: 'c', tenantSlug: 't', tenantName: '云途定制旅行' }) as const;
+  ({ userId: 'u1', displayName: '小林', role, csrf: 'c', tenantSlug: 't', tenantName: '云途定制旅行', sandbox: null }) as const;
 const owner = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('owner'), pack });
 const agent = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('agent'), pack });
 const anonOf = (pack: IndustryPack): Viewer => ({ kind: 'anon', pack });

@@ -1,4 +1,5 @@
 import { publicHostMiddleware } from '../tenancy/hosts.js';
+import { sandboxSessionOf, resolveSandboxSession } from '../tenancy/sandbox/session.js';
 import { currentRuntime, withoutTenantScope, tenantCallback, withTenantScope } from '../tenancy/runtime.js';
 import { brandTexts } from '../core/brand.js';
 // 后台接口子应用（docs/architecture/01-pg-config-console/spec.md「后台 API 与页面」）。
@@ -199,6 +200,9 @@ let clock = (): number => Date.now();
  * server.ts 的 /api/admin/stream 也用它
  */
 export async function consoleSession(c: Context): Promise<{ user: AuthedUser; token: string } | null> {
+  const sandbox = sandboxSessionOf(c);
+  if (sandbox) return { user: sandbox.user, token: sandbox.token };
+  if (process.env.APP_ROLE === 'sandbox') return null;
   if (configMode() !== 'db') return null;
   const token = getCookie(c, SESSION_COOKIE);
   if (!token) return null;
@@ -339,6 +343,10 @@ const meOf = (u: AuthedUser): Me => ({
   csrf: u.csrf,
   tenantSlug: configRuntime().deps.tenantSlug,
   tenantName: currentTenant().name,
+  sandbox:
+    currentRuntime().kind === 'sandbox'
+      ? { expiresAt: new Date(currentRuntime().expiresAt!).toISOString(), wechat: 'off', steps: [false, false, false, false] }
+      : null,
 });
 
 // 会话列表的投影、排序与计数在 ./workbench.ts（J 页与事件流共用）
@@ -437,9 +445,9 @@ export const consoleApi = new Hono<ConsoleEnv>()
     const sop = currentSop();
     const h = configHealth();
     const store = storeHealth();
-    await refreshChannelObservability();
+    if (currentRuntime().kind !== 'sandbox') await refreshChannelObservability();
     const body: Status = {
-      channels: channelStatuses(),
+      channels: currentRuntime().kind === 'sandbox' ? [] : channelStatuses(),
       mode: 'db',
       tenantSlug: configRuntime().deps.tenantSlug,
       sop: {
@@ -895,6 +903,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
       else if (!lastEventId) void stream.writeSSE({ id: tailId(), event: 'counts', data: JSON.stringify(conversationCounts(clock())) });
       else for (const b of missed) write(b);
       const { heartbeatMs, recheckMs } = eventTiming();
+      const db = configRuntime().db;
       let nextBeat = Date.now() + heartbeatMs;
       let nextCheck = Date.now() + recheckMs;
       while (open && !stream.aborted) {
@@ -906,7 +915,10 @@ export const consoleApi = new Hono<ConsoleEnv>()
           let alive = true;
           try {
             // 01 的 auth_session_touch：开着的事件流算活动，7 天的绝对期限照旧；过期、被移出、停用都是 null
-            alive = (await withTenantScope(rt, () => resolveSession(token, clock()))) !== null;
+            alive =
+              rt.kind === 'sandbox'
+                ? (await withoutTenantScope(() => resolveSandboxSession(db, token))).status === 'ok'
+                : (await withTenantScope(rt, () => resolveSession(token, clock()))) !== null;
           } catch (e) {
             // 库一时连不上：认不出失效，下一次再复核（不因库故障把所有人踢回登录页）
             console.error('[console-api] 事件流复核登录失败:', e instanceof Error ? e.name : e);

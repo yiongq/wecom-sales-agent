@@ -103,14 +103,13 @@ import { startAlerts } from './ops/alert.js';
 import { consolePages } from './console-api/host.js';
 import { logRole } from './tenancy/sandbox/role.js';
 import { SandboxProcess, sandboxApp } from './tenancy/sandbox/process.js';
+import { sandboxSessionOf, sandboxSimulatorId } from './tenancy/sandbox/session.js';
 import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
 const app = new Hono();
 const sandbox = process.env.APP_ROLE === 'sandbox' ? new SandboxProcess(process.env) : null;
-const sandboxHttp = sandbox ? sandboxApp(sandbox, process.env.SANDBOX_HOST ?? '') : null;
 // 每个请求一个 req（响应头 x-request-id），两个角色都在任何路由分派之前建立日志上下文。
 app.use('/*', requestLogContext);
-if (sandboxHttp) app.use('/*', async (c) => sandboxHttp.fetch(c.req.raw));
 app.use('/*', publicHostMiddleware);
 
 // channel 来自落盘的会话 JSON：数据改坏、或加了新渠道漏接这里，都会落到兜底。兜底此前是模拟器，
@@ -213,6 +212,7 @@ const anonReadable: MiddlewareHandler = async (c, next) => (profile().flags.anon
  *  两类演示会话各归一个开关：sim- 直读是网页模拟器的一部分（chat.html 靠它恢复历史），只看 visitor_simulator，
  *  关掉时接口当作不存在，带不带凭据都是 404；种子直读属于后台免密读，anon_readonly_admin 关掉就和真实客户一样要登录。 */
 async function sessionReadAuth(c: Context, next: Next): Promise<Response | void> {
+  if (sandboxSessionOf(c)) return lookupLimit(c, next);
   const id = c.req.param('id') ?? '';
   if (id.startsWith('sim-')) return profile().flags.visitor_simulator ? lookupLimit(c, next) : c.notFound();
   if (SEED_SESSION_RE.test(id) && profile().flags.anon_readonly_admin) return lookupLimit(c, next);
@@ -451,19 +451,28 @@ app.post('/api/chat', simulatorOnly, async (c) => {
   if (!text) return c.json({ error: 'text 不能为空' }, 400);
   if (text.length > 1000) return c.json({ error: '消息过长（≤1000 字）' }, 400);
   // 只接受模拟器自己的 sim- 会话 ID：不许网页端指定 wecom: 前缀混入真实客户会话
-  if (body?.sessionId && !SIM_SESSION_RE.test(body.sessionId)) {
+  const inSandbox = !!sandboxSessionOf(c);
+  if (
+    body?.sessionId &&
+    (typeof body.sessionId !== 'string' || (inSandbox ? !sandboxSimulatorId(body.sessionId) : !SIM_SESSION_RE.test(body.sessionId)))
+  ) {
     return c.json({ error: 'sessionId 非法' }, 400);
   }
   // 会话 ID 就是凭据（chat.html 靠它恢复历史，/api/sessions/:id 靠它放行读取），
   // 必须是完整熵。此前截成 8 个十六进制字符只有 32 bit，配合无限流的读接口可被穷举。
-  const sessionId = body?.sessionId || `sim-${randomBytes(12).toString('hex')}`;
+  const sessionId = inSandbox
+    ? sandboxSimulatorId(body?.sessionId || `sim-${randomBytes(12).toString('hex')}`)!
+    : body?.sessionId || `sim-${randomBytes(12).toString('hex')}`;
+  if (inSandbox && body?.sessionId?.startsWith('sbx-') && !getSession(sessionId)) return c.notFound();
   const reply = await handleMessage(sessionId, text, 'simulator');
   return c.json({ sessionId, reply });
 });
 
 // SSE 推送通道：服务端主动消息（支付跟进、人工回复）经此下发
 app.get('/api/stream/:sessionId', simulatorOnly, lookupLimit, (c) => {
-  const sessionId = c.req.param('sessionId');
+  const rawId = c.req.param('sessionId');
+  const sessionId = sandboxSessionOf(c) ? sandboxSimulatorId(rawId) : rawId;
+  if (!sessionId || (sandboxSessionOf(c) && !rawId.startsWith('sim-') && !getSession(sessionId))) return c.notFound();
   const rt = currentRuntime();
   return streamSSE(c, async (stream) => {
     let wake = (): void => {};
@@ -588,9 +597,11 @@ app.get('/api/sessions', anonReadable, (c) => {
 });
 
 app.get('/api/sessions/:id', sessionReadAuth, (c) => {
-  const s = getSession(c.req.param('id') ?? '');
+  const rawId = c.req.param('id') ?? '';
+  const id = sandboxSessionOf(c) ? sandboxSimulatorId(rawId) : rawId;
+  const s = id ? getSession(id) : undefined;
   if (!s) return c.json({ error: 'session not found' }, 404);
-  return c.json(isAdminReq(c) ? s : anonSession(s));
+  return c.json(sandboxSessionOf(c) || isAdminReq(c) ? s : anonSession(s));
 });
 
 app.post('/api/sessions/:id/handoff', legacyWrites, sameOriginOnly, adminAuth, (c) => {
@@ -1033,8 +1044,18 @@ app.use('/*', async (c, next) => {
   const page = /^\/(pay|proposal|chat)\.html$/i.exec(c.req.path)?.[1]?.toLowerCase() as 'pay' | 'proposal' | 'chat' | undefined;
   if (!page || !['GET', 'HEAD'].includes(c.req.method)) return next();
   const binding = currentPack();
-  if (binding.brand === null) return next();
-  const html = await readFile(path.resolve(`public/${page}.html`), 'utf8');
+  if (binding.brand === null && !sandboxSessionOf(c)) return next();
+  let html = await readFile(path.resolve(`public/${page}.html`), 'utf8');
+  if (page === 'chat' && sandboxSessionOf(c)) {
+    // 体验页的历史、查询参数与 localStorage 都按本沙箱隔离；宿主文件原样输出。
+    html = html
+      .replace("const LS_KEY = 'ssj_session_id';", `const LS_KEY = 'ssj_session_id:${currentRuntime().slug}';`)
+      .replace(
+        'let sessionId = localStorage.getItem(LS_KEY);',
+        "let sessionId = new URLSearchParams(location.search).get('c') || localStorage.getItem(LS_KEY);",
+      )
+      .replace('const STRONG_ID_RE = /^sim-', 'const STRONG_ID_RE = /^(?:sim|sbx)-');
+  }
   return c.html(renderBrandPage(html, page, binding.runtime, binding.brand));
 });
 app.use('/*', serveStatic({ root: './public' }));
@@ -1054,7 +1075,8 @@ app.onError((err, c) => {
 
 // server.selftest.ts 直接 import app、走 app.request 测路由：自测不能占端口，更不能起企微轮询与
 // 自动跟进（本机 .env 若配了企微，自测进程会去拉真实客户消息、以 AI 身份回复）。
-export { app };
+const sandboxHttp = sandbox ? sandboxApp(sandbox, process.env.SANDBOX_HOST ?? '', app) : app;
+export { sandboxHttp as app };
 const SELFTEST = process.env.SERVER_SELFTEST === '1';
 
 const port = Number(process.env.PORT) || 3200;
@@ -1126,7 +1148,7 @@ if (!SELFTEST && sandbox) {
     });
     onShutdown(() => sandbox.close(), { phase: 'late' });
     withoutTenantScope(() =>
-      serve({ fetch: app.fetch, port }, (info) => {
+      serve({ fetch: sandboxHttp.fetch, port }, (info) => {
         console.log(`[server] 沙箱已启动 http://localhost:${info.port}`);
         logRole('sandbox', profile().flags);
       }),

@@ -227,7 +227,7 @@ interface Entry {
   fired: string;
 }
 
-const ME: Me = { userId: 'u1', displayName: '小林', role: 'owner', csrf: 'c', tenantSlug: 't', tenantName: '云途' };
+const ME: Me = { userId: 'u1', displayName: '小林', role: 'owner', csrf: 'c', tenantSlug: 't', tenantName: '云途', sandbox: null };
 
 const ENTRIES: Entry[] = [
   {

@@ -1021,7 +1021,15 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
   return respond(method, url);
 }) as typeof fetch;
 
-const me = (role: Role): Me => ({ userId: 'u1', displayName: '老板', role, csrf: 'c1', tenantSlug: 'yuntu', tenantName: '云途定制旅行' });
+const me = (role: Role): Me => ({
+  userId: 'u1',
+  displayName: '老板',
+  role,
+  csrf: 'c1',
+  tenantSlug: 'yuntu',
+  tenantName: '云途定制旅行',
+  sandbox: null,
+});
 
 /** 一个元素在总览的哪一块（按区块的类名，都不是就是「需要你处理」） */
 const blockOf = (e: HTMLElement): string =>

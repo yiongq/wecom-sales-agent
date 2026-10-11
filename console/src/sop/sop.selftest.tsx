@@ -1257,7 +1257,7 @@ const MEMBER_SOP: SopOverview = {
 };
 const OWNER: Viewer = {
   kind: 'member',
-  me: { userId: 'u1', displayName: '老板', role: 'owner', csrf: 'c1', tenantSlug: 't', tenantName: '云途' },
+  me: { userId: 'u1', displayName: '老板', role: 'owner', csrf: 'c1', tenantSlug: 't', tenantName: '云途', sandbox: null },
   pack: packOf(TRAVEL),
 };
 
