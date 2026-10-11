@@ -348,12 +348,11 @@ async function loadSessionStore(deps: SessionStoreDeps | null): Promise<void> {
     { phase: 'late' },
   );
   // 用量：每 30 秒与 drain 段累加进 usage_daily（spec「逐轮 trace、护栏事件与用量」），不经会话写队列。已冲突、租户锁在别人手里时不写
-  if (currentRuntime().isHost)
-    startUsageDaily(
-      tenantCallback(currentRuntime(), (deltas) => backend.writeUsage(deltas)) as (
-        deltas: import('./db/repo/usage.js').UsageDelta[],
-      ) => Promise<void>,
-    );
+  await startUsageDaily(
+    tenantCallback(currentRuntime(), (deltas) => backend.writeUsage(deltas)) as (
+      deltas: import('./db/repo/usage.js').UsageDelta[],
+    ) => Promise<void>,
+  );
   onShutdown(
     tenantCallback(currentRuntime(), () => flushUsageDaily()),
     { phase: 'drain' },

@@ -74,7 +74,7 @@ async function embed(texts: string[]): Promise<number[][] | null> {
   const { baseUrl, apiKey } = embedCfg();
   if (!apiKey || process.env.LLM_MOCK === '1') return null;
   try {
-    const { res } = await gatedFetch(
+    const { res, settleUsage } = await gatedFetch(
       baseUrl + '/embeddings',
       {
         method: 'POST',
@@ -87,10 +87,14 @@ async function embed(texts: string[]): Promise<number[][] | null> {
       console.error(`[retrieval] embedding 请求失败 ${res.status}，本次退回关键词匹配`);
       return null;
     }
-    const d = (await res.json()) as {
+    const d = (await res.json().catch((e) => {
+      settleUsage(null);
+      throw e;
+    })) as {
       data?: { embedding: number[] }[];
       usage?: { prompt_tokens?: number; completion_tokens?: number };
     };
+    settleUsage(d);
     recordUsage(EMBED_MODEL, d.usage?.prompt_tokens ?? 0, d.usage?.completion_tokens ?? 0, undefined, 0, 0, 'embedding');
     return d.data?.map((x) => x.embedding) ?? null;
   } catch (e) {

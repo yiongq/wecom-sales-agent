@@ -45,10 +45,14 @@ const ring = { current: { id: 'fixture', key }, all: new Map([['fixture', key]])
 const accountIds = new Map<string, string>();
 const originalFetch = globalThis.fetch;
 const sent: { msgid: string; touser: string; open_kfid: string; text?: { content: string } }[] = [];
+let syncGate: Promise<void> | null = null;
 globalThis.fetch = async (input, init) => {
   const url = String(input);
   if (url.includes('/gettoken')) return Response.json({ errcode: 0, access_token: 'fixture-token', expires_in: 7200 });
-  if (url.includes('/kf/sync_msg')) return Response.json({ errcode: 0, next_cursor: 'fixture-cursor', has_more: 0, msg_list: [] });
+  if (url.includes('/kf/sync_msg')) {
+    if (syncGate) await syncGate;
+    return Response.json({ errcode: 0, next_cursor: 'fixture-cursor', has_more: 0, msg_list: [] });
+  }
   if (url.includes('/kf/send_msg')) {
     const body = JSON.parse(String(init!.body));
     sent.push(body);
@@ -377,6 +381,21 @@ try {
       assert.equal(wecom.__wecomTest.inspect(accountIds.get(rt === a ? b.id : a.id)!), null);
       assert.equal(wecom.__wecomTest.routeAccount(sameId), accountIds.get(rt.id));
     });
+  // 回调开始后、ensureReady 的首个 await 期间也必须算忙；不能靠固定延时等回复。
+  let releaseSync!: () => void;
+  syncGate = new Promise<void>((resolve) => (releaseSync = resolve));
+  const callback = r.withoutTenantScope(() => wecom.syncAccountFromCallback(accountIds.get(b.id)!, 'callback-b'));
+  try {
+    assert.equal(inScope(b, wecom.__wecomTest.idle), false, 'B 回调已开始，不能提前判空闲');
+    assert.equal(inScope(a, wecom.__wecomTest.idle), true, 'B 的回调不能让 A 忙');
+    await pause(0);
+    assert.equal(inScope(b, wecom.__wecomTest.idle), false, '拉取等待回包时仍须算忙');
+  } finally {
+    syncGate = null;
+    releaseSync();
+    await callback;
+  }
+  assert.equal(inScope(b, wecom.__wecomTest.idle), true, '回调完成后解除忙状态');
   // 同 key 的两个账号都已装载；准备的句柄仍不可跨租户消费。
   const prepared = inScope(b, () => wecom.wecomAdapter.prepare!(sameId, b.slug, { kind: 'human' }));
   assert.ok(prepared);

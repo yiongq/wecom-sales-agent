@@ -2598,7 +2598,7 @@ function ensureReady(rt: WecomRuntime, cfg: WecomConfig): Promise<void> {
 
 /** 回调带来的 token 立即拉一次（两种账号共用） */
 async function pullFromCallback(rt: WecomRuntime, cfg: WecomConfig, syncToken: string): Promise<void> {
-  return withLogContext({ acct: rt.key }, async () => {
+  const task = withLogContext({ acct: rt.key }, async () => {
     if (rt.stopping) {
       // 回调照样回 success（server.ts），只是不拉：消息还在 cursor 之后，新进程启动补拉时会拿到
       console.log(`${rt.tag} 停机中，回调不再拉取（新进程启动后补拉）`);
@@ -2616,6 +2616,13 @@ async function pullFromCallback(rt: WecomRuntime, cfg: WecomConfig, syncToken: s
       console.error(`${rt.tag} kf/sync_msg 异常: errcode=${apiErrorCode(err)}`); // server.ts 是 void 调用，漏到外面就是未捕获 rejection
     }
   });
+  // ensureReady 的首个 await 之前尚未设置 syncTask；整次回调都要供空闲判断与停机等待。
+  rt.eventTasks.add(task);
+  try {
+    await task;
+  } finally {
+    rt.eventTasks.delete(task);
+  }
 }
 
 /**

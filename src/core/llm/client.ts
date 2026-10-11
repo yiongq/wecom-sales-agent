@@ -265,14 +265,14 @@ async function requestModel(ep: Endpoint, model: string, payload: Record<string,
       },
       signal,
     );
-  let { res, errorBody } = await send(false);
+  let { res, errorBody, settleUsage } = await send(false);
   if (!res.ok) {
     // 重试过的响应 body 已被 gatedFetch 读掉，再 res.text() 会抛「Body is unusable」，
     // 把 429 的真实原因（配额说明）整条吃掉——用它带出来的副本
     let detail = errorBody ?? (await res.text().catch(() => ''));
     if (isAlwaysThinkingError(res.status, detail) && !mustThink(ep.baseUrl, model)) {
       // 先按强制思考重发，**成功了才记住**：万一判断错了，不会把一个能关思考的模型永久切过去
-      ({ res, errorBody } = await send(true));
+      ({ res, errorBody, settleUsage } = await send(true));
       if (res.ok) {
         learnedThinking.add(model);
         stats.thinkingSelfHeal += 1;
@@ -285,7 +285,14 @@ async function requestModel(ep: Endpoint, model: string, payload: Record<string,
     }
     if (!res.ok) throw new LlmHttpError(res.status, model, detail);
   }
-  const data = (await res.json()) as Completion;
+  let data: Completion;
+  try {
+    data = (await res.json()) as Completion;
+  } catch (e) {
+    settleUsage(null);
+    throw e;
+  }
+  settleUsage(data);
   // 发了 disabled 却照样思考：多半是正则没收录的强制思考模型，在按默认最高档想，延迟会翻几倍。
   // 只告警不自动切：自动给老模型加 reasoning_effort 可能换来 400，那比慢更糟
   const think = thinkingParams(ep.baseUrl, model) as { thinking?: { type?: string } };
