@@ -13,6 +13,7 @@ import {
 import {
   acquireSandboxProcess,
   advanceSandboxEpoch,
+  checkSandboxStartup,
   expireBrokenSandbox,
   sandboxPoolHealth,
   sandboxStartupRows,
@@ -79,13 +80,21 @@ export class SandboxProcess {
         }),
       );
       await checkConfigDatabase(this.deps);
-      const rows = await sandboxStartupRows(this.deps.db, this.env.SANDBOX_TEMPLATE_SLUG!, this.env.SANDBOX_WECOM_OPEN_KFID);
+      await checkSandboxStartup(this.deps.db, this.env.SANDBOX_TEMPLATE_SLUG!, this.env.SANDBOX_WECOM_OPEN_KFID);
       this.epoch = await advanceSandboxEpoch(this.deps.db);
+      // epoch UPDATE 等旧 FOR SHARE 事务落定后，才可读取装载 / 重建所用的数据。
+      const rows = await sandboxStartupRows(this.deps.db);
       for (const row of rows) {
         assertSandboxRunning();
         const held = await this.lock.acquireTenant(row.id);
         if (!held) {
           console.error('[sandbox] sandbox_tenant_lock_held，跳过装载（不改到期）');
+          withoutTenantScope(() =>
+            alert('tenant_lock', `沙箱 ${row.slug} 的租户锁被其他进程持有，跳过装载（不改到期）`, {
+              instance: true,
+              scope: `sandbox:${row.id}`,
+            }),
+          );
           continue;
         }
         const rt = createTenantRuntime({

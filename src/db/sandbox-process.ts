@@ -34,7 +34,7 @@ export function withSandboxTenant<T>(db: Db, ctx: TenantCtx, epoch: string, fn: 
   });
 }
 
-export async function sandboxStartupRows(db: Db, templateSlug: string, openKfid?: string) {
+export async function checkSandboxStartup(db: Db, templateSlug: string, openKfid?: string): Promise<void> {
   const templates = rowsOf<{ id: string }>(
     await db.execute(sql`
     select id from public.tenants where slug = ${templateSlug} and kind = 'standard' and status <> 'suspended'`),
@@ -50,6 +50,10 @@ export async function sandboxStartupRows(db: Db, templateSlug: string, openKfid?
       if (conflict.length) throw new SandboxStartupError('sandbox_wecom_conflict');
     }
   }
+}
+
+/** 必须在 epoch 推进成功后读取，才能包含旧进程受 fencing 保护的迟到开通。 */
+export async function sandboxStartupRows(db: Db) {
   return rowsOf<{ id: string; slug: string; expiresAt: Date | string }>(
     await db.execute(sql`
     select id, slug, expires_at as "expiresAt" from public.tenants

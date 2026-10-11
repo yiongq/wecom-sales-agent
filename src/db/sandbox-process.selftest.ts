@@ -8,7 +8,10 @@ import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import { sql } from 'drizzle-orm';
-import { openDb, withNewSandboxTenant, withSandboxEpoch } from './client.js';
+import { openDb, withNewSandboxTenant, withSandboxEpoch, withTenant, holdTenantLocks } from './client.js';
+import { sopVersions } from './schema.js';
+import { readPublishedSop } from './repo/sop.js';
+import { readActiveCatalog, insertActiveItems } from './repo/catalog.js';
 import { createRealPgFixture, fakeLock, openTestDb } from './testing.js';
 import { importConfig } from '../config/transfer.js';
 import { acquireSandboxProcess, advanceSandboxEpoch, systemContext, withSandboxTenant } from './sandbox-process.js';
@@ -173,6 +176,14 @@ try {
     const next = await openDb(fixture.urls.app);
     let held: Awaited<ReturnType<typeof acquireSandboxProcess>> | null = null;
     try {
+      const templateImport = await importConfig({
+        db: app.db,
+        tenantSlug: 'template',
+        dataDir: 'data',
+        imageSop: fs.readFileSync('data/sop.md', 'utf8'),
+        lock: async () => fakeLock(),
+      });
+      assert.equal(templateImport.code, 0, templateImport.message);
       const [standard] = await fixture.query<{ id: string }>(
         "insert into tenants (slug,name,pack_id) values ('other-standard','测试','travel') returning id",
       );
@@ -317,6 +328,7 @@ try {
         await until(() => skip.output().includes('沙箱已启动'));
         assert.equal((await (await health(port)).json()).sandboxes, 0);
         assert.match(skip.output(), /sandbox_tenant_lock_held/);
+        assert.match(skip.output(), /\[alert\].*租户锁被其他进程持有/);
         assert.deepEqual(await fixture.query("select id, expires_at from tenants where kind = 'sandbox'"), snapshot);
         skip.child.kill('SIGTERM');
         await exitCode(skip);
@@ -388,6 +400,96 @@ try {
       console.log(
         'sandbox-process: 严格模式、租户锁冲突不改到期、停机丢弃计数、var 无文件与停止后 HTTP 503 / 拒绝模型请求、借连接和 COMMIT 通过',
       );
+
+      // 旧进程的开通持有 FOR SHARE 尚未提交；新进程拿到实例锁后必须等 epoch 屏障，再读装载清单。
+      const seed = await withTenant(app.db, systemContext(fixture.tenantId), async (tx) => ({
+        sop: await readPublishedSop(tx),
+        items: await readActiveCatalog(tx),
+      }));
+      assert.ok(seed.sop);
+      held = await acquireSandboxProcess(fixture.urls.app, () => {});
+      const creationEpoch = await advanceSandboxEpoch(app.db);
+      let finishCreation = (): void => {};
+      const creationGate = new Promise<void>((resolve) => {
+        finishCreation = resolve;
+      });
+      let creationReady = false;
+      const lateCreation = withNewSandboxTenant(
+        app.db,
+        { slug: 'sbx-late-create', templateTenantId: fixture.tenantId, brand: null, tokenHash: randomBytes(32), ip: null, userAgent: null },
+        async (tx, row) => {
+          const { id: _id, ...sop } = seed.sop!;
+          await tx.insert(sopVersions).values({ ...sop, tenantId: row.tenantId, basedOn: null });
+          for (const kind of ['route', 'hotel'] as const)
+            await insertActiveItems(
+              tx,
+              row.tenantId,
+              kind,
+              seed.items.filter((item) => item.kind === kind).map((item) => item.payload as Record<string, unknown>),
+              { userId: null, name: 'sandbox-test' },
+            );
+          creationReady = true;
+          await creationGate;
+          return row;
+        },
+        { epoch: creationEpoch },
+      );
+      let rebuilding: Child | undefined;
+      try {
+        await until(() => creationReady);
+        assert.equal((await fixture.query("select id from tenants where slug='sbx-late-create'")).length, 0, '旧开通仍未提交');
+        await held.release();
+        held = null;
+        rebuilding = run({ DATABASE_URL: fixture.urls.app, PORT: String(port) });
+        await until(
+          async () =>
+            (
+              await fixture.query<{ n: number }>(
+                "select count(*)::int as n from pg_stat_activity where datname=current_database() and wait_event='transactionid' and query ilike '%update public.sandbox_process_epoch%'",
+              )
+            )[0]!.n > 0,
+        );
+        assert.doesNotMatch(rebuilding.output(), /沙箱已启动/, '新进程仍在等待旧开通事务');
+      } finally {
+        finishCreation();
+        await lateCreation;
+      }
+      await until(() => rebuilding!.output().includes('沙箱已启动'));
+      assert.equal((await (await health(port)).json()).sandboxes, 2, 'epoch 屏障之后重读清单，包含刚提交的沙箱');
+      assert.match(rebuilding!.output(), /租户 sbx-late-create/);
+      rebuilding!.child.kill('SIGTERM');
+      assert.equal(await exitCode(rebuilding!), 143);
+      console.log('sandbox-process: 真实 PG 旧开通事务先持 SHARE，新进程推进 epoch 后重读清单并装载迟到沙箱通过');
+
+      // 两个沙箱都被外部占锁：同一沙箱重复启动检查只告警一次，不压掉另一个沙箱的告警。
+      const liveRows = await fixture.query<{ id: string; expires_at: Date }>(
+        "select id, expires_at from tenants where kind='sandbox' order by id",
+      );
+      const busy = await holdTenantLocks(
+        fixture.urls.app,
+        liveRows.map((row) => row.id),
+      );
+      assert.ok(busy);
+      try {
+        const repeated = run(
+          { DATABASE_URL: fixture.urls.app },
+          `
+          const {SandboxProcess} = await import('./src/tenancy/sandbox/process.ts');
+          for (let n = 0; n < 2; n++) {
+            const sandbox = new SandboxProcess(process.env);
+            try { await sandbox.start(); if ((await sandbox.health()).sandboxes !== 0) throw new Error('busy_sandbox_loaded'); }
+            finally { await sandbox.close(); }
+          }
+        `,
+        );
+        assert.equal(await exitCode(repeated), 0, repeated.output());
+        assert.equal((repeated.output().match(/\[alert\].*租户锁被其他进程持有/g) ?? []).length, 2, '告警按沙箱独立去重');
+        assert.equal((repeated.output().match(/sandbox_tenant_lock_held/g) ?? []).length, 4, '每次跳过仍记日志');
+        assert.deepEqual(await fixture.query("select id, expires_at from tenants where kind='sandbox' order by id"), liveRows);
+      } finally {
+        await busy.release();
+      }
+      console.log('sandbox-process: 真实 PG 租户锁冲突告警按沙箱去重、不改到期通过');
     } finally {
       await held?.release();
       for (const child of children)
