@@ -1080,7 +1080,12 @@ if (!SELFTEST) {
         }
       }),
     // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配
-    buildIndex: () => withTenantScope(hostRuntime(), buildIndex),
+    buildIndex: () =>
+      Promise.all(
+        tenantRuntimes()
+          .filter((rt) => rt.kind === 'standard')
+          .map((rt) => withTenantScope(rt, buildIndex)),
+      ).then(() => undefined),
     storeMode: () => withTenantScope(hostRuntime(), sessionStoreMode),
     // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）。文件存储是扫描器，db 存储由任务表驱动
     startFollowUpScheduler: () => startFollowUpScheduler(pushFollowUp),
@@ -1093,8 +1098,11 @@ if (!SELFTEST) {
     startAlerts,
     // 隐私说明（02 第 16 步）：读进内存、起 60 秒后台轮询；文件配置模式什么都不做
     startPrivacy: async () => {
-      await withTenantScope(hostRuntime(), initPrivacy);
-      startPrivacyPoll();
+      for (const rt of tenantRuntimes().filter((rt) => rt.kind === 'standard'))
+        await withTenantScope(rt, async () => {
+          await initPrivacy();
+          startPrivacyPoll();
+        });
     },
   });
 }

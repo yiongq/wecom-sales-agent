@@ -1,7 +1,7 @@
 // 只在常驻评测子进程安装：给没有 reset 出口的私有状态挂清理回调。
 // load hook 仅追加清理函数，不改运行逻辑或磁盘上的 src；串行对照模式不装它。
 // 私有依赖：store 的 sessions/orders/pgBackend/changeTimer/fileBackend，PG factory 的 entries/preRefs/adopted/voidedIds/conflict/lastError/stats/isDirty，
-// core/llm/client 的 learnedThinking/warnedIgnoredDisabled/requestObserver/stats，takeover 的 gens 及下面的 __*Test 出口。
+// core/llm/client 的 learnedThinking/warnedIgnoredDisabled/requestObserver/stats、retrieval 的共享缓存与退避设置。
 // 已登记的租户状态经 resetTenantState 清理，不依赖模块首次加载晚于 hook（预算依赖可提前加载用量模块）。
 // 模块搬家或私有变量改名后，同步 bodies 的路径与清理代码（PG factory 定位另见 isolation-loader.mjs），再跑池 / 隔离对照自测。
 import { register } from 'node:module';
@@ -30,12 +30,7 @@ const bodies: Record<string, string> = {
   'core/llm/client.ts': `
     learnedThinking.clear(); warnedIgnoredDisabled.clear(); requestObserver = null;
     for (const k of Object.keys(stats)) stats[k] = 0;`,
-  'core/retrieval.ts': '__retrievalTest.reset();',
-  'core/followup.ts': '__followupTest.resetForTest();',
-  'notify/handoff.ts': '__handoffNotifyTest.reset();',
-  'jobs/runner.ts': '__jobsTest.reset();',
-  'handoff/takeover.ts': 'gens.clear(); __takeoverTest.resetRecent();',
-  'quota/ledger.ts': '__ledgerTest.reset();',
+  'core/retrieval.ts': 'shared.clear(); retryBackoff = RETRY_BACKOFF_MS;',
 };
 export const resetModuleNames = Object.freeze(Object.keys(bodies));
 
@@ -53,9 +48,22 @@ export function installResets(): void {
 // 在引擎与后端初始化后主动加载全部清理目标，包括尚未走到的业务分支。
 export async function loadResetModules(): Promise<void> {
   await Promise.all(
-    [...resetModuleNames, 'budget.ts', 'usage.ts', 'trace/usage-daily.ts'].map(
-      (name) => import(new URL(`../../src/${name}`, import.meta.url).href),
-    ),
+    [
+      ...resetModuleNames,
+      'budget.ts',
+      'usage.ts',
+      'trace/usage-daily.ts',
+      'core/insight.ts',
+      'handoff/takeover.ts',
+      'quota/ledger.ts',
+      'privacy/privacy.ts',
+      'ops/metrics.ts',
+      'ops/alert.ts',
+      'engine.ts',
+      'core/followup.ts',
+      'notify/handoff.ts',
+      'jobs/runner.ts',
+    ].map((name) => import(new URL(`../../src/${name}`, import.meta.url).href)),
   );
   assertResetsRegistered();
 }

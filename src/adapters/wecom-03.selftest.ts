@@ -1957,6 +1957,53 @@ async function outboundSuite(h: Harness): Promise<void> {
   }
 
   h.fake.beforeSend = null;
+  // 05：账本 dispose 取消 pending 等待是 deferred，不能按真正 timeout 的 R6 照发。
+  {
+    const uid = 'wm07cancel';
+    const sid = sidOf('a1', uid);
+    const s = h.store.getOrCreateSession(sid, 'wecom');
+    s.messages.push({ role: 'customer', content: '你好', at: Date.now(), sentAt: Date.now() });
+    h.store.saveSession(s);
+    await h.store.flushSession(sid);
+    let open!: () => void;
+    h.faults.gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    try {
+      const prepared = h.wecom.wecomAdapter.prepare!(sid, '等提交再发', { kind: 'notice' });
+      check('dispose 回归：准备好待提交的组', prepared !== null);
+      const pending = ledger.__ledgerTest.rows(sid);
+      const { tenantKeys } = await import('../tenancy/state.js');
+      const { currentRuntime } = await import('../tenancy/runtime.js');
+      const owner = currentRuntime();
+      const beforeTimers = tenantKeys(owner.id)['ledger.timers'] ?? 0;
+      const sending = h.wecom.wecomAdapter.push(sid, '等提交再发', { kind: 'notice', prepared });
+      check('dispose 回归：确实阻塞在 pending 提交', await waitFor(() => (tenantKeys(owner.id)['ledger.timers'] ?? 0) > beforeTimers));
+      ledger.__ledgerTest.reset();
+      check('dispose 回归：取消等待后推送返回 false', !(await sending));
+      check('dispose 回归：没有向企微发请求，也不计为不安全发送', h.sentTo(uid).length === 0 && ledger.unsafeSendsIn10m() === 0);
+      check(
+        'dispose 回归：已清理的 intent 返回 deferred',
+        (await ledger.commitOutbound(
+          pending.map((row) => ({
+            msgid: row.msgid,
+            accountId: idOf('a1'),
+            sessionId: sid,
+            hasSession: true,
+            inboxId: null,
+            kind: row.kind,
+            segment: row.segment,
+            message: row.message,
+            payload: row.payload!,
+          })),
+        )) === 'deferred',
+      );
+    } finally {
+      h.faults.gate = null;
+      open();
+      await settle();
+    }
+  }
   ledger.__ledgerTest.setWaits(null);
 }
 

@@ -1,3 +1,6 @@
+import { TenantLocal } from '../tenancy/local-state.js';
+import { registerTenantState } from '../tenancy/state.js';
+import { currentRuntime, withTenantScope, withoutTenantScope, tenantCallback, type TenantRuntime } from '../tenancy/runtime.js';
 // 企微发送账本（docs/architecture/02-conversations-workbench/spec.md「企微：发送账本、回执与去重」、R7、R18、不变量 33、34）。
 // 每次 send_msg 的每个分段带一个我们生成的 msgid（≤32 字节，同一分段重试沿用），在这里恰有一行：
 //   accepted 接口回了成功；rejected 接口明确报错；unknown 超时或网络异常、结果不明（计入额度）；failed 之后收到 msg_send_fail。
@@ -29,7 +32,6 @@ import { randomBytes } from 'node:crypto';
 import { accountForSession, type ChannelAccount } from '../channels/accounts.js';
 import { canMoveOutbound } from '../channels/transitions.js';
 import type { OutboundStatus } from '../shared/channel-types.js';
-import { withTenantScope } from '../tenancy/runtime.js';
 import {
   deliveryOfSegments,
   type DeliveryView,
@@ -136,6 +138,8 @@ export class OutboundPlanError extends Error {
 export type CancelReason = 'taken_over' | 'inbox_abandoned' | 'restore' | 'export' | 'aborted';
 
 interface Row {
+  owner: TenantRuntime;
+  ledger: Ledger;
   sessionId: string;
   msgid: string;
   kind: OutboundKind;
@@ -177,30 +181,90 @@ interface Row {
   probe: boolean;
 }
 
-const bySession = new Map<string, Row[]>();
-const byMsgid = new Map<string, Row>();
-/** 预占的行，按要发的那条消息认 */
-const holds = new Map<ChatMessage, Row>();
-/** 等对应消息分到 seq 的账本行，按消息对象：分到之后同一条消息的这几行一起排进落库 */
-const awaitingSeq = new Map<ChatMessage, { rows: Set<Row>; timer: NodeJS.Timeout | null }>();
+type LedgerTimer = NodeJS.Timeout | NodeJS.Immediate;
+function disposeTimer(timer: LedgerTimer): void {
+  if ('refresh' in timer) clearTimeout(timer);
+  else clearImmediate(timer);
+}
+const ledger = new TenantLocal(
+  () => ({
+    bySession: new Map<string, Row[]>(),
+    byMsgid: new Map<string, Row>(),
+    holds: new Map<ChatMessage, Row>(),
+    awaitingSeq: new Map<ChatMessage, { rows: Set<Row>; timer: NodeJS.Timeout | null }>(),
+    timers: new Map<LedgerTimer, () => void>(),
+  }),
+  (s) => {
+    for (const [timer, cancel] of s.timers) {
+      disposeTimer(timer);
+      cancel();
+    }
+    s.timers.clear();
+    for (const w of s.awaitingSeq.values()) if (w.timer) clearTimeout(w.timer);
+    s.awaitingSeq.clear();
+    s.holds.clear();
+    s.bySession.clear();
+    s.byMsgid.clear();
+  },
+);
+type Ledger = ReturnType<typeof ledger.get>;
+// timeout 归属是弱对象键；清理迟到的 Promise 不得再次创建租户账本。
+const timerStates = new WeakMap<LedgerTimer, Ledger>();
+function scheduleLedger(ms: number, fn: () => void, cancel: () => void = () => {}): NodeJS.Timeout {
+  const rt = currentRuntime();
+  const state = ledger.get(rt);
+  const timer = withoutTenantScope(() =>
+    setTimeout(
+      tenantCallback(rt, () => {
+        state.timers.delete(timer);
+        if (ledger.owns(rt, state)) fn();
+        else cancel();
+      }),
+      Math.max(0, ms),
+    ),
+  );
+  state.timers.set(timer, cancel);
+  timerStates.set(timer, state);
+  return timer;
+}
+function clearLedgerTimer(timer: LedgerTimer): void {
+  disposeTimer(timer);
+  timerStates.get(timer)?.timers.delete(timer);
+  timerStates.delete(timer);
+}
+function scheduleLedgerImmediate(fn: () => void): void {
+  const rt = currentRuntime();
+  const state = ledger.get(rt);
+  const timer = withoutTenantScope(() =>
+    setImmediate(
+      tenantCallback(rt, () => {
+        state.timers.delete(timer);
+        if (ledger.owns(rt, state)) fn();
+      }),
+    ),
+  );
+  state.timers.set(timer, () => {});
+}
 /** 03：pending 那一行的写入对象 → 账本行（主事务提交的回调据它认出是哪一行） */
 const pendingWrites = new WeakMap<OutboundRow, Row>();
 
 /** 已用条数算哪几种：送达的、结果不明的，以及还在发的（可能已经送达）；03 的 pending、sending 也算（R18 的保守口径） */
 const COUNTED: ReadonlySet<Status> = new Set<Status>(['accepted', 'unknown', 'pending', 'sending']);
 
+const liveRow = (row: Row): boolean => ledger.owns(row.owner, row.ledger);
+
 function add(row: Row): void {
-  const list = bySession.get(row.sessionId);
+  const list = ledger.get().bySession.get(row.sessionId);
   if (list) list.push(row);
-  else bySession.set(row.sessionId, [row]);
-  byMsgid.set(row.msgid, row);
+  else ledger.get().bySession.set(row.sessionId, [row]);
+  ledger.get().byMsgid.set(row.msgid, row);
 }
 
 function remove(row: Row): void {
-  byMsgid.delete(row.msgid);
-  const list = bySession.get(row.sessionId);
+  ledger.get().byMsgid.delete(row.msgid);
+  const list = ledger.get().bySession.get(row.sessionId);
   if (list)
-    bySession.set(
+    ledger.get().bySession.set(
       row.sessionId,
       list.filter((r) => r !== row),
     );
@@ -208,6 +272,8 @@ function remove(row: Row): void {
 
 function newRow(sessionId: string, kind: OutboundKind, message: ChatMessage | null, now: number): Row {
   return {
+    owner: currentRuntime(),
+    ledger: ledger.get(),
     sessionId,
     msgid: randomBytes(16).toString('hex'),
     kind,
@@ -239,7 +305,7 @@ function ensureLoaded(): void {
   const pre = takePreloadedOutbound();
   for (const [sessionId, rows] of pre) {
     for (const r of rows) {
-      if (byMsgid.has(r.channelMsgid)) continue;
+      if (ledger.get().byMsgid.has(r.channelMsgid)) continue;
       const v2 = 'accountId' in r && typeof r.accountId === 'string';
       add({
         ...newRow(sessionId, r.kind, null, r.sentAt.getTime()),
@@ -260,11 +326,11 @@ function ensureLoaded(): void {
 
 /** 摘掉 7 天前的；还在发的（02 的 pending，03 的 pending、sending）不摘 */
 function prune(sessionId: string, now: number): void {
-  const list = bySession.get(sessionId);
+  const list = ledger.get().bySession.get(sessionId);
   if (!list?.length || list[0]!.sentAt >= now - KEEP_MS) return;
   const kept = list.filter((r) => r.sentAt >= now - KEEP_MS || r.status === 'pending' || r.status === 'sending');
-  for (const r of list) if (!kept.includes(r)) byMsgid.delete(r.msgid);
-  bySession.set(sessionId, kept);
+  for (const r of list) if (!kept.includes(r)) ledger.get().byMsgid.delete(r.msgid);
+  ledger.get().bySession.set(sessionId, kept);
 }
 
 /** 这条账本行在库里的那一份：db 存储的真实会话才有，demo 类与文件存储只在内存 */
@@ -297,6 +363,7 @@ function writeShape(row: Row, status: Status = row.status): OutboundRow {
  * 排进落库（结果）：会话在内存里就随它的下一次落库（queueTelemetry，存档点之内），没有会话（老客户补发的欢迎语）单独一个短事务
  */
 function write(row: Row): void {
+  if (!liveRow(row)) return;
   const dbRow = writeShape(row);
   row.dbRow = dbRow;
   row.inDb = true;
@@ -311,6 +378,7 @@ function write(row: Row): void {
  * 一起），见 awaitSeq
  */
 function persist(row: Row): void {
+  if (!liveRow(row)) return;
   if (!writesToDb(row.sessionId)) return;
   if (row.message && seqOf(row.message) === undefined) awaitSeq(row);
   else write(row);
@@ -318,29 +386,29 @@ function persist(row: Row): void {
 
 function awaitSeq(row: Row): void {
   const msg = row.message!;
-  let w = awaitingSeq.get(msg);
-  if (!w) awaitingSeq.set(msg, (w = { rows: new Set(), timer: null }));
+  let w = ledger.get().awaitingSeq.get(msg);
+  if (!w) ledger.get().awaitingSeq.set(msg, (w = { rows: new Set(), timer: null }));
   w.rows.add(row);
   armSeqTimer(msg);
 }
 
 /** 等 seq 的上限只在这条消息没有还在发的分段时走：分段之间要等网络，不能让前一段的上限先到 */
 function armSeqTimer(msg: ChatMessage): void {
-  const w = awaitingSeq.get(msg);
+  const w = ledger.get().awaitingSeq.get(msg);
   if (!w) return;
-  if (w.timer) clearTimeout(w.timer);
+  if (w.timer) clearLedgerTimer(w.timer);
   w.timer = null;
   const sid = [...w.rows][0]?.sessionId;
-  if (sid !== undefined && (bySession.get(sid) ?? []).some((r) => r.message === msg && r.inFlight)) return;
-  w.timer = setTimeout(() => releaseAwaiting(msg, true), SEQ_WAIT_MS);
+  if (sid !== undefined && (ledger.get().bySession.get(sid) ?? []).some((r) => r.message === msg && r.inFlight)) return;
+  w.timer = scheduleLedger(SEQ_WAIT_MS, () => releaseAwaiting(msg, true));
   w.timer.unref();
 }
 
 function releaseAwaiting(msg: ChatMessage, timedOut: boolean): void {
-  const w = awaitingSeq.get(msg);
+  const w = ledger.get().awaitingSeq.get(msg);
   if (!w) return;
-  awaitingSeq.delete(msg);
-  if (w.timer) clearTimeout(w.timer);
+  ledger.get().awaitingSeq.delete(msg);
+  if (w.timer) clearLedgerTimer(w.timer);
   if (timedOut && seqOf(msg) === undefined) {
     console.warn(`[quota] ${w.rows.size} 行发送账本等不到对应消息写进会话（没送达或结果不明），message_seq 记 NULL`);
   }
@@ -351,9 +419,9 @@ function releaseAwaiting(msg: ChatMessage, timedOut: boolean): void {
 // 不在 saveSession 里面排：同一段同步代码里还要记这一轮的 trace，分开排，trace 那几行写不进去（存档点回滚）时不连带丢账本行
 onAnySessionSaved((rt, s) =>
   withTenantScope(rt, () => {
-    if (!awaitingSeq.size) return;
-    for (const msg of awaitingSeq.keys())
-      if (s.messages.includes(msg) && seqOf(msg) !== undefined) setImmediate(() => releaseAwaiting(msg, false));
+    if (rt.state !== 'serving') return;
+    for (const msg of ledger.get(rt).awaitingSeq.keys())
+      if (s.messages.includes(msg) && seqOf(msg) !== undefined) scheduleLedgerImmediate(() => releaseAwaiting(msg, false));
   }),
 );
 
@@ -405,9 +473,9 @@ export function recordSend(sessionId: string, kind: OutboundKind, message: ChatM
   ensureLoaded();
   const now = Date.now();
   prune(sessionId, now);
-  let row = message ? holds.get(message) : undefined;
+  let row = message ? ledger.get().holds.get(message) : undefined;
   if (row && row.sessionId === sessionId && message) {
-    holds.delete(message);
+    ledger.get().holds.delete(message);
     remove(row); // 挪到这个会话的末尾：账本按记账顺序
     Object.assign(row, { kind, held: false, sentAt: now, lastAttemptAt: now });
   } else row = newRow(sessionId, kind, message, now);
@@ -419,7 +487,7 @@ export function recordSend(sessionId: string, kind: OutboundKind, message: ChatM
     done = true;
     r.inFlight = false;
   };
-  return {
+  const handle: SendHandle = {
     msgid: r.msgid,
     attempt() {
       if (!done) r.lastAttemptAt = Date.now();
@@ -449,6 +517,16 @@ export function recordSend(sessionId: string, kind: OutboundKind, message: ChatM
       if (r.message) armSeqTimer(r.message);
     },
   };
+  const run = (fn: () => void): void => {
+    if (liveRow(r)) withTenantScope(r.owner, fn);
+  };
+  return {
+    msgid: handle.msgid,
+    attempt: () => run(() => handle.attempt()),
+    unknown: () => run(() => handle.unknown()),
+    settle: (result, code) => run(() => handle.settle(result, code)),
+    discard: () => run(() => handle.discard()),
+  };
 }
 
 /**
@@ -461,11 +539,14 @@ export function holdSend(sessionId: string, kind: OutboundKind, message: ChatMes
   const row = newRow(sessionId, kind, message, Date.now());
   row.held = true;
   add(row);
-  holds.set(message, row);
+  ledger.get().holds.set(message, row);
   return () => {
-    if (holds.get(message) !== row) return;
-    holds.delete(message);
-    remove(row);
+    withTenantScope(row.owner, () => {
+      // 关闭时仍要释放预占；drop 已清空捕获的账本时不读取或重建槽。
+      if (row.ledger.holds.get(message) !== row) return;
+      row.ledger.holds.delete(message);
+      remove(row);
+    });
   };
 }
 
@@ -559,6 +640,7 @@ const intentOf = (r: Row): OutboundIntent => ({
 
 /** pending 那一行提交了（随会话或短事务）或短事务没写成：叫醒在等的 commitOutbound */
 function pendingSettled(row: Row, ok: boolean): void {
+  if (!liveRow(row)) return;
   if (row.commit === 'committed') return;
   row.commit = ok ? 'committed' : 'failed';
   const ws = row.commitWaiters;
@@ -567,9 +649,10 @@ function pendingSettled(row: Row, ok: boolean): void {
 }
 onAnyOutboundCommitted((rt, rows) =>
   withTenantScope(rt, () => {
+    if (rt.state !== 'serving') return;
     for (const w of rows) {
       const r = pendingWrites.get(w);
-      if (r) pendingSettled(r, true);
+      if (r && r.owner === rt) pendingSettled(r, true);
     }
   }),
 );
@@ -616,12 +699,12 @@ export function planOutbound(
   const sessionId = target.sessionId;
   const now = Date.now();
   prune(sessionId, now);
-  const held = message ? holds.get(message) : undefined;
+  const held = message ? ledger.get().holds.get(message) : undefined;
   const rows: Row[] = [];
   payloads.forEach((payload, segment) => {
     let row: Row;
     if (segment === 0 && held && held.sessionId === sessionId && MSGID_RE.test(held.msgid)) {
-      holds.delete(message!);
+      ledger.get().holds.delete(message!);
       remove(held); // 挪到这个会话的末尾：账本按记账顺序
       Object.assign(held, { kind, held: false, sentAt: now, lastAttemptAt: now });
       row = held;
@@ -664,13 +747,13 @@ export async function planRuntimeSegment(
   msgid?: string,
 ): Promise<{ intent: OutboundIntent; commit: 'committed' | 'timeout' } | null> {
   const first = group[0];
-  const base = first ? byMsgid.get(first.msgid) : undefined;
+  const base = first ? ledger.get().byMsgid.get(first.msgid) : undefined;
   if (!first || !base?.v2) throw planRejected('运行时补的段找不到它那一组');
   if (group.length >= 32_767) throw planRejected('一组的段号用完了');
   const bad = payloadProblem(payload);
   if (bad) throw planRejected(bad);
   if (msgid !== undefined && !MSGID_RE.test(msgid)) throw planRejected('运行时补的段 msgid 不对');
-  const known = msgid === undefined ? undefined : byMsgid.get(msgid);
+  const known = msgid === undefined ? undefined : ledger.get().byMsgid.get(msgid);
   if (known?.v2) {
     if (known.status !== 'pending' && known.status !== 'sending') return null;
     known.payload ??= payload;
@@ -697,20 +780,25 @@ export async function planRuntimeSegment(
   row.dbRow = w;
   row.inDb = true;
   const ok = await raceTimeout(writeOutboundNow([w]), waits.commitMs, false);
+  if (!liveRow(row)) return null;
   pendingSettled(row, ok);
   return { intent: intentOf(row), commit: ok ? 'committed' : 'timeout' };
 }
 
 function raceTimeout<T>(p: Promise<T>, ms: number, onTimeout: T): Promise<T> {
   return new Promise<T>((resolve) => {
-    const timer = setTimeout(() => resolve(onTimeout), Math.max(0, ms));
+    const timer = scheduleLedger(
+      ms,
+      () => resolve(onTimeout),
+      () => resolve(onTimeout),
+    );
     void p.then(
       (v) => {
-        clearTimeout(timer);
+        clearLedgerTimer(timer);
         resolve(v);
       },
       () => {
-        clearTimeout(timer);
+        clearLedgerTimer(timer);
         resolve(onTimeout);
       },
     );
@@ -720,27 +808,37 @@ function raceTimeout<T>(p: Promise<T>, ms: number, onTimeout: T): Promise<T> {
 /**
  * 等这一组的 pending 提交（有会话的随 flushSession 那一次落库，没有会话的短事务）：至多 5 秒，从 planOutbound 那一刻算起
  * （人工回复、跟进等调用方自己已经等过一次提交，不再叠一个 5 秒）。等到了返回 committed；超时、短事务没写成返回 timeout，
- * 调用方照发（R6）并计数。只在内存里的会话（demo 类）恒为 committed
+ * 调用方照发（R6）并计数。运行时关闭或账本被清理返回 deferred，调用方不得发；只在内存里的会话（demo 类）恒为 committed
  */
-export async function commitOutbound(intents: readonly OutboundIntent[]): Promise<'committed' | 'timeout'> {
-  const rows = intents.map((i) => byMsgid.get(i.msgid)).filter((r): r is Row => r !== undefined && r.v2);
+export async function commitOutbound(intents: readonly OutboundIntent[]): Promise<'committed' | 'timeout' | 'deferred'> {
+  const rt = currentRuntime();
+  if (rt.state !== 'serving') return 'deferred';
+  const state = ledger.get(rt);
+  const rows = intents.map((i) => state.byMsgid.get(i.msgid)).filter((r): r is Row => r !== undefined && r.v2);
+  if (rows.length !== intents.length) return 'deferred';
   const waiting = rows.filter((r) => r.commit === null);
   if (waiting.length) {
     const deadline = Math.min(...rows.map((r) => r.sentAt)) + waits.commitMs;
-    await new Promise<void>((resolve) => {
+    const outcome = await new Promise<'settled' | 'cancelled'>((resolve) => {
       let left = waiting.length;
-      const timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+      const timer = scheduleLedger(
+        deadline - Date.now(),
+        () => resolve('settled'),
+        () => resolve('cancelled'),
+      );
       for (const r of waiting) {
         r.commitWaiters.push(() => {
           left -= 1;
           if (left === 0) {
-            clearTimeout(timer);
-            resolve();
+            clearLedgerTimer(timer);
+            resolve('settled');
           }
         });
       }
     });
+    if (outcome === 'cancelled') return 'deferred';
   }
+  if (!ledger.owns(rt, state)) return 'deferred';
   return rows.every((r) => r.commit === 'committed') ? 'committed' : 'timeout';
 }
 
@@ -754,15 +852,17 @@ let planHook: ((intents: readonly OutboundIntent[]) => void) | null = null;
  * db_unavailable：库不可用（或等满 5 秒），照发（R6）并计数。只在内存里的会话（demo 类）只改内存
  */
 export async function markSending(intent: OutboundIntent): Promise<MarkSendingResult> {
-  const row = byMsgid.get(intent.msgid);
+  const row = ledger.get().byMsgid.get(intent.msgid);
   if (!row?.v2) return 'absent';
   if (markHook) await markHook(intent);
+  if (!liveRow(row)) return 'not_pending';
   if (!writesToDb(row.sessionId)) {
     if (!canMoveOutbound(row.status, 'sending', ['mark'])) return 'not_pending';
     row.status = 'sending';
     return 'marked';
   }
   const r = await markOutboundSendingInDb(intent.msgid, waits.markMs);
+  if (!liveRow(row)) return 'not_pending';
   if (r === 'marked' && canMoveOutbound(row.status, 'sending', ['mark'])) row.status = 'sending';
   // 按定死的 msgid 新建的补段，库里早有同一 msgid 的行、已有结果：这一块补文已经发过（或不会再发），从账本摘掉，以库里的为准
   if (r === 'not_pending' && row.probe && row.status === 'pending') {
@@ -777,9 +877,10 @@ export async function markSending(intent: OutboundIntent): Promise<MarkSendingRe
  * 写不成时这一段留在 sending、重启后按出站恢复记 unknown（没发过，工作台显示「可能没送达」）
  */
 export async function unmarkSending(intent: OutboundIntent): Promise<boolean> {
-  const row = byMsgid.get(intent.msgid);
+  const row = ledger.get().byMsgid.get(intent.msgid);
   if (!row?.v2) return false;
   const ok = writesToDb(row.sessionId) ? await unmarkOutboundInDb(intent.msgid) : true;
+  if (!liveRow(row)) return false;
   if (ok && canMoveOutbound(row.status, 'pending', ['unmark'])) row.status = 'pending';
   if (!ok) console.error('[quota] 停机截止之后标了 sending 的一段迁回 pending 没写成：它留在 sending，重启后记 unknown（没发过）');
   return ok;
@@ -793,14 +894,14 @@ const NO_MORE_SENDS: ReadonlySet<Status> = new Set<Status>(['accepted', 'rejecte
  * msg_send_fail 记了 failed、被取消等）就不能。unknown、sending、pending 可以（unknown 只在同一进程里那一段的重试中再发）
  */
 export function maySendAgain(intent: OutboundIntent): boolean {
-  const row = byMsgid.get(intent.msgid);
+  const row = ledger.get().byMsgid.get(intent.msgid);
   return !!row && !NO_MORE_SENDS.has(row.status);
 }
 
 /** 一次尝试发出之前调（第一次也调）：记下这次尝试的时刻（窗口按最后一次尝试计数）与次数 */
 export function noteAttempt(intent: OutboundIntent): void {
-  const row = byMsgid.get(intent.msgid);
-  if (!row?.v2) return;
+  const row = ledger.get().byMsgid.get(intent.msgid);
+  if (!row?.v2 || !liveRow(row)) return;
   row.lastAttemptAt = Date.now();
   row.attempts += 1;
 }
@@ -815,8 +916,8 @@ function persistResult(row: Row): void {
  * 由 settleIntent 升 accepted）
  */
 export function noteUnknown(intent: OutboundIntent, errcode?: number): void {
-  const row = byMsgid.get(intent.msgid);
-  if (!row?.v2 || !canMoveOutbound(row.status, 'unknown', ['settle'])) return;
+  const row = ledger.get().byMsgid.get(intent.msgid);
+  if (!row?.v2 || !liveRow(row) || !canMoveOutbound(row.status, 'unknown', ['settle'])) return;
   row.status = 'unknown';
   row.errcode = errcode ?? null;
   persistResult(row);
@@ -833,8 +934,8 @@ function finishRow(row: Row): void {
  * 只按迁移表改：已收到回执（failed）、已取消的不改（库里同样不改）。wecom_send 告警照 02 挂在这里
  */
 export function settleIntent(intent: OutboundIntent, result: SendResult, detail: { errcode?: number; attempts: number }): void {
-  const row = byMsgid.get(intent.msgid);
-  if (!row?.v2) return;
+  const row = ledger.get().byMsgid.get(intent.msgid);
+  if (!row?.v2 || !liveRow(row)) return;
   row.attempts = Math.max(row.attempts, detail.attempts);
   const moved = canMoveOutbound(row.status, result, ['settle']);
   if (moved) {
@@ -856,7 +957,7 @@ export function settleIntent(intent: OutboundIntent, result: SendResult, detail:
 export function cancelIntents(intents: readonly OutboundIntent[], reason: CancelReason): void {
   let n = 0;
   for (const i of intents) {
-    const row = byMsgid.get(i.msgid);
+    const row = ledger.get().byMsgid.get(i.msgid);
     if (!row?.v2 || !canMoveOutbound(row.status, 'cancelled', ['cancel'])) continue;
     row.status = 'cancelled';
     finishRow(row);
@@ -874,7 +975,9 @@ export function cancelIntents(intents: readonly OutboundIntent[], reason: Cancel
  * inbox_abandoned）。cancelled 与 abandoned 排进同一个会话、同一段同步代码时就是同一次落库
  */
 export function cancelInboxIntents(inboxId: string): void {
-  const rows = [...byMsgid.values()].filter((r) => r.v2 && r.inboxId === inboxId && (r.status === 'pending' || r.status === 'sending'));
+  const rows = [...ledger.get().byMsgid.values()].filter(
+    (r) => r.v2 && r.inboxId === inboxId && (r.status === 'pending' || r.status === 'sending'),
+  );
   if (rows.length) cancelIntents(rows.map(intentOf), 'inbox_abandoned');
 }
 
@@ -907,7 +1010,7 @@ export interface OpenOutboundLike {
 export function adoptOpenOutbound(accountId: string, rows: readonly OpenOutboundLike[]): OutboundIntent[] {
   ensureLoaded();
   return rows.map((r) => {
-    let row = byMsgid.get(r.channelMsgid);
+    let row = ledger.get().byMsgid.get(r.channelMsgid);
     if (!row) {
       row = { ...newRow(r.conversationId, r.kind, null, r.sentAt.getTime()), msgid: r.channelMsgid };
       add(row);
@@ -936,7 +1039,7 @@ export function adoptOpenOutbound(accountId: string, rows: readonly OpenOutbound
  * 写进存档点（与别的结果同一类：丢了下次启动再记一遍），没有会话的单独短事务。工作台随之「可能没送达」
  */
 export function recoverAsUnknown(intent: OutboundIntent): void {
-  const row = byMsgid.get(intent.msgid);
+  const row = ledger.get().byMsgid.get(intent.msgid);
   if (!row?.v2 || !canMoveOutbound(row.status, 'unknown', ['recover'])) return;
   row.status = 'unknown';
   finishRow(row);
@@ -945,7 +1048,7 @@ export function recoverAsUnknown(intent: OutboundIntent): void {
 
 /** 入站恢复（replied 一行）：这条入站名下还在 pending 的段，按段号（启动恢复收进来的，与本进程排过、还没发的） */
 export function pendingIntentsOfInbox(inboxId: string): OutboundIntent[] {
-  return [...byMsgid.values()]
+  return [...ledger.get().byMsgid.values()]
     .filter((r) => r.v2 && r.inboxId === inboxId && r.status === 'pending')
     .toSorted((a, b) => a.segment - b.segment)
     .map(intentOf);
@@ -1005,7 +1108,7 @@ export function sendWindow(sessionId: string, now: number): SendWindow {
   if (lastCustomerAt === null) return { lastCustomerAt: null, closesAt: null, used: 0, remaining: 0 };
   const closesAt = lastCustomerAt + WINDOW_MS;
   let used = 0;
-  for (const r of bySession.get(sessionId) ?? []) if (r.lastAttemptAt >= lastCustomerAt && COUNTED.has(r.status)) used += 1;
+  for (const r of ledger.get().bySession.get(sessionId) ?? []) if (r.lastAttemptAt >= lastCustomerAt && COUNTED.has(r.status)) used += 1;
   return { lastCustomerAt, closesAt, used, remaining: now >= closesAt ? 0 : Math.max(0, WINDOW_SENDS - used) };
 }
 
@@ -1040,7 +1143,7 @@ export function humanReplyVerdict(sessionId: string, now: number): HumanReplyVer
 function rowsOf(sessionId: string, message: ChatMessage): Row[] {
   ensureLoaded();
   const seq = seqOf(message);
-  return (bySession.get(sessionId) ?? []).filter(
+  return (ledger.get().bySession.get(sessionId) ?? []).filter(
     (r) => !r.held && (r.message === message || (r.message === null && r.seq !== null && r.seq === seq)),
   );
 }
@@ -1096,15 +1199,19 @@ async function markFailedInDb(
   inboxId: string | null = null,
   full: OutboundRow | null = null,
 ): Promise<void> {
+  const rt = currentRuntime();
+  const state = ledger.get(rt);
   const delays = inboxId === null ? [RECEIPT_RETRY_MS] : RECEIPT_INBOX_RETRY_MS;
   for (let i = 0; ; i++) {
+    if (!ledger.owns(rt, state)) return;
     const r = await markOutboundFailedInDb(channelMsgid, failType, inboxId, full);
+    if (!ledger.owns(rt, state)) return;
     if (r.ok) {
       if (explainHit && r.sessionId) explain(r.sessionId, failType);
       return;
     }
     if (i >= delays.length) break;
-    await new Promise<void>((resolve) => setTimeout(resolve, delays[i]).unref());
+    await new Promise<void>((resolve) => scheduleLedger(delays[i]!, resolve, resolve).unref());
   }
   console.error(
     `[quota] msg_send_fail 回执改库重试${delays.length === 1 ? '一' : ` ${delays.length} `}次仍没写成（fail_type=${failType}），库里那一行没记 failed`,
@@ -1131,8 +1238,10 @@ export function onSendFailInbox(channelMsgid: string, failType: number, inboxId:
 }
 
 async function receipt(channelMsgid: string, failType: number, inboxId: string | null): Promise<void> {
+  const rt = currentRuntime();
+  const state = ledger.get(rt);
   ensureLoaded();
-  const row = byMsgid.get(channelMsgid);
+  const row = ledger.get().byMsgid.get(channelMsgid);
   let toDb = false;
   let explainHit = false;
   let waitFor: string | null = null;
@@ -1179,6 +1288,7 @@ async function receipt(channelMsgid: string, failType: number, inboxId: string |
     return;
   }
   if (waitFor !== null && getSession(waitFor)) await flushSession(waitFor, { timeoutMs: 5000 }).catch(() => undefined);
+  if (!ledger.owns(rt, state)) return;
   await markFailedInDb(channelMsgid, failType, explainHit, inboxId, full);
 }
 
@@ -1202,7 +1312,7 @@ export const __ledgerTest = {
     commit: 'committed' | 'failed' | null;
   }[] {
     ensureLoaded();
-    const lists = sessionId === undefined ? [...bySession.values()] : [bySession.get(sessionId) ?? []];
+    const lists = sessionId === undefined ? [...ledger.get().bySession.values()] : [ledger.get().bySession.get(sessionId) ?? []];
     return lists.flat().map((r) => ({
       sessionId: r.sessionId,
       msgid: r.msgid,
@@ -1222,11 +1332,7 @@ export const __ledgerTest = {
     }));
   },
   reset(): void {
-    bySession.clear();
-    byMsgid.clear();
-    holds.clear();
-    for (const w of awaitingSeq.values()) if (w.timer) clearTimeout(w.timer);
-    awaitingSeq.clear();
+    ledger.registration(() => 0).drop(currentRuntime().id);
     unsafeAt = [];
     markHook = null;
     planHook = null;
@@ -1253,3 +1359,13 @@ export const __ledgerTest = {
     planHook = fn;
   },
 };
+
+registerTenantState({ name: 'ledger.bySession', ...ledger.registration((s) => s.bySession.size) });
+
+registerTenantState({ name: 'ledger.byMsgid', ...ledger.registration((s) => s.byMsgid.size) });
+
+registerTenantState({ name: 'ledger.holds', ...ledger.registration((s) => s.holds.size) });
+
+registerTenantState({ name: 'ledger.awaitingSeq', ...ledger.registration((s) => s.awaitingSeq.size) });
+
+registerTenantState({ name: 'ledger.timers', ...ledger.registration((s) => s.timers.size) });

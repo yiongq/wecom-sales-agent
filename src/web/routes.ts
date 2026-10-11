@@ -200,10 +200,11 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
   state().processing.add(s.id);
   let reservation: Daily | null = null;
   let usedModel = false;
-  const unsubscribeTurn = withoutTenantScope(() =>
-    onTurnEnd(({ turn }) => {
-      if (currentRuntime() === owner && turn.conversationId === s.id && turn.llm.length > 0) usedModel = true;
-    }),
+  const unsubscribeTurn = onTurnEnd(
+    ({ turn }) => {
+      if (turn.llm.length > 0) usedModel = true;
+    },
+    { owner, conversationId: s.id },
   );
   try {
     const count = daily(account);
