@@ -1,3 +1,4 @@
+import { publicBase } from '../tenancy/hosts.js';
 // 转人工的外部提醒（docs/architecture/02-conversations-workbench/spec.md「通知」、R13、开放问题 3、不变量 32）：Notifier 接口与
 // 企微群机器人的实现。console 没开时顾问靠它知道有人要人工；与告警（src/ops/alert.ts，ALERT_WEBHOOK_URL）不是同一个群。
 // 消息体只有类型的中文、短码、时间与工作台链接（不带会话 id）：不含客户原话、external_userid、会话原 id。
@@ -41,7 +42,7 @@ export const UNSAVED_MARK = '记录暂未保存';
 
 /** 工作台链接：等人接手的列表，不带会话 id（spec「通知」） */
 export function workbenchLink(): string {
-  const base = (process.env.PUBLIC_BASE_URL ?? '').trim().replace(/\/+$/, '');
+  const base = publicBase();
   return `${base}/console/conversations?state=human`;
 }
 

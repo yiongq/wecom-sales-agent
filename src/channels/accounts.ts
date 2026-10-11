@@ -1,3 +1,4 @@
+import { currentRuntime, runtimeOf } from '../tenancy/runtime.js';
 // 渠道账号（docs/architecture/03-channels-v2/spec.md「接口与数据流 · 渠道账号与凭据」、R1、R8、R11、R15、R19）：
 // 账号的进程内形状、从库里读出与解密、env 账号的拼法、按 key 与按会话找账号、欢迎语的 AI 显式标识检查。
 // 启动装载（src/channels/registry.ts 的 initChannels）判完企微状态之后经 installAccounts 把这一份账号装上；命令行（第 14、15 步）
@@ -218,8 +219,14 @@ export function loadedAccounts(): readonly ChannelAccount[] {
 }
 
 /** 按 key 找账号：只返回启用的、种类对得上的（R12：/wecom/callback/:key 只认 wecom_kf，网页的 key 当作不存在） */
-export function accountByKey(key: string, kind: ChannelKind): ChannelAccount | undefined {
-  return installed.find((a) => a.key === key && a.kind === kind && isEnabled(a));
+export function accountByKey(key: string, kind: ChannelKind, tenantId = currentRuntime().id): ChannelAccount | undefined {
+  return installed.find(
+    (a) =>
+      (a.tenantId === tenantId || (a.source === 'env' && a.tenantId === '' && runtimeOf(tenantId)?.isHost)) &&
+      a.key === key &&
+      a.kind === kind &&
+      isEnabled(a),
+  );
 }
 
 /**

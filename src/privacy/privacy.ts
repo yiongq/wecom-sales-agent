@@ -1,3 +1,4 @@
+import { publicBase } from '../tenancy/hosts.js';
 import { hostRuntime, scopedRuntime, withTenantScope, withoutTenantScope, tenantCallback, TenantScopeMissing } from '../tenancy/runtime.js';
 // 隐私说明（docs/architecture/02-conversations-workbench/spec.md「隐私说明、敏感信息同意、保留期与行权」，R23）。
 // DB 配置模式下：boot() 在 initConfig 成功之后调 initPrivacy() 读进内存，之后 startPrivacyPoll() 起一个 60 秒的后台轮询——
@@ -63,7 +64,7 @@ export function currentPrivacyNotice(): PrivacyNotice | null {
 /** 发布过时的 /privacy 完整链接；没发布过是 null */
 export function privacyLink(): string | null {
   if (!current) return null;
-  const base = (process.env.PUBLIC_BASE_URL ?? '').replace(/\/+$/, '');
+  const base = publicBase();
   return `${base}/privacy`;
 }
 

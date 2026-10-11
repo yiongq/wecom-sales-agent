@@ -1,3 +1,4 @@
+import { installPublicHost, validatePublicHosts } from '../tenancy/hosts.js';
 import {
   currentRuntime,
   scopedRuntime,
@@ -409,6 +410,10 @@ async function loadConfigFromEnv(env: NodeJS.ProcessEnv, gracefulExit: (code: nu
     for (const t of standards) if (!selected.includes(t)) console.log(`[config] 跳过未设置 public_host 的租户 ${t.slug}`);
     if (selected.length > 1 && selected.some((t) => !t.publicHost))
       throw startup('tenant_host_missing', '多个 standard 租户都必须设置 public_host');
+    validatePublicHosts(
+      selected.map((t) => ({ publicHost: t.publicHost, isHost: t.id === host.id })),
+      env.PUBLIC_BASE_URL ?? '',
+    );
     configureTenancy({ role: 'host', standardCount: selected.length, strict: env.TENANCY_STRICT === '1' });
     const held = await dbStep('取宿主进程租户锁', () =>
       holdTenantLocks(
@@ -441,6 +446,7 @@ async function loadConfigFromEnv(env: NodeJS.ProcessEnv, gracefulExit: (code: nu
     );
     for (const t of selected) {
       const rt = t.id === host.id ? hostRuntime() : createTenantRuntime({ id: t.id, slug: t.slug, publicBase: `https://${t.publicHost}` });
+      installPublicHost(rt, t.publicHost);
       if (!rt.isHost) registerRuntime(rt);
       await withTenantScope(rt, () => initConfig({ ...deps, tenantSlug: t.slug, lock: async () => locks.get(t.id)!, closeDb: undefined }));
     }

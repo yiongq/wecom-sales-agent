@@ -369,11 +369,11 @@ if (!mode) {
         assert.equal(stopped, true);
         const request = (route: string, init?: RequestInit): Promise<Response> =>
           base ? fetch(`${base}${route}`, init) : Promise.resolve(resource!.runInAsyncScope(() => app.request(route, init)));
-        assert.equal((await request('/healthz')).status, mode === 'multi' ? 500 : 200);
+        assert.equal((await request('/healthz')).status, 200); // 第 8 步：健康检查不受 Host 限制。
         if (mode === 'multi')
           assert.equal(
             (await request('/api/chat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status,
-            500,
+            404, // 第 8 步：多 standard 未解析到 Host 的公开请求是 404。
           );
         else {
           const events = host.events.storeEvents;
