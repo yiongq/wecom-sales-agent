@@ -147,6 +147,7 @@ function hostUsageRegistration(field: 'state' | 'timer') {
     reset: () => {
       for (const h of hosts.values()) if (h.timer) clearTimeout(h.timer);
       hosts.clear();
+      warnedUnknown.clear();
     },
   };
 }

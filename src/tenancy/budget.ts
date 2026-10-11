@@ -2,7 +2,6 @@
 import type { UsagePurpose } from '../db/repo/usage.js';
 import { withTenant } from '../db/client.js';
 import { todayIso } from '../env.js';
-import { withUsageDailySnapshot } from '../trace/usage-daily.js';
 import { currentRuntime, tenantRuntimes, withTenantScope, withoutTenantScope, type TenantRuntime } from './runtime.js';
 import { registerTenantState } from './state.js';
 export interface Reservation {
@@ -69,8 +68,11 @@ export function initializeStandardBudget(rt: TenantRuntime): Promise<void> {
   const loaded = rt.config.loaded;
   if (!loaded) return Promise.resolve();
   const day = state.day;
-  const work = withTenantScope(rt, () =>
-    withUsageDailySnapshot(day, (persistedMilli) =>
+  const work = withTenantScope(rt, async () => {
+    // runtime 的构造依赖预算；用量入口也依赖 runtime。调用时再接快照队列，避免模块加载环。
+    const { withUsageDailySnapshot } = await import('../trace/usage-daily.js');
+    if (state.dropped || rt.state !== 'serving' || state.day !== day) return;
+    return withUsageDailySnapshot(day, (persistedMilli) =>
       withTenant(
         loaded.deps.db,
         {
@@ -100,8 +102,8 @@ export function initializeStandardBudget(rt: TenantRuntime): Promise<void> {
         },
         { readOnly: true },
       ),
-    ),
-  )
+    );
+  })
     .catch(() => {
       console.warn('[budget] llm_daily_alert_load_failed');
     })

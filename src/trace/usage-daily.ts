@@ -265,6 +265,23 @@ registerTenantState({ name: 'usage.daily.lastDay', ...dailyRegistration('lastDay
 
 /** 仅供自测；读取的始终是当前租户。 */
 export const __usageDailyTest = {
+  /** 常驻评测保留连接夹具，统一 reset 后只恢复 writer，不带回金额、队列或软上限基数。 */
+  captureWriters(): () => void {
+    const writers = [...states.values()].flatMap((s) =>
+      s.writer && s.intervalMs !== null ? [{ owner: s.owner, writer: s.writer, intervalMs: s.intervalMs }] : [],
+    );
+    return () => {
+      for (const { owner, writer, intervalMs } of writers)
+        withTenantScope(owner, () => {
+          const state = daily();
+          state.writer = writer;
+          state.intervalMs = intervalMs;
+          state.nextAt = Date.now() + intervalMs;
+        });
+      // 不在这里初始化预算：worker 随后才清数据库，下一条 case 读的是清理后的基数。
+      arm();
+    };
+  },
   pending(): (Omit<UsageDailyDelta, 'costMilliCny'> & { milli: number })[] {
     return [...daily().acc.values()].map((a) => ({ ...a }));
   },
