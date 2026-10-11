@@ -13,6 +13,7 @@
 // v2 默认逐条比对该基线；EVAL_V2_BASELINE=<文件> 换基线，off 关闭比对。
 import '../src/selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
 import '../src/env.js';
+import { withoutTenantScope } from '../src/tenancy/runtime.js';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -25,10 +26,10 @@ import { validateCases } from './v2/schema.js';
 if (process.argv[2] === '--v2-worker' || process.argv[2] === '--v2-pool-worker') {
   const pooled = process.argv[2] === '--v2-pool-worker';
   process.argv.splice(2, 1);
-  const { runWorker, runPoolWorker } = await import('./v2/worker.js');
+  const { runWorker, runPoolWorker } = await withoutTenantScope(() => import('./v2/worker.js'));
   const prepareDb = async (varDir: string) => {
-    const { openTestDb, installSeededConfig, installPgSessionStore } = await import('../src/db/testing.js');
-    const { initSessionStore } = await import('../src/store.js');
+    const { openTestDb, installSeededConfig, installPgSessionStore } = await withoutTenantScope(() => import('../src/db/testing.js'));
+    const { initSessionStore } = await withoutTenantScope(() => import('../src/store.js'));
     const db = await openTestDb();
     try {
       await installSeededConfig(db);
@@ -82,8 +83,8 @@ if (v2Arg > 0 || (versioned.length && versioned.length === entries.length)) {
   process.exit((await runV2(v2Cases)) ? 0 : 1);
 }
 
-const { hostRuntime } = await import('../src/tenancy/runtime.js');
-const { enterTenantScopeForTest } = await import('../src/tenancy/testing.js');
+const { hostRuntime } = await withoutTenantScope(() => import('../src/tenancy/runtime.js'));
+const { enterTenantScopeForTest } = await withoutTenantScope(() => import('../src/tenancy/testing.js'));
 enterTenantScopeForTest(hostRuntime());
 // LOG_FORMAT=json（02 spec R24）：这个回放器不经 server.ts / profile-boot.ts 启动，没有它 console.* 不会被接到 pino；
 // 没设时什么都不做。放在这里好让「LOG_FORMAT=json 跑一遍 mock eval、扫描输出」这个门禁检查生效
@@ -101,11 +102,11 @@ process.env.VAR_DIR ??= fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-eval-'));
 // 跑完核对库里有每个用例的会话、库里的消息与内存一致（见文件末尾的 checkStoredSessions）
 let dbStore: { t: import('../src/db/testing.js').TestDb; tenantId: string } | null = null;
 if (process.env.CONFIG_TEST_DB === 'pglite') {
-  const { openTestDb, installSeededConfig, installPgSessionStore } = await import('../src/db/testing.js');
-  const { observeRequests } = await import('../src/llm.js');
-  const { currentSop } = await import('../src/config/source.js');
-  const { sha256 } = await import('../src/config/hashes.js');
-  const { initSessionStore } = await import('../src/store.js');
+  const { openTestDb, installSeededConfig, installPgSessionStore } = await withoutTenantScope(() => import('../src/db/testing.js'));
+  const { observeRequests } = await withoutTenantScope(() => import('../src/llm.js'));
+  const { currentSop } = await withoutTenantScope(() => import('../src/config/source.js'));
+  const { sha256 } = await withoutTenantScope(() => import('../src/config/hashes.js'));
+  const { initSessionStore } = await withoutTenantScope(() => import('../src/store.js'));
   const t = await openTestDb();
   await installSeededConfig(t);
   const fx = await installPgSessionStore(t, { varDir: process.env.VAR_DIR });
@@ -124,11 +125,11 @@ if (process.env.CONFIG_TEST_DB === 'pglite') {
   });
 }
 
-const { handleMessage, onToolCall } = await import('../src/engine.js');
-const { getSession } = await import('../src/store.js');
-const { buildIndex } = await import('../src/retrieval.js');
-const { usageToday } = await import('../src/usage.js');
-const { llmStats } = await import('../src/llm.js');
+const { handleMessage, onToolCall } = await withoutTenantScope(() => import('../src/engine.js'));
+const { getSession } = await withoutTenantScope(() => import('../src/store.js'));
+const { buildIndex } = await withoutTenantScope(() => import('../src/retrieval.js'));
+const { usageToday } = await withoutTenantScope(() => import('../src/usage.js'));
+const { llmStats } = await withoutTenantScope(() => import('../src/llm.js'));
 
 interface Turn {
   say: string;
@@ -361,10 +362,10 @@ process.exit(failures.length || storeBad || !v2Ok ? 1 : 0);
  * 库里未作废的订单与内存相同；写库没有积压、poisoned 与冲突。返回不符的处数，每处打一行（只有用例 id 与原因，不打原文）
  */
 async function checkStoredSessions(d: NonNullable<typeof dbStore>): Promise<number> {
-  const { drainStore, storeHealth, getSession, listOrders, seqOf } = await import('../src/store.js');
-  const { normalizeForStore } = await import('../src/store/project.js');
-  const { readStoredConversations } = await import('../src/db/testing.js');
-  const { isDeepStrictEqual } = await import('node:util');
+  const { drainStore, storeHealth, getSession, listOrders, seqOf } = await withoutTenantScope(() => import('../src/store.js'));
+  const { normalizeForStore } = await withoutTenantScope(() => import('../src/store/project.js'));
+  const { readStoredConversations } = await withoutTenantScope(() => import('../src/db/testing.js'));
+  const { isDeepStrictEqual } = await withoutTenantScope(() => import('node:util'));
   const { undrained } = await drainStore(10_000);
   const stored = await readStoredConversations(d.t, d.tenantId);
   const bad: string[] = [];

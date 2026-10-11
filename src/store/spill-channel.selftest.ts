@@ -27,7 +27,7 @@ import type { InboxStateWrite } from '../db/repo/channel-inbox.js';
 import type { OutboundWriteRow } from '../db/repo/outbound.js';
 import type { GuardEventRow } from '../db/repo/traces.js';
 import type { ChatMessage, Order, Session } from '../types.js';
-import { hostRuntime } from '../tenancy/runtime.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
 import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
 enterTenantScopeForTest(hostRuntime());
@@ -150,11 +150,11 @@ interface SpillDocShape {
 async function suite(mode: string): Promise<void> {
   const varDir = process.env.VAR_DIR!;
   Object.assign(process.env, { LLM_MOCK: '1', PUBLIC_BASE_URL: '', ALERT_WEBHOOK_URL: '', FOLLOWUP_ENABLED: '' });
-  const testing = await import('../db/testing.js');
-  const { openPgBackend } = await import('./pg-backend.js');
-  const { seqOf } = await import('./seq.js');
-  const { sessionState, lastCustomerAtOf } = await import('./project.js');
-  const { shortIdOf } = await import('../shared/conversation.js');
+  const testing = await withoutTenantScope(() => import('../db/testing.js'));
+  const { openPgBackend } = await withoutTenantScope(() => import('./pg-backend.js'));
+  const { seqOf } = await withoutTenantScope(() => import('./seq.js'));
+  const { sessionState, lastCustomerAtOf } = await withoutTenantScope(() => import('./project.js'));
+  const { shortIdOf } = await withoutTenantScope(() => import('../shared/conversation.js'));
   type Db = import('../db/client.js').Db;
 
   let db: Db;
@@ -997,9 +997,9 @@ async function suite(mode: string): Promise<void> {
 
   // ======== 五、验收 8 场景二（发送账本这一层）：poisoned 之后客户再发两句，回复照常发，入站与出站行经短事务落库 ========
   {
-    const store = await import('../store.js');
+    const store = await withoutTenantScope(() => import('../store.js'));
     await store.initSessionStore({ db, tenantId: mainTenant, tenantSlug: slug, varDir });
-    const { sealSecrets } = await import('../channels/secrets.js');
+    const { sealSecrets } = await withoutTenantScope(() => import('../channels/secrets.js'));
     const keyBytes = Buffer.alloc(32, 9);
     const keyRing = { current: { id: 'k11', key: keyBytes }, all: new Map([['k11', keyBytes]]) };
     const accId = randomUUID();
@@ -1013,11 +1013,11 @@ async function suite(mode: string): Promise<void> {
        values ($1, $2, 'a1', 'wecom_kf', 'a1', 'active', 'wecom:', 'corp11', 'kf11m', decode($3, 'hex'), $4)`,
       [mainTenant, accId, ct.toString('hex'), keyId],
     );
-    const reg = await import('../channels/registry.js');
+    const reg = await withoutTenantScope(() => import('../channels/registry.js'));
     await reg.initChannels({ db, tenantId: mainTenant, tenantSlug: slug, varDir, keyRing });
-    const { loadedAccounts } = await import('../channels/accounts.js');
+    const { loadedAccounts } = await withoutTenantScope(() => import('../channels/accounts.js'));
     const A1 = loadedAccounts().find((a) => a.key === 'a1')!;
-    const ledger = await import('../quota/ledger.js');
+    const ledger = await withoutTenantScope(() => import('../quota/ledger.js'));
     const L = `wecom:${'q'.repeat(195)}`;
     const s = store.getOrCreateSession(L, 'wecom');
     s.messages.push({ role: 'customer', content: '你好', at: Date.now(), msgid: 'm11q0', sentAt: Date.now() });

@@ -32,7 +32,7 @@ import {
   repliedRecovery,
   type OpenOutboundFacts,
 } from './recovery-rules.js';
-import { hostRuntime } from '../tenancy/runtime.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
 import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
 enterTenantScopeForTest(hostRuntime());
@@ -397,7 +397,7 @@ async function parentMain(): Promise<never> {
     fs.mkdirSync(varParent, { recursive: true });
     const ROOT = fs.mkdtempSync(path.join(varParent, 'recovery-selftest-'));
     process.on('exit', () => fs.rmSync(ROOT, { recursive: true, force: true }));
-    const testing = await import('../db/testing.js');
+    const testing = await withoutTenantScope(() => import('../db/testing.js'));
     const runChild = (
       mode: string,
       env: Record<string, string>,
@@ -713,7 +713,7 @@ async function killPoisoned(h: Harness): Promise<void> {
   const session = h.store.getSession(sid)!;
   session.profile.notes = ['触发恢复自测 CHECK'];
   h.store.saveSession(session);
-  const { shortIdOf } = await import('../shared/conversation.js');
+  const { shortIdOf } = await withoutTenantScope(() => import('../shared/conversation.js'));
   check('验收 8 · 实际 CHECK 失败把会话标为 poisoned', await waitFor(() => h.store.storeHealth().poisoned.includes(shortIdOf(sid))));
   const msgs: FakeMsg[] = [];
   for (const k of [1, 2]) {
@@ -880,7 +880,7 @@ async function restartSpill(h: Harness): Promise<void> {
 }
 
 async function webRequest(cookie: string | undefined, text: string, cid: string): Promise<Response> {
-  const { webRoutes } = await import('../web/routes.js');
+  const { webRoutes } = await withoutTenantScope(() => import('../web/routes.js'));
   return webRoutes.request('/api/web/rw/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-web-chat': '1', ...(cookie ? { cookie } : {}) },
@@ -893,8 +893,8 @@ async function killWeb(h: Harness): Promise<void> {
   const cookie = first.headers.get('set-cookie')?.split(';')[0];
   check('验收 14 · 网页首次 HTTP 请求成功签发访客 cookie', first.status === 200 && !!cookie);
   if (!cookie) throw new Error('缺访客 cookie');
-  const { webConversationId } = await import('../adapters/web.js');
-  const { accountByKey } = await import('./accounts.js');
+  const { webConversationId } = await withoutTenantScope(() => import('../adapters/web.js'));
+  const { accountByKey } = await withoutTenantScope(() => import('./accounts.js'));
   const sid = webConversationId(accountByKey('rw', 'web')!.id, cookie.split('=')[1]!);
   await h.store.flushSession(sid);
   const cid = 'web-kill-cid';
@@ -1121,8 +1121,8 @@ async function harness(mode: string) {
   };
 
   // ---- 库与会话存储（真实 PG：父进程建的一次性库，前后几个子进程连同一个库） ----
-  const store = await import('../store.js');
-  const testing = await import('../db/testing.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const testing = await withoutTenantScope(() => import('../db/testing.js'));
   const tenantId = process.env.RECOVERY_TENANT!;
   const app = await testing.openGatedDb(process.env.RECOVERY_APP_URL!);
   const sq = await testing.connectSuperQuery(process.env.RECOVERY_SUPER_URL!);
@@ -1137,7 +1137,7 @@ async function harness(mode: string) {
   await store.initSessionStore({ db: app.db, tenantId, tenantSlug: 'recov10', varDir });
 
   // ---- 渠道账号：杀进程的那一个建（id 先生成，AAD 要用），重启的那一个读回 ----
-  const { sealSecrets } = await import('./secrets.js');
+  const { sealSecrets } = await withoutTenantScope(() => import('./secrets.js'));
   const keyBytes = Buffer.alloc(32, 7);
   const keyRing = { current: { id: 'k10', key: keyBytes }, all: new Map([['k10', keyBytes]]) };
   const ids = new Map<string, string>();
@@ -1184,12 +1184,12 @@ async function harness(mode: string) {
     }
   }
 
-  const reg = await import('./registry.js');
-  const wecom = await import('../adapters/wecom.js');
-  const ledger = await import('../quota/ledger.js');
-  const tk = await import('../handoff/takeover.js');
-  const alerts = await import('../ops/alert.js');
-  await import('../server.js'); // 推送通道（人工回复、跟进经 adapterFor 找到企微适配器）与 prepare 的接线
+  const reg = await withoutTenantScope(() => import('./registry.js'));
+  const wecom = await withoutTenantScope(() => import('../adapters/wecom.js'));
+  const ledger = await withoutTenantScope(() => import('../quota/ledger.js'));
+  const tk = await withoutTenantScope(() => import('../handoff/takeover.js'));
+  const alerts = await withoutTenantScope(() => import('../ops/alert.js'));
+  await withoutTenantScope(() => import('../server.js')); // 推送通道（人工回复、跟进经 adapterFor 找到企微适配器）与 prepare 的接线
   if (mode === 'r3') {
     // 第 10 步评审：人工回复判定时还在 10 分钟内、等 markSending 期间过了 10 分钟（装载之前把建行时刻挪到 9 分 52 秒前）
     await su(`update outbound_sends set sent_at = now() - interval '9 minutes 52 seconds' where conversation_id = $1`, [sidOf('r1', V.ht)]);
@@ -2004,7 +2004,7 @@ async function restart3(h: Harness): Promise<void> {
   );
   // 恢复做完之前到期的跟进：沉默了 3 小时的报价会话，落库时排上跟进（02 的写法）
   process.env.FOLLOWUP_ENABLED = '1';
-  const runner = await import('../jobs/runner.js');
+  const runner = await withoutTenantScope(() => import('../jobs/runner.js'));
   runner.__jobsTest.start((id, text, opts) => h.wecom.wecomAdapter.push(id, text, opts));
   const fuSid = sid(V.fu);
   {
@@ -2289,9 +2289,9 @@ async function kill5(h: Harness): Promise<void> {
 /** c5：恢复之后不跑 restore-cutoff 直接起：会话存储照常装上，渠道装载以 channel_restore_pending 拒绝，哨兵留着 */
 async function refusedBySentinel(): Promise<void> {
   const varDir = process.env.VAR_DIR!;
-  const store = await import('../store.js');
-  const testing = await import('../db/testing.js');
-  const reg = await import('./registry.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const testing = await withoutTenantScope(() => import('../db/testing.js'));
+  const reg = await withoutTenantScope(() => import('./registry.js'));
   const tenantId = process.env.RECOVERY_TENANT!;
   const app = await testing.openGatedDb(process.env.RECOVERY_APP_URL!);
   try {
@@ -2328,7 +2328,7 @@ async function restart5(h: Harness): Promise<void> {
   const d = h.say('r1', W.d, 'D5 想去桂林');
   // 跟进开着、落库钩子装上（G、H 的只补记要经过它；自测自己调 runJobsOnce）
   process.env.FOLLOWUP_ENABLED = '1';
-  const runner = await import('../jobs/runner.js');
+  const runner = await withoutTenantScope(() => import('../jobs/runner.js'));
   runner.__jobsTest.start((id, text, opts) => h.wecom.wecomAdapter.push(id, text, opts));
   h.start();
   h.pull('r1');

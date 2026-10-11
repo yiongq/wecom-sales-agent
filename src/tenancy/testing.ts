@@ -5,3 +5,8 @@ import { __tenantTest, type TenantRuntime } from './runtime.js';
 export function enterTenantScopeForTest(rt: TenantRuntime): void {
   __tenantTest.enterScope(rt);
 }
+
+/** 仅对白名单中的故意缺作用域场景标记；严格预载器还会核对套件与次数。 */
+export function expectTenantScopeMissingForTest<T>(reason: string, fn: () => T): T {
+  return __tenantTest.missingExpectation.run(reason, fn);
+}

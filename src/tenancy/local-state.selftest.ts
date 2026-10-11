@@ -22,6 +22,7 @@ Object.assign(process.env, {
 });
 const r = await import('./runtime.js');
 const states = await import('./state.js');
+const { installPublicHost } = await import('./hosts.js');
 const store = await import('../store.js');
 const config = await import('../config/source.js');
 const takeover = await import('../handoff/takeover.js');
@@ -41,6 +42,8 @@ const a = r.createTenantRuntime({ id: 'a', slug: 'state-a', publicBase: 'https:/
 const b = r.createTenantRuntime({ id: 'b', slug: 'state-b', publicBase: 'https://b.example' });
 r.registerRuntime(a);
 r.registerRuntime(b);
+installPublicHost(a, 'a.example');
+installPublicHost(b, 'b.example');
 r.configureTenancy({ role: 'host', standardCount: 2 });
 const inside = <T>(rt: import('./runtime.js').TenantRuntime, fn: () => T): T => r.withTenantScope(rt, fn);
 const wait = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -380,7 +383,7 @@ try {
   block = null;
   await Promise.all([first, second, other]);
   // 真实网页入口在等待模型时登记请求观察器，结束后注销。
-  const { webRoutes } = await inside(a, () => import('../web/routes.js'));
+  const { webRoutes } = await import('../web/routes.js');
   const { installAccounts } = await import('../channels/accounts.js');
   const { randomUUID } = await import('node:crypto');
   const webAccountId = randomUUID();
@@ -409,13 +412,11 @@ try {
   const observers = states.tenantKeys(a.id)['trace.endObservers'];
   const webCallStart = calls.length;
   block = deferred();
-  const webRequest = inside(a, () =>
-    webRoutes.request('/api/web/review-web/messages', {
-      method: 'POST',
-      headers: { 'x-web-chat': '1', 'content-type': 'application/json' },
-      body: JSON.stringify({ text: '你好' }),
-    }),
-  );
+  const webRequest = webRoutes.request('/api/web/review-web/messages', {
+    method: 'POST',
+    headers: { host: 'a.example', 'x-web-chat': '1', 'content-type': 'application/json' },
+    body: JSON.stringify({ text: '你好' }),
+  });
   await until(() => calls.length > webCallStart);
   assert.equal(states.tenantKeys(a.id)['trace.endObservers'], observers + 1, '网页观察器属于请求租户');
   block.release();

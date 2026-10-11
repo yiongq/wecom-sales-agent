@@ -11,7 +11,7 @@ import { brandTexts, renderBrandPage, renderBrandTemplate } from '../core/brand.
 import { bindPack, partsOf, type BrandProfile } from '../core/pack-api.js';
 import { toolDefs } from '../tool-defs.js';
 import { renderSystemPrompt } from '../prompt/system.js';
-import { hostRuntime } from '../tenancy/runtime.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
 import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
 enterTenantScopeForTest(hostRuntime());
@@ -25,17 +25,17 @@ process.env.WECOM_CORP_ID = 'selftest-corp';
 process.env.WECOM_APP_SECRET = 'selftest-secret';
 process.env.WECOM_KF_OPEN_KFID = 'selftest-kf';
 
-const config = await import('./source.js');
-const { handleMessage, promptPrefix } = await import('../core/engine/index.js');
-const store = await import('../store.js');
-const { openTestDb, installSeededConfig } = await import('../db/testing.js');
-const { withTenant } = await import('../db/client.js');
-const { readPublishedSop } = await import('../db/repo/sop.js');
-const sop = await import('./sop.js');
-const { runTenantBrand } = await import('../cli/tenant-brand.js');
-const { app } = await import('../server.js');
-const { __test: wecom, syncFromCallback } = await import('../adapters/wecom.js');
-const { installAccounts } = await import('../channels/accounts.js');
+const config = await withoutTenantScope(() => import('./source.js'));
+const { handleMessage, promptPrefix } = await withoutTenantScope(() => import('../core/engine/index.js'));
+const store = await withoutTenantScope(() => import('../store.js'));
+const { openTestDb, installSeededConfig } = await withoutTenantScope(() => import('../db/testing.js'));
+const { withTenant } = await withoutTenantScope(() => import('../db/client.js'));
+const { readPublishedSop } = await withoutTenantScope(() => import('../db/repo/sop.js'));
+const sop = await withoutTenantScope(() => import('./sop.js'));
+const { runTenantBrand } = await withoutTenantScope(() => import('../cli/tenant-brand.js'));
+const { app } = await withoutTenantScope(() => import('../server.js'));
+const { __test: wecom, syncFromCallback } = await withoutTenantScope(() => import('../adapters/wecom.js'));
+const { installAccounts } = await withoutTenantScope(() => import('../channels/accounts.js'));
 
 const runtime = config.currentPack().runtime;
 const baseline = promptPrefix();

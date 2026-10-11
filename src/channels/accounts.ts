@@ -208,11 +208,14 @@ export function openAccountSecrets(ring: KeyRing, tenantId: string, row: Channel
 // 是 env 账号（配齐时）与库里的网页账号
 
 let installed: readonly ChannelAccount[] = [];
+function ownedBy(account: ChannelAccount, id: string): boolean {
+  return account.tenantId === id || (account.source === 'env' && account.tenantId === '' && runtimeOf(id)?.isHost === true);
+}
 registerTenantState({
   name: 'channels.accounts',
-  keyCount: (id) => installed.filter((account) => account.tenantId === id).length,
+  keyCount: (id) => installed.filter((account) => ownedBy(account, id)).length,
   drop: (id) => {
-    installed = Object.freeze(installed.filter((account) => account.tenantId !== id));
+    installed = Object.freeze(installed.filter((account) => !ownedBy(account, id)));
   },
   reset: () => {
     installed = [];
@@ -231,13 +234,7 @@ export function loadedAccounts(): readonly ChannelAccount[] {
 
 /** 按 key 找账号：只返回启用的、种类对得上的（R12：/wecom/callback/:key 只认 wecom_kf，网页的 key 当作不存在） */
 export function accountByKey(key: string, kind: ChannelKind, tenantId = currentRuntime().id): ChannelAccount | undefined {
-  return installed.find(
-    (a) =>
-      (a.tenantId === tenantId || (a.source === 'env' && a.tenantId === '' && runtimeOf(tenantId)?.isHost)) &&
-      a.key === key &&
-      a.kind === kind &&
-      isEnabled(a),
-  );
+  return installed.find((a) => ownedBy(a, tenantId) && a.key === key && a.kind === kind && isEnabled(a));
 }
 
 /**
@@ -247,7 +244,7 @@ export function accountByKey(key: string, kind: ChannelKind, tenantId = currentR
  */
 export function accountForSession(sessionId: string, s?: Pick<Session, 'channelAccountId'>): ChannelAccount | undefined {
   const rt = currentRuntime();
-  const accounts = installed.filter((a) => a.tenantId === rt.id || (a.source === 'env' && a.tenantId === '' && rt.isHost));
+  const accounts = installed.filter((a) => ownedBy(a, rt.id));
   if (sessionId.startsWith('web:')) {
     const id = s?.channelAccountId;
     return id ? accounts.find((a) => a.kind === 'web' && a.id === id) : undefined;

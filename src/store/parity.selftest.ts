@@ -20,7 +20,7 @@ import { fileURLToPath } from 'node:url';
 import { isDeepStrictEqual } from 'node:util';
 import type { AddressInfo } from 'node:net';
 import type { ChatMessage, Session } from '../types.js';
-import { hostRuntime } from '../tenancy/runtime.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
 import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
 enterTenantScopeForTest(hostRuntime());
@@ -766,7 +766,9 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
   }) as typeof fetch;
 
   // ---------------- 存储：两边同一个配置源；PG 那边另装 PG 会话存储 ----------------
-  const { openTestDb, installSeededConfig, installPgSessionStore, readStoredConversations } = await import('../db/testing.js');
+  const { openTestDb, installSeededConfig, installPgSessionStore, readStoredConversations } = await withoutTenantScope(
+    () => import('../db/testing.js'),
+  );
   const t = await openTestDb();
   await installSeededConfig(t);
   // 第 13 步：后台成员（接手人、人工回复的作者）。PG 那边 assignee_user_id 有外键到 users，两边都用同一个固定的 id，比较才对得上
@@ -776,7 +778,7 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     PARITY_MEMBER.name,
   ]);
   await t.pg.exec('SET ROLE agent_app');
-  const store = await import('../store.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
   let tenantId = '';
   if (mode === 'db') {
     const fx = await installPgSessionStore(t, { varDir: VAR });
@@ -796,9 +798,9 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     `基准 ${clock}，现在 ${clockNow.join('、')}`,
   );
 
-  const { handleMessage, onToolCall } = await import('../engine.js');
-  const { onTurnEnd } = await import('../trace/recorder.js');
-  const { __ledgerTest: ledgerTest } = await import('../quota/ledger.js');
+  const { handleMessage, onToolCall } = await withoutTenantScope(() => import('../engine.js'));
+  const { onTurnEnd } = await withoutTenantScope(() => import('../trace/recorder.js'));
+  const { __ledgerTest: ledgerTest } = await withoutTenantScope(() => import('../quota/ledger.js'));
   /** 这个进程里结束的每一轮（第 9 步的 trace）：场景收集 TraceOut，PG 那边拿 turnId 核对库里 */
   const turnLog: { sid: string; turnId: string; guards: number; t: TraceOut }[] = [];
   onTurnEnd((f) => {
@@ -816,14 +818,14 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     };
     turnLog.push({ sid: t.sid, turnId: f.turn.turnId, guards: f.turn.guards.length, t });
   });
-  const { app } = await import('../server.js');
-  const { __test: wecomTest, syncFromCallback } = await import('../adapters/wecom.js');
-  const { runFollowUpScan } = await import('../followup.js');
-  const jobs = await import('../jobs/runner.js');
-  const tk = await import('../handoff/takeover.js');
-  const { shortIdOf } = await import('../shared/conversation.js');
-  const { normalizeForStore } = await import('./project.js');
-  const { todayIso } = await import('../env.js');
+  const { app } = await withoutTenantScope(() => import('../server.js'));
+  const { __test: wecomTest, syncFromCallback } = await withoutTenantScope(() => import('../adapters/wecom.js'));
+  const { runFollowUpScan } = await withoutTenantScope(() => import('../followup.js'));
+  const jobs = await withoutTenantScope(() => import('../jobs/runner.js'));
+  const tk = await withoutTenantScope(() => import('../handoff/takeover.js'));
+  const { shortIdOf } = await withoutTenantScope(() => import('../shared/conversation.js'));
+  const { normalizeForStore } = await withoutTenantScope(() => import('./project.js'));
+  const { todayIso } = await withoutTenantScope(() => import('../env.js'));
 
   const today = todayIso();
   const y = Number(today.slice(0, 4));

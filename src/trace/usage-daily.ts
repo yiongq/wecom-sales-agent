@@ -47,7 +47,7 @@ interface DailyState {
 const states = new Map<string, DailyState>();
 // 唯一实例定时器在空作用域创建；每拍显式恢复各 writer 的租户。
 let timer: NodeJS.Timeout | null = null;
-// 实例拍的测试时序接线，不保存租户用量（第 1 步 armedMs 归类照旧）。
+// 实例唯一的刷新拍间隔；租户累计值仍在各自登记的累加器中。
 let armedMs: number | null = null;
 function daily(): DailyState {
   const rt = currentRuntime();

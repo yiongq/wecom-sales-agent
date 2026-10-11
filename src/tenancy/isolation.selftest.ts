@@ -54,7 +54,8 @@ const model = http.createServer(async (req, res) => {
     for await (const chunk of req) chunks.push(Buffer.from(chunk));
     const body = JSON.parse(Buffer.concat(chunks).toString()) as { messages: { role: string; content: string }[]; tools: unknown };
     const system = body.messages.find((message) => message.role === 'system')!.content;
-    const owner = system.includes('山海旅行') ? 'b' : 'a';
+    const owner = req.headers['x-fixture-tenant'] === a.id ? 'a' : req.headers['x-fixture-tenant'] === b.id ? 'b' : null;
+    if (!owner) throw new Error('模型请求缺少有效的租户来源标记');
     requests.push({ owner, system, tools: JSON.stringify(body.tools), wire: JSON.stringify(body) });
     if (owner === 'b' && delayB) await blockedB;
     const brand = owner === 'a' ? '云途旅行' : '山海旅行';
@@ -101,6 +102,17 @@ const a = r.hostRuntime();
 const b = r.createTenantRuntime({ id: 'isolation-b', slug: 'isolation-b', publicBase: 'https://b.example.invalid' });
 r.registerRuntime(b);
 r.configureTenancy({ role: 'host', standardCount: 2 });
+const originalFetch = globalThis.fetch;
+// 来源取自发起请求的作用域，完全独立于 system/tools 内容；真实 HTTP 服务只认这个头。
+globalThis.fetch = (input, init) => {
+  const url = new URL(input instanceof Request ? input.url : String(input));
+  if (url.origin === process.env.LLM_BASE_URL) {
+    const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+    headers.set('x-fixture-tenant', r.currentRuntime().id);
+    return originalFetch(input, { ...init, headers });
+  }
+  return originalFetch(input, init);
+};
 const inside = <T>(rt: TenantRuntime, fn: () => T): T => r.withTenantScope(rt, fn);
 const su = async <T>(sql: string, args: unknown[] = []): Promise<T[]> =>
   t.pg.transaction(async (tx) => {
@@ -149,14 +161,14 @@ const accountsByTenant = new Map<TenantRuntime, { web: string; token: string; ae
 const cookies = new Map<TenantRuntime, string>();
 const webCookies = new Map<TenantRuntime, string>();
 const webIds = new Map<TenantRuntime, string>();
-const usageSeen = new Map<TenantRuntime, number>([
-  [a, 0],
-  [b, 0],
-]);
+const usageSeen: { subscriber: TenantRuntime; actual: TenantRuntime | undefined; event: import('../usage.js').UsageEvent }[] = [];
+const pushesSeen: { subscriber: TenantRuntime; actual: TenantRuntime | undefined; text: string }[] = [];
 const expected = new Map<TenantRuntime, { system: string; tools: string }>();
 const ringKey = randomBytes(32);
 const ring = { current: { id: 'fixture', key: ringKey }, all: new Map([['fixture', ringKey]]) };
 const same = 'wecom:wmShared';
+let observationNow = Date.now();
+channels.__channelsTest.setObservationClock(() => observationNow);
 const orderSeed = (JSON.parse(fs.readFileSync('data/sandbox-seeds.json', 'utf8')) as { orders: Order[] }).orders[0]!;
 try {
   await su("insert into tenants (slug,name,pack_id,brand) values ('isolation-b','B','travel',$1)", [JSON.stringify(shanhaiBrand)]);
@@ -189,7 +201,27 @@ try {
       values ($1, $2, 'main', $3, 'wecom_kf', 'active', 'wecom:', 'fixture-corp', 'fixture-kf', decode($4, 'hex'), $5, '{}')`,
       [rt.id, wecom, rt.slug, sealed.ct.toString('hex'), sealed.keyId],
     );
+    if (rt === b) observationNow += 61_000;
     await inside(rt, () => channels.initChannels({ ...fx.deps, keyRing: ring }));
+    if (rt === a) {
+      await su(
+        `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state, received_at, payload)
+        values ($1, $2, 'grace-probe', 'message', $3, 'received', $4, '{"text":"fixture"}')`,
+        [rt.id, web, same, new Date(observationNow - 400_000)],
+      );
+      await inside(rt, channels.refreshChannelObservability);
+      assert.equal(
+        inside(rt, () => channels.channelConditions().find((item) => item.key === 'same-web')!.stuck),
+        false,
+        'A 启动仍在宽限期',
+      );
+    } else {
+      assert.equal(
+        inside(a, () => channels.channelConditions().find((item) => item.key === 'same-web')!.stuck),
+        true,
+        'B 装载不能重启 A 的 60 秒宽限期',
+      );
+    }
     inside(rt, () => {
       expected.set(rt, { system: config.currentSop().promptHash, tools: config.currentSop().toolsHash });
       const session = store.getOrCreateSession(same, 'simulator');
@@ -201,6 +233,7 @@ try {
         sessionId: same,
         routeId: sharedRoute,
         routeTitle: rt.slug,
+        totalPrice: (originalPrice + (rt === b ? 777 : 0)) * orderSeed.travelers,
         status: 'pending_payment',
         createdAt: Date.now(),
         paidAt: undefined,
@@ -208,11 +241,16 @@ try {
       rt.store.orders.set(order.id, order);
       session.orderIds.push(order.id);
       store.saveOrder(order);
+      const reverse = { ...order, id: 'same-order-reverse' };
+      rt.store.orders.set(reverse.id, reverse);
+      session.orderIds.push(reverse.id);
+      store.saveOrder(reverse);
       store.saveSession(session);
       __privacyTest.set({ version: rt === a ? 101 : 202, body: `${rt.slug} 隐私说明` });
     });
     await inside(rt, () => store.flushSession(same));
   }
+  channels.__channelsTest.setObservationClock(null);
   validatePublicHosts(
     [
       { isHost: true, publicHost: 'a.example.invalid' },
@@ -253,9 +291,8 @@ try {
 
   for (const rt of [a, b])
     inside(rt, () =>
-      onUsage(() => {
-        assert.equal(r.currentRuntime(), rt);
-        usageSeen.set(rt, usageSeen.get(rt)! + 1);
+      onUsage((event) => {
+        usageSeen.push({ subscriber: rt, actual: r.scopedRuntime(), event });
       }),
     );
   const observed: string[] = [];
@@ -267,11 +304,9 @@ try {
         },
       });
       // 订阅者也要隔离；第 11 步补登记的闭包在 reset/drop 后不得继续被调用。
-      const { currentRuntime } = r;
       inside(rt, () =>
         simulator.subscribe('same-stream', (text) => {
-          assert.equal(currentRuntime(), rt);
-          assert.equal(text, rt.slug);
+          pushesSeen.push({ subscriber: rt, actual: r.scopedRuntime(), text });
           withConversationLog(same, () => logger.info('isolation-push'));
         }),
       );
@@ -287,11 +322,15 @@ try {
   assert.doesNotMatch(replyA.text, /山海/);
   assert.match(replyB.text, /山海/);
   assert.doesNotMatch(replyB.text, /云途/);
-  await Promise.all([
+  const second = await Promise.all([
     inside(a, () => handleMessage(same, '请再介绍一下', 'simulator')),
     inside(b, () => handleMessage(same, '请再介绍一下', 'simulator')),
   ]);
-  assert.equal(requests.length, 4);
+  assert.match(second[0]!.text, /云途/);
+  assert.doesNotMatch(second[0]!.text, /山海/);
+  assert.match(second[1]!.text, /山海/);
+  assert.doesNotMatch(second[1]!.text, /云途/);
+  for (const owner of ['a', 'b']) assert.equal(requests.filter((req) => req.owner === owner).length, 2, `${owner} 各两轮模型请求`);
   for (const req of requests) {
     const rt = req.owner === 'a' ? a : b;
     assert.equal(sha(req.system), expected.get(rt)!.system);
@@ -302,9 +341,20 @@ try {
     await inside(rt, () => simulator.simulatorAdapter.push('same-stream', rt.slug));
     inside(rt, ledger.noteUnsafeSend);
     assert.equal(inside(rt, ledger.unsafeSendsIn10m), 1, '未落库发送计数按租户隔离');
-    assert.equal(usageSeen.get(rt), 2, '租户观测回调只收到自己的两轮用量');
+    const received = usageSeen.filter((record) => record.subscriber === rt);
+    assert.equal(received.length, 2, '租户观测回调只收到自己的两轮用量');
+    for (const record of received) {
+      assert.equal(record.actual, rt);
+      assert.equal(record.event.tenantId, rt.id);
+      assert.equal(record.event.sessionId, same);
+    }
     assert.equal(state.tenantKeys(rt.id)['usage.usageListeners'], 1);
   }
+  for (const record of pushesSeen) {
+    assert.equal(record.actual, record.subscriber);
+    assert.equal(record.text, record.subscriber.slug);
+  }
+  assert.equal(pushesSeen.length, 2);
   assert.deepEqual(
     observed.map((line) => JSON.parse(line).tenant),
     [a.slug, b.slug],
@@ -348,7 +398,11 @@ try {
     assert.equal((await (await request('/api/orders/same-order', rt)).json()).routeTitle, rt.slug);
     assert.match(await (await request('/pay/same-order', rt)).text(), new RegExp(brand));
     assert.match(await (await request(`/proposal/${sharedRoute}`, rt)).text(), new RegExp(brand));
-    assert.equal((await request(`/api/proposal/${sharedRoute}`, rt)).status, 200);
+    const proposal = await request(`/api/proposal/${sharedRoute}?travelers=1`, rt);
+    assert.equal(proposal.status, 200);
+    const quote = (await proposal.json()).quote;
+    assert.equal(quote.perPerson, originalPrice + (rt === b ? 777 : 0));
+    assert.equal(quote.total, originalPrice + (rt === b ? 777 : 0));
     assert.match(await (await request('/privacy', rt)).text(), new RegExp(`${rt.slug} 隐私说明`));
     assert.match(await (await request('/w/same-web', rt)).text(), new RegExp(rt.slug));
     assert.equal((await request('/api/web/same-web/history', rt)).status, 200);
@@ -380,7 +434,6 @@ try {
     for (const url of ['/guide.html', '/try', '/api/sandbox', '/api/sandbox/end', '/api/sandbox/wechat/code', '/wx/fixture/pay/same-order'])
       assert.equal((await request(url, rt, { method: url.startsWith('/api/sandbox') ? 'POST' : 'GET' })).status, 404, url);
     assert.equal((await request('/healthz', rt)).status, 200);
-    assert.equal((await request('/api/orders/same-order/pay', rt, { method: 'POST' })).status, 200);
     const secret = accountsByTenant.get(rt)!;
     const message = Buffer.from(secret.echo),
       length = Buffer.alloc(4);
@@ -397,8 +450,33 @@ try {
       assert.equal((await request(`${callback}?${query}`, rt === a ? b : a)).status, 404);
     }
   }
+  // 两个方向各用一组同 id 订单，先付的一边不能改变另一边的未付款状态。
+  for (const [id, first, other] of [
+    ['same-order', a, b],
+    ['same-order-reverse', b, a],
+  ] as const) {
+    for (const rt of [a, b]) {
+      const pending = await (await request(`/api/orders/${id}`, rt)).json();
+      assert.equal(pending.status, 'pending_payment');
+      assert.equal(pending.totalPrice, (originalPrice + (rt === b ? 777 : 0)) * orderSeed.travelers);
+    }
+    const paid = await request(`/api/orders/${id}/pay`, first, { method: 'POST' });
+    assert.equal(paid.status, 200);
+    const paidOrder = (await paid.json()).order;
+    assert.equal(paidOrder.status, 'paid');
+    assert.equal(paidOrder.totalPrice, (originalPrice + (first === b ? 777 : 0)) * orderSeed.travelers);
+    const untouched = await (await request(`/api/orders/${id}`, other)).json();
+    assert.equal(untouched.status, 'pending_payment');
+    assert.equal(untouched.paidAt, null);
+    const otherPaid = await request(`/api/orders/${id}/pay`, other, { method: 'POST' });
+    assert.equal(otherPaid.status, 200);
+    assert.equal((await otherPaid.json()).order.status, 'paid');
+  }
+  assert.equal((await request('/api/chat', b, { method: 'POST' })).status, 404);
   for (const url of [
     '/chat.html',
+    `/api/sessions/${same}`,
+    '/api/admin/stream',
     '/api/sessions',
     '/api/orders',
     '/api/admin/status',
@@ -421,12 +499,25 @@ try {
   await until(() => webA.text.includes('only-web-a') && webB.text.includes('only-web-b'), '网页 SSE 各自收到推送');
   assert.doesNotMatch(webA.text, /only-web-b/);
   assert.doesNotMatch(webB.text, /only-web-a/);
-  assert.equal(requests.length, 6);
+  for (const owner of ['a', 'b']) assert.equal(requests.filter((req) => req.owner === owner).length, 3, `${owner} 两轮对话加一轮网页请求`);
   for (const req of requests) {
     const rt = req.owner === 'a' ? a : b;
     assert.equal(sha(req.system), expected.get(rt)!.system);
     assert.equal(sha(req.tools), expected.get(rt)!.tools);
     assert.doesNotMatch(req.wire, rt === a ? /山海/ : /云途/);
+  }
+  for (const rt of [a, b]) {
+    const received = usageSeen.filter((record) => record.subscriber === rt);
+    assert.equal(received.length, 3, '各租户用量恰为两轮对话加一轮网页请求');
+    for (const record of received) {
+      assert.equal(record.actual, rt);
+      assert.equal(record.event.tenantId, rt.id);
+      assert.ok([same, webIds.get(rt)!].includes(record.event.sessionId!));
+    }
+  }
+  for (const record of pushesSeen) {
+    assert.equal(record.actual, record.subscriber);
+    assert.equal(record.text, record.subscriber.slug);
   }
   // 真实数据库里的重复 id 同样只经各自的 RLS 可见。
   const persisted = await su<{ tenant_id: string; id: string }>('select tenant_id, id from conversations where id=$1', [same]);
@@ -451,7 +542,11 @@ try {
     assert.equal((await app.request(url, { headers: { host: 'unknown.example.invalid' } })).status, 404, url);
   assert.equal((await app.request('/healthz', { headers: { host: 'unknown.example.invalid' } })).status, 200);
   // 删除一边必须物理关闭其流；另一边继续收事件。单个订阅的 drop 覆盖登记表实际接线。
+  // 即使调用者带 A 的作用域，B Host 与未知 Host 仍分别选择 B、返回 404。
+  assert.equal((await (await inside(a, () => request('/api/orders/same-order', b))).json()).routeTitle, b.slug);
+  assert.equal((await inside(a, () => app.request('/', { headers: { host: 'unknown.example.invalid' } }))).status, 404);
   state.dropTenantState(b.id);
+  for (const [name, count] of Object.entries(state.tenantKeys(b.id))) assert.equal(count, 0, `${name} 在 drop B 后无残留`);
   await until(() => consoleB.done && webB.done, 'B console 物理连接关闭');
   assert.equal(consoleA.done, false);
   inside(a, () => events.deliverCommitted([{ type: 'conversation.changed', id: 'after-b-drop' }]));
@@ -467,8 +562,20 @@ try {
   state.dropTenantState(a.id);
   await until(() => consoleA.done && simulatorA.done && adminA.done && webA.done, 'A console 与 simulator 物理连接关闭');
   for (const rt of [a, b]) assert.equal(state.tenantKeys(rt.id)['channels.accounts'], 0);
+  const envAccount = accounts.envAccountFrom(
+    { WECOM_CORP_ID: 'fixture-corp', WECOM_APP_SECRET: 'fixture', WECOM_KF_OPEN_KFID: 'fixture-kf' },
+    '',
+  )!;
+  accounts.installAccounts([envAccount]);
+  assert.equal(state.tenantKeys(a.id)['channels.accounts'], 1, '空 tenantId 的 env 账号归宿主');
+  assert.equal(state.tenantKeys(b.id)['channels.accounts'], 0);
+  state.dropTenantState(a.id);
+  assert.equal(accounts.loadedAccounts().length, 0, '宿主 drop 必须实际删除 env 账号');
+  assert.equal(state.tenantKeys(a.id)['channels.accounts'], 0);
   console.log('TENANT ISOLATION PASS: A/B 同 id / 品牌与价格 / 6 个 HTTP 模型前缀 / 日志 / SSE 物理关闭 / 公开路由表');
 } finally {
+  globalThis.fetch = originalFetch;
+  channels.__channelsTest.setObservationClock(null);
   releaseB();
   for (const rt of [a, b]) state.dropTenantState(rt.id);
   for (const stream of streams) {

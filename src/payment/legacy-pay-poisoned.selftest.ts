@@ -7,7 +7,7 @@ import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与�
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { hostRuntime } from '../tenancy/runtime.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
 import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
 enterTenantScopeForTest(hostRuntime());
@@ -20,10 +20,10 @@ process.env.ADMIN_USER = 'admin';
 process.env.ADMIN_PASS = 'selftest-pass';
 for (const k of ['WECOM_CORP_ID', 'WECOM_APP_SECRET', 'WECOM_KF_OPEN_KFID', 'FOLLOWUP_ENABLED']) process.env[k] = '';
 
-const { app } = await import('../server.js');
-const store = await import('../store.js');
-const { loadRoutes } = await import('../tools.js');
-const { openTestDb, installPgSessionStore, fakeDbError } = await import('../db/testing.js');
+const { app } = await withoutTenantScope(() => import('../server.js'));
+const store = await withoutTenantScope(() => import('../store.js'));
+const { loadRoutes } = await withoutTenantScope(() => import('../tools.js'));
+const { openTestDb, installPgSessionStore, fakeDbError } = await withoutTenantScope(() => import('../db/testing.js'));
 
 let pass = 0;
 const fails: string[] = [];

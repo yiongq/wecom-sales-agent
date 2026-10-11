@@ -170,9 +170,9 @@ const IMPORT_RULES: ImportRule[] = [
     bad: (i) => under(i.target, PACK_FIXTURES),
   },
   {
-    desc: 'src/db/testing.ts 只能被 *.selftest.ts 和 eval/run.ts import',
+    desc: 'src/db/testing.ts 与 src/tenancy/testing.ts 只能被 *.selftest.ts 和 eval/run.ts import',
     applies: (f) => !isSelftest(f) && f !== 'eval/run.ts',
-    bad: (i) => i.target === 'src/db/testing.ts',
+    bad: (i) => ['src/db/testing.ts', 'src/tenancy/testing.ts'].includes(i.target ?? ''),
   },
   {
     desc: 'src/prompt/ 与 src/sop/ 不能 import src/db/ 和 src/config/',
@@ -243,6 +243,20 @@ const SQL_RAW = ['sql', 'raw'].join('.');
 const CHANNEL_KEY_ENV = ['CHANNEL', 'SECRETS', 'KEY'].join('_');
 
 const TEXT_RULES: TextRule[] = [
+  {
+    desc: 'runtime 的 __tenantTest 只给自测夹具与严格预载器使用',
+    files: (f) => CODE_EXT.test(f),
+    allowed: (f) =>
+      isSelftest(f) ||
+      [
+        'src/tenancy/runtime.ts',
+        'src/tenancy/testing.ts',
+        'eval/run.ts',
+        'scripts/check-boundaries.ts',
+        'scripts/tenancy-strict-preload.ts',
+      ].includes(f),
+    re: /\b__tenantTest\b/g,
+  },
   {
     desc: `${CHANNEL_KEY_ENV} 只能出现在 src/channels/secrets.ts`,
     // 只管代码：.env.example 与文档不受此规则约束；自测用字符串拼接构造名称。

@@ -18,7 +18,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ChatMessage, Session } from '../types.js';
-import { hostRuntime } from '../tenancy/runtime.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
 import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
 enterTenantScopeForTest(hostRuntime());
@@ -57,7 +57,7 @@ async function parentMain(): Promise<never> {
 
   // 工作台的映射表（spec「出站：投递状态」）：内存账本与库里的行共用这一个函数
   {
-    const { deliveryOfSegments } = await import('../shared/conversation-types.js');
+    const { deliveryOfSegments } = await withoutTenantScope(() => import('../shared/conversation-types.js'));
     const d = (...st: string[]) => deliveryOfSegments(st.map((status) => ({ status, failType: status === 'failed' ? 4 : null })));
     check('映射：没有分段为 null', d() === null);
     check('映射：全部 accepted → accepted（工作台不显示）', d('accepted', 'accepted')?.status === 'accepted');
@@ -153,9 +153,9 @@ async function childMain(mode: string): Promise<never> {
 async function suite(mode: string, logs: string[]): Promise<void> {
   const varDir = process.env.VAR_DIR!;
   Object.assign(process.env, { LLM_MOCK: '1', PUBLIC_BASE_URL: '', ALERT_WEBHOOK_URL: '', FOLLOWUP_ENABLED: '' });
-  const store = await import('../store.js');
-  const testing = await import('../db/testing.js');
-  const { withTenant } = await import('../db/client.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const testing = await withoutTenantScope(() => import('../db/testing.js'));
+  const { withTenant } = await withoutTenantScope(() => import('../db/client.js'));
   let db: import('../db/client.js').Db;
   let tenantId: string;
   let su: <R = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<R[]>;
@@ -191,7 +191,7 @@ async function suite(mode: string, logs: string[]): Promise<void> {
   }
 
   // ---- 两个库里的企微账号（不起运行时：这里只测账本与落库） ----
-  const { sealSecrets } = await import('../channels/secrets.js');
+  const { sealSecrets } = await withoutTenantScope(() => import('../channels/secrets.js'));
   const keyBytes = Buffer.alloc(32, 8);
   const keyRing = { current: { id: 'k08', key: keyBytes }, all: new Map([['k08', keyBytes]]) };
   const defs = [
@@ -215,12 +215,12 @@ async function suite(mode: string, logs: string[]): Promise<void> {
       [tenantId, id, a.key, a.prefix, a.kf, ct.toString('hex'), keyId],
     );
   }
-  const reg = await import('../channels/registry.js');
+  const reg = await withoutTenantScope(() => import('../channels/registry.js'));
   await reg.initChannels({ db, tenantId, tenantSlug: mode === 'rpg' ? 'out08' : 'demo', varDir, keyRing });
-  const { loadedAccounts } = await import('../channels/accounts.js');
+  const { loadedAccounts } = await withoutTenantScope(() => import('../channels/accounts.js'));
   const A1 = loadedAccounts().find((a) => a.key === 'a1')!;
   const A2 = loadedAccounts().find((a) => a.key === 'a2')!;
-  const ledger = await import('./ledger.js');
+  const ledger = await withoutTenantScope(() => import('./ledger.js'));
   const { OutboundPlanError } = ledger;
   ledger.__ledgerTest.setWaits({ commitMs: 400, markMs: 400 });
   type Payload = import('./ledger.js').OutboundPayload;
@@ -396,7 +396,7 @@ async function suite(mode: string, logs: string[]): Promise<void> {
     await agree('表外：对 cancelled 写 accepted 不改', k.i.msgid, 'cancelled');
     check('markSending：对 cancelled → not_pending', (await ledger.markSending(k.i)) === 'not_pending');
     await agree('表外：对 cancelled 标 sending 不改', k.i.msgid, 'cancelled');
-    const { insertOutboundSends } = await import('../db/repo/outbound.js');
+    const { insertOutboundSends } = await withoutTenantScope(() => import('../db/repo/outbound.js'));
     const ctx = { tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
     // 对 cancelled 写 pending（晚到的 pending 插入）：库里不改（验收 17）
     await withTenant(db, ctx, (tx) =>
@@ -554,8 +554,8 @@ async function suite(mode: string, logs: string[]): Promise<void> {
 
   // ======== 回执先于消息追加：跟进的 pending 落库时 message_seq 为空，回执先把库里那一行记 failed，消息追加之后 seq 照样补上 ========
   {
-    const { deliveryOfSegments } = await import('../shared/conversation-types.js');
-    const { readOutboundForSeqs } = await import('../db/repo/outbound.js');
+    const { deliveryOfSegments } = await withoutTenantScope(() => import('../shared/conversation-types.js'));
+    const { readOutboundForSeqs } = await withoutTenantScope(() => import('../db/repo/outbound.js'));
     const ctx = { tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
     const { sid, s } = newSession();
     await settle();
@@ -598,7 +598,7 @@ async function suite(mode: string, logs: string[]): Promise<void> {
       json(rows.map((r) => [r.status, r.failType])),
     );
     // 只许 NULL → 值：已有的 seq 不改，状态与结果也不动（迁移表没有放宽）
-    const { insertOutboundSends } = await import('../db/repo/outbound.js');
+    const { insertOutboundSends } = await withoutTenantScope(() => import('../db/repo/outbound.js'));
     await withTenant(db, ctx, (tx) =>
       insertOutboundSends(tx, [
         {
@@ -716,8 +716,8 @@ async function suite(mode: string, logs: string[]): Promise<void> {
 
   // ======== 工作台（内存与库里两条路同一张映射表）与窗口计数 ========
   {
-    const { deliveryOfSegments } = await import('../shared/conversation-types.js');
-    const { readOutboundForSeqs } = await import('../db/repo/outbound.js');
+    const { deliveryOfSegments } = await withoutTenantScope(() => import('../shared/conversation-types.js'));
+    const { readOutboundForSeqs } = await withoutTenantScope(() => import('../db/repo/outbound.js'));
     const ctx = { tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
     const { sid, s } = newSession();
     const msgs: Record<string, ChatMessage> = {};
@@ -792,7 +792,7 @@ async function suite(mode: string, logs: string[]): Promise<void> {
 
   // ======== 没落库就发：告警（channel）10 分钟内至多一条 ========
   {
-    const alertMod = await import('../ops/alert.js');
+    const alertMod = await withoutTenantScope(() => import('../ops/alert.js'));
     alertMod.__alertTest.reset();
     alertMod.__alertTest.stopTimer();
     alertMod.startAlerts();

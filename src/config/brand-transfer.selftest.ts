@@ -40,10 +40,10 @@ function filePrefix(sopPath: string, lazy = false): { system: string; tools: str
       '-e',
       `import './src/selftest-env.ts';
      const {hostRuntime, withTenantScope} = await import('./src/tenancy/runtime.ts');
+     const config = await import('./src/config/source.ts');
+     const { promptPrefix } = await import('./src/engine.ts');
      await withTenantScope(hostRuntime(), async () => {
-       const config = await import('./src/config/source.ts');
        ${lazy ? '' : 'await config.initConfigFromEnv(process.env, () => {});'}
-       const { promptPrefix } = await import('./src/engine.ts');
      console.log(JSON.stringify({ ...promptPrefix(), brand: config.currentPack().brand })); });`,
     ],
     {
@@ -151,7 +151,7 @@ try {
       'tsx',
       '--input-type=module',
       '-e',
-      "const {hostRuntime, withTenantScope} = await import('./src/tenancy/runtime.ts'); await withTenantScope(hostRuntime(), async () => { const c = await import('./src/config/source.ts'); console.log(c.currentPack().brand); });",
+      "const {hostRuntime, withTenantScope} = await import('./src/tenancy/runtime.ts'); const c = await import('./src/config/source.ts'); await withTenantScope(hostRuntime(), async () => { console.log(c.currentPack().brand); });",
     ],
     { env: { ...process.env, CONFIG_SOURCE: 'db', SOP_PATH: path.join(out, 'sop.md') }, encoding: 'utf8', timeout: 30_000 },
   );
