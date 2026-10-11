@@ -461,7 +461,7 @@ export function startAlerts(): void {
     onInboxAbandoned(onInboxGivenUp);
     onTokenError(onToken);
     onLockEvent(onLock);
-    onStoreIncident(onIncident);
+    for (const rt of tenantRuntimes()) withTenantScope(rt, () => onStoreIncident(onIncident));
     onJobFailed(onJob);
     // 停机：在途的推送（store_conflict、锁被拿走、drain 段末尾的 spill）等到 late 段的截止时刻，再退出
     onShutdown(

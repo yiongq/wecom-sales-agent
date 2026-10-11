@@ -7,7 +7,7 @@ import path from 'node:path';
 import { logError } from '../log.js';
 import type { Order, Session } from '../types.js';
 import { StoreLaggingError, type StoreBackend, type StoreHealth } from './backend.js';
-import { deliverCommitted, type DomainEvent } from './events.js';
+import { deliverCommitted, type DomainEventInput as DomainEvent } from './events.js';
 import { ORDERS_JSON, SESSIONS_JSON } from './project.js';
 import { assignSeqs, seedSeqs } from './seq.js';
 
@@ -121,7 +121,8 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
     pendingEvents = [];
     for (const w of waiters) w.resolve();
     waiters.clear();
-    deliverCommitted(events);
+    // 文件后端闭包一直属于宿主对象；启动补 uuid 后，排队事件使用该对象的新身份。
+    deliverCommitted(events.map((ev) => ({ ...ev, tenantId: rt.id })));
     return true;
   }
 
