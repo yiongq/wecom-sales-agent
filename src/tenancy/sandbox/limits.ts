@@ -3,6 +3,7 @@ import { isIP } from 'node:net';
 import { scopedRuntime } from '../runtime.js';
 import { scopedState } from '../scoped-state.js';
 import { registerTenantState } from '../state.js';
+import { SandboxStartupError } from './role.js';
 
 const HOUR = 60 * 60_000;
 const DAY = 24 * HOUR;
@@ -28,24 +29,38 @@ export class SandboxLimitError extends Error {
 
 function limit(env: NodeJS.ProcessEnv, key: string, fallback: number): number {
   const value = env[key] === undefined ? fallback : Number(env[key]);
-  if (!Number.isSafeInteger(value) || value < 1) throw new Error('sandbox_limits_invalid');
+  if (!Number.isSafeInteger(value) || value < 1) invalidLimit(key, 'must be a positive safe integer');
   return value;
+}
+
+function invalidLimit(key: string, requirement: string): never {
+  const error = new SandboxStartupError('sandbox_limits_invalid');
+  error.message = `sandbox_limits_invalid: ${key} ${requirement}`;
+  throw error;
+}
+
+/** 在取进程锁和连接数据库之前拒绝坏配置；错误只含字段名，不回显环境值。 */
+export function validateSandboxLimits(env: NodeJS.ProcessEnv): void {
+  sandboxWriteLimits(env);
+  for (const key of ['SANDBOX_MAX_LIVE', 'SANDBOX_PER_DAY', 'SANDBOX_PER_HOUR', 'SANDBOX_PER_IP_DAY', 'SANDBOX_MAX_CONVERSATIONS'])
+    limit(env, key, 1);
 }
 
 /** SANDBOX_WRITE_LIMITS 是 JSON 对象，省略的字段沿用开放问题 8 默认值。 */
 export function sandboxWriteLimits(env: NodeJS.ProcessEnv = process.env): SandboxWriteLimits {
-  if (!env.SANDBOX_WRITE_LIMITS) return WRITE_DEFAULTS;
+  if (env.SANDBOX_WRITE_LIMITS === undefined) return WRITE_DEFAULTS;
   let input: unknown;
   try {
     input = JSON.parse(env.SANDBOX_WRITE_LIMITS);
   } catch {
-    throw new Error('sandbox_limits_invalid');
+    invalidLimit('SANDBOX_WRITE_LIMITS', 'must be a JSON object');
   }
-  if (input === null || typeof input !== 'object' || Array.isArray(input)) throw new Error('sandbox_limits_invalid');
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) invalidLimit('SANDBOX_WRITE_LIMITS', 'must be a JSON object');
   const out: SandboxWriteLimits = { ...WRITE_DEFAULTS };
   for (const [key, value] of Object.entries(input)) {
-    if (!Object.hasOwn(out, key) || !Number.isSafeInteger(value) || typeof value !== 'number' || value < 1)
-      throw new Error('sandbox_limits_invalid');
+    if (!Object.hasOwn(out, key)) invalidLimit('SANDBOX_WRITE_LIMITS', 'contains an unknown field');
+    if (!Number.isSafeInteger(value) || typeof value !== 'number' || value < 1)
+      invalidLimit(`SANDBOX_WRITE_LIMITS.${key}`, 'must be a positive safe integer');
     out[key as keyof SandboxWriteLimits] = value;
   }
   return out;

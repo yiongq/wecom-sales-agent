@@ -1,6 +1,6 @@
 // 05 第 12 步组合根：不启动渠道注册表、任务、宿主文件状态或体验客服。
 import { Hono } from 'hono';
-import { assertSandboxWriteRate, SandboxLimitError } from './limits.js';
+import { assertSandboxWriteRate, validateSandboxLimits, SandboxLimitError } from './limits.js';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { consolePages } from '../../console-api/host.js';
 import { getCookie } from 'hono/cookie';
@@ -83,6 +83,7 @@ export class SandboxProcess {
 
   async start(): Promise<void> {
     if (resolveRole(this.env) !== 'sandbox') throw new Error('app_role_invalid');
+    validateSandboxLimits(this.env);
     configureTenancy({ role: 'sandbox', standardCount: 0 });
     // 第一把锁取不到时不打开配置、不装载、不改任何沙箱。
     this.lock = await acquireSandboxProcess(this.env.DATABASE_URL ?? '', this.failStop);

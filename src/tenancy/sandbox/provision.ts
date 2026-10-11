@@ -15,7 +15,7 @@ import { withoutTenantScope } from '../runtime.js';
 import { assertSandboxRunning } from './lifecycle.js';
 import { loadSandboxRuntime } from './load.js';
 import { sandboxSeeds } from './seeds.js';
-import { assertSandboxProvisionAllowed, recordSandboxProvision, SandboxLimitError } from './limits.js';
+import { assertSandboxProvisionAllowed, recordSandboxProvision, sandboxWriteLimits, SandboxLimitError } from './limits.js';
 
 // 实例互斥链：包括判限额、读快照、提交与预载；失败不能毒化下一次开通。
 let provisioning: Promise<void> = Promise.resolve();
@@ -76,6 +76,8 @@ function failureCode(error: unknown): string {
           'sandbox_template_unpublished_inputs',
           'sandbox_template_contract_failed',
           'sandbox_template_invalid',
+          'sandbox_template_catalog_limit',
+          'sandbox_template_quick_replies_limit',
           'sandbox_tenant_lock_held',
           'sandbox_already_loaded',
           'sandbox_epoch_stale',
@@ -106,6 +108,10 @@ async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
     assertSandboxProvisionAllowed({ live: live.length, provisioned: pool.provisioned, day: pool.day, ip: o.ip }, o.env);
     await o.admit?.();
     const template = await readSandboxTemplate(o.deps.db, o.templateSlug);
+    const limits = sandboxWriteLimits(o.env);
+    // 模板过大是部署配置问题；保留完整快照，拒绝开通而不是截断复制。
+    if (template.items.length > limits.catalogItems) throw new Error('sandbox_template_catalog_limit');
+    if (template.replies.length > limits.quickReplies) throw new Error('sandbox_template_quick_replies_limit');
     const slug = `sbx-${[...randomBytes(20)].map((n) => 'abcdefghijklmnopqrstuvwxyz234567'[n & 31]).join('')}`;
     const token = randomBytes(32).toString('base64url');
     const created = await withNewSandboxTenant(
@@ -133,7 +139,8 @@ async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
       },
       { epoch: o.epoch },
     );
-    recordSandboxProvision(o.ip, pool.day);
+    // 到期时刻来自创建事务的 now() + 24 hours；与库内 UTC day 同源，跨午夜也不会记到准入日。
+    recordSandboxProvision(o.ip, new Date(created.expiresAt.getTime() - 24 * 60 * 60_000).toISOString().slice(0, 10));
     try {
       const rt = await loadSandboxRuntime(o.deps, { id: created.tenantId, slug, expiresAt: created.expiresAt }, o.host, o.acquireTenant);
       if (!rt) throw new Error('sandbox_tenant_lock_held');

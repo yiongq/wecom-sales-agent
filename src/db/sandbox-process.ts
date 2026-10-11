@@ -73,9 +73,9 @@ export async function expireBrokenSandbox(db: Db, tenantId: string): Promise<voi
 export async function sandboxPoolHealth(db: Db) {
   const [row] = rowsOf<{ day: string; provisioned: number; costMilli: number }>(
     await db.execute(sql`
-    select current_date::text as day, coalesce(p.provisioned, 0)::int as provisioned,
+    select d.day::text as day, coalesce(p.provisioned, 0)::int as provisioned,
       coalesce(p.cost_milli, 0)::int as "costMilli"
-    from (select current_date as day) d left join public.sandbox_pool_daily p using (day)`),
+    from (select (now() at time zone 'UTC')::date as day) d left join public.sandbox_pool_daily p using (day)`),
   );
   return row!;
 }

@@ -3,7 +3,7 @@ import '../selftest-env.js';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import pg from 'pg';
-import { openDb, type Db } from './client.js';
+import { openDb, rowsOf, type Db } from './client.js';
 import { runMigrations } from './migrate.js';
 import { openTestDb, fakeLock, testConfigDeps } from './testing.js';
 import { importConfig } from '../config/transfer.js';
@@ -12,12 +12,13 @@ import { createCatalogItem, updateCatalogItem, importCatalogCsv, listCatalog } f
 import { saveSopDraft, publishSopDraft, rollbackSop } from '../config/sop.js';
 import { getOrCreateSession, listSessions, flushSession } from '../store.js';
 import { csrfFor } from '../auth/session.js';
-import { sandboxApp } from '../tenancy/sandbox/process.js';
+import { sandboxApp, SandboxProcess } from '../tenancy/sandbox/process.js';
 import { provisionSandbox, SandboxProvisionError } from '../tenancy/sandbox/provision.js';
 import { loadSandboxRuntime } from '../tenancy/sandbox/load.js';
 import { resolveSandboxSession } from '../tenancy/sandbox/session.js';
 import { expireBrokenSandbox } from './sandbox-process.js';
 import { dropShutdownHooks } from '../shutdown.js';
+import { onTurnEnd, type TurnOutcome } from '../trace/recorder.js';
 import {
   configureTenancy,
   createTenantRuntime,
@@ -30,6 +31,7 @@ import {
 import { dropTenantState, tenantKeys } from '../tenancy/state.js';
 import {
   sandboxWriteLimits,
+  validateSandboxLimits,
   assertSandboxProvisionAllowed,
   recordSandboxProvision,
   sandboxIpKey,
@@ -45,6 +47,7 @@ process.env.SERVER_SELFTEST = '1';
 process.env.CONFIG_SOURCE = 'db';
 process.env.SESSION_STORE = 'db';
 process.env.LLM_MOCK = '1';
+process.env.ALERT_WEBHOOK_URL = '';
 const { app: routes } = await import('../server.js');
 type Query = <T = Record<string, unknown>>(sql: string, params?: unknown[]) => Promise<T[]>;
 let checks = 0;
@@ -54,6 +57,8 @@ function check(fn: () => void): void {
 }
 const limited = (error: unknown) => error instanceof SandboxLimitError && error.reason === 'sandbox_write_limited';
 const env = { SANDBOX_PER_HOUR: '100', SANDBOX_PER_IP_DAY: '100' };
+// 任意运行时刻都选一个与 UTC 日期不同的会话时区。
+const testTimezone = new Date().getUTCHours() >= 10 ? 'Pacific/Kiritimati' : 'Etc/GMT+12';
 const now = Date.now();
 const input = { live: 0, provisioned: 0, day: '2026-10-11', ip: '192.0.2.1' };
 check(() => assert.equal(sandboxIpKey('2001:db8:1:2::1'), sandboxIpKey('2001:0DB8:0001:0002:ffff::2')));
@@ -76,8 +81,48 @@ check(() => assert.throws(() => assertSandboxProvisionAllowed(input, { SANDBOX_M
 __sandboxLimitsTest.resetProvisioned();
 check(() => assert.equal(sandboxWriteLimits({ SANDBOX_WRITE_LIMITS: '{"requestsPerMinute":2}' }).requestsPerMinute, 2));
 check(() => assert.equal(sandboxWriteLimits({ SANDBOX_WRITE_LIMITS: '{"requestsPerMinute":2}' }).catalogItems, 80));
-for (const value of ['null', '[]', '{', '{"unknown":1}', '{"quickReplies":0}', '{"catalogItems":"80"}'])
+check(() =>
+  assert.deepEqual(sandboxWriteLimits({}), {
+    requestsPerMinute: 30,
+    catalogItems: 80,
+    versionsPerItem: 20,
+    importRows: 80,
+    sopPublishesPerDay: 20,
+    quickReplies: 50,
+  }),
+);
+for (const value of [
+  '',
+  ' ',
+  'null',
+  '[]',
+  '{',
+  '{"unknown":1}',
+  '{"quickReplies":0}',
+  '{"catalogItems":"80"}',
+  '{"importRows":1.5}',
+  '{"versionsPerItem":true}',
+  '{"sopPublishesPerDay":9007199254740992}',
+]) {
   check(() => assert.throws(() => sandboxWriteLimits({ SANDBOX_WRITE_LIMITS: value }), /sandbox_limits_invalid/));
+  // 无 DATABASE_URL：必须在取锁、连库前立即得到明确配置错误。
+  await assert.rejects(
+    () =>
+      new SandboxProcess({
+        APP_ROLE: 'sandbox',
+        DEPLOY_PROFILE: 'demo',
+        CONFIG_SOURCE: 'db',
+        SESSION_STORE: 'db',
+        SANDBOX_TEMPLATE_SLUG: 'template',
+        SANDBOX_HOST: 'sandbox.example.invalid',
+        SANDBOX_WRITE_LIMITS: value,
+      }).start(),
+    /sandbox_limits_invalid: SANDBOX_WRITE_LIMITS/,
+  );
+  checks++;
+}
+for (const key of ['SANDBOX_MAX_LIVE', 'SANDBOX_PER_DAY', 'SANDBOX_PER_HOUR', 'SANDBOX_PER_IP_DAY', 'SANDBOX_MAX_CONVERSATIONS'])
+  check(() => assert.throws(() => validateSandboxLimits({ [key]: '0' }), new RegExp(`sandbox_limits_invalid: ${key}`)));
 
 async function cleanup(): Promise<void> {
   for (const rt of tenantRuntimes()) {
@@ -117,11 +162,102 @@ async function suite(db: Db, q: Query, real: boolean) {
     userAgent: null,
     env,
   };
+  const [days] = await q<{ localDay: string; utcDay: string }>(
+    `select current_date::text as "localDay", (now() at time zone 'UTC')::date::text as "utcDay"`,
+  );
+  check(() => assert.notEqual(days!.localDay, days!.utcDay));
+  await q('insert into sandbox_pool_daily(day,provisioned) values($1,50)', [days!.utcDay]);
+  await assert.rejects(
+    () => provisionSandbox(options),
+    (e) => e instanceof SandboxProvisionError && e.status === 429,
+  );
+  checks++;
+  const [none] = await q<{ n: number }>("select count(*)::int as n from tenants where kind='sandbox'");
+  check(() => assert.equal(none!.n, 0));
+  await q('delete from sandbox_pool_daily');
+
+  // 超限模板是部署错误：HTTP 503、不签 cookie、不建行或加计数，日志与实例告警都有固定诊断。
+  const snapshot = async () =>
+    JSON.stringify(
+      await q(`select
+    (select count(*) from tenants where kind='sandbox')::int as tenants,
+    (select count(*) from auth_sessions)::int as sessions,
+    (select coalesce(sum(provisioned),0) from sandbox_pool_daily)::int as provisioned`),
+    );
+  const before = await snapshot();
+  const errors: string[] = [],
+    alerts: string[] = [];
+  const errorLog = console.error,
+    warnLog = console.warn;
+  console.error = (...args) => {
+    errors.push(args.join(' '));
+  };
+  console.warn = (...args) => {
+    alerts.push(args.join(' '));
+  };
+  try {
+    const unavailableApp = (config: NodeJS.ProcessEnv) =>
+      sandboxApp(
+        {
+          health: async () => ({}) as never,
+          resolve: (token) => resolveSandboxSession(db, token),
+          provision: (input) => provisionSandbox({ ...options, ...input, env: { ...env, ...config } }),
+          end: (id) => expireBrokenSandbox(db, id),
+        },
+        options.host,
+      );
+    const rejected = async (config: NodeJS.ProcessEnv) => {
+      const response = await unavailableApp(config).request('/api/sandbox', {
+        method: 'POST',
+        headers: { host: options.host, 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' },
+        body: '{}',
+      });
+      check(() => assert.equal(response.status, 503));
+      const body = (await response.json()) as { error: string };
+      check(() => assert.equal(body.error, 'sandbox_unavailable'));
+      check(() => assert.ok(!response.headers.has('set-cookie') || response.headers.get('set-cookie')!.includes('Max-Age=0')));
+      const after = await snapshot();
+      check(() => assert.equal(after, before));
+    };
+    await rejected({ SANDBOX_WRITE_LIMITS: '{"catalogItems":1}' });
+    await q(
+      `insert into quick_replies(tenant_id,ord,title,body)
+      select $1::uuid, i, '模板回复' || i, '正文' from generate_series(1,51) i`,
+      [host.id],
+    );
+    await rejected({});
+    for (const code of ['sandbox_template_catalog_limit', 'sandbox_template_quick_replies_limit']) {
+      check(() => assert.ok(errors.some((s) => s.includes(code))));
+      check(() => assert.ok(alerts.some((s) => s.includes(code))));
+    }
+    await q('delete from quick_replies where tenant_id=$1', [host.id]);
+  } finally {
+    console.error = errorLog;
+    console.warn = warnLog;
+  }
+
+  // 注入午夜前的准入日期；创建事务仍在新的 UTC 日，IP 记账必须跟随创建事务。
+  const execute = db.execute;
+  let staleDay = true;
+  db.execute = (async (...args: Parameters<Db['execute']>) => {
+    const result = await execute.apply(db, args);
+    const row = rowsOf<{ day?: string; provisioned?: number; costMilli?: number }>(result)[0];
+    if (staleDay && row?.day && row.provisioned !== undefined && row.costMilli !== undefined) {
+      row.day = new Date(Date.parse(`${row.day}T00:00:00Z`) - 86400000).toISOString().slice(0, 10);
+      staleDay = false;
+    }
+    return result;
+  }) as Db['execute'];
   // 真正的开通互斥：两个请求同时冲最后一个存活名额，只有一个事务提交。
-  const attempts = await Promise.allSettled([
-    provisionSandbox({ ...options, env: { ...env, SANDBOX_MAX_LIVE: '1' } }),
-    provisionSandbox({ ...options, env: { ...env, SANDBOX_MAX_LIVE: '1' } }),
-  ]);
+  let attempts: PromiseSettledResult<Awaited<ReturnType<typeof provisionSandbox>>>[];
+  try {
+    attempts = await Promise.allSettled([
+      provisionSandbox({ ...options, env: { ...env, SANDBOX_MAX_LIVE: '1' } }),
+      provisionSandbox({ ...options, env: { ...env, SANDBOX_MAX_LIVE: '1' } }),
+    ]);
+  } finally {
+    db.execute = execute;
+  }
   const opened = attempts.find((r) => r.status === 'fulfilled');
   if (opened?.status !== 'fulfilled') throw new Error('开通失败');
   const a = opened.value;
@@ -132,6 +268,14 @@ async function suite(db: Db, q: Query, real: boolean) {
     ),
   );
   const b = await provisionSandbox(options);
+  await assert.rejects(
+    () => provisionSandbox({ ...options, env: { ...env, SANDBOX_PER_IP_DAY: '2' } }),
+    (e) => e instanceof SandboxProvisionError && e.reason === 'sandbox_limited',
+  );
+  checks++;
+  const [pool] = await q<{ day: string; provisioned: number }>('select day::text as day,provisioned from sandbox_pool_daily');
+  check(() => assert.equal(pool!.day, new Date(a.expiresAt.getTime() - 86400000).toISOString().slice(0, 10)));
+  check(() => assert.equal(pool!.provisioned, 2));
   // daily 是库里的计数，清掉进程计数后仍挡；先前失败 / 拒绝不增加计数。
   __sandboxLimitsTest.resetProvisioned();
   await assert.rejects(
@@ -179,18 +323,61 @@ async function suite(db: Db, q: Query, real: boolean) {
   __sandboxLimitsTest.dropTenantLimits(rt.id);
   // 预算预占已拒绝、模型已走 mock 时写速率照计；另一沙箱有独立的桶。
   const reserve = rt.budget.reserve;
-  rt.budget.reserve = () => null;
-  check(() => assert.equal(rt.budget.reserve('chat', 1), null));
-  withTenantScope(rt, () => {
-    for (let i = 0; i < 30; i++) assertSandboxWriteRate(now);
-    check(() => assert.throws(() => assertSandboxWriteRate(now), limited));
-  });
-  await expectLimit(await request('/api/console/quick-replies', 'POST', { title: '拒绝', body: '正文' }));
-  const otherReply = await request('/api/console/quick-replies', 'POST', { title: '另一沙箱', body: '正文' }, b.token);
-  check(() => assert.equal(otherReply.status, 200));
-  withTenantScope(rt, () => check(() => assert.doesNotThrow(() => assertSandboxWriteRate(now + 60_000))));
-  rt.budget.reserve = reserve;
-  __sandboxLimitsTest.dropTenantLimits(rt.id);
+  let budgetRefusals = 0,
+    fetches = 0;
+  rt.budget.reserve = () => {
+    budgetRefusals++;
+    return null;
+  };
+  const outcomes: TurnOutcome[] = [];
+  const stopTurns = withTenantScope(rt, () =>
+    onTurnEnd((turn) => {
+      outcomes.push(turn.outcome);
+    }),
+  );
+  const settings = {
+    LLM_MOCK: '0',
+    LLM_PROVIDER: '',
+    LLM_API_KEY: 'fixture',
+    LLM_BASE_URL: 'http://llm.example.invalid',
+    LLM_HEDGE_MODEL: '',
+    SANDBOX_WRITE_LIMITS: '{"requestsPerMinute":2}',
+  };
+  const saved = Object.fromEntries(Object.keys(settings).map((key) => [key, process.env[key]]));
+  const fetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetches++;
+    throw new Error('测试禁止网络请求');
+  };
+  Object.assign(process.env, settings);
+  try {
+    const seed = withTenantScope(rt, () => listSessions().find((s) => !s.handedOver && s.stage === 'discovery')!);
+    assert.ok(seed);
+    for (let i = 0; i < 2; i++) {
+      const res = await request('/api/chat', 'POST', { text: '你好', sessionId: seed.id });
+      check(() => assert.equal(res.status, 200));
+      const body = (await res.json()) as { reply: { text: string } };
+      check(() => assert.ok(body.reply.text.length > 0));
+    }
+    check(() => assert.deepEqual(outcomes, ['budget', 'budget']));
+    check(() => assert.equal(budgetRefusals, 2));
+    check(() => assert.equal(fetches, 0));
+    await expectLimit(await request('/api/chat', 'POST', { text: '你好', sessionId: seed.id }));
+    await expectLimit(await request('/api/console/quick-replies', 'POST', { title: '拒绝', body: '正文' }));
+    check(() => assert.equal(budgetRefusals, 2));
+    const otherReply = await request('/api/console/quick-replies', 'POST', { title: '另一沙箱', body: '正文' }, b.token);
+    check(() => assert.equal(otherReply.status, 200));
+    withTenantScope(rt, () => check(() => assert.doesNotThrow(() => assertSandboxWriteRate(Date.now() + 60_000))));
+  } finally {
+    stopTurns();
+    rt.budget.reserve = reserve;
+    globalThis.fetch = fetch;
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    __sandboxLimitsTest.dropTenantLimits(rt.id);
+  }
   // 新会话种子不算；并发路径的核心同步创建在 store 里，超限时没有消息或模型调用。
   await withTenantScope(rt, async () => {
     check(() => assert.equal(listSessions().length, 13));
@@ -318,7 +505,7 @@ if (!process.env.PG_TEST_URL) {
     }
   };
   try {
-    await f.pg.exec('SET ROLE agent_app');
+    await f.pg.exec(`SET ROLE agent_app; SET TIME ZONE '${testTimezone}'`);
     await suite(f.db, q, false);
   } finally {
     await cleanup();
@@ -334,7 +521,7 @@ if (!process.env.PG_TEST_URL) {
   url.pathname = `/${name}`;
   const roleUrl = (role: string) => {
     const u = new URL(url);
-    u.searchParams.set('options', `-c role=${role}`);
+    u.searchParams.set('options', `-c role=${role} -c timezone=${testTimezone}`);
     return u.toString();
   };
   let db: Awaited<ReturnType<typeof openDb>> | undefined;
@@ -346,6 +533,7 @@ if (!process.env.PG_TEST_URL) {
     owner = new pg.Client({ connectionString: url.toString() });
     owner.on('error', () => {});
     await owner.connect();
+    await owner.query(`SET TIME ZONE '${testTimezone}'`);
     const q: Query = async (text, values) => (await owner!.query(text, values)).rows as never;
     await suite(db.db, q, true);
   } finally {
