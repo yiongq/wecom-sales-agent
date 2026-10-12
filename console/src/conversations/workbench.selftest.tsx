@@ -1257,6 +1257,28 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
   );
 }
 
+// 05：只有沙箱的 sbx 会话露出模拟器入口。
+for (const [sandbox, id, shown] of [
+  [true, 'sbx-probe', true],
+  [true, 'wecom:wmProbe', false],
+  [false, 'sbx-probe', false],
+] as const) {
+  server = { cur: detail({ row: row({ id, channel: 'simulator' }) }), seenClientIds: [], extraMessages: [] };
+  const visitor: Viewer = {
+    kind: 'member',
+    me: {
+      ...me('owner'),
+      sandbox: sandbox ? { expiresAt: new Date(NOW + 3600_000).toISOString(), wechat: 'off', steps: [false, false, false, false] } : null,
+    },
+    pack: TRAVEL,
+  };
+  const m = await mount(visitor, id);
+  const link = m.$('a').find((a) => a.textContent?.includes('在模拟器里打开'));
+  check(`沙箱模拟器入口 ${id} / ${sandbox}`, !!link === shown);
+  if (link) eq('模拟器入口带 c 参数', link.getAttribute('href'), `/chat.html?c=${id}`);
+  await m.unmount();
+}
+
 Date.now = realNow;
 
 if (fails.length) {

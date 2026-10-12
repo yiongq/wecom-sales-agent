@@ -170,6 +170,14 @@ function unauthorized(): Response {
 export function createSessionFetch(base: (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>) {
   const run = async (input: RequestInfo | URL, init: RequestInit = {}): Promise<Response> => {
     const res = await base(input, init);
+    if (res.status === 401 || res.status === 410) {
+      const body = await jsonOf(res);
+      const code = has(body, 'error') ? (body as ApiError).error : null;
+      if (code === 'sandbox_required' || code === 'sandbox_expired') {
+        window.location.replace(code === 'sandbox_expired' ? '/try?ended=1' : '/try');
+        return res;
+      }
+    }
     if (!member) return res;
     const url = new URL(input instanceof Request ? input.url : String(input), 'https://console.invalid');
     if (EXEMPT.has(url.pathname)) return res;
