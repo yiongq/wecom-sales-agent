@@ -48,7 +48,13 @@ export function logout(): Promise<void> {
 
 export function useViewer() {
   const qc = useQueryClient();
-  return useQuery({ queryKey: VIEWER_KEY, queryFn: () => loadViewer(qc.getQueryData<Viewer>(VIEWER_KEY)), staleTime: 60_000 });
+  return useQuery({
+    queryKey: VIEWER_KEY,
+    queryFn: () => loadViewer(qc.getQueryData<Viewer>(VIEWER_KEY)),
+    staleTime: 60_000,
+    refetchInterval: (q) => (q.state.data?.kind === 'member' && q.state.data.me.sandbox ? 10_000 : false),
+    refetchIntervalInBackground: false,
+  });
 }
 
 /** 去登录页（侧栏、⌘K 的「登录」，横幅的「登录后编辑」），保留 demo 的入口配置 */

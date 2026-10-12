@@ -30,6 +30,9 @@
 .shell-hidden .shell-panel {
   margin: 0 8px 8px;
 }
+.shell-body {
+  display: contents;
+}
 /* 面板内部自己滚动；吸顶条与保存条不挡住焦点（§3） */
 .shell-scroll {
   flex: 1;

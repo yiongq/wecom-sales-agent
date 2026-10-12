@@ -6,16 +6,18 @@ import vm from 'node:vm';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { openDb, type Db } from '../../db/client.js';
+import { writeAudit } from '../../db/repo/audit.js';
+import { readSandboxSteps } from '../../db/repo/sandbox-steps.js';
+import { openDb, withTenant, type Db } from '../../db/client.js';
 import { createRealPgFixture, fakeLock, openTestDb, testConfigDeps, purgeTestSandbox } from '../../db/testing.js';
 import { importConfig } from '../../config/transfer.js';
-import { closeConfig, initConfig, currentSop, currentCatalog } from '../../config/source.js';
+import { closeConfig, initConfig, currentSop, currentCatalog, currentTenant } from '../../config/source.js';
 import { expireBrokenSandbox } from '../../db/sandbox-process.js';
 import { sandboxSessionResolve } from '../../db/repo/sandbox.js';
 import { csrfFor, __authTest } from '../../auth/session.js';
 import { subscribe } from '../../adapters/simulator.js';
 import { dropShutdownHooks } from '../../shutdown.js';
-import { listSessions, listOrders, flushSession } from '../../store.js';
+import { listSessions, listOrders, flushSession, createOrder, getSession, saveSession } from '../../store.js';
 import { scrubConvIds } from '../../log.js';
 import { shanhaiBrand } from '../../packs/travel/brand-fixture.js';
 import type { Me, CatalogItem, SopOverview } from '../../shared/console-api.js';
@@ -122,6 +124,18 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
       check(() => assert.equal(body.error, error));
     }
   };
+  const page = async (url: string, token: string, status = 200): Promise<string> => {
+    const response = await request(url, token);
+    await expect(response, status);
+    const html = await response.text();
+    const csp = response.headers.get('content-security-policy')!;
+    const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
+      (match) => `'sha256-${createHash('sha256').update(match[1]!).digest('base64')}'`,
+    );
+    check(() => assert.deepEqual(/(?:^|; )script-src ([^;]*)/.exec(csp)![1]!.split(' '), ["'self'", ...hashes]));
+    check(() => assert.equal((html.match(/<script src="\/sandbox-ui\.js"><\/script>/g) ?? []).length, 1));
+    return html;
+  };
   // 无 cookie、跨 cookie、未知 Host、禁止的宿主入口。
   await expect(await request('/try'), 200);
   check(() => assert.equal(tenantRuntimes().length, 0, 'GET /try 不开通'));
@@ -217,6 +231,11 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
     registerRuntime(a);
   }
   await expect(await request('/api/console/me', token, { headers: goodIp }), 200);
+  const progress = async (cookieToken = token): Promise<boolean[]> => {
+    const r = await request('/api/console/me', cookieToken);
+    await expect(r, 200);
+    return ((await r.json()) as Me).sandbox!.steps;
+  };
   const status = (await (await request('/api/console/status', token)).json()) as { channels: unknown[]; tenantSlug: string };
   check(() => assert.deepEqual(status.channels, []));
   check(() => assert.equal(status.tenantSlug, a.slug));
@@ -275,10 +294,15 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   check(() => assert.ok(restored.messages.length >= 2));
   await expect(await request(`/api/console/conversations/${sbxId}`, token), 200);
   await expect(await request(`/api/sessions/${sbxId}`, bResult.token), 404);
-  const html = await (await request(`/chat.html?c=${sbxId}`, token)).text();
+  const html = await page(`/chat.html?c=${sbxId}`, token);
   check(() => assert.ok(html.includes(`ssj_session_id:${a.slug}`)));
   check(() => assert.ok(html.includes("new URLSearchParams(location.search).get('c')")));
   check(() => assert.ok(html.includes('(?:sim|sbx)-')));
+  // 租户品牌与会话键会改变脚本，不能用 public 源文件的固定 hash。
+  const originalScript = /<script>([\s\S]*?)<\/script>/.exec(fs.readFileSync('public/chat.html', 'utf8'))![1]!;
+  check(() => assert.notEqual(/<script>([\s\S]*?)<\/script>/.exec(html)![1], originalScript));
+  for (const url of ['/pay.html', '/proposal.html', '/try', '/proposal/r-xian/2']) await page(url, token);
+  await page('/proposal/r-xian/2?v=999', token, 404);
   // 执行真实页面的启动代码和按钮回调：?c 优先；新会话删 c、保留其余 URL，再启动产生新 id。
   const key = /LS_KEY = '([^']+)'/.exec(html)![1]!;
   const storage = new Map([[key, simId]]);
@@ -336,6 +360,8 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   check(() => assert.equal(newChatBody.sessionId, `sbx-${newId.slice(4)}`));
   await withTenantScope(a, () => flushSession(`sbx-${newId.slice(4)}`, { timeoutMs: 5000 }));
 
+  const awaitedChatSteps = await progress();
+  check(() => assert.deepEqual(awaitedChatSteps, [true, false, false, false]));
   // 接手、回复、交还、模拟器继续、标已付与 reset 的耐久后端回归。
   const pushes: string[] = [];
   const off = withTenantScope(a, () => subscribe(sbxId, (text) => pushes.push(text)));
@@ -346,8 +372,12 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   await reader.read(); // 首个 ping：已经订阅。
   try {
     await expect(await post(`/api/console/conversations/${sbxId}/takeover`, token), 200);
+    const afterTakeover = await progress();
+    check(() => assert.equal(afterTakeover[2], false, '接手但未回复不算完成'));
     await expect(await post(`/api/console/conversations/${sbxId}/reply`, token, { text: '体验访客回复', clientId: randomUUID() }), 200);
     check(() => assert.ok(pushes.some((s) => s.includes('【顾问】体验访客回复'))));
+    const afterReply = await progress();
+    check(() => assert.equal(afterReply[2], true, '人工接管后的回复算完成'));
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const pushed = await Promise.race([
@@ -400,6 +430,8 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
     headers: { 'content-type': 'application/json', 'x-csrf': csrfFor(token) },
   });
   await expect(patch, 200);
+  const afterPrice = await progress();
+  check(() => assert.equal(afterPrice[3], true, '修改价格完成第四步'));
   check(() =>
     assert.equal(
       withTenantScope(a, () => currentCatalog().routes.find((r) => r.id === item.code)!.priceFrom),
@@ -424,6 +456,95 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   check(() =>
     assert.ok(proposalBody.includes(String(hostPrice + 100)) || proposalBody.includes((hostPrice + 100).toLocaleString('zh-CN'))),
   );
+  // 验收 11：访客写的产品标题通过真实 API 到三类页面，只能成为文本。
+  const xss = '<img src=x onerror=alert(1)>';
+  // 已上架线路的标题锁定，所以走访客可用的新建草稿、上架流程。
+  const xssRouteId = 'r-xss';
+  const created = await post('/api/console/catalog/route', token, { payload: { ...item.payload, id: xssRouteId, title: xss } });
+  await expect(created, 200);
+  const createdItem = (await created.json()) as CatalogItem;
+  await expect(await post(`/api/console/catalog/route/${xssRouteId}/activate`, token, { rev: createdItem.rev }), 200);
+  const proposalHtml = await page(`/proposal/${xssRouteId}/2?v=1`, token);
+  check(() => assert.ok(proposalHtml.includes('&lt;img src=x onerror=alert(1)&gt;')));
+  check(() => assert.equal(proposalHtml.includes(xss), false));
+  const proposalApp = { innerHTML: '' };
+  const proposalContext = vm.createContext({
+    document: { getElementById: () => proposalApp, title: '行程方案书' },
+    location: { pathname: `/proposal/${xssRouteId}/2`, search: '?v=1' },
+    URLSearchParams,
+    fetch: (url: string) => request(url, token),
+  });
+  vm.runInContext(
+    /<script>([\s\S]*?)<\/script>/.exec(proposalHtml)![1]!.replace('(async () => {', 'globalThis.loaded = (async () => {'),
+    proposalContext,
+  );
+  await proposalContext.loaded;
+  check(() => assert.ok(proposalApp.innerHTML.includes('&lt;img src=x onerror=alert(1)&gt;')));
+  check(() => assert.equal(proposalApp.innerHTML.includes(xss), false));
+
+  const order = withTenantScope(a, () => {
+    const route = currentCatalog().routes.find((r) => r.id === xssRouteId)!;
+    const session = getSession(quoteBody.sessionId)!;
+    const order = createOrder({
+      sessionId: session.id,
+      routeId: route.id,
+      routeTitle: route.title,
+      travelers: 2,
+      departDate: '2099-01-01',
+      totalPrice: route.priceFrom * 2,
+      catalogVersion: 1,
+    });
+    session.orderIds.push(order.id);
+    saveSession(session);
+    return order;
+  });
+  await withTenantScope(a, () => flushSession(order.sessionId, { timeoutMs: 5000 }));
+  {
+    const payHtml = await page(`/pay/${order.id}`, token);
+    check(() => assert.ok(payHtml.includes('&lt;img src=x onerror=alert(1)&gt;')));
+    check(() => assert.equal(payHtml.includes(xss), false));
+    const orderBody = await (await request(`/api/orders/${order.id}`, token)).json();
+    const fields = new Map<
+      string,
+      { textContent: string; hidden: boolean; style: Record<string, string>; classList: { add: () => void }; addEventListener: () => void }
+    >();
+    const field = (id: string) => {
+      if (!fields.has(id))
+        fields.set(id, { textContent: '', hidden: false, style: {}, classList: { add: () => {} }, addEventListener: () => {} });
+      return fields.get(id)!;
+    };
+    const payContext = vm.createContext({
+      document: { getElementById: field, querySelector: () => null },
+      location: { pathname: `/pay/${order.id}`, search: '' },
+      URLSearchParams,
+      navigator: { userAgent: '' },
+      window: {},
+      fetch: (url: string) => request(url, token),
+      setInterval: () => 0,
+      clearInterval: () => {},
+    });
+    vm.runInContext(/<script>([\s\S]*?)<\/script>/.exec(payHtml)![1]!.replace('  load();', '  globalThis.loaded = load();'), payContext);
+    await payContext.loaded;
+    check(() => assert.equal(field('routeTitle').textContent, xss));
+    const renderAdvisor = /  function renderAdvisor\(\) \{[\s\S]*?\n  \}/.exec(payHtml)![0];
+    vm.runInNewContext(`${renderAdvisor}; renderAdvisor();`, {
+      $: field,
+      order: orderBody,
+      fmt: String,
+      advisorStatusText: () => '',
+      show: () => {},
+    });
+    check(() => assert.equal(field('aRouteTitle').textContent, xss));
+    const fillPayCard = /  async function fillPayCard\(card, pay\) \{[\s\S]*?\n  \}/.exec(html)![0];
+    const cardContext = vm.createContext({
+      card: { querySelector: field },
+      pay: { orderId: order.id },
+      fetch: (url: string) => request(url, token),
+      cnDate: String,
+    });
+    await vm.runInContext(`${fillPayCard}; fillPayCard(card, pay);`, cardContext);
+    check(() => assert.equal(field('.pc-title').textContent, xss));
+  }
   const sop = (await (await request('/api/console/sop', token)).json()) as SopOverview;
   const beforeHash = withTenantScope(a, () => currentSop().promptHash);
   const saved = await request('/api/console/sop/draft', token, {
@@ -450,6 +571,35 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
       beforeHash,
     ),
   );
+  const allSteps = await progress();
+  check(() => assert.deepEqual(allSteps, [true, true, true, true]));
+  const untouchedSteps = await progress(bResult.token);
+  check(() => assert.deepEqual(untouchedSteps, [false, false, false, false], 'A 的进度不进入 B'));
+  // 第四步的三个独立分支；事务回滚保留 B 的初始状态，不删除审计。
+  const bMe = (await (await request('/api/console/me', bResult.token)).json()) as Me;
+  for (const [action, targetType, diff, done] of [
+    ['catalog.update', 'route', { title: ['旧标题', '新标题'] }, false],
+    ['catalog.update', 'route', { priceFrom: [100, 100] }, false],
+    ['catalog.update', 'route', { priceFrom: [100, 200] }, true],
+    ['order.mark_paid', 'order', {}, true],
+    ['sop.publish', 'sop_version', {}, true],
+  ] as const) {
+    const rollback = new Error('rollback_probe');
+    await assert.rejects(
+      withTenantScope(b, () =>
+        withTenant(db, { tenantId: b.id, actor: { kind: 'user', userId: bMe.userId, name: bMe.displayName, ip: null } }, async (tx) => {
+          await writeAudit(tx, { action, targetType, diff });
+          const steps = await readSandboxSteps(
+            tx,
+            withTenantScope(b, () => currentTenant().pack),
+          );
+          check(() => assert.deepEqual(steps, [false, false, false, done], action));
+          throw rollback;
+        }),
+      ),
+      (e: unknown) => e === rollback,
+    );
+  }
   const afterTemplate = await templateSnapshot();
   check(() => assert.deepEqual(afterTemplate, originalTemplate, '沙箱改价与发布 SOP 不改宿主模板的库行'));
 
