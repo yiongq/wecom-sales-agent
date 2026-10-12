@@ -87,6 +87,7 @@ function receiptProbe(db: Db) {
   let failRead = false;
   let afterEpoch: (() => Promise<void>) | undefined;
   let beforeEpoch: (() => Promise<void>) | undefined;
+  let afterCommit: (() => Promise<void>) | undefined;
   const lost = () => Object.assign(new Error('fake_commit_receipt_lost'), { code: 'ECONNRESET' });
   const probe = new Proxy(db, {
     get(target, key) {
@@ -102,6 +103,8 @@ function receiptProbe(db: Db) {
         afterEpoch = undefined;
         const beforeHook = beforeEpoch;
         beforeEpoch = undefined;
+        const receiptHook = afterCommit;
+        afterCommit = undefined;
         const result = await db.transaction(async (tx) => {
           const wrapped = new Proxy(tx, {
             get(target, key) {
@@ -122,6 +125,7 @@ function receiptProbe(db: Db) {
           if (mode === 'rollback') throw lost();
           return result;
         });
+        await receiptHook?.();
         if (mode === 'commit') throw lost();
         return result;
       };
@@ -135,6 +139,9 @@ function receiptProbe(db: Db) {
     },
     failReads: (value: boolean) => {
       failRead = value;
+    },
+    pauseAfterCommit: (fn: () => Promise<void>) => {
+      afterCommit = fn;
     },
     pauseBeforeEpoch: (fn: () => Promise<void>) => {
       beforeEpoch = fn;
@@ -724,6 +731,67 @@ async function suite(db: Db, q: Query, appUrl?: string) {
     } finally {
       epochContinue.release();
     }
+    // 数据库在有效期内提交；正常回执与丢失回执都延迟到过期后，必须得出同一绑定结果。
+    const lateResults: { tenant: string; user: string; welcome: string }[] = [];
+    for (const lostReceipt of [false, true]) {
+      const lateCode = await codeFor(R);
+      const lateHash = createHash('sha256').update(lateCode.code.replace('-', '')).digest('hex');
+      const expiresAt = Date.now() + 1000;
+      await q('update sandbox_wechat set code_expires_at=$2 where tenant_id=$1', [R.id, new Date(expiresAt)]);
+      sandboxWechatIndex.publishCode(R, lateHash, expiresAt);
+      const committed = barrier(),
+        receipt = barrier();
+      let committedAt = 0;
+      probe.pauseAfterCommit(async () => {
+        committedAt = Date.now();
+        committed.release();
+        await receipt.promise;
+      });
+      if (lostReceipt) probe.lose('commit');
+      const beforeWelcome = sends.length;
+      pages.push([message('wmRecovery', lateCode.code)]);
+      await service.sync();
+      try {
+        await committed.promise;
+        assert.ok(committedAt < expiresAt);
+        const [storedBinding] = await q<{ external_userid: string; consumed: boolean; usedInTime: boolean }>(
+          'select external_userid,code_hash is null as consumed,bound_at < $2::timestamptz as "usedInTime" from sandbox_wechat where tenant_id=$1',
+          [R.id, new Date(expiresAt)],
+        );
+        assert.equal(storedBinding!.external_userid, 'wmRecovery');
+        assert.equal(storedBinding!.consumed, true);
+        assert.equal(storedBinding!.usedInTime, true);
+        assert.equal(sandboxWechatIndex.forUser('wmRecovery'), undefined);
+        await new Promise((resolve) => setTimeout(resolve, Math.max(0, expiresAt - Date.now()) + 30));
+        receipt.release();
+        await service.drain();
+        namedCheck(
+          lostReceipt ? 'COMMIT_WITHIN_CODE_EXPIRY_LATE_RECEIPT_LOST_BINDS' : 'COMMIT_WITHIN_CODE_EXPIRY_LATE_RECEIPT_NORMAL_BINDS',
+          () => {
+            assert.ok(Date.now() > expiresAt);
+            assert.equal(sandboxWechatIndex.forUser('wmRecovery'), R);
+            assert.equal(sandboxWechatIndex.code(lateHash), undefined);
+            assert.equal(sends.length, beforeWelcome + 1);
+            assert.match(sends.at(-1)!.body.text.content, /AI/);
+          },
+        );
+        lateResults.push({
+          tenant: sandboxWechatIndex.forUser('wmRecovery')!.id,
+          user: sends.at(-1)!.body.touser!,
+          welcome: sends.at(-1)!.body.text.content,
+        });
+        const [afterReceipt] = await q<{ external_userid: string; consumed: boolean }>(
+          'select external_userid,code_hash is null as consumed from sandbox_wechat where tenant_id=$1',
+          [R.id],
+        );
+        assert.equal(afterReceipt!.external_userid, 'wmRecovery');
+        assert.equal(afterReceipt!.consumed, true);
+      } finally {
+        receipt.release();
+        await service.drain();
+      }
+    }
+    namedCheck('LATE_RECEIPT_NORMAL_AND_LOST_BINDINGS_AGREE', () => assert.deepEqual(lateResults[0], lateResults[1]));
     await q(
       "update sandbox_wechat set bound_at=date_trunc('milliseconds',clock_timestamp())+interval '2 microseconds' where tenant_id=$1",
       [R.id],

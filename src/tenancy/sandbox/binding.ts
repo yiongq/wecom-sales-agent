@@ -155,7 +155,7 @@ export class SandboxWechatBinding {
         const row = hash && sandboxWechatIndex.code(hash);
         if (!row) return failed('invalid');
         const target = row.runtime;
-        if (row.expiresAt <= now || !serving(target)) return failed('expired');
+        if (!serving(target)) return failed('expired');
         const old = sandboxWechatIndex.forUser(user);
         const previous = sandboxWechatIndex.boundUser(target);
         const finishPrevious = sandboxWechatIndex.beginBinding(previous && previous !== user ? [previous] : []);
@@ -174,16 +174,11 @@ export class SandboxWechatBinding {
                 }
               }
               if (!serving(target)) throw new SandboxWechatError(410, 'sandbox_expired');
-              if (row.expiresAt <= Date.now()) throw new SandboxWechatError(410, 'sandbox_code_expired');
               const bound = await this.write(target, (tx) => bindSandboxWechat(tx, hash!, user));
               if (!bound) throw new SandboxWechatError(410, 'sandbox_code_expired');
+              // 码是否有效只由库内条件更新判断；提交成功后不因回执迟到而撤销。
               // 成功落库，但 closing 时不得回写解析表。
               if (!serving(target)) return failed('expired');
-              if (row.expiresAt <= Date.now()) {
-                await this.write(target, clearSandboxWechat);
-                await this.recover(old && old !== target ? [old, target] : [target]);
-                return failed('expired');
-              }
               sandboxWechatIndex.clearCode(target.id);
               sandboxWechatIndex.publishCommittedBinding(target, user, BigInt(bound));
               if (welcomeCode) sandboxWechatIndex.assignWelcome(welcomeCode, target);
@@ -191,13 +186,7 @@ export class SandboxWechatBinding {
             } catch (error) {
               // 回滚失败和 COMMIT 回执丢失都不能按旧快照恢复。读取库里的真实结果。
               const recovered = await this.recover(old && old !== target ? [old, target] : [target]);
-              if (
-                recovered &&
-                row.expiresAt > Date.now() &&
-                serving(target) &&
-                sandboxWechatIndex.forUser(user) === target &&
-                !sandboxWechatIndex.code(hash!)
-              ) {
+              if (recovered && serving(target) && sandboxWechatIndex.forUser(user) === target && !sandboxWechatIndex.code(hash!)) {
                 if (welcomeCode) sandboxWechatIndex.assignWelcome(welcomeCode, target);
                 return { status: 'bound', runtime: target };
               }
