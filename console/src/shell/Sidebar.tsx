@@ -4,7 +4,7 @@
 // 匿名：租户行写「演示」，没有铃铛、会话和审计入口；用户行换成「登录」按钮和「关于」图标按钮
 import { useQuery } from '@tanstack/react-query';
 import { Link } from '@tanstack/react-router';
-import { Button, type PopoverProps, Tooltip } from 'antd';
+import { Button, Tag, type PopoverProps, Tooltip } from 'antd';
 import { Info, LogIn, PanelLeft, Search } from 'lucide-react';
 import type { ReactNode } from 'react';
 import type { CatalogKind } from '../../../src/shared/catalog.js';
@@ -133,13 +133,14 @@ export function TenantRow({
       {collapsed ? (
         <Tooltip title={tenant} placement="right">
           <span className="tenant" role="img" tabIndex={0} aria-label={tenant}>
-            <TenantMark name={tenant} />
+            {viewer.kind === 'member' && viewer.me.sandbox ? <Tag>体验</Tag> : <TenantMark name={tenant} />}
           </span>
         </Tooltip>
       ) : (
         <span className="tenant">
-          <TenantMark name={tenant} />
+          {!(viewer.kind === 'member' && viewer.me.sandbox) && <TenantMark name={tenant} />}
           <span className="tenant-name">{tenant}</span>
+          {viewer.kind === 'member' && viewer.me.sandbox && <Tag>体验</Tag>}
         </span>
       )}
       {viewer.kind === 'member' && <Bell pack={pack} placement={bellPlacement} />}

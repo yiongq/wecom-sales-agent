@@ -3,110 +3,141 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>免登录体验 · AI 销售工作台</title>
-<link rel="icon" type="image/png" href="/share-cover.png">
+<meta name="robots" content="noindex">
+<title>AI销售工作台</title>
+<!-- console styles -->
 <style>
-  :root { color-scheme:light; --ink:#202922; --sub:#59645b; --line:#dce2d9; --green:#246348; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:#f5f6f0; color:var(--ink); font:16px/1.75 "PingFang SC","Noto Sans SC",sans-serif; }
-  main { max-width:680px; margin:8vh auto; padding:0 24px 40px; }
-  .eyebrow { color:var(--green); font-size:12px; letter-spacing:2px; font-weight:600; }
-  h1 { font-size:clamp(30px,6vw,44px); line-height:1.35; letter-spacing:-1px; margin:18px 0; }
-  .intro { color:var(--sub); max-width:520px; }
-  .steps { display:flex; gap:24px; padding:22px 0; margin:26px 0; border-top:1px solid var(--line); border-bottom:1px solid var(--line); }
-  .steps div { flex:1; }
-  .steps span { display:block; color:var(--green); font-size:12px; margin-bottom:4px; }
-  button { border:0; border-radius:8px; background:var(--green); color:white; padding:13px 28px; font-family:inherit; font-size:16px; font-weight:600; line-height:1.5; cursor:pointer; }
-  button:hover { background:#194f38; }
-  button:disabled { cursor:wait; opacity:.7; }
-  button:focus-visible, a:focus-visible { outline:3px solid #87b79b; outline-offset:4px; }
-  [hidden] { display:none !important; }
-  .notice { padding:12px 16px; border-left:3px solid var(--green); background:#e9efe4; margin:20px 0; }
-  #status { min-height:28px; color:var(--sub); margin:12px 0; overflow-wrap:anywhere; }
-  .fallback { padding:16px 0; }
-  .fallback p { margin:0 0 8px; }
-  .fallback a { display:inline-block; margin:0 20px 8px 0; color:var(--green); text-underline-offset:4px; }
-  .fallback a:not([href]) { display:none; }
-  details { margin-top:28px; padding-top:18px; border-top:1px solid var(--line); font-size:13px; color:var(--sub); }
-  summary { cursor:pointer; color:var(--ink); }
-  details p { margin:12px 0 0; }
-  @media(max-width:480px) { main { margin:36px auto 0; padding-inline:20px; } .steps { gap:12px; font-size:14px; } button { width:100%; } }
+[hidden] { display:none !important; }
+.try-panel { display:flex; flex-direction:column; }
+.try-panel .login-column { margin-bottom:64px; }
+.try-start { width:100%; height:40px; border:0; border-radius:var(--r-sm); background:var(--primary); color:var(--on-primary); font:500 14px/22px var(--font); cursor:pointer; }
+.try-start:hover { background:var(--primary-hover); }
+.try-start:disabled { cursor:wait; opacity:.65; }
+.try-start:focus-visible, summary:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+.try-steps { margin:32px 0 24px; padding-top:24px; border-top:1px solid var(--divider); }
+.try-steps h2 { margin:0 0 12px; font-size:13px; line-height:20px; font-weight:500; color:var(--text-2); }
+.try-steps ol { padding:0; margin:0; list-style:none; }
+.try-steps li { display:flex; align-items:center; gap:10px; margin-top:10px; }
+.try-steps span { width:20px; height:20px; border:1px solid var(--control-border); border-radius:var(--r-full); text-align:center; font-size:12px; line-height:18px; color:var(--text-2); }
+.try-notes { font-size:13px; line-height:20px; color:var(--text-2); }
+.try-notes p { margin:8px 0; }
+.try-ended-notes { margin:24px 0; }
+.try-footer { margin-top:auto; text-align:center; font-size:13px; line-height:20px; color:var(--text-2); }
+.try-data { margin-top:16px; font-size:13px; line-height:20px; color:var(--text-2); }
+.try-data summary { cursor:pointer; color:var(--accent-text); }
+.try-alert { display:flex; gap:10px; align-items:flex-start; margin:16px 0; padding:12px 16px; border-radius:var(--r-md); background:var(--danger-bg); color:var(--danger); font-size:13px; line-height:20px; overflow-wrap:anywhere; }
+.try-fallback a { display:block; margin-top:12px; padding:16px; border-radius:var(--r-md); box-shadow:var(--shadow-card); color:var(--text); }
+.try-fallback small { display:block; margin-top:4px; color:var(--text-2); font-size:13px; }
+.try-alert svg { width:16px; height:16px; flex:none; margin-top:2px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; }
 </style>
 </head>
 <body>
-<main>
-  <div class="eyebrow">AI 销售工作台 / 免登录体验</div>
-  <h1>把一段对话，<br>变成你的工作台。</h1>
-  <p class="intro">为你准备一份独立的临时环境，包含示例会话、订单和产品。接管回复、改价、标已付、改 SOP，都可以亲手试一遍。</p>
-  <p class="notice" id="ended" hidden>上一次体验已结束。你可以重新开始一次体验。</p>
-  <div class="steps" aria-label="体验步骤">
-    <div><span>01 / 准备</span>开通独立副本</div>
-    <div><span>02 / 对话</span>用模拟器聊一句</div>
-    <div><span>03 / 操作</span>接管、回复与改价</div>
-  </div>
-  <p class="intro">体验环境最长保留 24 小时，闲置会提前结束。回复只发到你自己的微信；微信体验不可用时，可以使用网页模拟器。不要输入真实个人信息。</p>
-  <button type="button" id="startBtn">开始体验</button>
-  <p id="status" role="status" aria-live="polite" aria-atomic="true"></p>
-  <div class="fallback" id="fallback" hidden>
-    <p>也可以先看主站演示：</p>
-    <!-- 由沙箱服务端填入宿主的绝对 URL；不猜测域名，也不落到沙箱自己的路由。 -->
-    <a id="hostConsole" aria-disabled="true" hidden>只读工作台</a>
-    <a id="hostChat" aria-disabled="true" hidden>网页模拟器</a>
-    <p id="fallbackUnavailable">请回到主站打开「只看演示数据」或网页模拟器。</p>
-  </div>
-  <details>
-    <summary>体验数据会怎样处理？</summary>
-    <p>体验结束后，这份环境及其会话、订单、配置和微信绑定将整体删除。备份副本随保留期滚动清理：本地 7 天、异地 30 天。</p>
-    <p>企微服务器上的聊天记录按企微的规则保存，不随沙箱删除。请只使用虚构的姓名、手机号等信息。</p>
-  </details>
-  <noscript><p class="notice">请启用 JavaScript 后点击「开始体验」。浏览此页面不会开通体验环境。</p></noscript>
-</main>
+<div class="login-page login-demo">
+  <main class="login-panel try-panel">
+    <div class="entry-wordmark">AI销售工作台</div>
+    <div class="login-column">
+      <h1 class="login-title" id="tryTitle">免登录体验</h1>
+      <p class="login-lead" id="tryLead">一份只属于你的示例后台，带示例会话、订单和产品。</p>
+      <div id="status" class="try-alert" role="alert" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="m9 9 6 6m0-6-6 6"></path></svg><span id="statusMessage"></span></div>
+      <button type="button" class="try-start" id="startBtn">开始体验</button>
+      <div class="try-steps" id="steps">
+        <h2>进去以后可以</h2>
+        <ol><li><span>1</span>用微信扫码，当一回客户</li><li><span>2</span>看AI怎么接待、报价</li><li><span>3</span>接手会话，自己回一句</li><li><span>4</span>改价、标已付或改话术</li></ol>
+      </div>
+      <div class="try-notes" id="notes"><p>最长保留24小时，闲置2小时会提前结束</p><p>只有这个浏览器能进入；回复只发给你自己的微信</p><p>别填真实的姓名和手机号</p></div>
+      <div class="try-notes try-ended-notes" id="ended" hidden><p>之前绑定的微信已经解除，再发消息不会有回复</p><p>企业微信服务器上的聊天记录按企业微信的规则保存</p></div>
+      <div class="try-fallback" id="fallback" hidden>
+        <a id="hostConsole" hidden>只读看演示后台<small>会话、产品库和话术都能看，不能改</small></a>
+        <a id="hostChat" hidden>在网页上和AI聊几句<small>你扮演客户，看它怎么推荐、报价</small></a>
+        <p id="fallbackUnavailable">备用入口暂未配置，请稍后重试。</p>
+      </div>
+      <details class="try-data"><summary>体验数据怎么处理</summary><!-- data copy --></details>
+      <noscript><p>需要开启 JavaScript 才能开始体验</p></noscript>
+    </div>
+    <p class="try-footer">已有账号？<a id="hostLogin" hidden>登录</a></p>
+  </main>
+  <!-- showcase -->
+</div>
 <script>
 (() => {
   const button = document.getElementById('startBtn');
   const status = document.getElementById('status');
+  const title = document.getElementById('tryTitle');
+  const lead = document.getElementById('tryLead');
   const fallback = document.getElementById('fallback');
-  document.getElementById('ended').hidden = new URLSearchParams(location.search).get('ended') !== '1';
-  const links = [document.getElementById('hostConsole'), document.getElementById('hostChat')];
-  for (const link of links) {
-    link.hidden = !link.hasAttribute('href');
-    if (link.hasAttribute('href')) link.removeAttribute('aria-disabled');
+  const params = new URLSearchParams(location.search);
+  const ended = params.get('ended') === '1';
+  const auto = params.get('start') === '1' && !ended;
+  if (params.has('start')) {
+    params.delete('start');
+    history.replaceState(null, '', location.pathname + (params.size ? '?' + params.toString() : '') + location.hash);
   }
-  document.getElementById('fallbackUnavailable').hidden = links.every(link => link.hasAttribute('href'));
-
-  button.addEventListener('click', async () => {
+  const links = ['hostConsole', 'hostChat', 'hostLogin'].map((id) => document.getElementById(id));
+  for (const link of links) link.hidden = !link.hasAttribute('href');
+  document.getElementById('fallbackUnavailable').hidden = links.slice(0, 2).every((link) => link.hasAttribute('href'));
+  if (ended) {
+    title.textContent = '上一次体验已结束';
+    lead.textContent = '环境和里面的数据已经删除。想再看一遍，可以重新开一个。';
+    button.textContent = '再开一个体验';
+    document.getElementById('ended').hidden = false;
+    document.getElementById('steps').hidden = true;
+    document.getElementById('notes').hidden = true;
+  }
+  async function start() {
     if (button.disabled) return;
     button.disabled = true;
-    button.textContent = '正在开通…';
-    status.textContent = '正在准备独立环境、示例会话和订单，请稍候…';
+    button.hidden = false;
+    button.textContent = '正在准备…';
+    title.textContent = '正在准备体验环境';
+    lead.textContent = '一份只属于你的示例后台，通常几秒就好。';
+    status.hidden = true;
     fallback.hidden = true;
+    const slow = setTimeout(() => { lead.textContent = '比平时慢一点，再等等'; }, 5000);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
     let entering = false;
     try {
       const response = await fetch('/api/sandbox', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { 'content-type': 'application/json' },
-        body: '{}',
+        method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}', signal: controller.signal,
       });
       const body = await response.json();
-      if (body.error === 'sandbox_limited' || response.status === 429) {
-        status.textContent = '体验名额或开通额度暂时已满，请稍后重试。';
+      clearTimeout(slow);
+      if (body.error === 'sandbox_limited') {
+        title.textContent = body.scope === 'ip' ? '这个网络今天开得有点多了' : '今天的体验名额满了';
+        const seconds = Number(body.retryAfter || response.headers.get('retry-after') || 3600);
+        const delay = seconds < 3600 ? Math.max(1, Math.ceil(seconds / 60)) + '分钟' : Math.ceil(seconds / 3600) + '小时';
+        lead.textContent = body.scope === 'ip' ? '过一会儿再试，或者先看看这些：' : '体验环境的名额有限，大约' + delay + '后恢复。先看看这些：';
+        document.getElementById('steps').hidden = true;
+        document.getElementById('notes').hidden = true;
         fallback.hidden = false;
+        button.hidden = true;
         return;
       }
-      if (!response.ok || body.url !== '/console/') throw new Error('sandbox_unavailable');
-      status.textContent = '环境已准备好，正在进入工作台…';
-      location.assign('/console/');
+      if (!response.ok || body.url !== '/console/') throw new Error(body.error || 'sandbox_unavailable');
+      location.replace('/console/');
       entering = true;
-    } catch {
-      status.textContent = '暂时无法开通体验，请检查网络后重试。';
+    } catch (error) {
+      status.hidden = false;
+      document.getElementById('statusMessage').textContent = error.message === 'sandbox_unavailable' ? '暂时无法开通体验，请稍后重试。' : error.message === 'cross_site' ? '请在体验页面里重新开始。' : '暂时无法开通体验，请检查网络后重试。';
     } finally {
-      if (!entering) {
-        button.disabled = false;
-        button.textContent = '重试';
-      }
+      clearTimeout(slow);
+      clearTimeout(timeout);
+      if (!entering) { button.disabled = false; button.textContent = '重试'; }
     }
-  });
+  }
+  button.addEventListener('click', start);
+  if (auto) {
+    title.textContent = '正在准备体验环境';
+    lead.textContent = '一份只属于你的示例后台，通常几秒就好。';
+    button.textContent = '正在准备…';
+    const visible = () => {
+      if (document.visibilityState !== 'visible') return;
+      document.removeEventListener('visibilitychange', visible);
+      void start();
+    };
+    if (document.visibilityState === 'visible') visible();
+    else document.addEventListener('visibilitychange', visible);
+  }
 })();
 </script>
 </body>

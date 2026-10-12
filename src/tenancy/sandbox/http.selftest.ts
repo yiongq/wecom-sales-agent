@@ -301,7 +301,12 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   // 租户品牌与会话键会改变脚本，不能用 public 源文件的固定 hash。
   const originalScript = /<script>([\s\S]*?)<\/script>/.exec(fs.readFileSync('public/chat.html', 'utf8'))![1]!;
   check(() => assert.notEqual(/<script>([\s\S]*?)<\/script>/.exec(html)![1], originalScript));
-  for (const url of ['/pay.html', '/proposal.html', '/try', '/proposal/r-xian/2']) await page(url, token);
+  for (const url of ['/pay.html', '/proposal.html', '/proposal/r-xian/2']) await page(url, token);
+  for (const query of ['', '?start=1', '?ended=1']) {
+    const existing = await request('/try' + query, token);
+    await expect(existing, 302);
+    check(() => assert.equal(existing.headers.get('location'), '/console/'));
+  }
   await page('/proposal/r-xian/2?v=999', token, 404);
   // 执行真实页面的启动代码和按钮回调：?c 优先；新会话删 c、保留其余 URL，再启动产生新 id。
   const key = /LS_KEY = '([^']+)'/.exec(html)![1]!;

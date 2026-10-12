@@ -22,3 +22,13 @@ export function sandboxTryUrl(): string | null {
     return null;
   }
 }
+
+/** 行业示例只由服务端下发，前端保持行业无关。 */
+export function loginShowcase() {
+  return profile().name === 'demo'
+    ? {
+        src: '/login-showcase.png',
+        alt: '企业微信会话示例：客户问云南6日游，AI推荐线路并报价；另一位客户在等人接手',
+      }
+    : null;
+}

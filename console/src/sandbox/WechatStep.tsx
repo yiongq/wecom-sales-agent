@@ -1,5 +1,7 @@
 // R22：签码只留在当前页面；二维码在浏览器生成，不请求外部图片。
 import { Button } from 'antd';
+import { Copy, ExternalLink } from 'lucide-react';
+import { Icon } from '../shell/icons.js';
 import { useEffect, useRef, useState } from 'react';
 import type { QrCodeGenerateResult } from 'uqr';
 import { HttpError } from '../api.js';
@@ -58,7 +60,17 @@ export function WechatStep({ wechat, expanded = true }: { wechat: SandboxInfo['w
     setAttempt((a) => a + 1);
   };
   const wantsCode = wechat === 'unbound' || (wechat === 'bound' && attempt > 0);
-  const inWechat = /MicroMessenger/i.test(navigator.userAgent);
+  const [copied, setCopied] = useState(false);
+  const [copyFailed, setCopyFailed] = useState(false);
+  const copy = async (value: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setCopied(true);
+      setCopyFailed(false);
+    } catch {
+      setCopyFailed(true);
+    }
+  };
 
   useEffect(() => {
     if (!wantsCode || !enabled) return;
@@ -134,16 +146,9 @@ export function WechatStep({ wechat, expanded = true }: { wechat: SandboxInfo['w
     };
   }, [enabled, wantsCode, state]);
 
-  if (wechat === 'off' || wechat === 'full')
-    return (
-      <>
-        <h3>打开模拟器发一句</h3>
-        <SimulatorFallback full={wechat === 'full'} />
-      </>
-    );
+  if (wechat === 'off' || wechat === 'full') return <SimulatorFallback full={wechat === 'full'} />;
   return (
     <div className="sandbox-wechat">
-      <h3>{wechat === 'unbound' && state.kind === 'full' ? '打开模拟器发一句' : '用微信给AI发一句'}</h3>
       {wechat === 'bound' && <p role="status">已连上你的微信</p>}
       {wechat === 'bound' && !wantsCode && (
         <Button size="small" onClick={requestCode}>
@@ -166,9 +171,9 @@ export function WechatStep({ wechat, expanded = true }: { wechat: SandboxInfo['w
           </div>
         ) : (
           <>
-            <p>{cjk('用微信扫码，给AI发一句。')}</p>
+            <p>{cjk('扫码后，你的微信就是这家店的客户：AI和你在后台的回复，都会发到这个微信。')}</p>
             <svg
-              className={`sandbox-qr${inWechat ? ' is-wechat' : ''}`}
+              className="sandbox-qr"
               role="img"
               aria-label="微信体验二维码"
               viewBox={`0 0 ${state.value.qr.size} ${state.value.qr.size}`}
@@ -179,26 +184,30 @@ export function WechatStep({ wechat, expanded = true }: { wechat: SandboxInfo['w
                 d={state.value.qr.data.flatMap((row, y) => row.flatMap((black, x) => (black ? [`M${x},${y}h1v1h-1z`] : []))).join('')}
               />
             </svg>
-            {inWechat && (
-              <a className="sandbox-open-wechat" href={state.value.href} rel="noreferrer">
-                在微信里打开
-              </a>
-            )}
-            <p>
-              {cjk('也可以在微信里发送这个码：')}
-              <br />
-              <code className="sandbox-wechat-code">{state.value.code}</code>
+            <a className="sandbox-open-wechat" href={state.value.href} rel="noreferrer">
+              <Icon of={ExternalLink} size={16} />
+              在微信里打开
+            </a>
+            <p className="sandbox-desktop-hint">
+              {slow && wechat === 'unbound' ? '扫码没反应？先用网页模拟器体验' : '进了对话没反应？把这串码发给客服'}
             </p>
-            <p>{cjk('码过期会自动换新。')}</p>
-            {slow && wechat === 'unbound' && (
-              <p role="status">
-                {cjk('扫码没反应？先用模拟器体验')}
-                <br />
-                <a href="/chat.html" target="_blank" rel="noopener noreferrer">
-                  打开模拟器
-                </a>
-              </p>
-            )}
+            <p className="sandbox-mobile-hint">打不开？在微信里给客服发这串码</p>
+            <div className="sandbox-code-row">
+              <code className="sandbox-wechat-code">{state.value.code}</code>
+              <Button
+                type="text"
+                size="small"
+                aria-label="复制码"
+                icon={<Icon of={Copy} size={16} />}
+                onClick={() => void copy(state.value.code)}
+              />
+              {copied && <span role="status">已复制</span>}
+            </div>
+            {copyFailed && <p role="alert">复制失败，请选中这串码手动复制</p>}
+            <p>10分钟内有效，过期自动换新</p>
+            <a href="/chat.html" target="_blank" rel="noopener noreferrer">
+              不方便扫码？先用网页模拟器
+            </a>
           </>
         ))}
       {wechat === 'bound' && wantsCode && (

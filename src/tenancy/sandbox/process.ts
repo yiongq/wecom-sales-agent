@@ -71,7 +71,7 @@ import { SandboxReaper } from './reaper.js';
 import { drainSandboxProvisioning, provisionSandbox, SandboxProvisionError, type ProvisionedSandbox } from './provision.js';
 import { sandboxWechatIndex, wxPage, wxResource } from './outbound.js';
 import { SandboxWechatBinding, SandboxWechatError } from './binding.js';
-import { sandboxPage, sandboxTryLinks } from './pages.js';
+import { sandboxPage, sandboxTryLinks, sandboxTryDesign } from './pages.js';
 
 export class SandboxProcess {
   private deps: ConfigDeps | null = null;
@@ -279,6 +279,11 @@ export function sandboxApp(
 ) {
   const app = new Hono();
   const publicBaseUrl = globalThis.process.env.PUBLIC_BASE_URL;
+  app.use('/*', async (c, next) => {
+    c.header('X-Robots-Tag', 'noindex, nofollow');
+    await next();
+    c.res.headers.set('X-Robots-Tag', 'noindex, nofollow');
+  });
   app.use('/*', requestLogContext);
   app.use('/*', async (c, next) => {
     if (/^\/wx(?:\/|$)/i.test(c.req.path)) {
@@ -321,6 +326,8 @@ export function sandboxApp(
     return c.redirect(target + new URL(c.req.url).search);
   });
   app.use('/console/assets/*', async (c) => consolePages.fetch(c.req.raw));
+  app.get('/robots.txt', (c) => c.text('User-agent: *\nDisallow: /\n'));
+  app.get('/login-showcase.png', serveStatic({ root: './public' }));
   app.get('/share-cover.png', serveStatic({ root: './public' }));
   app.get('/sandbox-ui.js', serveStatic({ root: './public' }));
   app.get('/web.css', serveStatic({ root: './public' }));
@@ -370,7 +377,14 @@ export function sandboxApp(
     });
   });
   // GET 永远不建租户；备用链接只来自部署配置，不读取请求的 Host / 转发头。
-  app.get('/try', async (c) => c.html(sandboxTryLinks(await readFile('public/try.html', 'utf8'), publicBaseUrl)));
+  app.get('/try', async (c) => {
+    if (sandboxSessionOf(c)) return c.redirect('/console/');
+    const [html, index] = await Promise.all([
+      readFile('public/try.html', 'utf8'),
+      readFile(`${globalThis.process.env.CONSOLE_DIST || 'console/dist'}/index.html`, 'utf8'),
+    ]);
+    return c.html(sandboxTryDesign(sandboxTryLinks(html, publicBaseUrl), index));
+  });
   app.post('/api/sandbox', async (c) => {
     if (!/^application\/json\s*(?:;|$)/i.test(c.req.header('content-type') ?? '')) return c.json({ error: 'unsupported_media_type' }, 415);
     const session = sandboxSessionOf(c);
@@ -398,11 +412,25 @@ export function sandboxApp(
     if (error instanceof BudgetExhausted) return c.json({ error: 'llm_budget_exhausted' }, 429);
     if (error instanceof SandboxLimitError) {
       c.header('Retry-After', String(error.retryAfter));
-      return c.json({ error: error.reason, retryAfter: error.retryAfter }, error.status);
+      return c.json(
+        {
+          error: error.reason,
+          retryAfter: error.retryAfter,
+          ...(c.req.path === '/api/sandbox' && error.reason === 'sandbox_limited' ? { scope: error.global ? 'pool' : 'ip' } : {}),
+        },
+        error.status,
+      );
     }
     if (error instanceof SandboxProvisionError) {
       if (error.retryAfter) c.header('Retry-After', String(error.retryAfter));
-      return c.json({ error: error.reason, ...(error.retryAfter === undefined ? {} : { retryAfter: error.retryAfter }) }, error.status);
+      return c.json(
+        {
+          error: error.reason,
+          ...(error.retryAfter === undefined ? {} : { retryAfter: error.retryAfter }),
+          ...(error.scope ? { scope: error.scope } : {}),
+        },
+        error.status,
+      );
     }
     console.error(`[sandbox-http] 请求失败 ${c.req.method} ${convLabelsIn(c.req.path)}`, error instanceof Error ? error.name : 'unknown');
     return c.json({ error: 'sandbox_unavailable' }, 503);

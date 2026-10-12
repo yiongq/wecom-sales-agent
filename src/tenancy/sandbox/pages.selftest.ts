@@ -5,8 +5,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
+import { createTenantRuntime } from '../runtime.js';
+import type { SandboxSession } from './session.js';
 import { createHash } from 'node:crypto';
-import { sandboxTryLinks } from './pages.js';
+import { sandboxTryDesign, sandboxTryLinks } from './pages.js';
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'sandbox-pages-'));
 process.env.VAR_DIR = temp;
@@ -49,7 +51,7 @@ class Element {
   }
 }
 
-function boot(html: string, fetch: (url: string, init: RequestInit) => Promise<Response>, ended = false) {
+function boot(html: string, fetch: (url: string, init: RequestInit) => Promise<Response>, search = '', visible = true) {
   const ids = new Map<string, Element>();
   for (const tag of html.matchAll(/<[^>]+\bid="([^"]+)"[^>]*>/g)) {
     const element = new Element();
@@ -59,13 +61,40 @@ function boot(html: string, fetch: (url: string, init: RequestInit) => Promise<R
     ids.set(tag[1]!, element);
   }
   const assigned: string[] = [];
+  const replaced: string[] = [];
+  const events = new Map<string, () => void>();
+  const timers = new Map<number, () => void>();
+  const document = {
+    getElementById: (id: string) => ids.get(id),
+    visibilityState: visible ? 'visible' : 'hidden',
+    addEventListener: (name: string, handler: () => void) => events.set(name, handler),
+    removeEventListener: (name: string) => events.delete(name),
+  };
+  let timer = 0;
   vm.runInNewContext(/<script>([\s\S]*?)<\/script>/.exec(html)![1]!, {
-    document: { getElementById: (id: string) => ids.get(id) },
+    document,
     URLSearchParams,
-    location: { search: ended ? '?ended=1' : '', assign: (url: string) => assigned.push(url) },
+    AbortController,
+    history: { replaceState: (_state: unknown, _title: string, url: string) => replaced.push(url) },
+    location: { pathname: '/try', search, hash: '', replace: (url: string) => assigned.push(url) },
+    setTimeout: (handler: () => void) => {
+      timers.set(++timer, handler);
+      return timer;
+    },
+    clearTimeout: (id: number) => timers.delete(id),
     fetch,
   });
-  return { ids, assigned, click: () => ids.get('startBtn')!.events.get('click')!() };
+  return {
+    ids,
+    assigned,
+    replaced,
+    timers,
+    visible: () => {
+      document.visibilityState = 'visible';
+      events.get('visibilitychange')?.();
+    },
+    click: () => ids.get('startBtn')!.events.get('click')!(),
+  };
 }
 
 function cspMatches(response: Response, html: string): void {
@@ -84,15 +113,17 @@ function cspMatches(response: Response, html: string): void {
 try {
   let provisions = 0;
   let failure: 'limited' | 'unavailable' = 'limited';
+  let scope: 'pool' | 'ip' = 'pool';
+  let session: SandboxSession = { status: 'invalid' };
   const service = {
     health: () => {
       throw new Error('unused');
     },
-    resolve: async () => ({ status: 'invalid' as const }),
+    resolve: async () => session,
     provision: async () => {
       provisions++;
       throw failure === 'limited'
-        ? new SandboxProvisionError(429, 'sandbox_limited', 60)
+        ? new SandboxProvisionError(429, 'sandbox_limited', 7200, undefined, scope)
         : new SandboxProvisionError(503, 'sandbox_unavailable');
     },
     end: async () => {},
@@ -127,14 +158,15 @@ try {
         getElementById: () => messages,
         querySelectorAll: () => [close],
         createElement: () => new Element(),
+        createElementNS: () => new Element(),
       },
       window: { closeWebview: () => closed++ },
       fetch: async () => Response.json({ sandbox: { wechat, expiresAt: new Date(Date.now() + 3600000).toISOString() } }),
     });
     await new Promise((resolve) => setImmediate(resolve));
-    check(() => assert.match(messages.banner!.children[0]!.textContent, /剩余 1 小时/));
-    check(() => assert.match(messages.banner!.children[0]!.textContent, wechat === 'off' ? /只进模拟器/ : /回复只发到你自己的微信/));
-    check(() => assert.match(messages.banner!.children[1]!.textContent, /本地 7 天、异地 30 天/));
+    check(() => assert.match(messages.banner!.children[1]!.children[0]!.textContent, /体验环境 · 你在扮演客户/));
+    check(() => assert.match(messages.banner!.children[1]!.children[1]!.textContent, /这里的回复只出现在网页上，不会发给任何人/));
+    check(() => assert.equal(messages.banner!.children[2]!.attrs.get('href'), '/console/'));
     await close.events.get('click')!({ preventDefault: () => prevented++ });
     check(() => assert.equal(closed, 1));
     check(() => assert.equal(prevented, 1));
@@ -150,27 +182,28 @@ try {
   cspMatches(response, html);
   check(() => assert.equal(response.status, 200));
   check(() => assert.equal(provisions, 0));
-  const page = boot(html, fetch, true);
+  const page = boot(html, fetch, '?ended=1');
   check(() => assert.equal(page.ids.get('ended')!.hidden, false));
-  check(() => assert.equal(page.ids.get('hostConsole')!.attrs.get('href'), 'https://host.example.invalid/console/'));
+  check(() => assert.equal(page.ids.get('hostConsole')!.attrs.get('href'), 'https://host.example.invalid/console/?view=demo'));
   check(() => assert.equal(page.ids.get('hostChat')!.attrs.get('href'), 'https://host.example.invalid/chat.html'));
   check(() => assert.equal(page.ids.get('hostConsole')!.hidden, false));
   check(() => assert.equal(page.ids.get('hostChat')!.hidden, false));
   check(() => assert.equal(page.ids.get('fallbackUnavailable')!.hidden, true));
   const attempt = page.click();
   check(() => assert.equal(page.ids.get('startBtn')!.disabled, true));
-  check(() => assert.match(page.ids.get('status')!.textContent, /正在准备/));
+  check(() => assert.match(page.ids.get('startBtn')!.textContent, /正在准备/));
   await page.click();
   await attempt;
   check(() => assert.equal(provisions, 1, '重复点击只发一次 POST'));
   check(() => assert.equal(page.ids.get('fallback')!.hidden, false));
-  check(() => assert.match(page.ids.get('status')!.textContent, /名额或开通额度/));
+  check(() => assert.match(page.ids.get('tryTitle')!.textContent, /今天的体验名额满了/));
+  check(() => assert.match(page.ids.get('tryLead')!.textContent, /大约2小时后恢复/));
   check(() => assert.equal(page.ids.get('startBtn')!.textContent, '重试'));
   check(() => assert.equal(page.ids.get('startBtn')!.disabled, false));
   failure = 'unavailable';
   await page.click();
   check(() => assert.equal(provisions, 2));
-  check(() => assert.match(page.ids.get('status')!.textContent, /暂时无法开通/));
+  check(() => assert.match(page.ids.get('statusMessage')!.textContent, /暂时无法开通/));
   check(() => assert.equal(page.ids.get('fallback')!.hidden, true));
   check(() => assert.deepEqual(page.assigned, []));
 
@@ -180,7 +213,7 @@ try {
       return result;
     });
     await errorPage.click();
-    check(() => assert.match(errorPage.ids.get('status')!.textContent, /暂时无法开通/));
+    check(() => assert.match(errorPage.ids.get('statusMessage')!.textContent, /暂时无法开通/));
     check(() => assert.equal(errorPage.ids.get('startBtn')!.disabled, false));
     check(() => assert.deepEqual(errorPage.assigned, []));
   }
@@ -196,6 +229,99 @@ try {
     check(() => assert.equal(success.ids.get('startBtn')!.disabled, true));
     check(() => assert.equal(success.ids.get('ended')!.hidden, true));
   }
+  // 自动开通须先清 start、等待可见，再 POST；直接访问与 ended 永远不自动。
+  let autoCalls = 0;
+  const autoPage = boot(
+    html,
+    async () => {
+      autoCalls++;
+      return Response.json({ url: '/console/' });
+    },
+    '?start=1&keep=2',
+    false,
+  );
+  check(() => assert.deepEqual(autoPage.replaced, ['/try?keep=2']));
+  check(() => assert.equal(autoCalls, 0));
+  autoPage.visible();
+  await new Promise((r) => setImmediate(r));
+  check(() => assert.equal(autoCalls, 1));
+  check(() => assert.deepEqual(autoPage.assigned, ['/console/']));
+  autoPage.visible();
+  check(() => assert.equal(autoCalls, 1));
+  for (const query of ['', '?ended=1', '?ended=1&start=1']) {
+    boot(
+      html,
+      async () => {
+        throw new Error('不得自动POST');
+      },
+      query,
+    );
+  }
+  const immediate = boot(
+    html,
+    async () => {
+      autoCalls++;
+      return Response.json({ url: '/console/' });
+    },
+    '?start=1',
+  );
+  await new Promise((r) => setImmediate(r));
+  check(() => assert.equal(autoCalls, 2));
+  check(() => assert.deepEqual(immediate.replaced, ['/try']));
+  let resolveSlow!: (res: Response) => void;
+  const slowPage = boot(
+    html,
+    async () =>
+      new Promise<Response>((r) => {
+        resolveSlow = r;
+      }),
+    '?start=1',
+  );
+  slowPage.timers.get(1)!();
+  check(() => assert.equal(slowPage.ids.get('tryLead')!.textContent, '比平时慢一点，再等等'));
+  resolveSlow(Response.json({ url: '/console/' }));
+  await new Promise((r) => setImmediate(r));
+  check(() => assert.equal(slowPage.timers.size, 0));
+  failure = 'limited';
+  scope = 'ip';
+  const ipPage = boot(html, fetch);
+  await ipPage.click();
+  check(() => assert.equal(ipPage.ids.get('tryTitle')!.textContent, '这个网络今天开得有点多了'));
+  check(() => assert.match(ipPage.ids.get('tryLead')!.textContent, /过一会儿再试/));
+  check(() => assert.equal(ipPage.ids.get('fallback')!.hidden, false));
+  check(() => assert.equal(response.headers.get('x-robots-tag'), 'noindex, nofollow'));
+  const robots = await fetch('/robots.txt');
+  const robotText = await robots.text();
+  check(() => assert.equal(robotText, 'User-agent: *\nDisallow: /\n'));
+  for (const url of ['/login-showcase.png', '/sandbox-ui.js', '/missing', '/api/sandbox/end']) {
+    const res = await fetch(url);
+    check(() => assert.equal(res.headers.get('x-robots-tag'), 'noindex, nofollow'));
+  }
+  check(() => assert.match(html, /<meta name="robots" content="noindex">/));
+  check(() => assert.match(html, /href="\/console\/assets\/[^" ]+\.css"/));
+  check(() => assert.match(html, /src="\/login-showcase.png"/));
+  check(() => assert.match(html, /本地7天、异地30天/));
+  check(() => assert.equal(ipPage.ids.get('hostLogin')!.attrs.get('href'), 'https://host.example.invalid/console/'));
+  const runtime = createTenantRuntime({ id: 'try-visitor', slug: 'sbx-try', kind: 'sandbox' });
+  session = {
+    status: 'ok',
+    token: 'fixture',
+    runtime,
+    expiresAt: new Date(Date.now() + 3600000).toISOString(),
+    user: { userId: 'visitor', tenantId: runtime.id, role: 'owner', displayName: '体验访客', csrf: 'fixture' },
+  };
+  for (const query of ['', '?start=1', '?ended=1']) {
+    const res = await fetch('/try' + query);
+    check(() => assert.equal(res.status, 302));
+    check(() => assert.equal(res.headers.get('location'), '/console/'));
+  }
+  session = { status: 'invalid' };
+  check(() =>
+    assert.equal(
+      sandboxTryDesign('<!-- console styles -->', '<link rel="stylesheet" href="/console/assets/test.css">'),
+      '<link rel="stylesheet" href="/console/assets/test.css">',
+    ),
+  );
   const head = await fetch('/try', { method: 'HEAD' });
   check(() => assert.equal(head.status, 200));
   const headBody = await head.text();

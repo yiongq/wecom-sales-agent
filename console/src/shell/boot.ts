@@ -11,17 +11,18 @@
 // | 401、401                                    | prod：登录页                                      |
 // 成员身份下（本次启动时 /me 成功过、或在本页登录过）/me 没成功时抛出，不降成匿名：分不清身份，宁可重试（spec「会话过期的判定」）。
 // 表外的组合（如 /me 200 而 /pack 401）也抛出，按错误文案显示
+import type { Showcase } from '../../../src/shared/entry-ui.js';
 import type { ApiError, Me } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { HttpError } from '../api.js';
 
-export type AnonViewer = { kind: 'anon'; pack: IndustryPack; tryUrl?: string | null };
+export type AnonViewer = { kind: 'anon'; pack: IndustryPack; tryUrl?: string | null; showcase?: Showcase | null };
 
 export type Viewer =
   | { kind: 'member'; me: Me; pack: IndustryPack }
   | AnonViewer
   /** demo：必须经「只看演示数据」进入匿名外壳（05 R23） */
-  | { kind: 'login'; demo?: AnonViewer; tryUrl?: string | null }
+  | { kind: 'login'; demo?: AnonViewer; tryUrl?: string | null; showcase?: Showcase | null; returning?: boolean }
   | { kind: 'disabled' }
   | { kind: 'redirect'; url: '/try' | '/try?ended=1' };
 

@@ -36,7 +36,7 @@ import { endMemberSession, isSessionExpired } from '../session.js';
 import { PageHeader } from '../shell/PageHeader.js';
 import { setReduceMotion } from '../theme/prefs.js';
 import { ThemeProvider } from '../theme/ThemeProvider.js';
-import { toLogin, type Viewer, VIEWER_KEY } from '../viewer.js';
+import { loadViewer, toLogin, type Viewer, VIEWER_KEY } from '../viewer.js';
 
 // Shell 经「关于」弹窗在模块顶层读 import.meta.env.BASE_URL（vite 构建时替换），Node 里没有 import.meta.env。
 // 在 tsx 转好的源码上把它换成构建时的值；钩子只对之后才载入的模块生效，所以 Shell 用动态 import
@@ -133,7 +133,9 @@ function checkLogin(body: { email?: string; password?: string }): Response {
 async function respond(method: string, url: URL, body: unknown): Promise<Response> {
   const p = url.pathname.replace(/^\/api\/console/, '');
   if (method === 'GET' && p === '/entry')
-    return server.entryFailure ? json(500, { error: 'internal' }) : json(200, { tryUrl: server.tryUrl ?? null });
+    return server.entryFailure
+      ? json(500, { error: 'internal' })
+      : json(200, { tryUrl: server.tryUrl ?? null, showcase: server.demo ? { src: '/login-showcase.png', alt: '服务端示例画面' } : null });
   if (method === 'GET' && p === '/me')
     return server.me ? json(server.me.status, server.me.body) : server.loggedIn ? json(200, ME) : unauthorized();
   if (method === 'GET' && p === '/pack') return server.loggedIn || server.demo ? json(200, PACK) : unauthorized();
@@ -282,7 +284,7 @@ async function mount(path: string, pages: { path: string; component: () => React
 
 {
   const anon: Viewer = { kind: 'anon', pack: PACK };
-  eq('toLogin：从 demo 匿名来的带着原来的匿名视图', toLogin(anon), { kind: 'login', demo: anon });
+  eq('toLogin：从 demo 匿名来的带着原来的匿名视图', toLogin(anon), { kind: 'login', demo: anon, returning: true });
   eq(
     'toLogin：别的来处不带（没有「只看演示数据」）',
     [toLogin(undefined), toLogin({ kind: 'member', me: ME, pack: PACK })],
@@ -301,13 +303,9 @@ async function mount(path: string, pages: { path: string; component: () => React
   // 1. 版式与文案
   eq('prod：启动只取 /me、/pack 各一次', [count('GET /api/console/me'), count('GET /api/console/pack')], [1, 1]);
   check('prod：是登录页，没有外壳（侧栏）', m.$('.login-page') !== null && document.querySelector('.sidebar') === null);
-  eq('prod：main 地标里只有一栏，h1 是「运营后台」', [m.$$('main').length, m.$$('h1').map(m.text)], [1, ['运营后台']]);
+  eq('prod：main 地标里只有一栏，h1 是「运营后台」', [m.$$('main').length, m.$$('h1').map(m.text)], [1, ['登录']]);
   check('prod：h1 用登录页的 display 样式', m.$('h1')?.className === 'login-title');
-  eq(
-    'prod：一句说明（中文与字母之间不打空格）',
-    m.text(m.$('.login-lead')),
-    '在这里维护销售话术和产品库，企业微信里的AI销售按它们接待客户',
-  );
+  eq('prod：一句说明（中文与字母之间不打空格）', m.text(m.$('.login-lead')), 'AI在企业微信里接待客户，你在这里管话术、产品和会话。');
   eq('prod：两个标签「邮箱」「密码」，不加冒号', m.$$('.login-label').map(m.text), ['邮箱', '密码']);
   check('prod：标签连着各自的输入框', m.email()?.tagName === 'INPUT' && m.password()?.tagName === 'INPUT');
   eq(
@@ -325,14 +323,9 @@ async function mount(path: string, pages: { path: string; component: () => React
   check('prod：焦点在邮箱上', document.activeElement === m.email());
   eq('prod：没点「登录」之前不写原因', [m.fieldErrors(), m.email()?.getAttribute('aria-invalid') ?? null], [[], null]);
   check('prod：没有「只看演示数据」', m.$('.login-back') === null && !m.box.textContent!.includes('只看演示数据'));
-  eq('prod：标签页标题是产品名', document.title, 'wecom-sales-agent · 企业微信AI销售助手');
+  eq('prod：标签页标题是产品名', document.title, 'AI销售工作台');
   check('prod：没有体验按钮', m.$('.login-try') === null);
-  const cover = m.$<HTMLImageElement>('.login-cover');
-  eq(
-    '登录页：真实产品图在标题上方',
-    [cover?.getAttribute('src'), cover?.width, cover?.height, cover !== null && (cover.compareDocumentPosition(m.$('h1')!) & 4) !== 0],
-    ['/share-cover.png', 96, 96, true],
-  );
+  check('prod：没有产品标志和右栏', !m.$('img') && !m.$('.entry-showcase'));
   eq(
     'prod：按钮只有一个主按钮「登录」，占满一栏',
     [m.$$('button[type="submit"]').map(m.text), m.$('.login-submit')?.classList.contains('ant-btn-block')],
@@ -578,12 +571,8 @@ async function mount(path: string, pages: { path: string; component: () => React
     [m.text(back()), back() !== null && (m.$('.login-form')!.compareDocumentPosition(back()!) & 4) !== 0],
     ['只看演示数据', true],
   );
-  eq(
-    'demo：「只看演示数据」是指向当前地址的链接（带 /console 与 search）',
-    back()?.getAttribute('href'),
-    '/console/catalog/route?status=draft',
-  );
-  eq('demo：标签页标题是产品名', document.title, 'wecom-sales-agent · 企业微信AI销售助手');
+  eq('demo：「只看演示数据」是指向当前地址的链接（带 /console 与 search）', back()?.getAttribute('href'), '/console/?view=demo');
+  eq('demo：标签页标题是产品名', document.title, 'AI销售工作台');
   check('demo：焦点在邮箱上', document.activeElement === m.email());
 
   // 点「只看演示数据」：prevented 记下页面自己拦没拦（document 上的监听在 React 之后跑，记完替浏览器拦住，不真的跳转）。
@@ -651,7 +640,25 @@ async function mount(path: string, pages: { path: string; component: () => React
   await m.unmount();
 }
 
-// 05 R23：体验入口按服务端 entry 与 demo 身份显示，失败时保留账号登录与只读入口。
+// 直达只读只对 demo 生效，prod 与已经选择登录的视图不受 query 强行切换。
+{
+  const search = win.location.search;
+  win.location.search = '?view=demo';
+  try {
+    for (const demo of [true, false]) {
+      server = { demo, loggedIn: false, login: 'check' };
+      endMemberSession();
+      const viewer = await loadViewer(undefined);
+      eq('view=demo 入口按部署profile判断', viewer.kind, demo ? 'anon' : 'login');
+      const previous = toLogin(viewer);
+      eq('主动登录不被直达参数覆盖', (await loadViewer(previous)).kind, 'login');
+    }
+  } finally {
+    win.location.search = search;
+  }
+}
+
+// 05 R23：demo 产品画面来自 entry，体验是小字链接；失败回退只读。
 for (const [demo, tryUrl, entryFailure] of [
   [true, '/try', false],
   [false, '/try', false],
@@ -660,19 +667,27 @@ for (const [demo, tryUrl, entryFailure] of [
   server = { demo, tryUrl, entryFailure, loggedIn: false, login: 'check' };
   const m = await mount('/console/catalog/route');
   const enabled = demo && !entryFailure;
+  const link = m.$<HTMLAnchorElement>('a[rel="nofollow"]');
+  eq('体验入口带start与nofollow', link?.getAttribute('href') ?? null, enabled ? '/try?start=1' : null);
+  eq('体验入口是小字链接', link?.textContent ?? '', enabled ? '免登录体验' : '');
+  eq('登录页只有回退时显示只读入口', m.box.textContent!.includes('只看演示数据'), demo && !enabled);
   eq(
-    `入口配置 demo=${demo} entryFailure=${entryFailure}：次级按钮`,
-    [m.text(m.$('.login-try-button')), m.$('.login-try-button')?.getAttribute('href') ?? null],
-    enabled ? ['免登录体验', '/try'] : ['', null],
+    'demo右栏图与alt来自entry',
+    [m.$('img')?.getAttribute('src') ?? null, m.$('img')?.getAttribute('alt') ?? null],
+    demo && !entryFailure ? ['/login-showcase.png', '服务端示例画面'] : [null, null],
   );
-  eq('入口配置：只看演示数据只在 demo 显示', !!m.$('.login-back'), demo);
-  check('入口配置：主按钮仍是账号登录', m.text(m.$('.login-submit')) === '登录');
+  check('主按钮仍是账号登录', m.text(m.$('.login-submit')) === '登录');
   if (enabled) {
-    eq('体验说明：寿命与回复范围', m.text(m.$('.login-try-note')), '临时环境、24小时后删除、回复只发到你自己的微信');
-    check('体验按钮是次级按钮', !m.$('.login-try-button')?.classList.contains('ant-btn-primary'));
-    await m.click(m.$('.login-back a'));
+    const viewer = m.qc.getQueryData<Viewer>(VIEWER_KEY);
+    if (viewer?.kind === 'login')
+      await act(async () => {
+        m.qc.setQueryData(VIEWER_KEY, viewer.demo);
+      });
+    await settle(m.qc);
     await m.click(m.$('.sb-login'));
-    eq('匿名外壳登录回到登录页后仍有体验入口', m.$('.login-try-button')?.getAttribute('href'), '/try');
+    eq('从匿名外壳登录保留返回演示', m.$('.login-back:last-child a')?.textContent, '返回演示');
+    await m.click(m.$('.login-back:last-child a'));
+    check('返回演示进入外壳', !!m.$('.sidebar'));
   }
   await m.unmount();
 }
@@ -853,7 +868,7 @@ const banners = (): Element[] =>
   eq('窄屏抽屉按 Esc 关上：焦点回到「打开导航」', [m.url(), document.activeElement === menu()], ['/conversations', true]);
   await m.unmount();
   setReduceMotion(false);
-  win.happyDOM.setViewport({ width: 1440, height: 1100 });
+  win.happyDOM.setViewport({ width: 1280, height: 1100 });
 }
 {
   // 启动出错、数据库没开：没有外壳的整页，这一块是 main；标题 h1，下面的说明 h2
@@ -971,8 +986,19 @@ const banners = (): Element[] =>
       },
     },
   };
+  win.happyDOM.setViewport({ width: 1280, height: 800 });
   const m = await mount('/console/catalog/route', [{ path: '/sop', component: () => createElement(PageHeader, { title: '话术页' }) }]);
   try {
+    eq(
+      '沙箱侧栏：产品名与体验Tag，没有租户头像',
+      [m.text(m.$('.tenant-name')), m.text(m.$('.sb-tenant .ant-tag')), !!m.$('.tenant-logo')],
+      ['AI销售工作台', '体验', false],
+    );
+    eq(
+      '沙箱用户行：访客头像、名字、不显示角色',
+      [m.text(m.$('.user-btn .avatar')), m.text(m.$('.user-name')), !!m.$('.user-role')],
+      ['访', '体验访客', false],
+    );
     const body = m.$('.sandbox-body')!;
     const inner = m.$('.shell-scroll')!;
     const checklist = m.$('.sandbox-checklist')!;
@@ -981,9 +1007,9 @@ const banners = (): Element[] =>
       [body.firstElementChild === checklist, checklist.nextElementSibling === inner],
       [true, true],
     );
-    for (const width of [1440, 1439, 390]) {
+    for (const width of [1280, 1279, 390]) {
       await act(async () => win.happyDOM.setViewport({ width, height: 800 }));
-      const narrow = width <= 1439;
+      const narrow = width <= 1279;
       const css = (el: HTMLElement) => win.getComputedStyle(el as never);
       eq(
         `沙箱 ${width}px：布局方向正常，清单顺序正确`,
@@ -1015,7 +1041,7 @@ const banners = (): Element[] =>
   } finally {
     await m.unmount();
     style.remove();
-    win.happyDOM.setViewport({ width: 1440, height: 1100 });
+    win.happyDOM.setViewport({ width: 1280, height: 1100 });
   }
 }
 

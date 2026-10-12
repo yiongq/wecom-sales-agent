@@ -295,7 +295,7 @@ const publicOrder = (o: Order): PublicOrder => ({
 app.get('/', (c) => c.redirect('/console/'));
 app.get('/try', (c) => {
   const url = sandboxTryUrl();
-  return url ? c.redirect(url) : c.notFound();
+  return url ? c.redirect(url + new URL(c.req.url).search) : c.notFound();
 });
 // 健康检查顺带暴露访客 LLM 预算用量，方便随时查「今天被刷了多少」；
 // llm 一栏看强制思考档位、1210 自愈次数、对冲触发/胜出次数——这几样出问题时不报错，只会变慢或变贵。

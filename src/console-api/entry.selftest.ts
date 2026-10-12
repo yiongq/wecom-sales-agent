@@ -16,6 +16,7 @@ const { app } = await import('../server.js');
 const { __profileTest } = await import('../profile.js');
 const { initConfig, closeConfig, __configTest } = await import('../config/source.js');
 const { openTestDb, installSeededConfig } = await import('../db/testing.js');
+const { loginShowcase } = await import('./entry.js');
 const oldHost = process.env.SANDBOX_HOST;
 const cases = [
   { env: { DEPLOY_PROFILE: 'prod' }, host: '', enabled: false },
@@ -32,13 +33,13 @@ async function matrix(source: string): Promise<void> {
     const label = `${source} / ${env.DEPLOY_PROFILE} / host=${!!host}`;
     const entry = await app.request('/api/console/entry');
     assert.equal(entry.status, 200, label);
-    assert.deepEqual(await entry.json(), { tryUrl: enabled ? '/try' : null }, label);
+    assert.deepEqual(await entry.json(), { tryUrl: enabled ? '/try' : null, showcase: loginShowcase() }, label);
     assert.equal(entry.headers.get('cache-control'), 'no-store', label);
-    const attempt = await app.request('/try');
+    const attempt = await app.request('/try?start=1&x=2');
     assert.equal(attempt.status, enabled ? 302 : 404, label);
-    assert.equal(attempt.headers.get('location'), enabled ? 'https://sandbox.test/try' : null, label);
+    assert.equal(attempt.headers.get('location'), enabled ? 'https://sandbox.test/try?start=1&x=2' : null, label);
     assert.equal((await app.request('/')).headers.get('location'), '/console/', label);
-    const cover = await app.request('/share-cover.png');
+    const cover = await app.request('/login-showcase.png');
     assert.equal(cover.status, 200, `${label}：登录页产品图可访问`);
     assert.match(cover.headers.get('content-type') ?? '', /^image\/png/);
     assert.deepEqual(Buffer.from(await cover.arrayBuffer()).subarray(0, 8), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
@@ -56,7 +57,7 @@ async function matrix(source: string): Promise<void> {
   ]) {
     process.env.SANDBOX_HOST = host;
     assert.equal((await app.request('/try')).status, 404, `${source}：无效 Host 不跳转`);
-    assert.deepEqual(await (await app.request('/api/console/entry')).json(), { tryUrl: null });
+    assert.deepEqual(await (await app.request('/api/console/entry')).json(), { tryUrl: null, showcase: loginShowcase() });
   }
 }
 

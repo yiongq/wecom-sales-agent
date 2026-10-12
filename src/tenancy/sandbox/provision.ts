@@ -28,6 +28,7 @@ export class SandboxProvisionError extends Error {
     readonly reason: 'sandbox_limited' | 'sandbox_unavailable',
     readonly retryAfter?: number,
     options?: ErrorOptions,
+    readonly scope?: 'pool' | 'ip',
   ) {
     super(reason, options);
   }
@@ -174,7 +175,7 @@ async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
   } catch (error) {
     if (error instanceof SandboxLimitError) {
       if (error.global) notifySandboxProvisionLimited();
-      throw new SandboxProvisionError(429, 'sandbox_limited', error.retryAfter);
+      throw new SandboxProvisionError(429, 'sandbox_limited', error.retryAfter, undefined, error.global ? 'pool' : 'ip');
     }
     if (error instanceof SandboxProvisionError) throw error;
     reportFailure('provision', error);

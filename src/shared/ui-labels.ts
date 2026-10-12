@@ -268,7 +268,13 @@ export const ERROR_COPY: Readonly<Record<string, ErrorEntry>> = {
   bad_request: { title: '无法完成这项操作', next: '刷新页面后重试', place: 'page', tone: 'danger', action: 'refresh' },
   unsupported_media_type: { title: '无法完成这项操作', next: '刷新页面后重试', place: 'page', tone: 'danger', action: 'refresh' },
   rate_limited: { title: '尝试太频繁', next: '稍后再试', place: 'form', tone: 'danger' },
-  sandbox_write_limited: { title: '体验环境的写入次数已达上限', next: '稍后再试', place: 'inline', tone: 'caution' },
+  sandbox_write_rate_limited: { title: '操作太快了，稍等几秒再试', next: null, place: 'inline', tone: 'caution' },
+  sandbox_write_capacity_limited: {
+    title: '这项操作已达到体验环境的容量上限',
+    next: '产品数量、版本、导入行数、快捷回复或当天话术发布次数有限，可以结束后再开一个',
+    place: 'inline',
+    tone: 'caution',
+  },
   llm_budget_exhausted: { title: '体验的模型额度已用完', next: '仍可用模拟器继续体验', place: 'inline', tone: 'caution' },
   busy: { title: '尝试太频繁', next: '稍后再试', place: 'form', tone: 'danger' },
   lock_lost: {

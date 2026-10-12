@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { encode } from 'uqr';
 import { WechatStep } from './WechatStep.js';
+import { ConfigProvider } from 'antd';
 import { QueryClient } from '@tanstack/react-query';
 import { startLiveEvents } from '../shell/live.js';
 import { VIEWER_KEY } from '../viewer.js';
@@ -15,11 +16,13 @@ import { HttpError } from '../api.js';
 import { errorCopy } from '../parts/errors.js';
 import { beginMemberSession, createSessionFetch, endMemberSession, isSessionExpired } from '../session.js';
 import { resolveBoot } from '../shell/boot.js';
+import { SANDBOX_DATA_COPY } from '../../../src/shared/entry-ui.js';
 import { userMenuItems } from '../shell/UserMenu.js';
 import {
   readCollapsed,
   remainingTime,
   SandboxBanner,
+  SandboxControls,
   SandboxChecklist,
   SimulatorLink,
   simulatorHref,
@@ -48,12 +51,21 @@ for (const wechat of ['off', 'full', 'unbound', 'bound'] as const) {
   check(() => assert.match(markup({ sandbox, error: new TypeError('offline') }), /没取到体验进度/));
   check(() => assert.match(markup({ sandbox }), /0\/4/));
   const banner = renderToStaticMarkup(createElement(SandboxBanner, { sandbox }));
-  check(() => assert.match(banner, wechat === 'off' || wechat === 'full' ? /只进模拟器/ : /回复只发到你自己的微信/));
+  check(() =>
+    assert.match(
+      banner,
+      wechat === 'off' || wechat === 'full'
+        ? /回复只出现在网页模拟器里/
+        : wechat === 'bound'
+          ? /已连上你的微信，回复只发给它/
+          : /扫码后，回复只发到你自己的微信/,
+    ),
+  );
 }
 check(() => assert.match(markup({ sandbox: { ...info, wechat: 'full' } }), /微信体验名额已满/));
 check(() => assert.match(markup({ sandbox: { ...info, wechat: 'bound' } }), /已连上你的微信/));
 check(() => assert.doesNotMatch(markup({ sandbox: { ...info, wechat: 'bound' } }), /微信体验二维码/));
-check(() => assert.match(markup(), /从发一句消息开始/));
+check(() => assert.match(markup(), /照着走一遍，大约5分钟/));
 check(() => assert.match(markup({ pending: true }), /正在载入体验进度/));
 check(() => assert.doesNotMatch(markup({ pending: true }), /未完成/));
 check(() => assert.match(markup({ error: new TypeError('offline') }), /没取到体验进度/));
@@ -65,18 +77,19 @@ for (let mask = 0; mask < 16; mask++) {
   check(() => assert.equal((html.match(/aria-label="未完成"/g) ?? []).length, steps.filter((v) => !v).length));
 }
 check(() => assert.match(markup({ sandbox: { ...info, steps: [true, true, true, true] } }), /四步已完成/));
-check(() => assert.match(renderToStaticMarkup(createElement(SandboxBanner, { sandbox: info })), /只进模拟器/));
+check(() => assert.match(renderToStaticMarkup(createElement(SandboxBanner, { sandbox: info })), /回复只出现在网页模拟器里/));
 check(() => assert.equal(simulatorHref('sbx-a&x=1'), '/chat.html?c=sbx-a%26x%3D1'));
 check(() => assert.equal(simulatorHref('sim-a'), null));
 check(() => assert.equal(renderToStaticMarkup(createElement(SimulatorLink, { id: 'wecom:wmTest' })), ''));
 check(() => assert.match(renderToStaticMarkup(createElement(SimulatorLink, { id: 'sbx-a' })), /在模拟器里打开/));
-check(() => assert.equal(remainingTime('2026-10-11T02:00:00Z', Date.parse('2026-10-11T01:00:00Z')), '剩余1小时'));
-check(() => assert.equal(remainingTime('2026-10-11T01:15:00Z', Date.parse('2026-10-11T01:00:00Z')), '剩余15分钟'));
+check(() => assert.equal(remainingTime('2026-10-11T02:00:00Z', Date.parse('2026-10-11T01:00:00Z')), '还剩1小时'));
+check(() => assert.equal(remainingTime('2026-10-11T01:15:00Z', Date.parse('2026-10-11T01:00:00Z')), '还剩15分钟'));
 check(() => assert.equal(remainingTime('2026-10-11T01:00:00Z', Date.parse('2026-10-11T01:00:00Z')), '体验已到期'));
 check(() =>
   assert.ok(!userMenuItems({ appearance: 'light', reduce: false, sandbox: true }).some((i) => i && 'key' in i && i.key === 'logout')),
 );
-check(() => assert.match(errorCopy(new HttpError(429, { error: 'sandbox_write_limited' })).title, /写入次数已达上限/));
+check(() => assert.match(errorCopy(new HttpError(429, { error: 'sandbox_write_rate_limited' })).title, /操作太快/));
+check(() => assert.match(errorCopy(new HttpError(429, { error: 'sandbox_write_capacity_limited' })).title, /容量上限/));
 check(() => assert.match(errorCopy(new HttpError(429, { error: 'llm_budget_exhausted' })).title, /模型额度已用完/));
 for (const [status, error, url] of [
   [401, 'sandbox_required', '/try'],
@@ -136,7 +149,7 @@ document.body.append(host);
 const root = createRoot(host);
 const render = async (node: React.ReactNode) => {
   await act(async () => {
-    root.render(node);
+    root.render(<ConfigProvider theme={{ token: { motion: false } }}>{node}</ConfigProvider>);
     await new Promise((r) => setTimeout(r, 10));
   });
 };
@@ -150,6 +163,52 @@ const click = async (text: string, scope: ParentNode = document) => {
 };
 let retries = 0;
 try {
+  // 实际横幅与清单共用状态：收起后整栏不占位，横幅可恢复。
+  const integrated = () => (
+    <SandboxControls slug="sbx-integrated">
+      <div>
+        <SandboxBanner sandbox={info} />
+        <SandboxChecklist slug="sbx-integrated" sandbox={info} onRetry={() => {}} />
+      </div>
+    </SandboxControls>
+  );
+  await render(integrated());
+  await click('收起', host);
+  check(() => assert.ok(host.querySelector('.sandbox-checklist.is-collapsed')));
+  check(() => assert.equal(readCollapsed('sbx-integrated'), true));
+  const collapseStyle = document.createElement('style');
+  collapseStyle.textContent = fs.readFileSync(new URL('./sandbox.css', import.meta.url), 'utf8');
+  document.head.append(collapseStyle);
+  check(() => assert.equal(getComputedStyle(host.querySelector('.sandbox-checklist')!).display, 'none'));
+  collapseStyle.remove();
+  await click('体验清单', host);
+  check(() => assert.equal(host.querySelector('.sandbox-checklist.is-collapsed'), null));
+  check(() => assert.equal(readCollapsed('sbx-integrated'), false));
+  await click('数据怎么处理', host);
+  check(() => assert.ok(SANDBOX_DATA_COPY.every((line) => document.querySelector('.ant-modal')?.textContent?.includes(line))));
+  await act(async () => {
+    document.querySelector<HTMLButtonElement>('.ant-modal-close')!.click();
+    await new Promise((r) => setTimeout(r, 30));
+  });
+  await click('结束体验', host);
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 450));
+  });
+  check(() => assert.equal(document.activeElement?.textContent?.replace(/\s/g, ''), '继续体验'));
+  check(() => assert.equal(document.querySelectorAll('.sandbox-end-effects li').length, 3));
+  await click('继续体验');
+  // 只展开第一个未完成步；绑定摘要单独保留改绑入口。
+  await render(
+    createElement(SandboxChecklist, {
+      slug: 'sbx-current',
+      sandbox: { ...info, wechat: 'bound', steps: [true, false, false, true], conversationId: 'wecom:wmTest' },
+      onRetry: () => {},
+    }),
+  );
+  check(() => assert.equal(host.querySelectorAll('.is-current').length, 1));
+  check(() => assert.match(host.querySelector('.is-current h3')?.textContent ?? '', /看AI怎么接待/));
+  check(() => assert.equal(host.querySelector('a[href="/console/conversations/wecom%3AwmTest"]')?.textContent, '查看这段会话'));
+  check(() => assert.equal(host.querySelectorAll('li:not(.is-current):not(:first-child) .sandbox-step-content').length, 0));
   await render(
     createElement(SandboxChecklist, {
       slug: 'sbx-a',
@@ -194,11 +253,11 @@ try {
   try {
     await render(createElement(SandboxBanner, { sandbox: info }));
     await click('结束体验', host);
-    check(() => assert.match(document.body.textContent ?? '', /无法恢复/));
+    check(() => assert.match(document.body.textContent ?? '', /不能恢复/));
     await click('继续体验');
     check(() => assert.equal(path, ''));
     await click('结束体验', host);
-    await click('结束体验', document.querySelector('.ant-modal')!);
+    await click('结束并删除', document.querySelector('.ant-modal')!);
     check(() => assert.equal(path, '/api/sandbox/end'));
     check(() => assert.equal(csrf, 'visitor-csrf'));
     check(() => assert.equal(target, ''));
@@ -285,7 +344,19 @@ try {
       check(() => assert.equal(new Headers(requestInit?.headers).get('x-csrf'), 'visitor-csrf'));
       await settle(response());
       check(() => assert.match(host.textContent ?? '', /TEST-0001/));
-      check(() => assert.equal(host.querySelector('.sandbox-open-wechat'), null));
+      check(() => assert.ok(host.querySelector('.sandbox-open-wechat')));
+      // 非微信浏览器的手机仍然能直接打开，二维码只供桌面扫码。
+      const mobileStyle = document.createElement('style');
+      mobileStyle.textContent = fs.readFileSync(new URL('./sandbox.css', import.meta.url), 'utf8');
+      document.head.append(mobileStyle);
+      host.classList.add('sandbox-checklist');
+      const desktopWidth = win.innerWidth;
+      win.happyDOM.setWindowSize({ width: 390 });
+      check(() => assert.equal(getComputedStyle(host.querySelector('.sandbox-open-wechat')!).display, 'flex'));
+      check(() => assert.equal(getComputedStyle(host.querySelector('.sandbox-qr')!).display, 'none'));
+      win.happyDOM.setWindowSize({ width: desktopWidth });
+      mobileStyle.remove();
+      host.classList.remove('sandbox-checklist');
       // 矩阵与含 scene_param 的假链接完全一致，静区 4 格，绘制不经 img/data URL。
       const href = 'https://wechat.invalid/fixture?test=1&scene_param=TEST0001#fake';
       const qr = encode(href, { border: 4, ecc: 'M' });
@@ -296,7 +367,7 @@ try {
       await advance(179_999);
       check(() => assert.doesNotMatch(host.textContent ?? '', /扫码没反应/));
       await advance(1);
-      check(() => assert.match(host.textContent ?? '', /扫码没反应？先用模拟器体验/));
+      check(() => assert.match(host.textContent ?? '', /扫码没反应？先用网页模拟器体验/));
       await advance(420_000);
       check(() => assert.equal(calls, 2));
       check(() => assert.doesNotMatch(host.textContent ?? '', /TEST-0001/));
@@ -478,9 +549,9 @@ try {
       }
       await render(step('off'));
       const css = fs.readFileSync(new URL('./sandbox.css', import.meta.url), 'utf8');
-      check(() => assert.match(css, /@media \(max-width: 767px\)/));
-      check(() => assert.match(css, /\.sandbox-qr\.is-wechat\s*\{\s*display: none/));
-      check(() => assert.match(css, /\.sandbox-open-wechat\s*\{\s*display: none/));
+      check(() => assert.match(css, /@media \(max-width:\s*767px\)/));
+      check(() => assert.match(css, /\.sandbox-qr,\s*\.sandbox-desktop-hint\s*\{\s*display:\s*none/));
+      check(() => assert.match(css, /height:\s*44px/));
     } finally {
       await render(step('off'));
       Date.now = nowBefore;

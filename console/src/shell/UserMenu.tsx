@@ -33,7 +33,7 @@ export function UserNames({ name, role }: { name: string; role: string }) {
   return (
     <span className="user-names">
       <span className="user-name">{name}</span>
-      <span className="user-role">{role}</span>
+      {role && <span className="user-role">{role}</span>}
     </span>
   );
 }
@@ -105,7 +105,9 @@ const SUBMENU_ARROW = (
 );
 
 export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
-  const role = ROLE_LABEL[me.role];
+  const role = me.sandbox ? '' : ROLE_LABEL[me.role];
+  const name = me.sandbox ? '体验访客' : me.displayName;
+  const identity = role ? `${name}，${role}` : name;
   const [open, setOpen] = useState(false);
   // 偏好只存在 prefs.ts 一处（⌘K、别的标签页也会改），每次渲染现读；这里改了以后重渲一次
   const [, rerender] = useReducer((n: number) => n + 1, 0);
@@ -158,25 +160,18 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
       popupRender={(menu) => (
         <PopupRegion className="user-menu" label="用户选项">
           <div className="user-menu-id">
-            <div className="user-menu-name">{me.displayName}</div>
-            <div className="user-menu-role">{role}</div>
+            <div className="user-menu-name">{name}</div>
+            {role && <div className="user-menu-role">{role}</div>}
           </div>
           <div className="user-menu-divider" />
           {menu}
         </PopupRegion>
       )}
     >
-      <Tooltip title={`${me.displayName}·${role}`} placement={collapsed ? 'right' : 'top'} open={open ? false : undefined}>
-        <button
-          ref={button}
-          type="button"
-          className="user-btn"
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-label={`${me.displayName}，${role}`}
-        >
-          <Avatar name={me.displayName} />
-          <UserNames name={me.displayName} role={role} />
+      <Tooltip title={me.sandbox ? name : `${name}·${role}`} placement={collapsed ? 'right' : 'top'} open={open ? false : undefined}>
+        <button ref={button} type="button" className="user-btn" aria-haspopup="menu" aria-expanded={open} aria-label={identity}>
+          <Avatar name={me.sandbox ? '访' : name} />
+          <UserNames name={name} role={role} />
           <Icon of={ChevronsUpDown} size={14} className="user-chevron" />
         </button>
       </Tooltip>
