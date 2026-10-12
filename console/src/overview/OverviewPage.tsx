@@ -20,6 +20,7 @@ import { shortIdOf } from '../../../src/shared/conversation.js';
 import { dateWithWeekday, digits } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { api, catalogKind, HttpError, unwrap } from '../api.js';
+import { OwnConversationTag } from '../sandbox/Sandbox.js';
 import { CAN_HANDLE_ROLES } from '../conversations/workbench.js';
 import { errorLine } from '../parts/ErrorAlert.js';
 import { EmptyBlock, StateView } from '../parts/StateView.js';
@@ -155,7 +156,10 @@ function TodoBody({ row, action }: { row: TodoRow; action: ReactNode }) {
       </span>
       <span className="ov-todo-type">{'status' in row.type ? <Status kind={row.type.status} /> : row.type.text}</span>
       <span className="ov-todo-main">
-        <span className="ov-todo-title">{cjk(row.title)}</span>
+        <span className={`ov-todo-title${row.sandboxOwner ? ' has-owner' : ''}`}>
+          <span className="own-conversation-label">{cjk(row.title)}</span>
+          <OwnConversationTag owner={row.sandboxOwner} />
+        </span>
         {row.context.length > 0 && (
           <span className="ov-todo-context">
             <Segments segments={row.context} />

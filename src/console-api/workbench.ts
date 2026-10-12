@@ -8,12 +8,21 @@ import { type Actor, assigneeOf, consentDeclined, handlesConversations, isAssign
 import { paymentMode } from '../payment/mode.js';
 import { deliveryOf, sendWindow } from '../quota/ledger.js';
 import { SALES_SEGMENTS } from '../shared/catalog-types.js';
-import type { ConversationCounts, ConversationDetail, ConversationRow, MessageView, OrderView } from '../shared/console-api.js';
+import type {
+  ConversationCounts,
+  ConversationDetail,
+  ConversationRow,
+  MessageView,
+  OrderView,
+  SandboxConversationOwner,
+} from '../shared/console-api.js';
 import { conversationState, needParts, needSummary, paidNeedsHuman, type NeedVocabulary } from '../shared/conversation.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { cleanText } from '../shared/text.js';
 import { getOrder, getSession, isDemoClassId, listSessions, seqOf, sessionStoreMode, turnIdOf, windowStartOf } from '../store.js';
 import type { ChatMessage, MessageAuthor, Order, Session } from '../types.js';
+import { scopedRuntime } from '../tenancy/runtime.js';
+import { sandboxWechatIndex } from '../tenancy/sandbox/outbound.js';
 import { maskNumbers } from './mask.js';
 
 /**
@@ -22,6 +31,39 @@ import { maskNumbers } from './mask.js';
  */
 export const listedSessions = (): Session[] => listSessions().filter((s) => !s.id.startsWith('sim-'));
 export const isListed = (id: string): boolean => !id.startsWith('sim-');
+
+/** 与R14同一持久化边界：种子 createdAt 早于开通；重启后仍可识别自建模拟器会话。 */
+export function sandboxConversationOwner(s: Session): SandboxConversationOwner | null {
+  const rt = scopedRuntime();
+  if (rt?.kind !== 'sandbox') return null;
+  const bound = sandboxWechatIndex.boundUser(rt);
+  if (bound && s.id === `wecom:${bound}`) return 'wechat';
+  return s.id.startsWith('sbx-') && s.channel === 'simulator' && rt.expiresAt !== null && s.createdAt >= rt.expiresAt - 24 * 60 * 60_000
+    ? 'simulator'
+    : null;
+}
+
+export function sandboxOwnConversationId(): string | null {
+  const rt = scopedRuntime();
+  if (rt?.kind !== 'sandbox') return null;
+  const bound = sandboxWechatIndex.boundUser(rt);
+  const id = bound ? `wecom:${bound}` : null;
+  if (id && getSession(id)) return id;
+  return (
+    listSessions()
+      .filter((s) => sandboxConversationOwner(s) === 'simulator')
+      .toSorted(byRecent)[0]?.id ?? null
+  );
+}
+
+/** 过滤后、分页前置顶自己的会话；自己的会话按更新时间排序，其余沿用调用方的排序。 */
+export const sandboxOwnedFirst =
+  (compare: (a: Session, b: Session) => number) =>
+  (a: Session, b: Session): number => {
+    const ownedA = Boolean(sandboxConversationOwner(a));
+    const ownedB = Boolean(sandboxConversationOwner(b));
+    return Number(ownedB) - Number(ownedA) || (ownedA && ownedB ? byRecent(a, b) : compare(a, b));
+  };
 
 /**
  * needSummary 的词表：目的地取产品库 active 条目的 destination；客群取旅游包的五个客群值，短标签暂时就是客群值本身
@@ -55,6 +97,7 @@ function conversationAmount(s: Session): number | null {
 /** 列表的一行：只投影这几个字段，不把 store 里的活对象原样返回，不带消息正文和客户画像。viewer 的转人工原因也要打码（不变量 47） */
 export const conversationRow = (s: Session, vocab: NeedVocabulary, viewer: boolean): ConversationRow => ({
   id: s.id,
+  ...(sandboxConversationOwner(s) ? { sandboxOwner: sandboxConversationOwner(s)! } : {}),
   channel: s.channel,
   stage: s.stage,
   handedOver: s.handedOver,
@@ -165,7 +208,12 @@ export const windowTurnIds = (s: Session): string[] =>
 function orderConversation(o: Order): OrderView['conversation'] {
   const s = getSession(o.sessionId);
   if (!s) return null;
-  return { id: s.id, channel: s.channel, needSummary: needSummary(s.profile, needVocabulary()) };
+  return {
+    id: s.id,
+    ...(sandboxConversationOwner(s) ? { sandboxOwner: sandboxConversationOwner(s)! } : {}),
+    channel: s.channel,
+    needSummary: needSummary(s.profile, needVocabulary()),
+  };
 }
 
 export function orderView(o: Order): OrderView {

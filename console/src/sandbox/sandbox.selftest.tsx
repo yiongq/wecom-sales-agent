@@ -36,6 +36,7 @@ function check(fn: () => void): void {
   checks++;
 }
 const info: SandboxInfo = {
+  ownConversationId: null,
   expiresAt: new Date(Date.now() + 24 * 3600_000).toISOString(),
   wechat: 'off',
   steps: [false, false, false, false],
@@ -44,6 +45,17 @@ const json = (status: number, error: string) =>
   new Response(JSON.stringify({ error }), { status, headers: { 'content-type': 'application/json' } });
 const markup = (extra: Partial<Parameters<typeof SandboxChecklist>[0]> = {}) =>
   renderToStaticMarkup(createElement(SandboxChecklist, { slug: 'sbx-a', sandbox: info, onRetry: () => {}, ...extra }));
+// 两个体验动作都以服务端 ownConversationId 为准，空值时回退模拟器。
+for (const ownConversationId of [null, 'wecom:wmOwn', 'sbx-own'] as const) {
+  for (const step of [1, 2]) {
+    const steps: SandboxInfo['steps'] = [true, step > 1, false, false];
+    const html = markup({ slug: `sbx-button-${step}`, sandbox: { ...info, steps, ownConversationId } });
+    const action = ownConversationId ? (step === 1 ? '查看这段会话' : '接手这段会话') : '打开模拟器';
+    const href = ownConversationId ? `/console/conversations/${encodeURIComponent(ownConversationId)}` : '/chat.html';
+    check(() => assert.match(html, new RegExp(String.raw`href="${href}"[^>]*>[\s\S]*?${action}`)));
+    if (step === 1) check(() => assert.match(html, /把时间、人数说具体，AI会给出正式报价/));
+  }
+}
 // 四种微信状态下，清单进度自身的加载、空态和错误均由 /me 决定。
 for (const wechat of ['off', 'full', 'unbound', 'bound'] as const) {
   const sandbox = { ...info, wechat };
@@ -201,7 +213,7 @@ try {
   await render(
     createElement(SandboxChecklist, {
       slug: 'sbx-current',
-      sandbox: { ...info, wechat: 'bound', steps: [true, false, false, true], conversationId: 'wecom:wmTest' },
+      sandbox: { ...info, wechat: 'bound', steps: [true, false, false, true], ownConversationId: 'wecom:wmTest' },
       onRetry: () => {},
     }),
   );

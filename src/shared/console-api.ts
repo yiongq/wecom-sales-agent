@@ -286,6 +286,7 @@ export interface Me {
   tenantName: string;
   sandbox: {
     conversationId?: string;
+    ownConversationId: string | null;
     expiresAt: string;
     wechat: 'off' | 'full' | 'unbound' | 'bound';
     steps: [boolean, boolean, boolean, boolean];
@@ -369,8 +370,12 @@ export interface AnonCatalogItem {
 }
 
 /** 会话只读列表的一行：只投影这几个字段，不带消息正文和客户画像（needSummary 只用规范化的取值） */
+export type SandboxConversationOwner = 'wechat' | 'simulator';
+
 export interface ConversationRow {
   id: string;
+  /** 仅沙箱自己的会话带此标记；宿主与种子不带。 */
+  sandboxOwner?: SandboxConversationOwner;
   channel: string;
   stage: string;
   handedOver: boolean;
@@ -488,7 +493,7 @@ export interface OrderView {
    * 所属会话的最小投影（02 第 21 步新增，A2「待付款」行用：标题、「打开会话」的去向）；会话已被清除（订单不再指向
    * 内存里的会话，第 16 步之后才会出现）时为 null，这种订单的行不画
    */
-  conversation: { id: string; channel: string; needSummary: string | null } | null;
+  conversation: { id: string; channel: string; needSummary: string | null; sandboxOwner?: SandboxConversationOwner } | null;
 }
 
 /** GET /conversations/:id：J 页一次取全 */

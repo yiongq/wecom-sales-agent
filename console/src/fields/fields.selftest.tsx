@@ -3649,7 +3649,12 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     const v = owner(liveTravel);
     if (v.kind !== 'member') throw new Error('member fixture');
     if (sandbox)
-      v.me.sandbox = { expiresAt: new Date(Date.now() + 86_400_000).toISOString(), wechat: 'off', steps: [true, true, true, false] };
+      v.me.sandbox = {
+        ownConversationId: null,
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        wechat: 'off',
+        steps: [true, true, true, false],
+      };
     let saved = false;
     let fail = true;
     let meReads = 0;

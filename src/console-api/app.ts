@@ -173,6 +173,8 @@ import { addListener, ensureEventHub, eventTiming, replayAfter, tailId, type Buf
 import { maskNumbers } from './mask.js';
 import {
   actorOf,
+  sandboxOwnConversationId,
+  sandboxOwnedFirst,
   byRecent,
   conversationCounts,
   conversationDetail,
@@ -350,6 +352,7 @@ const meOf = (u: AuthedUser): Me => ({
   sandbox:
     currentRuntime().kind === 'sandbox'
       ? {
+          ownConversationId: sandboxOwnConversationId(),
           expiresAt: new Date(currentRuntime().expiresAt!).toISOString(),
           wechat: sandboxWechatIndex.wechatState(currentRuntime()),
           steps: [false, false, false, false],
@@ -621,7 +624,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
           (!stage || s.stage === stage) &&
           (group !== 'paid_needs_human' || inPaidNeedsHuman(s, pack)),
       )
-      .toSorted(order === 'waiting_first' ? waitingFirst(pack) : byRecent);
+      .toSorted(sandboxOwnedFirst(order === 'waiting_first' ? waitingFirst(pack) : byRecent));
     const vocab = needVocabulary();
     const page: ConversationPage = {
       total: all.length,

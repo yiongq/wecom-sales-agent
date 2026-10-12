@@ -36,7 +36,7 @@ import { conversationLabel, documentTitle } from '../shell/model.js';
 import { shellViewerOf } from '../shell/PageHeader.js';
 import { cjk } from '../typography.js';
 import { refreshSandboxProgress, usePack, useViewer } from '../viewer.js';
-import { SimulatorLink } from '../sandbox/Sandbox.js';
+import { OwnConversationTag, SimulatorLink } from '../sandbox/Sandbox.js';
 import { stageLabel } from './model.js';
 import { QuickRepliesCard } from './QuickReplies.js';
 import {
@@ -129,7 +129,10 @@ function WbListRow({ row }: { row: WbRow }) {
   return (
     <li className={row.selected ? 'wb-row is-selected' : 'wb-row'}>
       <Link to="/conversations/$id" params={{ id: row.id }} className="wb-row-link" aria-label={`${row.label.join(' ')}，${row.context}`}>
-        <span className="wb-row-title">{cjk(row.label)}</span>
+        <span className={`wb-row-title${row.sandboxOwner ? ' has-owner' : ''}`}>
+          <span className="own-conversation-label">{cjk(row.label)}</span>
+          <OwnConversationTag owner={row.sandboxOwner} />
+        </span>
         <span className="wb-row-sub">
           <Status kind={row.state} />
           <span className="wb-row-ctx" title={row.context}>

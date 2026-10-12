@@ -229,3 +229,23 @@
     overflow: visible;
   }
 }
+
+/* 自己的会话标签不被长需求摘要挤掉；只改变带标记的沙箱行。 */
+.cv-conv-link.has-owner,
+.wb-row-title.has-owner,
+.ov-todo-title.has-owner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.has-owner .own-conversation-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.has-owner .own-conversation-tag {
+  flex: none;
+  margin-inline-end: 0;
+}

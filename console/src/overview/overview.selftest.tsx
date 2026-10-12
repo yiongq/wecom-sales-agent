@@ -664,6 +664,20 @@ eq(
 }
 // WAITING（F01、A01）都没有报价（amount null）；PENDING_HIGH（120,000）> PENDING_B01（85,600）> 两个等人接手（null，
 // 并列时按沉默久的在前：A01 26分钟 > F01 8分钟）
+// 自己的待办超过种子的紧急/金额排序；订单会话同样带标记。
+{
+  const waiting = [{ ...WAITING[0]!, sandboxOwner: 'wechat' as const }, ...WAITING.slice(1)];
+  const ownOrder = { ...PENDING_B01, conversation: { ...PENDING_B01.conversation!, sandboxOwner: 'simulator' as const } };
+  const rows = attentionTodos(waiting, [], [ownOrder, PENDING_HIGH], 'advisor', TRAVEL, NOW);
+  eq(
+    '总览自己的两种会话都在金额更高的种子前',
+    rows
+      .slice(0, 2)
+      .map((r) => r.sandboxOwner)
+      .sort(),
+    ['simulator', 'wechat'],
+  );
+}
 const plain = attentionTodos(WAITING, [], [PENDING_B01, PENDING_HIGH], 'advisor', TRAVEL, NOW);
 eq(
   '需要你处理的顺序（验收 16）：按金额（HIGH 120,000 > B01 85,600 > 两个等人接手 null，null 按沉默久的在前）、话术草稿、线路草稿、6条酒店草稿',
@@ -1802,6 +1816,20 @@ for (const w of BANNED) {
     !hit,
     hit ? `出现在「${hit.slice(Math.max(0, at - 16), at + w.length + 16).replace(/\s+/g, ' ')}」` : '',
   );
+}
+
+{
+  server = {
+    pack: TRAVEL,
+    lists: { route: ROUTES, hotel: HOTELS },
+    waiting: [{ ...WAITING[0]!, sandboxOwner: 'wechat' }, ...WAITING.slice(1)],
+    pendingOrders: [{ ...PENDING_B01, conversation: { ...PENDING_B01.conversation!, sandboxOwner: 'simulator' } }, PENDING_HIGH],
+  };
+  const m = await mountOverview(member('owner'));
+  const tags = [...document.querySelectorAll('.ov-todo-title .ant-tag')];
+  eq('实际总览自己的会话置顶且显示对应Tag', tags.map((el) => el.textContent).sort(), ['你的微信', '你的模拟器会话']);
+  check('总览第一项属于访客', Boolean(document.querySelector('.ov-todo-title')?.querySelector('.ant-tag')));
+  await m.unmount();
 }
 
 if (fails.length) {

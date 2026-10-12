@@ -1,9 +1,9 @@
 // 05 第 24 步：同一外壳里的体验提示与清单。完成度只读 /me，不在浏览器推断。
-import { Button, Modal } from 'antd';
+import { Button, Modal, Tag } from 'antd';
 import { CircleCheck, Info, MessageSquare, PanelRightClose } from 'lucide-react';
 import { createContext, type ReactNode, useContext, useEffect, useState } from 'react';
 import { SANDBOX_DATA_COPY } from '../../../src/shared/entry-ui.js';
-import type { Me } from '../../../src/shared/console-api.js';
+import type { Me, SandboxConversationOwner } from '../../../src/shared/console-api.js';
 import { HttpError } from '../api.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
 import { ErrorAlert } from '../parts/ErrorAlert.js';
@@ -14,6 +14,10 @@ import { Icon } from '../shell/icons.js';
 import { WechatStep } from './WechatStep.js';
 
 export type SandboxInfo = NonNullable<Me['sandbox']>;
+
+export function OwnConversationTag({ owner }: { owner?: SandboxConversationOwner }) {
+  return owner ? <Tag className="own-conversation-tag">{owner === 'wechat' ? '你的微信' : '你的模拟器会话'}</Tag> : null;
+}
 
 export const simulatorHref = (id?: string): string | null =>
   id === undefined ? '/chat.html' : id.startsWith('sbx-') ? `/chat.html?c=${encodeURIComponent(id)}` : null;
@@ -172,10 +176,10 @@ export function SandboxChecklist({
       title: '看AI怎么接待、报价',
       description:
         sandbox.wechat === 'off' || sandbox.wechat === 'full'
-          ? '在模拟器里问一句，看AI怎么推荐、报价。'
-          : '在微信里问一句，看AI怎么推荐、报价。',
-      href: sandbox.conversationId ? `/console/conversations/${encodeURIComponent(sandbox.conversationId)}` : '/chat.html',
-      action: sandbox.conversationId ? '查看这段会话' : '打开模拟器',
+          ? '在模拟器里问一句，看AI怎么推荐、报价。把时间、人数说具体，AI会给出正式报价。'
+          : '在微信里问一句，看AI怎么推荐、报价。把时间、人数说具体，AI会给出正式报价。',
+      href: sandbox.ownConversationId ? `/console/conversations/${encodeURIComponent(sandbox.ownConversationId)}` : '/chat.html',
+      action: sandbox.ownConversationId ? '查看这段会话' : '打开模拟器',
     },
     {
       title: '接手会话，自己回一句',
@@ -183,8 +187,8 @@ export function SandboxChecklist({
         sandbox.wechat === 'off' || sandbox.wechat === 'full'
           ? '接手一个会话，模拟器里马上收到顾问回复。'
           : '接手微信会话，微信里马上收到顾问回复。',
-      href: '/console/conversations',
-      action: '去接手会话',
+      href: sandbox.ownConversationId ? `/console/conversations/${encodeURIComponent(sandbox.ownConversationId)}` : '/chat.html',
+      action: sandbox.ownConversationId ? '接手这段会话' : '打开模拟器',
     },
     {
       title: '改价、标已付或改话术',

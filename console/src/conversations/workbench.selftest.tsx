@@ -323,11 +323,43 @@ eq(
 eq('订单状态中文', ORDER_STATUS_LABEL, { pending_payment: '待付款', paid: '已付款', cancelled: '已取消', superseded: '已失效' });
 eq('能处理会话的角色：owner/admin/supervisor/agent，不含 viewer', [...CAN_HANDLE_ROLES].sort(), ['admin', 'agent', 'owner', 'supervisor']);
 
+// 沙箱自己的会话在所有状态组前，状态计数不重复；没有标记的宿主分组照旧。
+{
+  const own = [
+    row({ id: 'wecom:wmOwn', stage: 'quote', handedOver: false, sandboxOwner: 'wechat' }),
+    row({ id: 'sbx-own', stage: 'paid', handedOver: false, sandboxOwner: 'simulator' }),
+  ];
+  const seed = row({ id: 'sbx-seed', handedOver: true, stage: 'handoff' });
+  const groups = wbGroups(
+    [seed, ...own],
+    { total: 3, byState: { human: 1, assigned: 0, ai: 1, paid: 1 }, aiByStage: {}, updatedToday: 0 },
+    TRAVEL,
+    NOW,
+    null,
+  );
+  eq(
+    '自己的会话组排在所有状态组前',
+    groups.flatMap((g) => g.rows.map((r) => r.id)),
+    ['wecom:wmOwn', 'sbx-own', 'sbx-seed'],
+  );
+  eq(
+    '自己的会话类型不丢失',
+    groups[0]?.rows.map((r) => r.sandboxOwner),
+    ['wechat', 'simulator'],
+  );
+  eq(
+    '分组计数不重复',
+    groups.map((g) => g.count),
+    [2, 1],
+  );
+}
+
 // ---------------- 2. 在 DOM 里挂载 ----------------
 const realNow = Date.now;
 Date.now = () => NOW;
 
 interface MockServer {
+  list?: ConversationRow[];
   cur: ConversationDetail | null;
   messagesBefore?: MessagesPage;
   turnDiff?: Record<string, TurnDiffView>;
@@ -349,7 +381,7 @@ const json = (status: number, b: unknown): Response =>
 function respond(method: string, url: URL, bodyText: string): Response {
   const p = url.pathname.replace(/^\/api\/console/, '');
   if (method === 'GET' && p === '/conversations')
-    return json(200, { items: server.cur ? [server.cur.row] : [], total: server.cur ? 1 : 0 });
+    return json(200, { items: server.list ?? (server.cur ? [server.cur.row] : []), total: server.list?.length ?? (server.cur ? 1 : 0) });
   if (method === 'GET' && p === '/conversations/counts') {
     const c: ConversationCounts = {
       total: server.cur ? 1 : 0,
@@ -672,7 +704,12 @@ for (const sandbox of [true, false]) {
   const v = member('owner');
   if (v.kind !== 'member') throw new Error('member fixture');
   if (sandbox)
-    v.me.sandbox = { expiresAt: new Date(Date.now() + 86_400_000).toISOString(), wechat: 'off', steps: [true, true, true, false] };
+    v.me.sandbox = {
+      ownConversationId: null,
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      wechat: 'off',
+      steps: [true, true, true, false],
+    };
   server = {
     cur: detail({
       orders: [
@@ -1362,7 +1399,9 @@ for (const [sandbox, id, shown] of [
     kind: 'member',
     me: {
       ...me('owner'),
-      sandbox: sandbox ? { expiresAt: new Date(NOW + 3600_000).toISOString(), wechat: 'off', steps: [false, false, false, false] } : null,
+      sandbox: sandbox
+        ? { ownConversationId: null, expiresAt: new Date(NOW + 3600_000).toISOString(), wechat: 'off', steps: [false, false, false, false] }
+        : null,
     },
     pack: TRAVEL,
   };
@@ -1415,7 +1454,12 @@ for (const remaining of [3, 0]) {
     kind: 'member',
     me: {
       ...me('owner'),
-      sandbox: { expiresAt: new Date(NOW + 3600_000).toISOString(), wechat: 'bound', steps: [true, true, true, false] },
+      sandbox: {
+        ownConversationId: null,
+        expiresAt: new Date(NOW + 3600_000).toISOString(),
+        wechat: 'bound',
+        steps: [true, true, true, false],
+      },
     },
     pack: TRAVEL,
   };
@@ -1439,6 +1483,27 @@ for (const remaining of [3, 0]) {
 }
 
 Date.now = realNow;
+
+{
+  const own = [
+    row({ id: 'wecom:wmOwn', stage: 'quote', handedOver: false, sandboxOwner: 'wechat' }),
+    row({ id: 'sbx-own', stage: 'paid', handedOver: false, sandboxOwner: 'simulator' }),
+  ];
+  server = {
+    cur: detail({ row: own[0]! }),
+    list: [row({ id: 'sbx-seed', handedOver: true, stage: 'handoff' }), ...own],
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  const m = await mount(member('owner'), 'wecom:wmOwn');
+  eq('实际工作台左栏自己的会话排第一', m.$('.wb-row-link')[0]?.getAttribute('href'), '/console/conversations/wecom%3AwmOwn');
+  eq(
+    '实际左栏显示两个中性Tag',
+    m.$('.wb-row-title .ant-tag').map((el) => el.textContent),
+    ['你的微信', '你的模拟器会话'],
+  );
+  await m.unmount();
+}
 
 if (fails.length) {
   console.error(`workbench: ${fails.length} 条断言失败（通过 ${pass} 条）`);

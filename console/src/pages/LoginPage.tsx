@@ -1,3 +1,7 @@
+// 登录页（05 spec「界面 · 登录页」，2026-10-12 owner 定的设计稿 B；设计系统 §2.3 display、§3「登录页控件 40」）。
+// demo：左栏字标、标题「登录」、一句说明、表单，下方一行「没有账号？免登录体验」（没配沙箱时是「只看演示数据」）；
+// 右栏是产品画面图，图与 alt 由 /api/console/entry 下发，console 源码不出现行业词。prod：单栏卡片，没有右栏与体验入口。
+// 登录成功后重新判断来者：并发取 /me 与 /pack（shell/boot.ts），进成员外壳；地址不变，登录前在哪一页，登录后还在哪一页
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouterState } from '@tanstack/react-router';
 import { type MouseEvent, useEffect, useRef } from 'react';

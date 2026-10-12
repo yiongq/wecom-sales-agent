@@ -11,9 +11,18 @@ const fixture = JSON.parse(fs.readFileSync(new URL('../../data/sandbox-seeds.jso
 const routes = JSON.parse(fs.readFileSync(new URL('../../data/routes.json', import.meta.url), 'utf8')) as { id: string }[];
 
 assert.ok(fixture.$comment.includes('毫秒偏移'), '文件须说明相对时间约定');
-assert.equal(fixture.sessions.length, 13, '必须有 13 个种子会话');
-assert.equal(fixture.orders.length, 3, '必须有 3 个种子订单');
+assert.equal(fixture.sessions.length, 5, '必须有 5 个种子会话');
+assert.equal(fixture.orders.length, 2, '必须有 2 个种子订单');
 
+assert.deepEqual(fixture.sessions.map((s) => s.id).sort(), [
+  'wecom:cust_A01',
+  'wecom:cust_B01',
+  'wecom:cust_C01',
+  'wecom:cust_E01',
+  'wecom:cust_F01',
+]);
+assert.deepEqual(fixture.sessions.map((s) => s.stage).sort(), ['closing', 'discovery', 'handoff', 'paid', 'quote']);
+assert.deepEqual(fixture.orders.map((o) => o.status).sort(), ['paid', 'pending_payment']);
 const sessions = new Map(fixture.sessions.map((session) => [session.id, session]));
 const orders = new Map(fixture.orders.map((order) => [order.id, order]));
 const routeIds = new Set(routes.map((route) => route.id));
@@ -71,4 +80,4 @@ for (const order of fixture.orders) {
   if (order.status === 'paid') relativeTime(order.paidAt, `${order.id}.paidAt`);
 }
 
-console.log('SELFTEST PASS: 沙箱种子 13 个会话、3 个订单，引用与线路有效，时间均为相对毫秒偏移');
+console.log('SELFTEST PASS: 沙箱种子 5 个会话、2 个订单，引用与线路有效，时间均为相对毫秒偏移');

@@ -113,6 +113,7 @@ export function listQuery(search: ConversationsSearch): ListQuery {
 
 export interface RowView {
   id: string;
+  sandboxOwner?: ConversationRow['sandboxOwner'];
   /** 「企微客户」「F01」，带 needSummary 时再加一段「贵州带爸妈4人」（02 第 19 步，与 J 页列表同一条写法） */
   label: readonly string[];
   state: ConversationState;
@@ -138,6 +139,7 @@ export function rowView(row: ConversationRow, pack: IndustryPack, now: number): 
   const waitMs = waiting ? now - Date.parse(row.handoff!.at) : null;
   return {
     id: row.id,
+    sandboxOwner: row.sandboxOwner,
     label: row.needSummary ? [...conversationLabel(row, pack), row.needSummary] : conversationLabel(row, pack),
     state,
     stage,

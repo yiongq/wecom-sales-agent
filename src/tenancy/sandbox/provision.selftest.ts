@@ -14,7 +14,7 @@ import { __alertTest } from '../../ops/alert.js';
 import { importConfig } from '../../config/transfer.js';
 import { closeConfig, currentCatalog, currentSop, ConfigStartupError } from '../../config/source.js';
 import { readSandboxTemplate } from '../../db/repo/sandbox.js';
-import { listSessions, getOrder } from '../../store.js';
+import { listSessions, listOrders, getOrder } from '../../store.js';
 import { currentPrivacyNotice } from '../../privacy/privacy.js';
 import { dropShutdownHooks } from '../../shutdown.js';
 import {
@@ -165,7 +165,17 @@ async function suite(
   const verify = () =>
     withTenantScope(rt, () => {
       const sessions = listSessions();
-      check(() => assert.equal(sessions.length, 13));
+      check(() => assert.equal(sessions.length, 5));
+      check(() => assert.equal(listOrders().length, 2));
+      check(() => assert.deepEqual(sessions.map((s) => s.stage).sort(), ['closing', 'discovery', 'handoff', 'paid', 'quote']));
+      check(() =>
+        assert.deepEqual(
+          listOrders()
+            .map((o) => o.status)
+            .sort(),
+          ['paid', 'pending_payment'],
+        ),
+      );
       check(() => assert.ok(sessions.every((s) => /^sbx-[a-f0-9]{32}$/.test(s.id) && s.channel === 'simulator')));
       const fixture = JSON.parse(fs.readFileSync('data/sandbox-seeds.json', 'utf8')) as { orders: { id: string }[] };
       for (const { id } of fixture.orders) check(() => assert.ok(getOrder(id) && sessions.some((s) => s.id === getOrder(id)!.sessionId)));
@@ -395,7 +405,7 @@ async function suite(
     check(() => assert.equal(tenantRuntimes().length, 20));
     const restored = runtimeOf(first.tenantId)!;
     check(() => assert.deepEqual(listSessionIds(restored), ids));
-    for (const loaded of tenantRuntimes()) withTenantScope(loaded, () => check(() => assert.equal(listSessions().length, 13)));
+    for (const loaded of tenantRuntimes()) withTenantScope(loaded, () => check(() => assert.equal(listSessions().length, 5)));
   } else {
     await releaseRuntimes();
     const loaded = await loadSandboxRuntime(deps, { id: first.tenantId, slug: first.slug, expiresAt: first.expiresAt }, base.host, acquire);
@@ -513,7 +523,7 @@ try {
             sessions: string[];
           }[];
           check(() => assert.equal(restored.length, 20));
-          check(() => assert.ok(restored.every((row) => row.sessions.length === 13)));
+          check(() => assert.ok(restored.every((row) => row.sessions.length === 5)));
           await restarted.start();
         },
         async () => {
