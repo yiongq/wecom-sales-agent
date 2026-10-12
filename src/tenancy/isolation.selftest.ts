@@ -642,3 +642,15 @@ if (process.env.PG_TEST_URL) {
     await pg.drop();
   }
 } else console.log('TENANT ISOLATION REAL PG: 未设 PG_TEST_URL，跳过');
+
+// 第 21 步在全新的沙箱角色进程中执行；必须保留 0 个运行时的启动边界。
+const { spawnSync } = await import('node:child_process');
+const sandboxIsolation = spawnSync(process.execPath, ['--import', 'tsx', 'src/tenancy/sandbox/isolation.selftest.ts'], {
+  env: process.env,
+  encoding: 'utf8',
+  timeout: 90_000,
+  killSignal: 'SIGKILL',
+});
+process.stdout.write(sandboxIsolation.stdout ?? '');
+process.stderr.write(sandboxIsolation.stderr ?? '');
+assert.equal(sandboxIsolation.status, 0, sandboxIsolation.error?.message ?? '沙箱隔离子进程失败');
