@@ -104,6 +104,7 @@ import { consolePages } from './console-api/host.js';
 import { logRole } from './tenancy/sandbox/role.js';
 import { SandboxProcess, sandboxApp } from './tenancy/sandbox/process.js';
 import { claimSandboxStream, SandboxLimitError } from './tenancy/sandbox/limits.js';
+import { sandboxWecomAdapter } from './adapters/wecom.js';
 import { sandboxSessionOf, sandboxSimulatorId } from './tenancy/sandbox/session.js';
 import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
@@ -119,7 +120,7 @@ app.use('/*', publicHostMiddleware);
 // 之后才调它，抛出会让一个已经付款成功的请求返回 500
 function adapterFor(channel: string): ChannelAdapter {
   const sandboxTenant = currentRuntime().kind === 'sandbox';
-  if (!sandboxTenant && channel === 'wecom') return wecomAdapter;
+  if (channel === 'wecom') return sandboxTenant ? sandboxWecomAdapter : wecomAdapter;
   if (channel === 'simulator') return simulatorAdapter;
   if (!sandboxTenant && channel === 'web') return webAdapter;
   return {

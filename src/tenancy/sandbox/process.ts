@@ -15,8 +15,11 @@ import { isIP } from 'node:net';
 import { readFile } from 'node:fs/promises';
 import { clientKey, isCrossSite } from '../../http-guards.js';
 import { claimSessionLookup } from '../../auth/session.js';
-import { requestLogContext } from '../../log.js';
+import { requestLogContext, convLabelsIn } from '../../log.js';
 import {
+  setSandboxWechatRuntime,
+  sandboxWechatCookie,
+  SANDBOX_WECHAT_COOKIE,
   sandboxCookie,
   SANDBOX_COOKIE,
   clearSandboxCookie,
@@ -66,6 +69,7 @@ import { resolveRole, sandboxFlags } from './role.js';
 import { loadSandboxRuntime } from './load.js';
 import { SandboxReaper } from './reaper.js';
 import { drainSandboxProvisioning, provisionSandbox, SandboxProvisionError, type ProvisionedSandbox } from './provision.js';
+import { sandboxWechatIndex, wxPage, wxResource } from './outbound.js';
 import { sandboxPage, sandboxTryLinks } from './pages.js';
 
 export class SandboxProcess {
@@ -269,6 +273,10 @@ export function sandboxApp(
   const publicBaseUrl = globalThis.process.env.PUBLIC_BASE_URL;
   app.use('/*', requestLogContext);
   app.use('/*', async (c, next) => {
+    if (/^\/wx(?:\/|$)/i.test(c.req.path)) {
+      c.header('Referrer-Policy', 'no-referrer');
+      c.header('Cache-Control', 'no-store');
+    }
     if (sandboxStopped()) return c.json({ error: 'sandbox_process_stopped' }, 503);
     if (c.req.path !== '/healthz' && normalizeHost(c.req.header('host') ?? '') !== normalizeHost(host)) return c.notFound();
     if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method) && isCrossSite(c)) return c.json({ error: 'cross_site' }, 403);
@@ -291,6 +299,19 @@ export function sandboxApp(
   app.get('/healthz', async (c) => c.json(await process.health()));
   // app 在 start() 之前创建：每次请求现取已启动的实例路由，不捕获启动前的 null。
   app.all('/wecom/callback', (c) => process.wecomRoutes?.()?.fetch(c.req.raw) ?? c.notFound());
+  app.get('/wx/:token/*', (c) => {
+    const token = c.req.param('token');
+    const rt = sandboxWechatIndex.forToken(token);
+    const prefix = `/wx/${token}`;
+    const target = c.req.path.slice(prefix.length);
+    if (!rt) {
+      c.header('Set-Cookie', sandboxWechatCookie('', 0));
+      return c.notFound();
+    }
+    if (!wxPage(target)) return c.notFound();
+    c.header('Set-Cookie', sandboxWechatCookie(token, rt.expiresAt!));
+    return c.redirect(target + new URL(c.req.url).search);
+  });
   app.use('/console/assets/*', async (c) => consolePages.fetch(c.req.raw));
   app.get('/share-cover.png', serveStatic({ root: './public' }));
   app.get('/sandbox-ui.js', serveStatic({ root: './public' }));
@@ -307,6 +328,17 @@ export function sandboxApp(
     )
       return c.notFound();
     const token = getCookie(c, SANDBOX_COOKIE);
+    if (token === undefined && wxResource(c.req.path, c.req.method)) {
+      const linkToken = getCookie(c, SANDBOX_WECHAT_COOKIE);
+      const rt = linkToken && sandboxWechatIndex.forToken(linkToken);
+      if (rt) {
+        setSandboxWechatRuntime(c, rt);
+        return withTenantScope(rt, () => {
+          if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) assertSandboxWriteRate();
+          return next();
+        });
+      }
+    }
     // 与宿主共用限流：查库前同步占名额，只有无效 cookie 保留计数。
     const giveBack = token ? claimSessionLookup(clientKey(c), Date.now()) : undefined;
     let session: SandboxSession;
@@ -357,7 +389,7 @@ export function sandboxApp(
       if (error.retryAfter) c.header('Retry-After', String(error.retryAfter));
       return c.json({ error: error.reason, ...(error.retryAfter === undefined ? {} : { retryAfter: error.retryAfter }) }, error.status);
     }
-    console.error('[sandbox-http] 请求失败', error instanceof Error ? error.name : 'unknown');
+    console.error(`[sandbox-http] 请求失败 ${c.req.method} ${convLabelsIn(c.req.path)}`, error instanceof Error ? error.name : 'unknown');
     return c.json({ error: 'sandbox_unavailable' }, 503);
   });
   return app;

@@ -58,3 +58,9 @@ export async function sandboxSessionResolve(db: Db, tokenHash: Buffer): Promise<
     throw error;
   }
 }
+
+/** R21：只在租户作用域中读取链接令牌；不向任何公开投影交出。 */
+export async function readSandboxLink(tx: Tx): Promise<string | null> {
+  const [row] = await tx.select({ token: sandboxWechat.linkToken }).from(sandboxWechat);
+  return row?.token ?? null;
+}

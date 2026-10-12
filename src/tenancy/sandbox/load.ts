@@ -20,6 +20,9 @@ import { normalizeHost } from '../hosts.js';
 import { assertSandboxRunning } from './lifecycle.js';
 import { sandboxFlags } from './role.js';
 import { initializeSandboxBudget } from './budget.js';
+import { withTenant } from '../../db/client.js';
+import { readSandboxLink } from '../../db/repo/sandbox.js';
+import { sandboxWechatIndex } from './outbound.js';
 import { buildIndex } from '../../core/retrieval.js';
 
 export interface SandboxRow {
@@ -53,6 +56,14 @@ export async function loadSandboxRuntime(
       await initializeSandboxBudget(rt, deps.db);
       await initSessionStore({ db: deps.db, tenantId: row.id, tenantSlug: row.slug, varDir: '' });
       await initPrivacy({ strict: true });
+      const link = await withTenant(
+        deps.db,
+        { tenantId: rt.id, actor: { kind: 'system', userId: null, name: null, ip: null } },
+        readSandboxLink,
+      );
+      assertSandboxRunning();
+      // 无微信附属行的底层建租户仍可服务工作台；未发布令牌时出站与 /wx/ 均拒绝。
+      if (link) sandboxWechatIndex.publishLink(rt, link);
       watchStoreAlerts();
       void buildIndex().catch(() => console.warn('[sandbox] sandbox_index_build_failed'));
     });
