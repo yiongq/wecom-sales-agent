@@ -7,7 +7,8 @@ import { openTestDb, createRealPgFixture, testConfigDeps, fakeLock } from '../..
 import { importConfig } from '../../config/transfer.js';
 import { closeConfig } from '../../config/source.js';
 import { shanhaiBrand } from '../../packs/travel/brand-fixture.js';
-import { drainStore, getSession } from '../../store.js';
+import { drainStore, getSession, getOrCreateSession, saveSession, flushSession, onCommitted } from '../../store.js';
+import { takeover, releaseNote } from '../../handoff/takeover.js';
 import { dropShutdownHooks } from '../../shutdown.js';
 import { readSandboxWecomState, commitSandboxWecomCursor } from '../../db/repo/sandbox-wecom.js';
 import { __alertTest } from '../../ops/alert.js';
@@ -32,6 +33,7 @@ import { SandboxWechatBinding } from './binding.js';
 import { sandboxWechatIndex } from './outbound.js';
 import { provisionSandbox } from './provision.js';
 import { __sandboxLimitsTest } from './limits.js';
+import { loadSandboxRuntime } from './load.js';
 
 const env = {
   SANDBOX_HOST: 'sandbox.example.invalid',
@@ -810,6 +812,217 @@ async function eventAccountSuite(
   }
 }
 
+async function rebindReleaseSuite(
+  db: Db,
+  q: <T = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<T[]>,
+): Promise<void> {
+  __sandboxLimitsTest.resetProvisioned();
+  const savedMock = process.env.LLM_MOCK;
+  process.env.LLM_MOCK = '1';
+  const [template] = await q<{ id: string }>(
+    "insert into tenants(slug,name,pack_id,brand) values('rebind-template','绑定模板','travel',$1::json) returning id",
+    [JSON.stringify(shanhaiBrand)],
+  );
+  const host = createTenantRuntime({ id: template!.id, slug: 'rebind-template', isHost: true });
+  const deps = testConfigDeps({ db }, { tenantSlug: host.slug, usePackRuntime: true });
+  const imported = await withTenantScope(host, () =>
+    importConfig({ db, tenantSlug: host.slug, dataDir: 'data', imageSop: deps.imageSop, lock: async () => fakeLock() }),
+  );
+  assert.equal(imported.code, 0, imported.message);
+  const [epoch] = await q<{ epoch: string }>('select epoch::text from sandbox_process_epoch where id=1');
+  const created = await provisionSandbox({
+    deps,
+    templateSlug: host.slug,
+    host: env.SANDBOX_HOST,
+    epoch: epoch!.epoch,
+    acquireTenant: async () => fakeLock(),
+    ip: null,
+    userAgent: null,
+  });
+  let rt = runtimeOf(created.tenantId)!;
+  const actor = { userId: created.user.userId, name: created.user.displayName, role: created.user.role };
+  const id = 'wecom:wmRebind';
+  const binding = new SandboxWechatBinding(db, epoch!.epoch);
+  const fake = new FakeWecom();
+  fake.sendRuntime = rt;
+  const instance = new SandboxWecom(env, {
+    request: fake.request,
+    binding,
+    now: Date.now,
+    schedule: () => () => {},
+    read: () => readSandboxWecomState(db, env.SANDBOX_WECOM_OPEN_KFID),
+    commit: (cursor) => commitSandboxWecomCursor(db, epoch!.epoch, env.SANDBOX_WECOM_OPEN_KFID, cursor),
+  });
+  let serial = 0;
+  const dispatch = async (incoming: KfMessage) => {
+    incoming.send_time = Date.now() / 1000;
+    fake.pages.push({ next_cursor: `rebind-page-${++serial}`, has_more: 0, msg_list: [incoming] });
+    await instance.sync();
+    await instance.drain();
+  };
+  const rebind = async (typed = false) => {
+    const { code } = await binding.issue(
+      rt,
+      () => instance.contactLink(),
+      () => false,
+    );
+    const incoming = typed
+      ? { ...message(`rebind-${serial}`, 'wmRebind'), text: { content: code } }
+      : eventMessage(`rebind-${serial}`, 'wmRebind', { event_type: 'enter_session', scene_param: code });
+    await dispatch(incoming);
+    assert.equal(sandboxWechatIndex.forUser('wmRebind'), rt, '重新绑定成功');
+  };
+  const session = () => withTenantScope(rt, () => getSession(id)!);
+  const auditRows = () =>
+    q<{ actor_user_id: string; actor_name: string }>(
+      "select actor_user_id,actor_name from audit_log where tenant_id=$1 and action='conversation.release' order by id",
+      [rt.id],
+    );
+  const take = () =>
+    withTenantScope(rt, async () => {
+      takeover(id, actor);
+      await flushSession(id, { timeoutMs: 5000 });
+    });
+  const releaseRecords = () => session().messages.filter((m) => m.role === 'system' && m.content === releaseNote(actor.name));
+  let released = 0;
+  const subscribe = () =>
+    withTenantScope(rt, () =>
+      onCommitted((event) => {
+        if (event.type === 'conversation.released' && event.id === id) released++;
+      }),
+    );
+  let unsubscribe = subscribe();
+  const unload = async () => {
+    unsubscribe();
+    await withTenantScope(rt, () => drainStore(5000));
+    rt.state = 'closed';
+    rt.store.pgBackend?.close();
+    await withTenantScope(rt, closeConfig);
+    dropShutdownHooks(rt);
+    dropTenantState(rt.id);
+    unregisterRuntime(rt.id);
+  };
+  try {
+    await instance.start();
+    await instance.drain();
+    await rebind();
+    const initialAudits = await auditRows();
+    verify('不存在会话时绑定只发欢迎语、不建会话或交还审计', () => {
+      assert.equal(session(), undefined);
+      assert.equal(released, 0);
+      assert.deepEqual(initialAudits, []);
+      assert.equal(fake.sends().length, 1);
+    });
+    withTenantScope(rt, () => {
+      getOrCreateSession(id, 'wecom').stage = 'discovery';
+    });
+    await take();
+    const beforeWelcome = fake.sends().length;
+    let checkedOrder = false;
+    let orderFailure: unknown;
+    fake.onSend = async () => {
+      try {
+        assert.equal(session().handedOver, false, '重新扫码绑定在欢迎语之前交还 AI');
+        assert.equal(releaseRecords().length, 1);
+        assert.equal(released, 1, '欢迎语之前已提交交还事件');
+        assert.deepEqual(await auditRows(), [{ actor_user_id: actor.userId, actor_name: actor.name }], '欢迎语之前已提交访客交还审计');
+        checkedOrder = true;
+      } catch (error) {
+        // 欢迎语发送会吞发送异常，断言结果必须交回测试主流程。
+        orderFailure = error;
+      }
+    };
+    await rebind();
+    fake.onSend = null;
+    verify('重新扫码交还 AI、还原阶段、system/事件/审计先于欢迎语', () => {
+      assert.ifError(orderFailure);
+      assert.ok(checkedOrder);
+      assert.equal(session().handedOver, false);
+      assert.equal(session().stage, 'discovery');
+      assert.equal(session().handoff, undefined);
+      assert.equal(session().assignee, undefined);
+      assert.equal(fake.sends().length, beforeWelcome + 1);
+    });
+    await dispatch({ ...message('rebind-ai', 'wmRebind'), text: { content: '你好，我想了解旅游线路' } });
+    verify('重新绑定后客户消息进入 AI 回复路径', () => {
+      assert.ok(session().messages.some((m) => m.msgid === 'rebind-ai'));
+      assert.ok(session().messages.some((m) => m.role === 'agent' && (m.author ?? 'ai') === 'ai'));
+      assert.equal(fake.sends().length, beforeWelcome + 2);
+    });
+    const beforeUnchanged = fake.sends().length;
+    await rebind(true);
+    verify('未接手会话重新绑定不增加交还记录、事件与审计', () => {
+      assert.equal(releaseRecords().length, 1);
+      assert.equal(released, 1);
+      assert.equal(fake.sends().length, beforeUnchanged + 1);
+    });
+    assert.equal((await auditRows()).length, 1);
+    await take();
+    const plainEnter = eventMessage('rebind-plain-enter', 'wmRebind', { event_type: 'enter_session' });
+    await dispatch(plainEnter);
+    verify('非绑定 enter_session 保留接手状态', () => assert.equal(session().handedOver, true));
+    for (const consent of ['declined', 'withdrawn'] as const) {
+      withTenantScope(rt, () => {
+        session().consent = { health: consent };
+        saveSession(session());
+      });
+      const before = fake.sends().length;
+      await rebind();
+      verify(`${consent} 敏感信息处理不交还但绑定与欢迎语照常`, () => {
+        assert.equal(session().handedOver, true);
+        assert.equal(releaseRecords().length, 1);
+        assert.equal(released, 1);
+        assert.equal(fake.sends().length, before + 1);
+      });
+      assert.equal((await auditRows()).length, 1);
+    }
+    withTenantScope(rt, () => {
+      delete session().consent;
+      saveSession(session());
+    });
+    await withTenantScope(rt, () => flushSession(id, { timeoutMs: 5000 }));
+    const old = rt;
+    await unload();
+    assert.equal(old.store.sessions.size, 0, '重启夹具清空旧内存');
+    rt = (await loadSandboxRuntime(
+      deps,
+      { id: created.tenantId, slug: created.slug, expiresAt: created.expiresAt },
+      env.SANDBOX_HOST,
+      async () => fakeLock(),
+    ))!;
+    fake.sendRuntime = rt;
+    unsubscribe = subscribe();
+    assert.notEqual(session(), undefined, '启动预载恢复持久化会话');
+    assert.equal(session().handedOver, true, '启动预载恢复接手状态');
+    await rebind(true);
+    verify('重启后手打绑定码同样交还持久化会话', () => {
+      assert.equal(session().handedOver, false);
+      assert.equal(releaseRecords().length, 2);
+      assert.equal(released, 2);
+    });
+    assert.equal((await auditRows()).length, 2);
+    await take();
+    await q('update users set disabled_at=now() where id=$1', [actor.userId]);
+    const beforeFailure = fake.sends().length;
+    const warningStart = warnings.length;
+    await rebind();
+    verify('交还异常不影响绑定、欢迎语且只记脱敏日志', () => {
+      assert.equal(session().handedOver, true);
+      assert.equal(fake.sends().length, beforeFailure + 1);
+      assert.ok(warnings.slice(warningStart).some((line) => line === '[sandbox-wecom] interface=binding errcode=release_failed count=1'));
+      assert.equal(instance.health().failing, false);
+    });
+    assert.equal((await auditRows()).length, 2);
+  } finally {
+    fake.onSend = null;
+    await instance.close();
+    await unload();
+    sandboxWechatIndex.reset();
+    if (savedMock === undefined) delete process.env.LLM_MOCK;
+    else process.env.LLM_MOCK = savedMock;
+  }
+}
+
 async function runtimeSuite(db: Db, q: <T = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<T[]>): Promise<void> {
   const tables = await q<{ name: string }>(
     "select table_name as name from information_schema.columns where table_schema='public' and column_name='tenant_id' order by table_name",
@@ -1193,6 +1406,14 @@ try {
       await t.pg.exec('SET ROLE agent_app');
     }
   });
+  await rebindReleaseSuite(t.db, async <T>(text: string, params: unknown[] = []) => {
+    await t.pg.exec('RESET ROLE');
+    try {
+      return (await t.pg.query<T>(text, params)).rows;
+    } finally {
+      await t.pg.exec('SET ROLE agent_app');
+    }
+  });
   await alertSuite(t.db, '0');
 } finally {
   await t.close();
@@ -1204,6 +1425,7 @@ if (process.env.PG_TEST_URL) {
     await processSuite(fixture.urls.app);
     await runtimeSuite(app.db, fixture.query);
     await eventAccountSuite(app.db, fixture.query);
+    await rebindReleaseSuite(app.db, fixture.query);
   } finally {
     await app.close();
     await fixture.drop();

@@ -17,6 +17,10 @@ import { SandboxWechatBinding, SandboxWechatError } from './binding.js';
 import { todayIso } from '../../env.js';
 import { sandboxStopped } from './lifecycle.js';
 import { SANDBOX_WECOM_NAMES, SandboxStartupError } from './role.js';
+import { configRuntime } from '../../config/source.js';
+import { authLoginLookup } from '../../db/repo/auth.js';
+import { getSession, flushSession } from '../../store.js';
+import { ConsentDeclinedError, release } from '../../handoff/takeover.js';
 
 interface WecomState {
   cursor: string | null;
@@ -483,7 +487,27 @@ export class SandboxWecom {
       }
       if (!this.running()) return;
       if (result.status === 'bound') {
-        await withTenantScope(result.runtime, () => this.api.welcomeUser(user, welcome));
+        const rt = result.runtime;
+        await withTenantScope(rt, () =>
+          rt.inflight.track(async () => {
+            try {
+              // loadSandboxRuntime 已经经 initSessionStore 预载库里的会话，重启后也读同一份 identity map。
+              const id = `wecom:${user}`;
+              if (getSession(id)?.handedOver) {
+                // 沙箱唯一的成员是开通时建的合成用户，邮箱固定为 `<slug>@sandbox.invalid`（迁移 0011）。
+                const member = await authLoginLookup(configRuntime().db, rt.id, `${rt.slug}@sandbox.invalid`);
+                if (!member) throw new Error('sandbox_member_missing');
+                if (this.running() && rt.state === 'serving' && !rt.cancel.aborted && sandboxWechatIndex.forUser(user) === rt) {
+                  release(id, { userId: member.userId, name: member.displayName, role: member.role });
+                  await flushSession(id, { timeoutMs: 5000 });
+                }
+              }
+            } catch (error) {
+              this.warn('binding', error instanceof ConsentDeclinedError ? 'consent_declined' : 'release_failed');
+            }
+            await this.api.welcomeUser(user, welcome);
+          }),
+        );
         return;
       }
       if (!entered || !previouslyBound) this.replyFixed(user, welcome, result.status === 'expired');
