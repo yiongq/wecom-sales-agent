@@ -29,7 +29,8 @@ import type {
 } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import type { Viewer } from '../shell/boot.js';
-import { VIEWER_KEY } from '../viewer.js';
+import { useViewer, VIEWER_KEY } from '../viewer.js';
+import { SandboxChecklist } from '../sandbox/Sandbox.js';
 import { WorkbenchPage } from './WorkbenchPage.js';
 import {
   CAN_HANDLE_ROLES,
@@ -474,10 +475,24 @@ async function settle(qc: QueryClient): Promise<void> {
   }
 }
 
+function Progress() {
+  const v = useViewer().data;
+  return v?.kind === 'member' && v.me.sandbox ? (
+    <SandboxChecklist slug={v.me.tenantSlug} sandbox={v.me.sandbox} onRetry={() => {}} />
+  ) : null;
+}
+
 async function mount(viewer: Viewer, id = 'wecom:cust_F01') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   qc.setQueryData(VIEWER_KEY, viewer);
-  const root = createRootRoute({ component: Outlet });
+  const root = createRootRoute({
+    component: () => (
+      <>
+        <Progress />
+        <Outlet />
+      </>
+    ),
+  });
   const router = createRouter({
     routeTree: root.addChildren([
       createRoute({ getParentRoute: () => root, path: '/conversations', component: () => null }),
@@ -636,6 +651,85 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
       eq(`输入框禁用、占位提示（${label}）`, [box?.disabled, box?.placeholder], [true, '接管后在此回复，客户在企业微信中看到']);
     }
     await m.unmount();
+  }
+}
+
+// 渠道决定回复位置：同一个渠道换 id 仍然显示同样的说明；宿主企微照旧。
+for (const [id, channel, where] of [
+  ['sbx-a', 'simulator', '网页模拟器里'],
+  ['sim-a', 'simulator', '网页模拟器里'],
+  ['web:a', 'web', '网页模拟器里'],
+  ['sbx-a', 'wecom', '企业微信中'],
+] as const) {
+  server = { cur: detail({ row: row({ id, channel }) }), seenClientIds: [], extraMessages: [] };
+  const m = await mount(member('owner'), id);
+  eq(`回复占位按渠道（${id}/${channel}）`, (m.$('textarea')[0] as HTMLTextAreaElement)?.placeholder, `接管后在此回复，客户在${where}看到`);
+  await m.unmount();
+}
+
+// 标已付成功后在原工作台从 3/4 变 4/4；失败不点亮、不刷新，宿主不增加 /me 请求。
+for (const sandbox of [true, false]) {
+  const v = member('owner');
+  if (v.kind !== 'member') throw new Error('member fixture');
+  if (sandbox)
+    v.me.sandbox = { expiresAt: new Date(Date.now() + 86_400_000).toISOString(), wechat: 'off', steps: [true, true, true, false] };
+  server = {
+    cur: detail({
+      orders: [
+        {
+          id: 'o-progress',
+          routeTitle: '贵州',
+          travelers: 2,
+          departDate: '2026-11-01',
+          totalPrice: 2000,
+          status: 'pending_payment',
+          createdAt: new Date(NOW).toISOString(),
+          paidAt: null,
+          confirmed: { at: new Date(NOW).toISOString(), by: '老板' },
+          handoffBeforePaid: null,
+          conversation: null,
+        },
+      ],
+      can: { ...detail().can, markPaid: true },
+    }),
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  let paid = false;
+  let fail = true;
+  let meReads = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const path = String(input);
+    if (path.endsWith('/mark-paid')) {
+      if (fail) return json(503, { error: 'store_lagging' });
+      paid = true;
+      return json(200, { ok: true });
+    }
+    if (path.endsWith('/me')) {
+      meReads++;
+      return json(200, { ...v.me, sandbox: v.me.sandbox && { ...v.me.sandbox, steps: [true, true, true, paid] } });
+    }
+    if (path.endsWith('/pack')) return json(200, v.pack);
+    if (path.endsWith('/entry')) return json(200, { tryUrl: null });
+    return real(input, init);
+  };
+  const m = await mount(v);
+  try {
+    const url = m.router.state.location.href;
+    const button = () => m.$('button').find((b) => m.text(b) === '确认收款');
+    await m.click(button());
+    eq(`标已付失败不刷新（沙箱=${sandbox}）`, [meReads, sandbox && m.text(m.$('.sandbox-checklist h2')[0])], [0, sandbox && '体验清单3/4']);
+    fail = false;
+    await m.click(button());
+    eq(
+      `标已付后不换页刷新（沙箱=${sandbox}）`,
+      [meReads, m.router.state.location.href, sandbox && m.text(m.$('.sandbox-checklist h2')[0])],
+      [sandbox ? 1 : 0, url, sandbox && '体验清单4/4'],
+    );
+  } finally {
+    await m.unmount();
+    globalThis.fetch = real;
   }
 }
 

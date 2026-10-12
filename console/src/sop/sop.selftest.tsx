@@ -75,7 +75,8 @@ import { ConfirmDanger } from '../parts/ConfirmDanger.js';
 import { ToastHost } from '../parts/toast.js';
 import { LEAVING_PAGE } from '../parts/UnsavedGuard.js';
 import { needsTrimFallback } from '../typography.js';
-import { VIEWER_KEY, type Viewer } from '../viewer.js';
+import { useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
+import { SandboxChecklist } from '../sandbox/Sandbox.js';
 import {
   AUTOSAVE_TIMING,
   type AutosaveTiming,
@@ -1270,6 +1271,13 @@ interface PageBox {
   unmount(): Promise<void>;
 }
 
+function Progress() {
+  const v = useViewer().data;
+  return v?.kind === 'member' && v.me.sandbox ? (
+    <SandboxChecklist slug={v.me.tenantSlug} sandbox={v.me.sandbox} onRetry={() => {}} />
+  ) : null;
+}
+
 /** 挂整页：url 是地址栏里的原样（带 /console） */
 async function mountPage(
   url: string,
@@ -1294,6 +1302,7 @@ async function mountPage(
   await act(async () =>
     r.render(
       <QueryClientProvider client={qc}>
+        <Progress />
         <AutosaveTimingContext.Provider value={timing}>
           <RouterProvider router={router as never} />
         </AutosaveTimingContext.Provider>
@@ -4780,6 +4789,62 @@ const docsIn = (el: Element): string[] =>
 const modalOf = (title: string): Element | undefined =>
   all(document.body, '.ant-modal').find((x) => text(x.querySelector('.ant-modal-title')) === title);
 const cleanChars = editableChars(D_CLEAN, SPEC).toLocaleString('en-US');
+
+// 发布 SOP：失败不刷新；成功在原话术页立即点亮第四步；宿主不增加 /me 请求。
+for (const sandbox of [true, false]) {
+  const srv = fakeServer(CLEAN_SOP);
+  srv.check = (s) => scan(s);
+  const v: Viewer = structuredClone(travelOwner);
+  if (v.kind !== 'member') throw new Error('member fixture');
+  if (sandbox)
+    v.me.sandbox = { expiresAt: new Date(Date.now() + 86_400_000).toISOString(), wechat: 'off', steps: [true, true, true, false] };
+  let fail = true;
+  let meReads = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const path = String(input);
+    if (path.endsWith('/me')) {
+      meReads++;
+      return new Response(
+        JSON.stringify({ ...v.me, sandbox: v.me.sandbox && { ...v.me.sandbox, steps: [true, true, true, srv.state.draft === null] } }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    }
+    if (path.endsWith('/pack')) return new Response(JSON.stringify(v.pack), { headers: { 'content-type': 'application/json' } });
+    if (path.endsWith('/entry')) return new Response('{"tryUrl":null}', { headers: { 'content-type': 'application/json' } });
+    if (path.endsWith('/draft/publish') && fail)
+      return new Response('{"error":"internal"}', { status: 500, headers: { 'content-type': 'application/json' } });
+    return real(input, init);
+  };
+  const m = await mountPage('/console/sop?section=tone', v, CLEAN_SOP, FAST);
+  try {
+    const url = m.router.state.location.href;
+    await waitFor(() => summaryOf(m) === '7/7通过');
+    await clickEv(barButton(m, '发布…'));
+    await waitFor(() => !!drawerOf('发布草稿'));
+    const d = drawerOf('发布草稿')!;
+    await setText(d.querySelector<HTMLTextAreaElement>('textarea')!, '修改话术原则，客户嫌贵先问预算');
+    await clickEv(drawerButton(d, '发布'));
+    await waitFor(() => !!d.querySelector('.ant-alert'));
+    eq(
+      `发布失败不刷新（沙箱=${sandbox}）`,
+      [meReads, sandbox && text(m.box.querySelector('.sandbox-checklist h2'))],
+      [0, sandbox && '体验清单3/4'],
+    );
+    fail = false;
+    await clickEv(drawerButton(d, '发布'));
+    await waitFor(() => barText(m).summary.startsWith('已发布') && m.qc.isFetching() === 0);
+    await settle();
+    eq(
+      `发布成功不换页刷新（沙箱=${sandbox}）`,
+      [meReads, m.router.state.location.href, sandbox && text(m.box.querySelector('.sandbox-checklist h2'))],
+      [sandbox ? 1 : 0, url, sandbox && '体验清单4/4'],
+    );
+  } finally {
+    await m.unmount();
+    globalThis.fetch = real;
+  }
+}
 
 // 11.3a 检查全过：摘要与字数；点「发布…」（没有要存的）打开抽屉、再检查一次；抽屉的清单、替换说明、逐节改动、预填的说明；
 // 只有预填时「发布」不能点、点了到说明框；发布以后条里写结果（不弹 toast）、焦点回到「发布…」；再改一个字那句就没了

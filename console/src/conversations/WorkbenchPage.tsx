@@ -35,7 +35,7 @@ import { IconButton } from '../shell/IconButton.js';
 import { conversationLabel, documentTitle } from '../shell/model.js';
 import { shellViewerOf } from '../shell/PageHeader.js';
 import { cjk } from '../typography.js';
-import { usePack, useViewer } from '../viewer.js';
+import { refreshSandboxProgress, usePack, useViewer } from '../viewer.js';
 import { SimulatorLink } from '../sandbox/Sandbox.js';
 import { stageLabel } from './model.js';
 import { QuickRepliesCard } from './QuickReplies.js';
@@ -547,6 +547,7 @@ function HandoffCard({ handoffCard, pack }: { handoffCard: NonNullable<Conversat
 }
 
 function ReplyBox({
+  channel,
   canReply,
   sendWindow,
   text,
@@ -555,6 +556,7 @@ function ReplyBox({
   sending,
   replyError,
 }: {
+  channel: string;
   canReply: boolean;
   sendWindow: SendWindowView | null;
   text: string;
@@ -580,7 +582,13 @@ function ReplyBox({
         rows={3}
         maxLength={2000}
         showCount={{ formatter: ({ count }) => String(count) }}
-        placeholder={canReply ? undefined : '接管后在此回复，客户在企业微信中看到'}
+        placeholder={
+          canReply
+            ? undefined
+            : channel === 'simulator' || channel === 'web'
+              ? '接管后在此回复，客户在网页模拟器里看到'
+              : '接管后在此回复，客户在企业微信中看到'
+        }
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(e);
         }}
@@ -767,7 +775,10 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
   });
   const markPaid = useMutation({
     mutationFn: (orderId: string) => unwrap(api.orders[':id']['mark-paid'].$post({ param: { id: orderId } })),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate();
+      refreshSandboxProgress(qc);
+    },
   });
   const cancelOrder = useMutation({
     mutationFn: ({ orderId, reason }: { orderId: string; reason: string }) =>
@@ -867,6 +878,7 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
         />
         {detail.handoffCard && <HandoffCard handoffCard={detail.handoffCard} pack={pack} />}
         <ReplyBox
+          channel={detail.row.channel}
           canReply={canReply}
           sendWindow={sendWindowView(detail.sendWindow, now)}
           text={replyText}

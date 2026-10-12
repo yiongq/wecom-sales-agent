@@ -116,7 +116,7 @@ import { ConflictBanner, LostEdits, type LostSection, SaveLive, SaveState } from
 import { CheckCard, ToolsCard } from '../sop/SideCards.js';
 import { SopSkeleton } from '../sop/SopSkeleton.js';
 import { cjk } from '../typography.js';
-import { canEdit, usePack, useViewer } from '../viewer.js';
+import { canEdit, refreshSandboxProgress, usePack, useViewer } from '../viewer.js';
 
 const NL = '\n';
 const TITLE = '销售话术';
@@ -562,6 +562,7 @@ function MemberSop({
     setConflict(null);
     try {
       const v = await unwrap(api.sop.draft.publish.$post({ json: { rev: draft.rev, changeNote: note } }));
+      refreshSandboxProgress(qc);
       const previous = replacedIn(v.basedOn, known) ?? (await fetchReplaced(v));
       setResult({ versionNo: v.versionNo, names: publishedNames(spec, previous, v), previous });
       qc.setQueryData<SopOverview | AnonSopOverview>(sopQuery.queryKey, (old) => (old && 'spec' in old ? withPublished(old, v) : old));
