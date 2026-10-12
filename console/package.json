@@ -24,6 +24,7 @@
     "pinyin-match": "1.2.10",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "uqr": "0.1.2",
     "zod": "4.6.5"
   },
   "devDependencies": {

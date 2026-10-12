@@ -9,6 +9,7 @@ import { ErrorAlert } from '../parts/ErrorAlert.js';
 import { Skeleton } from '../parts/StateView.js';
 import { csrfHeader, sessionFetch } from '../session.js';
 import { cjk } from '../typography.js';
+import { WechatStep } from './WechatStep.js';
 
 export type SandboxInfo = NonNullable<Me['sandbox']>;
 
@@ -54,7 +55,11 @@ export function SandboxBanner({ sandbox }: { sandbox: SandboxInfo }) {
     <section className="sandbox-banner" aria-label="体验环境">
       <div className="sandbox-banner-row">
         <p>
-          {cjk(['体验环境', remainingTime(sandbox.expiresAt, now), sandbox.wechat === 'off' ? '只进模拟器' : '回复只发到你自己的微信'])}
+          {cjk([
+            '体验环境',
+            remainingTime(sandbox.expiresAt, now),
+            sandbox.wechat === 'off' || sandbox.wechat === 'full' ? '只进模拟器' : '回复只发到你自己的微信',
+          ])}
         </p>
         <div className="sandbox-banner-actions">
           <Button size="small" href="/chat.html" target="_blank" rel="noopener noreferrer">
@@ -112,11 +117,19 @@ export function SandboxChecklist({
   const [collapsed, setCollapsed] = useState(() => readCollapsed(slug));
   const done = sandbox.steps.filter(Boolean).length;
   const items = [
-    { title: '打开模拟器发一句', description: '以客户的身份发一句，等AI回复。', href: '/chat.html', action: '打开模拟器' },
+    {
+      title: sandbox.wechat === 'off' || sandbox.wechat === 'full' ? '打开模拟器发一句' : '用微信给AI发一句',
+      description: '',
+      href: '',
+      action: '',
+    },
     { title: '看AI怎么回、怎么报价', description: '继续对话，让AI给出报价。', href: '/console/conversations', action: '查看会话' },
     {
       title: '点接管，自己回一句',
-      description: '接手一个会话，模拟器里马上收到顾问回复。',
+      description:
+        sandbox.wechat === 'off' || sandbox.wechat === 'full'
+          ? '接手一个会话，模拟器里马上收到顾问回复。'
+          : '接手微信会话，微信里马上收到顾问回复。',
       href: '/console/conversations',
       action: '去接手会话',
     },
@@ -147,38 +160,40 @@ export function SandboxChecklist({
           {collapsed ? '展开' : '收起'}
         </Button>
       </div>
-      {!collapsed && (
-        <div id="sandbox-checklist-steps">
-          {pending ? (
-            <div role="status" aria-label="正在载入体验进度">
-              <Skeleton rows={4} />
-            </div>
-          ) : error ? (
-            <ErrorAlert error={error} title="没取到体验进度" onRetry={onRetry} />
-          ) : (
-            <>
-              {done === 0 && <p className="sandbox-checklist-intro">从发一句消息开始，完成一项就会点亮一项。</p>}
-              <ol>
-                {items.map((item, i) => (
-                  <li key={item.title} className={sandbox.steps[i] ? 'is-done' : ''}>
-                    <span className="sandbox-step-mark" aria-label={sandbox.steps[i] ? '已完成' : '未完成'}>
-                      {sandbox.steps[i] ? <Check size={14} /> : i + 1}
-                    </span>
-                    <div>
-                      <h3>{item.title}</h3>
-                      <p>{item.description}</p>
-                      <a href={item.href} {...(i === 0 ? { target: '_blank', rel: 'noopener noreferrer' } : {})}>
-                        {item.action}
-                      </a>
-                    </div>
-                  </li>
-                ))}
-              </ol>
-              {done === 4 && <p role="status">四步已完成，你可以继续体验。</p>}
-            </>
-          )}
-        </div>
-      )}
+      <div id="sandbox-checklist-steps" hidden={collapsed}>
+        {pending ? (
+          <div role="status" aria-label="正在载入体验进度">
+            <Skeleton rows={4} />
+          </div>
+        ) : error ? (
+          <ErrorAlert error={error} title="没取到体验进度" onRetry={onRetry} />
+        ) : (
+          <>
+            {done === 0 && <p className="sandbox-checklist-intro">从发一句消息开始，完成一项就会点亮一项。</p>}
+            <ol>
+              {items.map((item, i) => (
+                <li key={item.title} className={sandbox.steps[i] ? 'is-done' : ''}>
+                  <span className="sandbox-step-mark" aria-label={sandbox.steps[i] ? '已完成' : '未完成'}>
+                    {sandbox.steps[i] ? <Check size={14} /> : i + 1}
+                  </span>
+                  <div>
+                    {i !== 0 && <h3>{cjk(item.title)}</h3>}
+                    {i === 0 ? (
+                      <WechatStep key={`${slug}:${sandbox.wechat}`} wechat={sandbox.wechat} expanded={!collapsed} />
+                    ) : (
+                      <>
+                        <p>{cjk(item.description)}</p>
+                        <a href={item.href}>{item.action}</a>
+                      </>
+                    )}
+                  </div>
+                </li>
+              ))}
+            </ol>
+            {done === 4 && <p role="status">四步已完成，你可以继续体验。</p>}
+          </>
+        )}
+      </div>
     </aside>
   );
 }
