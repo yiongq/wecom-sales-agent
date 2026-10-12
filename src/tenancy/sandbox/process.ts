@@ -1,6 +1,13 @@
 // 05 沙箱组合根：不启动渠道注册表、任务或宿主文件状态。
 import { Hono } from 'hono';
 import { assertSandboxWriteRate, validateSandboxLimits, SandboxLimitError } from './limits.js';
+import {
+  initializeSandboxPool,
+  validateSandboxBudget,
+  sandboxPoolAvailable,
+  sandboxBudgetPoolStatus,
+  closeSandboxBudgetPool,
+} from './budget.js';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { consolePages } from '../../console-api/host.js';
 import { getCookie } from 'hono/cookie';
@@ -36,7 +43,7 @@ import {
   sandboxStartupRows,
 } from '../../db/sandbox-process.js';
 import type { ProcessTenantLock } from '../../db/client.js';
-import { gateStatus } from '../../llm-gate.js';
+import { gateStatus, BudgetExhausted } from '../../llm-gate.js';
 import { alert, startAlerts, stopAlertPolling } from '../../ops/alert.js';
 import { profile } from '../../profile.js';
 import { storeHealth } from '../../store.js';
@@ -95,6 +102,7 @@ export class SandboxProcess {
   async start(): Promise<void> {
     if (resolveRole(this.env) !== 'sandbox') throw new Error('app_role_invalid');
     validateSandboxLimits(this.env);
+    validateSandboxBudget(this.env);
     configureTenancy({ role: 'sandbox', standardCount: 0 });
     // 第一把锁取不到时不打开配置、不装载、不改任何沙箱。
     this.lock = await acquireSandboxProcess(this.env.DATABASE_URL ?? '', this.failStop);
@@ -108,6 +116,7 @@ export class SandboxProcess {
       await checkConfigDatabase(this.deps);
       await checkSandboxStartup(this.deps.db, this.env.SANDBOX_TEMPLATE_SLUG!, this.env.SANDBOX_WECOM_OPEN_KFID);
       this.epoch = await advanceSandboxEpoch(this.deps.db);
+      await initializeSandboxPool(this.deps.db, this.env);
       this.reaper = new SandboxReaper({
         db: this.deps.db,
         acquireTenant: (id) => this.lock!.acquireTenant(id),
@@ -172,6 +181,9 @@ export class SandboxProcess {
       host: this.env.SANDBOX_HOST!,
       epoch: this.epoch,
       acquireTenant: (id) => this.lock!.acquireTenant(id),
+      admit: async () => {
+        if (!sandboxPoolAvailable()) throw new SandboxProvisionError(503, 'sandbox_unavailable');
+      },
     });
   }
 
@@ -208,6 +220,7 @@ export class SandboxProcess {
       await withTenantScope(rt, closeConfig);
       // 保留到 exit：store 的退出钩子还要统计未落库条数，且沙箱不写 spill。
     }
+    await closeSandboxBudgetPool();
     await this.lock?.release();
     await this.deps?.closeDb?.();
     this.lock = null;
@@ -220,12 +233,13 @@ export class SandboxProcess {
   }
 
   async health() {
+    const budget = sandboxBudgetPoolStatus();
     const health = tenantRuntimes().map((rt) => withTenantScope(rt, storeHealth));
     let reachable = !!this.deps;
     let pool = { day: '', provisioned: 0, costMilli: 0 };
     let purgeOverdue = 0;
     try {
-      if (this.deps) pool = await sandboxPoolHealth(this.deps.db);
+      if (this.deps) pool = await sandboxPoolHealth(this.deps.db, budget.day);
       purgeOverdue = (await this.reaper?.overdue()) ?? 0;
     } catch {
       reachable = false;
@@ -237,7 +251,7 @@ export class SandboxProcess {
       sandboxes: tenantRuntimes().filter((rt) => rt.kind === 'sandbox').length,
       purgeOverdue,
       scopeMissing: this.scopeMissing,
-      pool: { ...pool, capMilli: Number(this.env.SANDBOX_POOL_DAILY_CNY ?? 10) * 1000 },
+      pool: { ...pool, day: budget.day, costMilli: budget.costMilli, capMilli: budget.capMilli },
       llmGate: gateStatus(),
       store: { lagMs: Math.max(0, ...health.map((h) => h.lagMs)), poisoned: health.reduce((n, h) => n + h.poisoned.length, 0) },
       wecom: this.wecom?.health() ?? { configured: false, full: false, bound: 0, lastSyncOkAt: null, failing: false },
@@ -334,6 +348,7 @@ export function sandboxApp(
   });
   if (routes) app.route('/', routes);
   app.onError((error, c) => {
+    if (error instanceof BudgetExhausted) return c.json({ error: 'llm_budget_exhausted' }, 429);
     if (error instanceof SandboxLimitError) {
       c.header('Retry-After', String(error.retryAfter));
       return c.json({ error: error.reason, retryAfter: error.retryAfter }, error.status);

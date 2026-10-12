@@ -172,6 +172,14 @@ export function costOf(model: string, promptTokens: number, completionTokens: nu
   return (fresh * p.in + hit * p.cachedIn + completionTokens * p.out) / 1_000_000;
 }
 
+/** 沙箱估算不享受缓存折扣；阶梯取较贵价，未知模型取全表各项最高价。宿主的 costOf 保持原口径。 */
+export function sandboxCostOf(model: string, promptTokens: number, completionTokens: number, cachedTokens = 0, estimate = false): number {
+  if (PRICE[model] && !estimate) return costOf(model, promptTokens, completionTokens, cachedTokens);
+  const prices = PRICE[model] ? [PRICE[model]!] : Object.values(PRICE);
+  const rows = prices.flatMap((p) => (p.outTier ? [p, p.outTier] : [p]));
+  return (promptTokens * Math.max(...rows.map((p) => p.in)) + completionTokens * Math.max(...rows.map((p) => p.out))) / 1_000_000;
+}
+
 /** 这次调用的用途（02 spec「逐轮 trace、护栏事件与用量」）：usage_daily 按它分列，与库里 purpose 的 CHECK 同一组值 */
 export type UsagePurpose = 'chat' | 'followup' | 'insight' | 'suggestion' | 'draft' | 'embedding';
 
@@ -209,12 +217,16 @@ export function recordUsage(
   cachedTokens = 0,
   reasoningTokens = 0,
   purpose: UsagePurpose = 'chat',
+  accountedMilli?: number,
 ): void {
   const rt = currentRuntime();
   if (rt.state === 'closed') return;
   const entry = hostUsage();
   const state = entry?.state;
-  const cny = costOf(model, promptTokens, completionTokens, cachedTokens);
+  const cny =
+    rt.kind === 'sandbox' && accountedMilli !== undefined
+      ? accountedMilli / 1000
+      : costOf(model, promptTokens, completionTokens, cachedTokens);
   const cached = Math.min(Math.max(0, cachedTokens), promptTokens);
   const reasoning = Math.min(Math.max(0, reasoningTokens), completionTokens);
   if (state) {

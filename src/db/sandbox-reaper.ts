@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { rowsOf, withTenant, type Db, type WithTenantOpts } from './client.js';
 import { systemContext } from './sandbox-process.js';
 import { writeAudit } from './repo/audit.js';
+import { todayIso } from '../env.js';
 
 export interface ReaperRow {
   id: string;
@@ -54,6 +55,6 @@ export async function purgeSandbox(db: Db, tenantId: string, opts: WithTenantOpt
       );
       return { ...usage!, counts: result!.counts };
     },
-    { ...opts, sandboxMaintenance: true },
+    { ...opts, sandboxMaintenance: true, sandboxDay: todayIso() },
   );
 }

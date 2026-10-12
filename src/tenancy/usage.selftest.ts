@@ -110,8 +110,8 @@ try {
   await Promise.all([scope(b, daily.flushUsageDaily), scope(b, daily.flushUsageDaily)]);
   assert.equal(retryWrites, 1, '重试与并发 flush 只提交一次');
 
-  // normal closing 的在途预算照常结算；删除取消才丢掉迟到结算。
-  const draining = r.createTenantRuntime({ id: 'budget-drain', slug: 'budget-drain', kind: 'sandbox' });
+  // standard 的正常 closing 照常结算，取消行为保留第 10 步口径；沙箱取消预占另由 R15 套件验。
+  const draining = r.createTenantRuntime({ id: 'budget-drain', slug: 'budget-drain' });
   const completed = scope(draining, () => draining.budget.reserve('chat', 5)!);
   draining.state = 'closing';
   scope(draining, () => completed.settle(3));

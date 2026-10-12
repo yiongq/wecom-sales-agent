@@ -1,4 +1,5 @@
 import { SandboxLimitError } from '../tenancy/sandbox/limits.js';
+import { BudgetExhausted } from '../llm-gate.js';
 import { publicHostMiddleware } from '../tenancy/hosts.js';
 import { sandboxSessionOf, resolveSandboxSession } from '../tenancy/sandbox/session.js';
 import { readSandboxSteps } from '../db/repo/sandbox-steps.js';
@@ -358,6 +359,7 @@ const cookie = (value: string, maxAgeSec: number): string =>
 
 /** 命名错误 → 状态码与 { error, … }；不认识的返回 null，按 500 处理 */
 function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503; body: ApiError } | null {
+  if (e instanceof BudgetExhausted) return { status: 429, body: { error: 'llm_budget_exhausted' } };
   if (e instanceof HTTPException) return { status: 400, body: { error: 'bad_request', detail: e.message } };
   // 02「后台接口」的新错误码：角色不够 403，角色够但会话不归你 409（不变量 23 与权限表的分界）
   if (e instanceof ForbiddenError) return { status: 403, body: { error: 'forbidden', detail: e.message } };

@@ -1,6 +1,7 @@
 import { currentRuntime, withTenantScope, withoutTenantScope, backgroundEntry, type TenantRuntime } from '../tenancy/runtime.js';
 import { registerTenantState } from '../tenancy/state.js';
 import { initializeStandardBudget } from '../tenancy/budget.js';
+import { setSandboxUsageLagReader } from '../tenancy/sandbox/budget.js';
 import { todayIso } from '../env.js';
 // usage_daily 的累加器（docs/architecture/02-conversations-workbench/spec.md「逐轮 trace、护栏事件与用量」、R16）。
 // 订阅 usage.ts 的 onUsage（所有模型调用的唯一汇聚点），内存里按（租户、天、模型、用途）累加；db 存储装上之后（store.ts 的
@@ -27,6 +28,7 @@ export interface UsageDailyDelta {
 interface Acc extends Omit<UsageDailyDelta, 'costMilliCny'> {
   /** 还没写进库的金额（千分之一元，带小数） */
   milli: number;
+  oldestAt: number | null;
 }
 
 const COUNTERS = ['calls', 'promptTokens', 'completionTokens', 'cachedTokens', 'reasoningTokens'] as const;
@@ -43,6 +45,7 @@ interface DailyState {
   /** 本运行时已提交的当日金额；与库快照在同一写队列里核对，防止软上限重复计费。 */
   persistedDay: string;
   persistedMilli: number;
+  flushingAt: number | null;
 }
 const states = new Map<string, DailyState>();
 // 唯一实例定时器在空作用域创建；每拍显式恢复各 writer 的租户。
@@ -74,6 +77,7 @@ function daily(): DailyState {
       nextAt: 0,
       persistedDay: '',
       persistedMilli: 0,
+      flushingAt: null,
     };
     states.set(rt.id, state);
   }
@@ -102,9 +106,11 @@ withoutTenantScope(() =>
         cachedTokens: 0,
         reasoningTokens: 0,
         milli: 0,
+        oldestAt: null,
       };
       acc.set(key, a);
     }
+    a.oldestAt ??= Date.now();
     a.calls += 1;
     a.promptTokens += e.promptTokens;
     a.completionTokens += e.completionTokens;
@@ -118,7 +124,7 @@ withoutTenantScope(() =>
 async function flushOnce(rt: TenantRuntime, state: DailyState): Promise<void> {
   const { acc, writer } = state;
   if (!writer || states.get(rt.id) !== state) return;
-  const batch: { a: Acc; d: UsageDailyDelta }[] = [];
+  const batch: { a: Acc; d: UsageDailyDelta; oldestAt: number | null }[] = [];
   for (const a of acc.values()) {
     // 加一点余量再取整：0.1 + 0.2 这类浮点零头不该让 1 厘变成 0
     const milli = Math.max(0, Math.floor(a.milli + 1e-6));
@@ -134,20 +140,23 @@ async function flushOnce(rt: TenantRuntime, state: DailyState): Promise<void> {
       reasoningTokens: a.reasoningTokens,
       costMilliCny: milli,
     };
-    batch.push({ a, d });
+    batch.push({ a, d, oldestAt: a.oldestAt });
   }
   if (!batch.length) return;
+  state.flushingAt = Math.min(...batch.map((b) => b.oldestAt ?? Date.now()));
   for (const { a, d } of batch) {
     for (const c of COUNTERS) a[c] -= d[c];
     a.milli -= d.costMilliCny;
+    a.oldestAt = null;
   }
   try {
     await writer(batch.map((b) => b.d));
   } catch (e) {
     if (states.get(rt.id) !== state) return;
-    for (const { a, d } of batch) {
+    for (const { a, d, oldestAt } of batch) {
       for (const c of COUNTERS) a[c] += d[c];
       a.milli += d.costMilliCny;
+      a.oldestAt = Math.min(a.oldestAt ?? Infinity, oldestAt ?? Date.now());
     }
     // 只打原因码：PG 后端的 writeUsage 已在 db 一侧归好类（UsageWriteError.code：SQLSTATE 沿 cause 链取，或 conflict / closed /
     // held_by_other），不打错误原文
@@ -156,6 +165,8 @@ async function flushOnce(rt: TenantRuntime, state: DailyState): Promise<void> {
       `[usage] usage_daily 写入失败（${typeof code === 'string' ? code : e instanceof Error ? e.name : 'unknown'}），这批用量留到下一次再写`,
     );
     return;
+  } finally {
+    state.flushingAt = null;
   }
   if (states.get(rt.id) !== state) return;
   const day = todayIso();
@@ -167,6 +178,17 @@ async function flushOnce(rt: TenantRuntime, state: DailyState): Promise<void> {
   // 写完的、前一天的只剩零头（不到 1 厘）的项不再留着
   for (const [k, a] of acc) if (!a.calls && a.day !== state.lastDay) acc.delete(k);
 }
+
+/** 包括正在写入的批次；成功刷写前不能提前解除全池 60 秒闸。 */
+setSandboxUsageLagReader(() => {
+  let oldest = Infinity;
+  for (const s of states.values())
+    if (s.owner.kind === 'sandbox' && !(s.owner.state === 'closing' && s.owner.cancel.aborted)) {
+      oldest = Math.min(oldest, s.flushingAt ?? Infinity);
+      for (const a of s.acc.values()) if (a.calls || a.milli >= 1 - 1e-6) oldest = Math.min(oldest, a.oldestAt ?? Infinity);
+    }
+  return Number.isFinite(oldest) ? oldest : null;
+});
 
 /** 与 writer 串行读库；传入库快照中已包含的本运行时金额（只计成功提交）。 */
 export function withUsageDailySnapshot<T>(day: string, read: (persistedMilli: number) => Promise<T>): Promise<T> {

@@ -596,6 +596,8 @@ export const STATE_MANIFEST: Record<
   'src/store/seq.ts:states': { kind: 'object-keyed' },
   'src/store/seq.ts:turns': { kind: 'object-keyed' },
   'src/tenancy/budget.ts:states': { kind: 'tenant', state: 'budget.standard' },
+  'src/tenancy/sandbox/budget.ts:budgets': { kind: 'tenant', state: 'budget.sandbox' },
+  'src/tenancy/sandbox/budget.ts:pool': { kind: 'instance', why: '实例锁保护的全池额度、首次共享索引记账与刷新队列；摘下租户不减池总额。' },
   'src/tenancy/hosts.ts:publicHosts': { kind: 'object-keyed' },
   'src/tenancy/runtime.ts:als': { kind: 'object-keyed' },
   'src/tenancy/runtime.ts:fallback': { kind: 'instance', why: '单 standard 兼容宿主引用；严格模式禁止作用域外使用。' },

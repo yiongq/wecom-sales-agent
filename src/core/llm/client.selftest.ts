@@ -140,6 +140,13 @@ try {
 
   // A 已预取、B 在飞时取消，随后同一响应重用 A：回调抛错不能产生后台 rejection。
   const cancelled = createTenantRuntime({ id: 'reuse-cancel', slug: 'reuse-cancel', kind: 'sandbox' });
+  // 本套只测缓存重放取消，不装数据库；预算用替身，真实预算与取消组合由 R15 自测覆盖。
+  Object.defineProperty(cancelled, 'budget', {
+    value: {
+      reserve: () => ({ settle: () => {} }),
+      status: () => ({ calls: 0, costMilli: 0, capCalls: null, capMilli: null }),
+    },
+  });
   let entered!: () => void;
   let release!: () => void;
   const started = new Promise<void>((resolve) => {
