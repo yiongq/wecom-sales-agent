@@ -181,7 +181,8 @@ function reserve(state: BudgetState | null, estimateMilli: number): Reservation 
       rollDay();
       pool.costMilli += actual - estimateMilli;
       pool.reservedCalls--;
-      pool.reservedMilli -= estimateMilli;
+      // 浮点加减会留下 -1e-13 这类残差，午夜结转后变成第二天的花费；没有在飞的预占时就是 0。
+      pool.reservedMilli = pool.reservedCalls === 0 ? 0 : pool.reservedMilli - estimateMilli;
       if (state) state.costMilli += actual - estimateMilli;
       else pool.pending.push({ day: pool.day, calls: 1, costMilli: actual, oldest: Date.now() });
     },

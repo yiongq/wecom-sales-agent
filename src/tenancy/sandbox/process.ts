@@ -379,9 +379,10 @@ export function sandboxApp(
   // GET 永远不建租户；备用链接只来自部署配置，不读取请求的 Host / 转发头。
   app.get('/try', async (c) => {
     if (sandboxSessionOf(c)) return c.redirect('/console/');
+    // console 没构建时（本地开发、CI 测试分片）准备页照常可用，只是没有共享样式；线上镜像里一定有构建产物。
     const [html, index] = await Promise.all([
       readFile('public/try.html', 'utf8'),
-      readFile(`${globalThis.process.env.CONSOLE_DIST || 'console/dist'}/index.html`, 'utf8'),
+      readFile(`${globalThis.process.env.CONSOLE_DIST || 'console/dist'}/index.html`, 'utf8').catch(() => ''),
     ]);
     return c.html(sandboxTryDesign(sandboxTryLinks(html, publicBaseUrl), index));
   });
