@@ -21,7 +21,7 @@ import { assertSandboxRunning } from './lifecycle.js';
 import { sandboxFlags } from './role.js';
 import { initializeSandboxBudget } from './budget.js';
 import { withTenant } from '../../db/client.js';
-import { readSandboxLink } from '../../db/repo/sandbox.js';
+import { readSandboxWechat } from '../../db/repo/sandbox-wechat.js';
 import { sandboxWechatIndex } from './outbound.js';
 import { buildIndex } from '../../core/retrieval.js';
 
@@ -56,14 +56,20 @@ export async function loadSandboxRuntime(
       await initializeSandboxBudget(rt, deps.db);
       await initSessionStore({ db: deps.db, tenantId: row.id, tenantSlug: row.slug, varDir: '' });
       await initPrivacy({ strict: true });
-      const link = await withTenant(
+      const wechat = await withTenant(
         deps.db,
         { tenantId: rt.id, actor: { kind: 'system', userId: null, name: null, ip: null } },
-        readSandboxLink,
+        readSandboxWechat,
       );
       assertSandboxRunning();
       // 无微信附属行的底层建租户仍可服务工作台；未发布令牌时出站与 /wx/ 均拒绝。
-      if (link) sandboxWechatIndex.publishLink(rt, link);
+      if (wechat) {
+        sandboxWechatIndex.publishLink(rt, wechat.linkToken);
+        if (wechat.codeHash && wechat.codeExpiresAt)
+          sandboxWechatIndex.publishCode(rt, wechat.codeHash, new Date(wechat.codeExpiresAt).getTime());
+        if (wechat.externalUserid && wechat.boundAt)
+          sandboxWechatIndex.publishRebuiltBinding(rt, wechat.externalUserid, BigInt(wechat.boundAt));
+      }
       watchStoreAlerts();
       void buildIndex().catch(() => console.warn('[sandbox] sandbox_index_build_failed'));
     });

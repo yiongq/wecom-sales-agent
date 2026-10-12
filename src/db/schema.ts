@@ -840,6 +840,7 @@ export const sandboxWecomState = pgTable('sandbox_wecom_state', {
   openKfid: text('open_kfid').primaryKey(),
   cursor: text('cursor'),
   fullSince: tstz('full_since'),
+  fullRevision: bigint('full_revision', { mode: 'bigint' }).notNull().default(0n),
   updatedAt: tstz('updated_at').notNull().defaultNow(),
 });
 export const sandboxProcessEpoch = pgTable(

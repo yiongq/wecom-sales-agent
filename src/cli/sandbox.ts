@@ -4,8 +4,9 @@ import { fileURLToPath } from 'node:url';
 import { holdTenantLocks, type Db, type ProcessTenantLock } from '../db/client.js';
 import { endSandbox, listSandboxes, purgeSandbox } from '../db/sandbox-reaper.js';
 import { dbFromEnv, main } from './common.js';
+import { resetSandboxWecomFull } from '../db/repo/sandbox-wecom.js';
 
-const USAGE = 'sandbox list | end <slug> | end --all | purge --all';
+const USAGE = 'sandbox list | end <slug> | end --all | purge --all | wecom-reset-full';
 export async function runSandbox(
   argv: string[],
   deps: {
@@ -18,6 +19,7 @@ export async function runSandbox(
     argv.length > 2 ||
     !(
       (command === 'list' && argv.length === 1) ||
+      (command === 'wecom-reset-full' && argv.length === 1) ||
       (command === 'end' && target && !target.startsWith('-')) ||
       ((command === 'end' || command === 'purge') && target === '--all')
     )
@@ -42,6 +44,11 @@ export async function runSandbox(
     signal.throwIfAborted();
     const conn = await deps.connect();
     try {
+      if (command === 'wecom-reset-full') {
+        await resetSandboxWecomFull(conn.db);
+        console.log('[sandbox] 体验客服名额状态已复位，一分钟内生效');
+        return 0;
+      }
       signal.throwIfAborted();
       const all = await listSandboxes(conn.db);
       signal.throwIfAborted();

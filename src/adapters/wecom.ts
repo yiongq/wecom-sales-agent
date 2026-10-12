@@ -80,6 +80,7 @@ import {
   planOutbound,
   planRuntimeSegment,
   recordSend,
+  sendWindow,
   recoverAsUnknown,
   replyDelivered,
   settleIntent,
@@ -1180,6 +1181,7 @@ function postSendMsg(
   if (sandbox)
     return sandbox.requestMessage(token, 'kf/send_msg', body).then(async (res) => {
       const data = (await res.json()) as { errcode?: number; errmsg?: string };
+      sandbox.reportError('kf/send_msg', data.errcode ?? 0);
       if (!res.ok)
         throw new SandboxWecomApiError('kf/send_msg', data.errcode ? String(data.errcode) : `http_${res.status}`, !!data.errcode);
       return data;
@@ -3246,6 +3248,10 @@ export class SandboxWecomRuntime {
     return new SandboxWecomApiError(endpoint, errcode, rejected);
   }
 
+  reportError(endpoint: string, errcode: number | string): void {
+    this.diagnostic(endpoint, String(errcode));
+  }
+
   /** 规范化只是用来识别别名；输入必须本身就是白名单中的逐字规范写法。 */
   private endpoint(value: string): string {
     if (typeof value !== 'string') sandboxWechatIndex.refuse();
@@ -3321,6 +3327,9 @@ export class SandboxWecomRuntime {
       headers: { 'content-type': 'application/json' },
       body: prepared,
       signal,
+    }).catch((error: unknown) => {
+      if (this.running()) this.reportError(endpoint, 'request_failed');
+      throw error;
     });
   }
 
@@ -3361,6 +3370,7 @@ export class SandboxWecomRuntime {
                 signal,
               });
           data = (await res.json()) as T;
+          if (sending) this.reportError(endpoint, data.errcode ?? 0);
           if (!res.ok) throw this.problem(endpoint, data.errcode ? String(data.errcode) : `http_${res.status}`, !!data.errcode);
         }
         this.assertRunning();
@@ -3385,7 +3395,11 @@ export class SandboxWecomRuntime {
   private async api<T extends { errcode?: number }>(endpoint: string, body: Record<string, unknown>): Promise<T> {
     try {
       const data = await this.callApi<T>(endpoint, body);
-      if (data.errcode) throw this.problem(endpoint, String(data.errcode), true);
+      if (data.errcode) {
+        if (endpoint === 'kf/send_msg' || endpoint === 'kf/send_msg_on_event')
+          throw new SandboxWecomApiError(endpoint, String(data.errcode), true);
+        throw this.problem(endpoint, String(data.errcode), true);
+      }
       return data;
     } catch (error) {
       this.assertRunning();
@@ -3435,15 +3449,98 @@ export class SandboxWecomRuntime {
     const rt = currentRuntime();
     if (rt.kind !== 'sandbox' || rt.state !== 'serving' || rt.cancel.aborted) return Promise.resolve(false);
     const cfg = this.sendConfig();
-    return rt.inflight.track(() => {
+    return rt.inflight.track(async () => {
       const uid = sessionId.slice(this.prefix.length);
-      if (opts?.kind === 'menu' && opts.category) return sendMenu(this, cfg, uid, formatForWecom(cfg, text), opts.category);
-      return sendRich(this, cfg, uid, formatForWecom(cfg, text), { kind: opts?.kind ?? 'notice', message: opts?.message ?? null });
+      const ok =
+        opts?.kind === 'menu' && opts.category
+          ? await sendMenu(this, cfg, uid, formatForWecom(cfg, text), opts.category)
+          : await sendRich(this, cfg, uid, formatForWecom(cfg, text), { kind: opts?.kind ?? 'notice', message: opts?.message ?? null });
+      if (!ok && rt.state === 'serving' && !rt.cancel.aborted && sandboxWechatIndex.forUser(uid) !== rt) {
+        const s = getSession(sessionId);
+        const content = '这个微信已不再连着这次体验';
+        if (s && s.messages.at(-1)?.content !== content) {
+          s.messages.push({ role: 'system', content, at: Date.now() });
+          saveSession(s, false);
+        }
+      }
+      return ok;
     });
   }
 
   welcome(code: string): Promise<void> {
     return currentRuntime().inflight.track(() => this.sendWelcome(code));
+  }
+
+  /** R21/R22：已发布绑定的入站才进引擎；不拉昵称、不重放、不进入 03 inbox。 */
+  receive(msg: KfMessage): Promise<void> {
+    const owner = currentRuntime();
+    return owner.inflight.track(async () => {
+      const uid = msg.external_userid;
+      if (sandboxWechatIndex.forUser(uid) !== owner || owner.cancel.aborted) return;
+      const id = this.prefix + uid;
+      const stillCurrent = (): boolean => {
+        if (owner.state !== 'serving' || owner.cancel.aborted) return false;
+        if (sandboxWechatIndex.forUser(uid) === owner) return true;
+        const s = getSession(id);
+        const content = '这个微信已不再连着这次体验';
+        if (s && s.messages.at(-1)?.content !== content) {
+          s.messages.push({ role: 'system', content, at: Date.now() });
+          saveSession(s, false);
+        }
+        return false;
+      };
+      const previous = getSession(id);
+      if (previous?.messages.some((m) => m.msgid === msg.msgid) || recentMsgids(id).has(msg.msgid)) return;
+      const gen = takeoverGen(id);
+      const parsed = parseConsentMenuId(msg.text?.menu_id);
+      const notice = currentPrivacyNotice();
+      if (parsed && notice && previous) {
+        if (applyConsentDecision(previous, parsed.category, parsed.decision, msg.text?.content ?? '', notice.version)) {
+          saveSession(previous);
+          if (parsed.decision === 'declined') await this.push(id, CONSENT_DECLINED_REPLY);
+        }
+        return;
+      }
+      if (msg.msgtype !== 'text' || !msg.text?.content) {
+        const s = getOrCreateSession(id, 'wecom');
+        s.messages.push({
+          role: 'customer',
+          content: placeholderOf(msg.msgtype),
+          at: Date.now(),
+          msgid: msg.msgid,
+          sentAt: msg.send_time * 1000,
+        });
+        trimSessionMessages(s);
+        saveSession(s);
+        if (!s.handedOver) {
+          const sent: ChatMessage = { role: 'agent', content: NON_TEXT_HINT[msg.msgtype] ?? NON_TEXT_HINT_OTHER, at: Date.now() };
+          if (await this.push(id, sent.content, { kind: 'ai', message: sent })) {
+            if (!stillCurrent()) return;
+            s.messages.push(sent);
+            saveSession(s);
+          }
+        }
+        return;
+      }
+      const reply = await handleMessage(id, msg.text.content, 'wecom', { msgid: msg.msgid, sentAt: msg.send_time * 1000, stillCurrent });
+      if (!stillCurrent() || reply.silent || !reply.text.trim()) return;
+      if (takeoverGen(id) !== gen) return;
+      await sendRich(this, this.sendConfig(), uid, formatForWecom(this.sendConfig(), reply.text), {
+        kind: 'ai',
+        message: replyMessageOf(reply) ?? null,
+        stillCurrent: () => takeoverGen(id) === gen,
+      });
+    });
+  }
+
+  async welcomeUser(user: string, code?: string, inboundAt?: number): Promise<void> {
+    if (code) return this.welcome(code);
+    const now = Date.now();
+    const window = sendWindow(this.prefix + user, now);
+    // 手打绑定码本身也是客户开口，但码不进会话与模型历史；企微窗口已由这条消息打开。
+    const freshBinding = inboundAt !== undefined && Number.isFinite(inboundAt) && Math.min(inboundAt, now) > now - 48 * 3600_000;
+    if (freshBinding || (window.closesAt !== null && window.closesAt > now && window.remaining > 0))
+      await this.push(this.prefix + user, withPrivacyLink(this.welcomeText), { kind: 'welcome' });
   }
 
   private async sendWelcome(code: string): Promise<void> {
@@ -3473,8 +3570,8 @@ export class SandboxWecomRuntime {
   }
 
   /** 唯一的作用域外发送：固定话术；不接受自定义正文，不拉客户昵称或头像。 */
-  async replyUnbound(user: string, welcomeCode?: string): Promise<void> {
-    const text = { content: sandboxWechatIndex.fixedTexts(this.cfg.host)[0] };
+  async replyUnbound(user: string, welcomeCode?: string, expired = false): Promise<void> {
+    const text = { content: sandboxWechatIndex.fixedTexts(this.cfg.host)[expired ? 1 : 0] };
     if (welcomeCode) await this.api('kf/send_msg_on_event', { code: welcomeCode, msgtype: 'text', text });
     else await this.api('kf/send_msg', { open_kfid: this.cfg.openKfid, touser: user, msgtype: 'text', text });
   }

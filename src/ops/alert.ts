@@ -41,7 +41,8 @@ export type AlertKey =
   | 'tenant_scope_missing'
   | 'sandbox_pool'
   | 'sandbox_purge'
-  | 'sandbox_send_refused';
+  | 'sandbox_send_refused'
+  | 'sandbox_wecom_full';
 
 export interface AlertOpts {
   /** 同一告警键下按账号与原因独立去重，正文仍只有公开账号 key。 */

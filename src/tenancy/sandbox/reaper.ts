@@ -59,6 +59,7 @@ export class SandboxReaper {
       acquireTenant(id: string): Promise<TenantLock | null>;
       idleMs: number;
       barrierMs?: number;
+      refreshWecom?: () => Promise<void>;
     },
   ) {}
 
@@ -110,6 +111,7 @@ export class SandboxReaper {
   }
   private async sweep(): Promise<void> {
     assertSandboxRunning();
+    await this.deps.refreshWecom?.();
     const rows = await listSandboxes(this.deps.db);
     for (const row of rows) {
       assertSandboxRunning();

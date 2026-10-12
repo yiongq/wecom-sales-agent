@@ -1,4 +1,4 @@
-// R11/R21：发送边界与公开页共用进程内解析；绑定事务由第 27 步发布。
+// R11/R21/R22：发送边界与公开页共用进程内解析；绑定提交后才发布。
 import { scopedRuntime, runtimeOf, type TenantRuntime } from '../runtime.js';
 import { normalizeHost } from '../hosts.js';
 import { registerTenantState } from '../state.js';
@@ -13,24 +13,127 @@ export class SandboxSendRefused extends Error {
 }
 
 class SandboxWechatIndex {
+  private readonly codes = new Map<string, { tenant: string; expiresAt: number }>();
+  private readonly issued = new Map<string, number[]>();
+  private serial: Promise<void> = Promise.resolve();
+  private available = false;
+  private full = false;
   private readonly links = new Map<string, { tenant: string; token: string }>();
   private readonly users = new Map<string, string>();
+  private readonly boundAt = new Map<string, bigint>();
+  private readonly bindingUsers = new Map<string, Set<Promise<void>>>();
   private readonly welcomes = new Map<string, { user: string; tenant: string | null; at: number }>();
   private readonly receipts = new Map<string, { tenant: string; at: number }>();
+
+  exclusive<T>(work: () => Promise<T> | T): Promise<T> {
+    const run = this.serial.then(work);
+    this.serial = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+  async drain(): Promise<void> {
+    await this.serial;
+  }
+  beginBinding(users: string[]): () => void {
+    let finish!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    for (const user of users) {
+      const tasks = this.bindingUsers.get(user) ?? new Set();
+      tasks.add(pending);
+      this.bindingUsers.set(user, tasks);
+    }
+    return () => {
+      for (const user of users) {
+        const tasks = this.bindingUsers.get(user);
+        tasks?.delete(pending);
+        if (!tasks?.size) this.bindingUsers.delete(user);
+      }
+      finish();
+    };
+  }
+  async awaitBinding(user: string): Promise<void> {
+    while (this.bindingUsers.has(user)) await Promise.all(this.bindingUsers.get(user) ?? []);
+  }
+  /** 提交回执不确定且重读失败：三张解析表一起撤下，不能猜测授权。 */
+  quarantine(tenant: string): void {
+    this.clearCode(tenant);
+    this.links.delete(tenant);
+    this.withdraw(tenant);
+    for (const [key, row] of this.welcomes) if (row.tenant === tenant) this.welcomes.delete(key);
+    for (const [key, row] of this.receipts) if (row.tenant === tenant) this.receipts.delete(key);
+  }
+  setAvailability(available: boolean, full: boolean): void {
+    this.available = available;
+    this.full = full;
+  }
+  wechatState(rt: TenantRuntime): 'off' | 'full' | 'unbound' | 'bound' {
+    if (!this.available && !this.full) return 'off';
+    if (this.boundUser(rt)) return 'bound';
+    return this.full ? 'full' : this.available ? 'unbound' : 'off';
+  }
+  boundUser(rt: TenantRuntime): string | undefined {
+    if (!this.live(rt)) return undefined;
+    return [...this.users].find(([, id]) => id === rt.id)?.[0];
+  }
+  boundCount(): number {
+    return [...this.users.keys()].filter((u) => this.forUser(u)).length;
+  }
+  code(hash: string): { runtime: TenantRuntime | undefined; expiresAt: number } | undefined {
+    const row = this.codes.get(hash);
+    return row && { runtime: runtimeOf(row.tenant), expiresAt: row.expiresAt };
+  }
+  publishCode(rt: TenantRuntime, hash: string, expiresAt: number): void {
+    if (!this.live(rt)) return;
+    this.clearCode(rt.id);
+    this.codes.set(hash, { tenant: rt.id, expiresAt });
+  }
+  clearCode(tenant: string): void {
+    for (const [hash, row] of this.codes) if (row.tenant === tenant) this.codes.delete(hash);
+  }
+  canIssue(rt: TenantRuntime, now: number): boolean {
+    const times = (this.issued.get(rt.id) ?? []).filter((at) => now - at < 3600_000);
+    this.issued.set(rt.id, times);
+    return times.length < 10;
+  }
+  recordIssue(rt: TenantRuntime, now: number): void {
+    this.issued.get(rt.id)?.push(now);
+  }
 
   publishLink(rt: TenantRuntime, token: string): void {
     if (rt.kind !== 'sandbox' || !/^[A-Za-z0-9_-]{43}$/.test(token)) throw new Error('sandbox_link_invalid');
     if (this.live(rt)) this.links.set(rt.id, { tenant: rt.id, token });
   }
   /** 只在提交后调用；改绑开始先 withdraw，两边的旧绑定立即失效。 */
-  publishBinding(rt: TenantRuntime, user: string): void {
+  publishCommittedBinding(rt: TenantRuntime, user: string, at = BigInt(Date.now()) * 1000n): void {
     if (!this.live(rt)) return;
     this.withdraw(rt.id);
     this.users.delete(user);
     this.users.set(user, rt.id);
+    this.boundAt.set(user, at);
+  }
+  publishRebuiltBinding(rt: TenantRuntime, user: string, at: bigint): void {
+    const previous = this.forUser(user);
+    if (previous && previous !== rt) {
+      console.warn('[sandbox-wecom] duplicate_binding_older_ignored');
+      const previousAt = this.boundAt.get(user) ?? 0n;
+      if (previousAt > at || (previousAt === at && previous.id > rt.id)) return;
+    }
+    this.publishCommittedBinding(rt, user, at);
+  }
+  /** 第 29 步之前既有自测的直接发布钩子；生产只发布已提交 / 重建的行。 */
+  publishBinding(rt: TenantRuntime, user: string): void {
+    this.publishCommittedBinding(rt, user);
   }
   withdraw(tenant: string): void {
-    for (const [user, owner] of this.users) if (owner === tenant) this.users.delete(user);
+    for (const [user, owner] of this.users)
+      if (owner === tenant) {
+        this.users.delete(user);
+        this.boundAt.delete(user);
+      }
   }
   private live(rt: TenantRuntime | undefined): rt is TenantRuntime {
     return (
@@ -234,20 +337,29 @@ class SandboxWechatIndex {
   keyCount(tenant: string): number {
     return (
       Number(this.links.has(tenant)) +
+      Number(this.issued.has(tenant)) +
+      [...this.codes.values()].filter((r) => r.tenant === tenant).length +
       [...this.users.values()].filter((id) => id === tenant).length +
       [...this.welcomes.values()].filter((r) => r.tenant === tenant).length +
       [...this.receipts.values()].filter((r) => r.tenant === tenant).length
     );
   }
   drop(tenant: string): void {
+    this.clearCode(tenant);
+    this.issued.delete(tenant);
     this.links.delete(tenant);
     this.withdraw(tenant);
     for (const [key, row] of this.welcomes) if (row.tenant === tenant) this.welcomes.delete(key);
     for (const [key, row] of this.receipts) if (row.tenant === tenant) this.receipts.delete(key);
   }
   reset(): void {
+    this.codes.clear();
+    this.issued.clear();
+    this.available = false;
+    this.full = false;
     this.links.clear();
     this.users.clear();
+    this.boundAt.clear();
     this.welcomes.clear();
     this.receipts.clear();
   }
