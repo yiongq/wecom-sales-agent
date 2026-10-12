@@ -1832,6 +1832,48 @@ for (const w of BANNED) {
   await m.unmount();
 }
 
+{
+  server = { pack: TRAVEL, lists: SCENE };
+  const originalActor = AUDIT[0]!.actorName;
+  AUDIT[0]!.actorName = '体验访客';
+  const style = document.createElement('style');
+  style.textContent = fs.readFileSync(new URL('./overview.css', import.meta.url), 'utf8');
+  document.head.append(style);
+  try {
+    for (const sandbox of [
+      null,
+      {
+        ownConversationId: null,
+        expiresAt: new Date(NOW + 86_400_000).toISOString(),
+        wechat: 'off' as const,
+        steps: [false, false, false, false] as [boolean, boolean, boolean, boolean],
+      },
+    ]) {
+      const m = await mountOverview({ kind: 'member', me: { ...me('owner'), tenantName: '体验沙箱', sandbox }, pack: TRAVEL });
+      m.box.classList.toggle('sandbox-body', !!sandbox);
+      const name = sandbox ? 'AI销售工作台' : '体验沙箱';
+      eq(
+        `${sandbox ? '沙箱' : '宿主'}总览：标签页与状态句`,
+        [document.title, m.texts('.page-status')],
+        [`总览 · ${name}`, [`${name}·9月26日 周六`]],
+      );
+      eq(`${sandbox ? '沙箱' : '宿主'}总览：最近变更访客头像`, m.texts('.ov-tl-row .avatar')[0], sandbox ? '访' : '体');
+      for (const selector of ['.ov-kpi-caption', '.ov-kpi-detail']) {
+        const css = win.getComputedStyle(m.$(selector)[0]! as never);
+        eq(
+          `${sandbox ? '沙箱' : '宿主'} KPI ${selector}：完整折行且不截断，宿主照旧`,
+          [css.whiteSpace, css.overflow, css.textOverflow],
+          sandbox ? ['normal', 'visible', 'clip'] : ['nowrap', 'hidden', 'ellipsis'],
+        );
+      }
+      await m.unmount();
+    }
+  } finally {
+    AUDIT[0]!.actorName = originalActor;
+    style.remove();
+  }
+}
+
 if (fails.length) {
   console.error(`overview: ${fails.length} 条断言失败（通过 ${pass} 条）`);
   for (const x of fails) console.error(`  ✗ ${x}`);

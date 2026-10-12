@@ -249,3 +249,76 @@
   flex: none;
   margin-inline-end: 0;
 }
+
+.sandbox-checklist-trigger {
+  position: relative;
+  isolation: isolate;
+}
+.sandbox-progress-flash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--accent-bg);
+  animation: sandbox-progress-flash 150ms linear 1 forwards;
+}
+@keyframes sandbox-progress-flash {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+html[data-reduce-motion='true'] .sandbox-progress-flash {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sandbox-progress-flash {
+    display: none;
+  }
+}
+.sandbox-mobile-checklist,
+.sandbox-end-mobile,
+.sandbox-checklist-tools {
+  display: none;
+}
+.sandbox-checklist.in-drawer {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+@media (max-width: 767px) {
+  .sandbox-banner-row,
+  .sandbox-banner-copy {
+    flex-wrap: nowrap;
+    white-space: nowrap;
+  }
+  .sandbox-banner-copy {
+    gap: 4px;
+  }
+  .sandbox-banner-copy > svg,
+  .sandbox-banner-copy > .sandbox-data-link,
+  .sandbox-banner-simulator,
+  .sandbox-banner-actions > .sandbox-checklist-trigger,
+  .sandbox-end-desktop {
+    display: none;
+  }
+  .sandbox-end-mobile {
+    display: inline;
+  }
+  .sandbox-mobile-checklist {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px 12px;
+  }
+  .sandbox-checklist-tools {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 16px;
+  }
+}

@@ -1,6 +1,6 @@
 // 登录页的自测（console UX spec「登录」「外壳 · 启动」、错误文案表，plan 第 15 步）。在 happy-dom 里挂真的 Shell（登录与否由它判断），
 // 加照服务端规则的假接口：/me、/pack 按 prod、demo 与是否登录回 200 或 401，登录接口可以指定回什么。
-// 1. prod（/me、/pack 都 401）：一栏的登录页，标题「运营后台」与一句说明；「邮箱」「密码」两个标签连着各自的输入框、不加冒号，
+// 1. prod（/me、/pack 都 401）：一栏的登录页，标题「登录」与一句说明；「邮箱」「密码」两个标签连着各自的输入框、不加冒号，
 //    全页没有「口令」；邮箱的占位符以「例：」开头；焦点在邮箱上；没有外壳，也没有「只看演示数据」；标签页标题是产品名。
 // 2. 没填就提交：不发请求，控件下方写「没填邮箱」「没填密码」（前置图标），两个控件都画成出错的样子，aria-invalid、
 //    aria-describedby 连上，焦点到第一个没填的；焦点本来就在那里时，看不见的 polite 区域念一遍没填的几项。填上一个，它的原因就消失。
@@ -303,9 +303,39 @@ async function mount(path: string, pages: { path: string; component: () => React
   // 1. 版式与文案
   eq('prod：启动只取 /me、/pack 各一次', [count('GET /api/console/me'), count('GET /api/console/pack')], [1, 1]);
   check('prod：是登录页，没有外壳（侧栏）', m.$('.login-page') !== null && document.querySelector('.sidebar') === null);
-  eq('prod：main 地标里只有一栏，h1 是「运营后台」', [m.$$('main').length, m.$$('h1').map(m.text)], [1, ['登录']]);
-  check('prod：h1 用登录页的 display 样式', m.$('h1')?.className === 'login-title');
+  eq('prod：main 地标里只有一栏，h1 是「登录」', [m.$$('main').length, m.$$('h1').map(m.text)], [1, ['登录']]);
+  check('prod：h1 用登录页标题样式', m.$('h1')?.className === 'login-title');
   eq('prod：一句说明（中文与字母之间不打空格）', m.text(m.$('.login-lead')), 'AI在企业微信里接待客户，你在这里管话术、产品和会话。');
+  const loginStyle = document.createElement('style');
+  loginStyle.textContent = readFileSync(new URL('../login.css', import.meta.url), 'utf8');
+  document.head.append(loginStyle);
+  const computed = (selector: string) => win.getComputedStyle(m.$(selector)! as never);
+  eq(
+    'prod 卡片靠顶部开始，起点 clamp(40px, 12vh, 120px)',
+    [computed('.login-prod').alignItems, /padding: (clamp\(40px, 12vh, 120px\)) 24px 48px/.exec(loginStyle.textContent!)?.[1]],
+    ['flex-start', 'clamp(40px, 12vh, 120px)'],
+  );
+  eq(
+    'prod 标题 page-title 24/32/600，说明距标题4',
+    [
+      computed('.login-title').fontSize,
+      computed('.login-title').lineHeight,
+      computed('.login-title').fontWeight,
+      computed('.login-lead').marginTop,
+    ],
+    ['24px', '32px', '600', '4px'],
+  );
+  for (const width of [1440, 360]) {
+    win.happyDOM.setViewport({ width, height: 900 });
+    eq(
+      `登录 ${width}：说明使用 pretty，逗号后断行，后半句完整`,
+      [computed('.login-lead').getPropertyValue('text-wrap'), m.$('.login-lead br')?.nextSibling?.textContent],
+      ['pretty', '你在这里管话术、产品和会话。'],
+    );
+  }
+  loginStyle.remove();
+  win.happyDOM.setViewport({ width: 1280, height: 1100 });
+
   eq('prod：两个标签「邮箱」「密码」，不加冒号', m.$$('.login-label').map(m.text), ['邮箱', '密码']);
   check('prod：标签连着各自的输入框', m.email()?.tagName === 'INPUT' && m.password()?.tagName === 'INPUT');
   eq(
@@ -982,12 +1012,20 @@ const banners = (): Element[] =>
       status: 200,
       body: {
         ...ME,
-        sandbox: { expiresAt: new Date(Date.now() + 86_400_000).toISOString(), wechat: 'off', steps: [false, false, false, false] },
+        sandbox: {
+          ownConversationId: null,
+          expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+          wechat: 'off',
+          steps: [false, false, false, false],
+        },
       },
     },
   };
   win.happyDOM.setViewport({ width: 1280, height: 800 });
-  const m = await mount('/console/catalog/route', [{ path: '/sop', component: () => createElement(PageHeader, { title: '话术页' }) }]);
+  const m = await mount('/console/', [
+    { path: '/', component: () => createElement(PageHeader, { title: '总览' }) },
+    { path: '/sop', component: () => createElement(PageHeader, { title: '话术页' }) },
+  ]);
   try {
     eq(
       '沙箱侧栏：产品名与体验Tag，没有租户头像',
@@ -1010,10 +1048,11 @@ const banners = (): Element[] =>
     for (const width of [1280, 1279, 390]) {
       await act(async () => win.happyDOM.setViewport({ width, height: 800 }));
       const narrow = width <= 1279;
+      const currentChecklist = m.$('.sandbox-body > .sandbox-checklist')!;
       const css = (el: HTMLElement) => win.getComputedStyle(el as never);
       eq(
         `沙箱 ${width}px：布局方向正常，清单顺序正确`,
-        [css(body).flexDirection || 'row', css(checklist).order],
+        [css(body).flexDirection || 'row', css(currentChecklist).order],
         [narrow ? 'column' : 'row', narrow ? '0' : '1'],
       );
       eq(
@@ -1037,6 +1076,21 @@ const banners = (): Element[] =>
       });
       await settle(m.qc);
       eq(`沙箱 ${width}px：换页重置实际滚动容器`, [reset, scroller.scrollTop], [true, 0]);
+      eq(`沙箱 ${width}px：非总览页没有常驻清单栏`, m.$('.sandbox-body > .sandbox-checklist'), null);
+      eq(`沙箱 ${width}px：页名加产品名`, document.title, '话术页 · AI销售工作台');
+      const trigger = document.querySelector<HTMLButtonElement>(
+        width < 768 ? '.sandbox-mobile-checklist button' : '.sandbox-banner .sandbox-checklist-trigger',
+      )!;
+      await act(async () => trigger.click());
+      await new Promise((r) => setTimeout(r, 30));
+      check(
+        `沙箱 ${width}px：横幅按钮打开右侧420抽屉`,
+        !!document.querySelector('.sandbox-checklist-drawer .ant-drawer-content-wrapper[style*="420px"]') &&
+          trigger.getAttribute('aria-expanded') === 'true',
+      );
+      await act(async () => document.querySelector<HTMLButtonElement>('.sandbox-checklist-drawer .ant-drawer-close')!.click());
+      await act(async () => m.router.navigate({ to: '/' }));
+      await settle(m.qc);
     }
   } finally {
     await m.unmount();

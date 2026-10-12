@@ -34,6 +34,7 @@
 .login-lead {
   margin: 8px 0 32px;
   color: var(--text-2);
+  text-wrap: pretty;
 }
 .login-back {
   margin: 24px 0 0;
@@ -84,9 +85,9 @@
 }
 .login-prod {
   background: var(--frame);
-  align-items: center;
+  align-items: flex-start;
   justify-content: center;
-  padding: 80px 24px 48px;
+  padding: clamp(40px, 12vh, 120px) 24px 48px;
 }
 .login-prod .login-panel {
   flex: 0 1 400px;
@@ -94,6 +95,14 @@
   border-radius: var(--r-xl);
   background: var(--panel);
   box-shadow: var(--shadow-panel);
+}
+.login-prod .login-title {
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 600;
+}
+.login-prod .login-lead {
+  margin-top: 4px;
 }
 .login-prod .entry-wordmark {
   position: fixed;

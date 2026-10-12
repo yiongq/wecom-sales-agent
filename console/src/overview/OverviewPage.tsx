@@ -750,14 +750,16 @@ function StagesBlock({ pack }: { pack: IndustryPack }) {
 
 function TimelineLine({ row }: { row: TimelineRow }) {
   const { name, human } = row.actor;
+  const viewer = useViewer().data;
+  const avatarName = viewer?.kind === 'member' && viewer.me.sandbox && name === '体验访客' ? '访' : name;
   return (
     <li className="ov-tl-row">
       <time className="ov-tl-time" dateTime={row.at} title={row.fullTime}>
         {row.time}
       </time>
       {human ? (
-        <span className={`avatar avatar-${avatarIndex(name)}`} aria-hidden="true">
-          {firstChar(name)}
+        <span className={`avatar avatar-${avatarIndex(avatarName)}`} aria-hidden="true">
+          {firstChar(avatarName)}
         </span>
       ) : (
         <span className="ov-tl-bot" aria-hidden="true">
@@ -857,7 +859,7 @@ export function OverviewPage() {
   return (
     <>
       {/* 状态句包成一段：页头的状态行是 flex，Sep 拆成单独的项会多出 8 的间隔 */}
-      <PageHeader title="总览" status={<span>{cjk([viewer.me.tenantName, date])}</span>} />
+      <PageHeader title="总览" status={<span>{cjk([viewer.me.sandbox ? 'AI销售工作台' : viewer.me.tenantName, date])}</span>} />
       <TodoBlock pack={pack} editor={editor} canHandle={canHandle} now={now} onSettled={showBelow} />
       <MetricsBlock editor={editor} />
       <div className={below ? 'ov-below' : 'ov-below is-waiting'}>

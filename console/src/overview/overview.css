@@ -585,3 +585,12 @@ a.ov-stage:hover {
     margin-left: 120px;
   }
 }
+
+/* 清单缩窄总览时，说明与次行完整折行；宿主格的排版照旧。 */
+.sandbox-body .ov-kpi-caption,
+.sandbox-body .ov-kpi-detail {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  text-wrap: pretty;
+}

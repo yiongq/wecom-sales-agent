@@ -278,6 +278,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
             key={v.me.tenantSlug}
             slug={v.me.tenantSlug}
             sandbox={sandbox}
+            presentation={selected === '/' ? 'inline' : 'drawer'}
             error={progress.error}
             onRetry={() => void progress.refetch()}
           />
@@ -310,7 +311,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
         sidebar(false)
       )}
       {sandbox && v.kind === 'member' ? (
-        <SandboxControls key={v.me.tenantSlug} slug={v.me.tenantSlug}>
+        <SandboxControls key={v.me.tenantSlug} slug={v.me.tenantSlug} overview={selected === '/'} page={path}>
           {panel}
         </SandboxControls>
       ) : (

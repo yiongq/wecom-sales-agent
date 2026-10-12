@@ -48,7 +48,11 @@ export function LoginPage({
         <div className="entry-wordmark">AI销售工作台</div>
         <div className="login-column">
           <h1 className="login-title">登录</h1>
-          <p className="login-lead">{cjk('AI在企业微信里接待客户，你在这里管话术、产品和会话。')}</p>
+          <p className="login-lead">
+            {cjk('AI在企业微信里接待客户，')}
+            <br />
+            {cjk('你在这里管话术、产品和会话。')}
+          </p>
           <LoginForm autoFocus onSuccess={() => void qc.resetQueries({ queryKey: VIEWER_KEY })} />
           {demo && (
             <p className="login-back">

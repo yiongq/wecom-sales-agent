@@ -4,6 +4,7 @@ import { win } from '../fields/selftest-dom.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { encode } from 'uqr';
+import { setReduceMotion } from '../theme/prefs.js';
 import { WechatStep } from './WechatStep.js';
 import { ConfigProvider } from 'antd';
 import { QueryClient } from '@tanstack/react-query';
@@ -209,6 +210,79 @@ try {
   check(() => assert.equal(document.activeElement?.textContent?.replace(/\s/g, ''), '继续体验'));
   check(() => assert.equal(document.querySelectorAll('.sandbox-end-effects li').length, 3));
   await click('继续体验');
+  // 非总览清单走右侧 S 抽屉；进度只在新步骤完成时闪一次，按钮本身不重挂。
+  const journey = (sandbox: SandboxInfo = info) => (
+    <SandboxControls slug="sbx-drawer" overview={false} page="/conversations">
+      <SandboxBanner sandbox={sandbox} />
+      <div className="sandbox-body">
+        <SandboxChecklist slug="sbx-drawer" sandbox={sandbox} presentation="drawer" onRetry={() => {}} />
+      </div>
+    </SandboxControls>
+  );
+  await render(journey());
+  check(() => assert.equal(host.querySelector('.sandbox-body > .sandbox-checklist'), null));
+  check(() => assert.equal(host.querySelector('.sandbox-progress-flash'), null));
+  const progressButton = host.querySelector<HTMLButtonElement>('.sandbox-banner .sandbox-checklist-trigger')!;
+  await click('体验清单', host.querySelector('.sandbox-banner')!);
+  check(() => assert.equal(progressButton.getAttribute('aria-expanded'), 'true'));
+  check(() =>
+    assert.equal(document.querySelector<HTMLElement>('.sandbox-checklist-drawer .ant-drawer-content-wrapper')!.style.width, '420px'),
+  );
+  check(() => assert.ok(document.querySelector('.sandbox-checklist-drawer.ant-drawer-right')));
+  check(() => assert.ok(document.querySelector('.sandbox-checklist-drawer .sandbox-step-content')));
+  await act(async () => document.querySelector<HTMLButtonElement>('.sandbox-checklist-drawer .ant-drawer-close')!.click());
+  check(() => assert.equal(progressButton.getAttribute('aria-expanded'), 'false'));
+  const progressed: SandboxInfo = { ...info, steps: [true, false, false, false] };
+  progressButton.focus();
+  await render(journey(progressed));
+  const firstFlash = progressButton.querySelector('.sandbox-progress-flash');
+  check(() => assert.ok(firstFlash));
+  check(() => assert.equal(host.querySelector('.sandbox-banner .sandbox-checklist-trigger'), progressButton));
+  check(() => assert.equal(document.activeElement, progressButton));
+  await render(journey({ ...progressed, steps: [...progressed.steps] }));
+  check(() => assert.equal(progressButton.querySelector('.sandbox-progress-flash'), firstFlash));
+  await act(async () => {
+    await new Promise((r) => setTimeout(r, 170));
+  });
+  check(() => assert.equal(progressButton.querySelector('.sandbox-progress-flash'), null));
+  await render(journey(progressed));
+  check(() => assert.equal(progressButton.querySelector('.sandbox-progress-flash'), null));
+  await render(journey(info));
+  check(() => assert.equal(progressButton.querySelector('.sandbox-progress-flash'), null));
+  setReduceMotion(true);
+  await render(journey(progressed));
+  check(() => assert.equal(progressButton.querySelector('.sandbox-progress-flash'), null));
+  setReduceMotion(false);
+  await render(journey({ ...progressed, steps: [true, true, false, false] }));
+  check(() => assert.ok(progressButton.querySelector('.sandbox-progress-flash')));
+  const mobileStyle = document.createElement('style');
+  mobileStyle.textContent = fs.readFileSync(new URL('./sandbox.css', import.meta.url), 'utf8');
+  document.head.append(mobileStyle);
+  win.happyDOM.setViewport({ width: 360, height: 800 });
+  const computed = (selector: string) => getComputedStyle(host.querySelector(selector)!);
+  check(() => assert.equal(computed('.sandbox-banner-row').flexWrap, 'nowrap'));
+  check(() => assert.equal(computed('.sandbox-banner-copy').whiteSpace, 'nowrap'));
+  for (const selector of [
+    '.sandbox-banner-simulator',
+    '.sandbox-banner-copy > .sandbox-data-link',
+    '.sandbox-banner-actions > .sandbox-checklist-trigger',
+    '.sandbox-end-desktop',
+  ]) {
+    check(() => assert.equal(computed(selector).display, 'none'));
+  }
+  check(() => assert.equal(computed('.sandbox-end-mobile').display, 'inline'));
+  check(() => assert.equal(computed('.sandbox-mobile-checklist').display, 'flex'));
+  await click('体验清单', host.querySelector('.sandbox-mobile-checklist')!);
+  check(() =>
+    assert.equal(getComputedStyle(document.querySelector('.sandbox-checklist-drawer .sandbox-checklist-tools')!).display, 'flex'),
+  );
+  check(() => assert.ok(document.querySelector('.sandbox-checklist-drawer a[href="/chat.html"]')));
+  await click('数据怎么处理', document.querySelector('.sandbox-checklist-drawer')!);
+  check(() => assert.ok(SANDBOX_DATA_COPY.every((line) => document.querySelector('.ant-modal')?.textContent?.includes(line))));
+  await act(async () => document.querySelector<HTMLButtonElement>('.ant-modal-close')!.click());
+  mobileStyle.remove();
+  win.happyDOM.setViewport({ width: 1280, height: 1100 });
+
   // 只展开第一个未完成步；绑定摘要单独保留改绑入口。
   await render(
     createElement(SandboxChecklist, {

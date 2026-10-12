@@ -180,6 +180,20 @@ try {
   const response = await fetch('/try?ended=1');
   const html = await response.text();
   cspMatches(response, html);
+  check(() => assert.match(html, /\.try-start:disabled[^}]+background:var\(--primary\)/));
+  check(() => assert.doesNotMatch(html, /\.try-start:disabled[^}]+opacity/));
+  check(() => assert.match(html, /\.try-icon[^}]+width:16px; height:16px/));
+  check(() => assert.match(html, /aria-busy="false"[\s\S]*?try-spinner/));
+  check(() => assert.match(html, /\.try-start\[aria-busy="true"\] \.try-spinner[^}]+animation:try-spin/));
+  for (const name of ['clock', 'lock', 'info', 'layout-dashboard', 'message-square', 'chevron-right', 'arrow-up-right']) {
+    check(() => assert.match(html, new RegExp(`class="try-icon ${name}"`)));
+  }
+  check(() => assert.match(html, /\.try-fallback strong[^}]+500 14px\/22px/));
+  check(() => assert.match(html, /#notes[^}]+border-top:1px solid var\(--divider\)/));
+  check(() => assert.doesNotMatch(html, /\.try-steps[^}]+border-top/));
+  check(() => assert.match(html, /id="dataWarning">别填真实的姓名和手机号 · <\/span><a/));
+  check(() => assert.match(html, /一份只属于你的示例后台，<br class="try-lead-break">带示例会话、订单和产品。/));
+
   check(() => assert.equal(response.status, 200));
   check(() => assert.equal(provisions, 0));
   const page = boot(html, fetch, '?ended=1');
@@ -189,17 +203,27 @@ try {
   check(() => assert.equal(page.ids.get('hostConsole')!.hidden, false));
   check(() => assert.equal(page.ids.get('hostChat')!.hidden, false));
   check(() => assert.equal(page.ids.get('fallbackUnavailable')!.hidden, true));
+  const dataToggle = page.ids.get('dataToggle')!;
+  await dataToggle.events.get('click')!({ preventDefault: () => {} });
+  check(() => assert.equal(page.ids.get('tryData')!.hidden, false));
+  check(() => assert.equal(dataToggle.attrs.get('aria-expanded'), 'true'));
+  await dataToggle.events.get('click')!({ preventDefault: () => {} });
+  check(() => assert.equal(page.ids.get('tryData')!.hidden, true));
   const attempt = page.click();
   check(() => assert.equal(page.ids.get('startBtn')!.disabled, true));
-  check(() => assert.match(page.ids.get('startBtn')!.textContent, /正在准备/));
+  check(() => assert.equal(page.ids.get('startBtn')!.attrs.get('aria-busy'), 'true'));
+  check(() => assert.match(page.ids.get('startLabel')!.textContent, /正在准备/));
   await page.click();
   await attempt;
   check(() => assert.equal(provisions, 1, '重复点击只发一次 POST'));
   check(() => assert.equal(page.ids.get('fallback')!.hidden, false));
   check(() => assert.match(page.ids.get('tryTitle')!.textContent, /今天的体验名额满了/));
   check(() => assert.match(page.ids.get('tryLead')!.textContent, /大约2小时后恢复/));
-  check(() => assert.equal(page.ids.get('startBtn')!.textContent, '重试'));
+  check(() => assert.equal(page.ids.get('startLabel')!.textContent, '重试'));
   check(() => assert.equal(page.ids.get('startBtn')!.disabled, false));
+  check(() => assert.equal(page.ids.get('startBtn')!.attrs.get('aria-busy'), 'false'));
+  check(() => assert.equal(page.ids.get('dataNote')!.hidden, true));
+  check(() => assert.equal(page.ids.get('tryData')!.hidden, true));
   failure = 'unavailable';
   await page.click();
   check(() => assert.equal(provisions, 2));
@@ -289,6 +313,8 @@ try {
   check(() => assert.equal(ipPage.ids.get('tryTitle')!.textContent, '这个网络今天开得有点多了'));
   check(() => assert.match(ipPage.ids.get('tryLead')!.textContent, /过一会儿再试/));
   check(() => assert.equal(ipPage.ids.get('fallback')!.hidden, false));
+  check(() => assert.equal(ipPage.ids.get('dataNote')!.hidden, true));
+  check(() => assert.equal(ipPage.ids.get('tryData')!.hidden, true));
   check(() => assert.equal(response.headers.get('x-robots-tag'), 'noindex, nofollow'));
   const robots = await fetch('/robots.txt');
   const robotText = await robots.text();
