@@ -58,3 +58,13 @@ export function sandboxSimulatorId(id: string): string | null {
   if (/^sbx-[0-9a-f]{24,64}$/.test(id)) return id;
   return null;
 }
+
+export const SANDBOX_WECHAT_COOKIE = '__Host-sbxw';
+export function sandboxWechatCookie(token: string, expiresAt: number, now = Date.now()): string {
+  return `${SANDBOX_WECHAT_COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.max(0, Math.floor((expiresAt - now) / 1000))}`;
+}
+
+/** 链接 cookie 只选择公开页租户，不签发 console 的 owner 身份。 */
+export function setSandboxWechatRuntime(c: Context, rt: TenantRuntime): void {
+  c.set('publicHostRuntime', rt);
+}

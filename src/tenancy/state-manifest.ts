@@ -596,6 +596,13 @@ export const STATE_MANIFEST: Record<
   'src/store/seq.ts:states': { kind: 'object-keyed' },
   'src/store/seq.ts:turns': { kind: 'object-keyed' },
   'src/tenancy/budget.ts:states': { kind: 'tenant', state: 'budget.standard' },
+  'src/tenancy/sandbox/outbound.ts:sandboxWechatIndex': { kind: 'tenant', state: 'sandbox.wechat' },
+  'src/adapters/wecom.ts:sandboxRuntime': {
+    kind: 'instance',
+    why: '沙箱进程独占的体验客服发送能力；租户解析在 sandbox.wechat，stop 摘除句柄。',
+  },
+  'src/adapters/wecom.ts:sandboxWecomAdapter': { kind: 'instance', why: '发送能力门面；不缓存租户身份。' },
+  'src/log.ts:textConsoleHooked': { kind: 'instance', why: '纯文本 console 的一次性链接令牌遮盖接线。' },
   'src/tenancy/sandbox/budget.ts:budgets': { kind: 'tenant', state: 'budget.sandbox' },
   'src/tenancy/sandbox/budget.ts:pool': { kind: 'instance', why: '实例锁保护的全池额度、首次共享索引记账与刷新队列；摘下租户不减池总额。' },
   'src/tenancy/hosts.ts:publicHosts': { kind: 'object-keyed' },

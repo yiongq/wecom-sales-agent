@@ -1,15 +1,17 @@
-// 05 R21：体验客服实例收件。第 25 步绑定表恒空；不建会话、不调用模型、不写租户表。
+// 05 R21：体验客服实例收件。收件不建会话、不调用模型；第 27 步接绑定派发。
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
-import { SandboxWecomRuntime } from '../../adapters/wecom.js';
+import { SandboxWecomRuntime, installSandboxWecomOutbound } from '../../adapters/wecom.js';
 import type { KfMessage } from '../../adapters/wecom-state.js';
 import type { CallbackQuery } from '../../adapters/wecom-callback.js';
 import { readSandboxWecomState, commitSandboxWecomCursor } from '../../db/repo/sandbox-wecom.js';
 import type { Db } from '../../db/client.js';
 import { alert } from '../../ops/alert.js';
 import { computeSignature, decryptWecom, safeEqual } from '../../wecom-crypto.js';
-import { withoutTenantScope } from '../runtime.js';
+import { sandboxWechatIndex } from './outbound.js';
+import { onSendFail } from '../../quota/ledger.js';
+import { withTenantScope, withoutTenantScope } from '../runtime.js';
 import { sandboxStopped } from './lifecycle.js';
 import { SANDBOX_WECOM_NAMES, SandboxStartupError } from './role.js';
 
@@ -137,6 +139,7 @@ export class SandboxWecom {
     this.cursor = state.cursor;
     this.cold = !this.cursor;
     this.full = state.fullSince !== null;
+    installSandboxWecomOutbound(this.api);
     // 凭据占位时 API 失败不拒绝启动，GET 校验完全独立。
     // 首轮 API 在后台跑，慢拉取 / 发送不阻塞 HTTP 监听。
     void this.tick();
@@ -260,6 +263,7 @@ export class SandboxWecom {
             const previousCursor = this.cursor;
             const page = await this.api.sync(this.cursor, callbackToken);
             if (!this.running()) return;
+            const arrivedAt = this.now();
             const messages = page.msg_list ?? [];
             // 02/03 兼容：空页不带游标时保持原位，结束本次拉取，避免无进展循环。
             if (messages.length && (!page.next_cursor || (page.has_more && page.next_cursor === previousCursor)))
@@ -274,7 +278,7 @@ export class SandboxWecom {
               if (!this.running()) return;
               if (message.open_kfid !== this.env.SANDBOX_WECOM_OPEN_KFID) continue;
               if (this.cold && message.send_time * 1000 < this.startedAt - 10 * 60_000) continue;
-              this.dispatch(message);
+              this.dispatch(message, arrivedAt);
             }
             more = page.has_more === 1 && !!page.next_cursor && page.next_cursor !== previousCursor;
           }
@@ -289,13 +293,21 @@ export class SandboxWecom {
     return this.syncTask;
   }
 
-  private dispatch(message: KfMessage): void {
-    // 系统发送失败回执不回话术；第 26 步接 msgid → 沙箱。
+  private dispatch(message: KfMessage, arrivedAt: number): void {
+    if (message.origin === 4 && message.event?.event_type === 'msg_send_fail') {
+      const msgid = message.event.fail_msgid;
+      const rt = msgid && sandboxWechatIndex.forReceipt(msgid, this.now());
+      if (rt) withTenantScope(rt, () => onSendFail(msgid!, message.event!.fail_type ?? 0));
+      else this.warn('receipt', 'unknown_msgid');
+      return;
+    }
+    // 第 27 步绑定发布后接客户对话；未绑定的话术仍在空作用域里发送。
     const entered = message.event?.event_type === 'enter_session';
     if (this.full || (!entered && message.origin !== 3)) return;
     const user = entered ? (message.event?.external_userid ?? message.external_userid) : message.external_userid;
     if (!user) return;
     const now = this.now();
+    if (entered && message.event?.welcome_code) sandboxWechatIndex.rememberWelcome(message.event.welcome_code, user, arrivedAt);
     for (const [key, at] of this.replies) if (now - at.at >= 10 * 60_000) this.replies.delete(key);
     this.hourly = this.hourly.filter((at) => now - at < 60 * 60_000);
     const hash = createHash('sha256').update(user).digest('hex');

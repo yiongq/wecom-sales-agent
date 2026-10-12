@@ -3,7 +3,7 @@ import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
 import { currentRuntime, scopedRuntime, tenantRuntimes } from '../tenancy/runtime.js';
 import { installedChannelAccounts } from '../channels/registry.js';
-import { publicBase } from '../tenancy/hosts.js';
+import { publicBase, normalizeHost } from '../tenancy/hosts.js';
 import {
   runtimeOf,
   hostRuntime,
@@ -51,6 +51,7 @@ import { brandTexts } from '../core/brand.js';
 //   在途表），发送走 03 的「先落库、后发送」（第 8 步，见下文「03 先落库、后发送」一节）。
 // - 会话 id = 账号前缀 + external_userid（默认账号 wecom:，之后建的 wecom:<key>:）；发往一个会话的消息经 accountForSession 找到账号，
 //   只带那个账号的 open_kfid 与 access_token；停用账号名下的会话推送返回 false。
+import { sandboxWechatIndex, SandboxSendRefused } from '../tenancy/sandbox/outbound.js';
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -85,6 +86,7 @@ import {
   unmarkSending,
   type OutboundIntent,
   type OutboundPayload,
+  type SendHandle,
   type SendResult,
 } from '../quota/ledger.js';
 import { cleanText } from '../shared/text.js';
@@ -425,7 +427,8 @@ function discardRuntime(rt: WecomRuntime): void {
 /** 库里账号的日志前缀 */
 const accountTag = (key: string): string => `[wecom acct=${key}]`;
 
-const sendsClosed = (rt: WecomRuntime): boolean => Date.now() >= rt.sendsClosedAt;
+type SendRuntime = WecomRuntime | SandboxWecomRuntime;
+const sendsClosed = (rt: SendRuntime): boolean => Date.now() >= rt.sendsClosedAt;
 
 /**
  * 这个账号的会话（没有就建，02 的 getOrCreateSession）。非默认的库里账号建的会话带 channelAccountId（R11）：与建会话同一段同步代码，
@@ -461,7 +464,8 @@ export function wecomObservability(accountId: string) {
 
 // ---------------- access_token ----------------
 
-async function getAccessToken(rt: WecomRuntime, cfg: WecomConfig, force = false): Promise<string> {
+async function getAccessToken(rt: SendRuntime, cfg: WecomConfig, force = false): Promise<string> {
+  if (rt instanceof SandboxWecomRuntime) return rt.accessToken(force);
   if (!force && rt.token && Date.now() < rt.tokenExpireAt) return rt.token.reveal();
   rt.tokenInflight ??= (async () => {
     try {
@@ -498,7 +502,7 @@ class TokenError extends Error {
   }
 }
 
-async function tokenOrThrow(rt: WecomRuntime, cfg: WecomConfig, force = false): Promise<string> {
+async function tokenOrThrow(rt: SendRuntime, cfg: WecomConfig, force = false): Promise<string> {
   try {
     return await getAccessToken(rt, cfg, force);
   } catch (e) {
@@ -508,11 +512,12 @@ async function tokenOrThrow(rt: WecomRuntime, cfg: WecomConfig, force = false): 
 
 /** 带 token 的 POST；token 过期（42001/40014）自动强刷重试一次。取 token 失败抛 TokenError */
 async function callApi<T extends { errcode?: number; errmsg?: string }>(
-  rt: WecomRuntime,
+  rt: SendRuntime,
   cfg: WecomConfig,
   endpoint: string,
   body: unknown,
 ): Promise<T> {
+  if (rt instanceof SandboxWecomRuntime) return rt.callApi<T>(endpoint, body as Record<string, unknown>);
   let token = await tokenOrThrow(rt, cfg);
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await fetch(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
@@ -566,12 +571,12 @@ const WECOM_TEXT_LIMIT = 2000;
 /** 超限长文按字节上限分段，优先在换行处断开。
  *  两个不能踩的坑：切点落在 URL 中间会得到两条都点不开的残缺网址；
  *  切点落在代理对中间会切出孤立的高位码元，客户端显示成乱码方块。 */
-function splitForWecom(text: string): string[] {
+function splitForWecom(text: string, size: (value: string) => number = (value) => Buffer.byteLength(value, 'utf8')): string[] {
   const chunks: string[] = [];
   let rest = text;
-  while (Buffer.byteLength(rest, 'utf8') > WECOM_TEXT_LIMIT) {
+  while (size(rest) > WECOM_TEXT_LIMIT) {
     let cut = rest.length;
-    while (Buffer.byteLength(rest.slice(0, cut), 'utf8') > WECOM_TEXT_LIMIT) {
+    while (size(rest.slice(0, cut)) > WECOM_TEXT_LIMIT) {
       cut = Math.floor(cut * 0.9);
     }
     const nl = rest.lastIndexOf('\n', cut);
@@ -606,7 +611,7 @@ function splitForWecom(text: string): string[] {
 const THUMB_TTL = 2 * 24 * 3600 * 1000;
 const THUMB_FAIL_COOLDOWN = 60_000;
 
-async function uploadThumb(rt: WecomRuntime, cfg: WecomConfig): Promise<string | null> {
+async function uploadThumb(rt: SendRuntime, cfg: WecomConfig, target?: string): Promise<string | null> {
   if (rt.thumbCache && Date.now() - rt.thumbCache.at < THUMB_TTL) return rt.thumbCache.id;
   if (Date.now() < rt.thumbFailUntil) return null;
   if (rt.thumbInflight) return rt.thumbInflight;
@@ -619,11 +624,13 @@ async function uploadThumb(rt: WecomRuntime, cfg: WecomConfig): Promise<string |
       const token = await getAccessToken(rt, cfg);
       const form = new FormData();
       form.append('media', new Blob([new Uint8Array(buf)], { type: 'image/png' }), 'proposal-thumb.png');
-      const res = await fetch(`${API_BASE}/media/upload?access_token=${encodeURIComponent(token)}&type=image`, {
-        method: 'POST',
-        body: form,
-        signal: AbortSignal.timeout(20000),
-      });
+      const res = await (rt instanceof SandboxWecomRuntime
+        ? rt.upload(token, form, target)
+        : fetch(`${API_BASE}/media/upload?access_token=${encodeURIComponent(token)}&type=image`, {
+            method: 'POST',
+            body: form,
+            signal: AbortSignal.timeout(20000),
+          }));
       const d = (await res.json()) as { errcode?: number; errmsg?: string; media_id?: string };
       if (d.errcode || !d.media_id) {
         console.error(`${rt.tag} 缩略图上传失败，链接将以纯文本发送:`, d.errcode);
@@ -689,19 +696,24 @@ function extractCard(text: string, baseUrl: string): { title: string; desc: stri
   return null;
 }
 
+function recordRuntimeSend(rt: SendRuntime, sessionId: string, kind: OutboundKind, message: ChatMessage | null): SendHandle {
+  const handle = recordSend(sessionId, kind, message);
+  return rt instanceof SandboxWecomRuntime ? rt.trackSend(handle) : handle;
+}
+
 /**
  * 发链接卡片（缩略图由调用方先备好，见 sendRich）。接口报错或网络异常时返回 false，调用方退回纯文本。
  * 卡片也是一次 send_msg：带 msgid、记一行账（kind='card'，对应的是这条回复），不重试
  */
 async function sendLinkCard(
-  rt: WecomRuntime,
+  rt: SendRuntime,
   cfg: WecomConfig,
   externalUserId: string,
   card: { title: string; desc: string; url: string },
   thumb: string,
   message: ChatMessage | null,
 ): Promise<boolean> {
-  const entry = recordSend(rt.prefix + externalUserId, 'card', message);
+  const entry = recordRuntimeSend(rt, rt.prefix + externalUserId, 'card', message);
   // 整体包 try/catch：callApi 用 AbortSignal.timeout，网络抖动会 reject 而不是返回 errcode。
   // 漏掉会让异常冲出 push()，调用方的纯文本兜底永不执行——正文已经发出去了、链接却没了。
   try {
@@ -722,7 +734,7 @@ async function sendLinkCard(
     return true;
   } catch (e) {
     if (e instanceof TokenError) entry.discard();
-    else entry.settle('unknown');
+    else entry.settle(e instanceof SandboxSendRefused ? 'rejected' : 'unknown');
     console.error(`${rt.tag} 链接卡片发送异常，退回纯文本:`, apiErrorCode(e));
     return false;
   }
@@ -841,7 +853,16 @@ function stripLink(body: string, raw: string): string {
 /** 发一条回复：含单条站内链接时走「正文 + 原生卡片」，否则纯文本。
  *  客户对话主链路与后台推送共用这一条路径——此前卡片逻辑只写在 push() 里，
  *  而客户消息的回复走的是 handleCustomerMessage → sendText，卡片代码对客户而言是死代码。 */
-async function sendRich(rt: WecomRuntime, cfg: WecomConfig, uid: string, body: string, ctx: SendCtx): Promise<boolean> {
+async function sendRich(rt: SendRuntime, cfg: WecomConfig, uid: string, body: string, ctx: SendCtx): Promise<boolean> {
+  if (rt instanceof SandboxWecomRuntime) {
+    try {
+      rt.assertLinks(body);
+    } catch (error) {
+      if (!(error instanceof SandboxSendRefused)) throw error;
+      recordRuntimeSend(rt, rt.prefix + uid, ctx.kind, ctx.message).settle('rejected');
+      return false;
+    }
+  }
   // 人工回复（kind='human'）的客户侧正文前加「【顾问】」（不变量 18）：加在拆完卡片之后，只加在客户读到的正文上——
   // 加在整条前面的话，只贴了一条链接时会单独发一条只有「【顾问】」的消息、多占一条额度，「方案书：<链接>」的标签也认不出来
   const advisor = ctx.kind === 'human' ? withAdvisorPrefix : (t: string): string => t;
@@ -850,7 +871,7 @@ async function sendRich(rt: WecomRuntime, cfg: WecomConfig, uid: string, body: s
   // 先把缩略图备好再动正文。stripLink 会把「方案书在这儿」改成「见下方卡片」，
   // 此前先发了改过的正文才去传缩略图，缩略图一失败（接口报错、之后 60 秒冷却期内每一张都算），
   // 客户读到「见下方卡片」，下方却是一条纯文本链接。拿不到缩略图就原样发正文，链接留在原处
-  const thumb = await uploadThumb(rt, cfg).catch(() => null);
+  const thumb = await uploadThumb(rt, cfg, uid).catch(() => null);
   // 缩略图上传是真实网络请求（2 天内第一张最长等 20 秒）：这期间被接手，还没发出任何一段就整条不发
   if (ctx.stillCurrent && !ctx.stillCurrent()) return false;
   if (!thumb) return sendText(rt, cfg, uid, advisor(body), ctx);
@@ -877,10 +898,10 @@ async function sendRich(rt: WecomRuntime, cfg: WecomConfig, uid: string, body: s
  * 否则有一次超时或网络异常（可能已经送达）是 unknown；否则是 rejected（接口明确报错）；取 access_token 失败、一次都没发出去的不记。
  * 返回 false 时分不清「明确没送达」与「结果不明」，要分的调用方看账本的 mayHaveDelivered
  */
-async function sendText(rt: WecomRuntime, cfg: WecomConfig, externalUserId: string, text: string, ctx: SendCtx): Promise<boolean> {
+async function sendText(rt: SendRuntime, cfg: WecomConfig, externalUserId: string, text: string, ctx: SendCtx): Promise<boolean> {
   let allOk = true;
   let anyAccepted = false;
-  for (const chunk of splitForWecom(text)) {
+  for (const chunk of splitForWecom(text, rt instanceof SandboxWecomRuntime ? (value) => rt.textBytes(value) : undefined)) {
     // 被接手（审查第 7 条，concurrency[3]）：还没发出过任何一段就整条不发；已经发出过的不再补发剩下的分段，
     // 但剩下的没发出去，不能算 allOk（调用方据此与接手代次再核一次，写 TAKEN_OVER_NOTE 而不是通用的发送失败说明）
     if (ctx.stillCurrent && !ctx.stillCurrent()) {
@@ -888,7 +909,7 @@ async function sendText(rt: WecomRuntime, cfg: WecomConfig, externalUserId: stri
       allOk = false;
       break;
     }
-    const entry = recordSend(rt.prefix + externalUserId, ctx.kind, ctx.message);
+    const entry = recordRuntimeSend(rt, rt.prefix + externalUserId, ctx.kind, ctx.message);
     let lastErr = '';
     let outcome: SendResult | null = null;
     let errcode: number | undefined;
@@ -921,6 +942,10 @@ async function sendText(rt: WecomRuntime, cfg: WecomConfig, externalUserId: stri
         if (data.errcode !== 45009 && data.errcode !== -1) break;
       } catch (e) {
         lastErr = apiErrorCode(e); // 网络异常/超时，重试
+        if (e instanceof SandboxSendRefused) {
+          if (outcome !== 'unknown') outcome = 'rejected';
+          break;
+        }
         // 超时与网络异常：请求可能已经到了企微、消息可能已经送达，结果不明（计入额度）；取 token 失败是根本没发。
         // 立刻记 unknown 并排进落库，不等重试跑完：重试途中进程被杀或停机，重启后情况 4 看到 unknown 就不再重发
         if (!(e instanceof TokenError)) {
@@ -949,13 +974,13 @@ async function sendText(rt: WecomRuntime, cfg: WecomConfig, externalUserId: stri
  * 退避重试与账本记账同 sendText，只是单条、不分段（问句远小于 2048 字节上限）
  */
 async function sendMenu(
-  rt: WecomRuntime,
+  rt: SendRuntime,
   cfg: WecomConfig,
   externalUserId: string,
   headContent: string,
   category: SensitiveCategory,
 ): Promise<boolean> {
-  const entry = recordSend(rt.prefix + externalUserId, 'menu', null);
+  const entry = recordRuntimeSend(rt, rt.prefix + externalUserId, 'menu', null);
   let outcome: SendResult | null = null;
   let errcode: number | undefined;
   let lastErr = '';
@@ -987,6 +1012,10 @@ async function sendMenu(
       if (data.errcode !== 45009 && data.errcode !== -1) break;
     } catch (e) {
       lastErr = apiErrorCode(e);
+      if (e instanceof SandboxSendRefused) {
+        if (outcome !== 'unknown') outcome = 'rejected';
+        break;
+      }
       if (!(e instanceof TokenError)) {
         outcome = 'unknown';
         entry.unknown();
@@ -1143,7 +1172,18 @@ function sendBody(g: OutGroup, intent: OutboundIntent, thumb: string | null): Re
 }
 
 /** 发一次 send_msg：调用时同步发起请求（之前不 await 任何东西，第 4 步「比较与发请求之间没有 await」） */
-function postSendMsg(token: string, body: Record<string, unknown>): Promise<{ errcode?: number; errmsg?: string }> {
+function postSendMsg(
+  token: string,
+  body: Record<string, unknown>,
+  sandbox?: SandboxWecomRuntime,
+): Promise<{ errcode?: number; errmsg?: string }> {
+  if (sandbox)
+    return sandbox.requestMessage(token, 'kf/send_msg', body).then(async (res) => {
+      const data = (await res.json()) as { errcode?: number; errmsg?: string };
+      if (!res.ok)
+        throw new SandboxWecomApiError('kf/send_msg', data.errcode ? String(data.errcode) : `http_${res.status}`, !!data.errcode);
+      return data;
+    });
   return fetch(`${API_BASE}/kf/send_msg?access_token=${encodeURIComponent(token)}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -1458,7 +1498,7 @@ async function sendTextDb(
  * 客户进入会话、尚未发消息时（send_msg 的 48h 窗口未开），用事件的 welcome_code
  * 经 send_msg_on_event 发欢迎语。code 20 秒内单次有效，须尽快调用。
  */
-async function sendWelcomeOnEvent(rt: WecomRuntime, cfg: WecomConfig, code: string): Promise<void> {
+async function sendWelcomeOnEvent(rt: SendRuntime, cfg: WecomConfig, code: string): Promise<void> {
   const data = await callApi<{ errcode?: number; errmsg?: string }>(rt, cfg, 'kf/send_msg_on_event', {
     code,
     msgtype: 'text',
@@ -2903,12 +2943,14 @@ withoutTenantScope(() =>
  * 发往一个企微会话的推送走哪个账号：企微状态在库里时经 accountForSession（前缀最长匹配，停用账号的会话不会落到默认账号上），
  * 账号停用、没有运行时都返回 null（推送记一行、返回 false，人工回复照 02 记「未能发送」）；其余照 02 走 env 账号
  */
-function pushRoute(sessionId: string, quiet = false): { rt: WecomRuntime; cfg: WecomConfig } | null {
+function pushRoute(sessionId: string, quiet = false): { rt: SendRuntime; cfg: WecomConfig } | null {
   // quiet：prepare 先问一次，找不到时不记日志（随后的 push 会再问一次、照常记）
   const err = (...args: unknown[]): void => {
     if (!quiet) console.error(...args);
   };
   if (currentRuntime().kind === 'sandbox') {
+    if (process.env.APP_ROLE === 'sandbox' && sandboxRuntime && sessionId.startsWith('wecom:'))
+      return { rt: sandboxRuntime, cfg: sandboxRuntime.sendConfig() };
     err('[wecom] ⚠️ 宿主企微账号拒绝沙箱会话，消息未送达:', convLabel(sessionId));
     return null;
   }
@@ -2976,6 +3018,7 @@ export const wecomAdapter: ChannelAdapter = {
   async push(sessionId: string, text: string, opts?: PushOpts): Promise<boolean> {
     // prepared 会绕过 pushRoute，必须在读取句柄之前同样拒绝沙箱。
     if (currentRuntime().kind === 'sandbox') {
+      if (process.env.APP_ROLE === 'sandbox' && sandboxRuntime) return sandboxRuntime.push(sessionId, text, opts);
       console.error('[wecom] ⚠️ 宿主企微账号拒绝沙箱会话，消息未送达:', convLabel(sessionId));
       return false;
     }
@@ -2998,6 +3041,7 @@ export const wecomAdapter: ChannelAdapter = {
     const route = pushRoute(sessionId);
     if (!route) return false;
     const { rt, cfg } = route;
+    if (rt instanceof SandboxWecomRuntime) return rt.push(sessionId, text, opts);
     if (isDbAccount(rt)) return (await recovered(rt)) && pushDb(rt, cfg, sessionId, text, opts);
     if (sendsClosed(rt)) {
       // 停机的 normal 段已截止：不再开始新的 send_msg（账本行已无处可写），按没发出去返回（跟进退账、之后再排）
@@ -3012,7 +3056,7 @@ export const wecomAdapter: ChannelAdapter = {
   /** 03：库里的企微账号把分段的 pending 排进调用方这一次落库（同步）；env 账号与找不到账号的返回 null（push 照 02 或照常报错） */
   prepare(sessionId: string, text: string, opts: PushOpts): PreparedPush | null {
     const route = pushRoute(sessionId, true);
-    if (!route || !isDbAccount(route.rt)) return null;
+    if (!route || route.rt instanceof SandboxWecomRuntime || !isDbAccount(route.rt)) return null;
     return prepareDb(route.rt, route.cfg, sessionId, text, opts);
   },
   /** 拿了句柄、不发了：这一组没发的段记 cancelled */
@@ -3132,8 +3176,41 @@ export const __wecomTest = {
   },
 };
 
+// 实例出站句柄只由沙箱组合根安装；宿主 push 仍按 APP_ROLE 显式拒绝沙箱。
+let sandboxRuntime: SandboxWecomRuntime | null = null;
+export const sandboxWecomAdapter: ChannelAdapter = {
+  name: 'wecom',
+  push: (id, text, opts) => sandboxRuntime?.push(id, text, opts) ?? Promise.resolve(false),
+};
+export function installSandboxWecomOutbound(rt: SandboxWecomRuntime): void {
+  sandboxRuntime = rt;
+}
+
+/** 明确的企微错误与可能已送达的网络 / HTTP 异常必须分开记账。 */
+class SandboxWecomApiError extends Error {
+  constructor(
+    readonly endpoint: string,
+    readonly errcode: string,
+    readonly rejected: boolean,
+  ) {
+    super('sandbox_wecom_api_failed');
+  }
+}
+
 /** 05 R21：第三种运行时的 API 能力。实例拥有它，不进入 env / 03 注册表、文件状态或租户状态。 */
 export class SandboxWecomRuntime {
+  readonly id = 'sandbox';
+  readonly prefix = 'wecom:';
+  readonly tag = '[sandbox-wecom]';
+  thumbCache: { id: string; at: number } | null = null;
+  thumbInflight: Promise<string | null> | null = null;
+  thumbFailUntil = 0;
+  sendsClosedAt = Number.POSITIVE_INFINITY;
+  get welcomeText(): string {
+    const binding = currentPack();
+    return brandTexts(binding.runtime, binding.brand).welcomeText;
+  }
+  private readonly sending = new Set<SendHandle>();
   private token: Redacted<string> | null = null;
   private expiresAt = 0;
   private tokenTask: Promise<string> | null = null;
@@ -3145,9 +3222,15 @@ export class SandboxWecomRuntime {
     private readonly now: () => number = Date.now,
     private readonly running: () => boolean = () => true,
     private readonly diagnostic: (endpoint: string, errcode: string) => void = () => {},
-  ) {}
+  ) {
+    this.cfg = { ...cfg, host: normalizeHost(cfg.host) ?? cfg.host };
+  }
 
   stop(): void {
+    if (sandboxRuntime === this) sandboxRuntime = null;
+    this.sendsClosedAt = 0;
+    for (const entry of this.sending) entry.settle('unknown');
+    this.sending.clear();
     this.abort.abort();
     this.token = null;
   }
@@ -3156,12 +3239,27 @@ export class SandboxWecomRuntime {
     if (this.abort.signal.aborted || !this.running()) throw new Error('sandbox_wecom_stopped');
   }
 
-  private problem(endpoint: string, errcode: string): Error {
+  private problem(endpoint: string, errcode: string, rejected = false): SandboxWecomApiError {
     this.diagnostic(endpoint, errcode);
-    return Object.assign(new Error('sandbox_wecom_api_failed'), { endpoint, errcode });
+    return new SandboxWecomApiError(endpoint, errcode, rejected);
   }
 
-  private async accessToken(force = false): Promise<string> {
+  /** 规范化只是用来识别别名；输入必须本身就是白名单中的逐字规范写法。 */
+  private endpoint(value: string): string {
+    const allowed = ['gettoken', 'kf/sync_msg', 'kf/add_contact_way', 'media/upload', 'kf/send_msg', 'kf/send_msg_on_event'];
+    let canonical: string | undefined;
+    try {
+      const url = new URL(`${API_BASE}/${value}`);
+      if (url.pathname.startsWith('/cgi-bin/') && !url.search && !url.hash) canonical = url.pathname.slice('/cgi-bin/'.length);
+    } catch {
+      /* 非法地址按未知接口拒绝。 */
+    }
+    if (value !== canonical || !allowed.includes(value)) sandboxWechatIndex.refuse();
+    return value;
+  }
+
+  async accessToken(force = false): Promise<string> {
+    this.endpoint('gettoken');
     this.assertRunning();
     if (!force && this.token && this.now() < this.expiresAt) return this.token.reveal();
     this.tokenTask ??= (async () => {
@@ -3191,34 +3289,156 @@ export class SandboxWecomRuntime {
     return this.tokenTask;
   }
 
-  private async api<T extends { errcode?: number }>(endpoint: string, body: unknown): Promise<T> {
-    let token = await this.accessToken();
-    for (let attempt = 0; attempt < 2; attempt++) {
-      this.assertRunning();
+  /** 素材没有收件人字段；上传前仍核对本次发送目标、沙箱状态与取消信号。 */
+  upload(token: string, form: FormData, target: string | undefined): Promise<Response> {
+    this.endpoint('media/upload');
+    this.assertRunning();
+    sandboxWechatIndex.assertUpload(target);
+    return this.request(`${API_BASE}/media/upload?access_token=${encodeURIComponent(token)}&type=image`, {
+      method: 'POST',
+      body: form,
+      signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(20_000)]),
+    });
+  }
+
+  /** 两条共用发送路的最终同步边界。核对之后到发请求之间不让出执行权。 */
+  requestMessage(token: string, endpoint: string, body: Record<string, unknown>): Promise<Response> {
+    this.endpoint(endpoint);
+    const prepared = sandboxWechatIndex.prepare(endpoint, body, this.cfg.openKfid, this.cfg.host, this.now());
+    this.assertRunning();
+    return this.request(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(prepared),
+      signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(15_000)]),
+    });
+  }
+
+  async callApi<T extends { errcode?: number }>(endpoint: string, body: Record<string, unknown>): Promise<T> {
+    this.endpoint(endpoint);
+    const sending = endpoint === 'kf/send_msg' || endpoint === 'kf/send_msg_on_event';
+    try {
+      let token: string;
       try {
-        const res = await this.request(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify(body),
-          signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(15_000)]),
-        });
-        const data = (await res.json()) as T;
+        token = await this.accessToken();
+      } catch (error) {
+        if (sending) throw new TokenError(error);
+        throw error;
+      }
+      for (let attempt = 0; attempt < 2; attempt++) {
+        this.assertRunning();
+        let data: T;
+        if (endpoint === 'kf/send_msg') data = (await postSendMsg(token, body, this)) as T;
+        else {
+          if (endpoint === 'media/upload') sandboxWechatIndex.assertUpload(typeof body.touser === 'string' ? body.touser : undefined);
+          const res = sending
+            ? await this.requestMessage(token, endpoint, body)
+            : await this.request(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify(body),
+                signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(15_000)]),
+              });
+          data = (await res.json()) as T;
+          if (!res.ok) throw this.problem(endpoint, data.errcode ? String(data.errcode) : `http_${res.status}`, !!data.errcode);
+        }
         this.assertRunning();
         if (attempt === 0 && (data.errcode === 42001 || data.errcode === 40014)) {
           this.problem(endpoint, String(data.errcode));
-          token = await this.accessToken(true);
+          try {
+            token = await this.accessToken(true);
+          } catch (error) {
+            if (sending) throw new TokenError(error);
+            throw error;
+          }
           continue;
         }
-        if (!res.ok || data.errcode)
-          throw this.problem(endpoint, typeof data.errcode === 'number' ? String(data.errcode) : `http_${res.status}`);
         return data;
-      } catch (error) {
-        this.assertRunning();
-        if (error instanceof Error && 'endpoint' in error) throw error;
-        throw this.problem(endpoint, 'request_failed');
       }
+      throw new Error('sandbox_wecom_token_invalid');
+    } finally {
+      if (endpoint === 'kf/send_msg_on_event' && typeof body.code === 'string') sandboxWechatIndex.consumeWelcome(body.code);
     }
-    throw new Error('sandbox_wecom_token_invalid');
+  }
+
+  private async api<T extends { errcode?: number }>(endpoint: string, body: Record<string, unknown>): Promise<T> {
+    try {
+      const data = await this.callApi<T>(endpoint, body);
+      if (data.errcode) throw this.problem(endpoint, String(data.errcode), true);
+      return data;
+    } catch (error) {
+      this.assertRunning();
+      if (error instanceof TokenError || error instanceof SandboxSendRefused || error instanceof SandboxWecomApiError) throw error;
+      throw this.problem(endpoint, 'request_failed');
+    }
+  }
+
+  trackSend(handle: SendHandle): SendHandle {
+    this.sending.add(handle);
+    return {
+      msgid: handle.msgid,
+      attempt: () => handle.attempt(),
+      unknown: () => handle.unknown(),
+      settle: (result, errcode) => {
+        this.sending.delete(handle);
+        handle.settle(result, errcode);
+      },
+      discard: () => {
+        this.sending.delete(handle);
+        handle.discard();
+      },
+    };
+  }
+
+  assertLinks(text: string): void {
+    sandboxWechatIndex.assertLinks(text, this.cfg.host);
+  }
+
+  textBytes(text: string): number {
+    return sandboxWechatIndex.textBytes(text, this.cfg.host);
+  }
+
+  sendConfig(): WecomConfig {
+    return {
+      corpId: this.cfg.corpId,
+      secret: this.cfg.secret,
+      openKfId: this.cfg.openKfid,
+      publicBaseUrl: currentRuntime().publicBase,
+      pollIntervalMs: 60_000,
+    };
+  }
+
+  /** R21：02 结果账本，既不 prepare pending，也不恢复补发。 */
+  push(sessionId: string, text: string, opts?: PushOpts): Promise<boolean> {
+    if (!sessionId.startsWith(this.prefix) || !sessionId.slice(this.prefix.length)) return Promise.resolve(false);
+    const rt = currentRuntime();
+    if (rt.kind !== 'sandbox' || rt.state !== 'serving' || rt.cancel.aborted) return Promise.resolve(false);
+    const cfg = this.sendConfig();
+    return rt.inflight.track(() => {
+      const uid = sessionId.slice(this.prefix.length);
+      if (opts?.kind === 'menu' && opts.category) return sendMenu(this, cfg, uid, formatForWecom(cfg, text), opts.category);
+      return sendRich(this, cfg, uid, formatForWecom(cfg, text), { kind: opts?.kind ?? 'notice', message: opts?.message ?? null });
+    });
+  }
+
+  welcome(code: string): Promise<void> {
+    return currentRuntime().inflight.track(() => this.sendWelcome(code));
+  }
+
+  private async sendWelcome(code: string): Promise<void> {
+    const entry = recordRuntimeSend(this, this.prefix + (sandboxWechatIndex.welcomeUser(code) ?? ''), 'welcome', null);
+    entry.attempt();
+    try {
+      await this.api('kf/send_msg_on_event', { code, msgtype: 'text', text: { content: withPrivacyLink(this.welcomeText) } });
+      entry.settle('accepted');
+    } catch (error) {
+      if (error instanceof TokenError) entry.discard();
+      else
+        entry.settle(
+          error instanceof SandboxSendRefused || (error instanceof SandboxWecomApiError && error.rejected) ? 'rejected' : 'unknown',
+        );
+      throw error;
+    }
   }
 
   async contactWay(): Promise<string> {
@@ -3233,7 +3453,7 @@ export class SandboxWecomRuntime {
 
   /** 唯一的作用域外发送：固定话术；不接受自定义正文，不拉客户昵称或头像。 */
   async replyUnbound(user: string, welcomeCode?: string): Promise<void> {
-    const text = { content: `这是体验客服，去 https://${this.cfg.host}/try 开一个体验，扫页面上的码就能连上` };
+    const text = { content: sandboxWechatIndex.fixedTexts(this.cfg.host)[0] };
     if (welcomeCode) await this.api('kf/send_msg_on_event', { code: welcomeCode, msgtype: 'text', text });
     else await this.api('kf/send_msg', { open_kfid: this.cfg.openKfid, touser: user, msgtype: 'text', text });
   }

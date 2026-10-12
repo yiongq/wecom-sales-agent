@@ -40,7 +40,8 @@ export type AlertKey =
   | 'channel'
   | 'tenant_scope_missing'
   | 'sandbox_pool'
-  | 'sandbox_purge';
+  | 'sandbox_purge'
+  | 'sandbox_send_refused';
 
 export interface AlertOpts {
   /** 同一告警键下按账号与原因独立去重，正文仍只有公开账号 key。 */
@@ -93,7 +94,8 @@ const tenants = new TenantLocal(
 );
 const tenantAlerts = () => tenants.get();
 function statesFor(key: AlertKey, instance = false): Map<string, KeyState> {
-  if (instance || key === 'model_errors' || key === 'tenant_scope_missing' || key === 'sandbox_pool') return instanceStates;
+  if (instance || key === 'model_errors' || key === 'tenant_scope_missing' || key === 'sandbox_pool' || key === 'sandbox_send_refused')
+    return instanceStates;
   return tenantAlerts().states;
 }
 registerTenantState({ name: 'alert.states', ...tenants.registration((s) => s.states.size) });

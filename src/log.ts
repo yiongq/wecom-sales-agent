@@ -2,7 +2,7 @@ import { currentRuntime } from './tenancy/runtime.js';
 // 结构化日志（docs/architecture/02-conversations-workbench/spec.md「可观测性与告警 · 结构化日志」、R24、不变量 48）。
 // LOG_FORMAT=json：pino 输出 JSON 行（time、level、msg，请求里带 req，轮次里带 tenant、conv、turn），boot() 与 profile-boot
 // 把 console.log / info / warn / error 接过来（msg 是原来那一行字符串），现有日志不用逐行改就带上下文。
-// LOG_FORMAT 没设：什么都不接，console 照旧打纯文本，一个字节都不变（自测与本机开发）。
+// LOG_FORMAT 没设：console 照旧打纯文本，仅遮盖 R21 的链接凭据；其余内容保持原样。
 // 日志里不出现会话原 id（里面是 external_userid）：会话写成 conv（db 存储的真实会话是会话行的 ref，其余是短码）；打会话的
 // 日志行经 convLabel（prod 写 ref 或短码，demo 原样，与 logQuote 同一口径）。JSON 输出另有一道兜底：形如会话原 id 的串
 // （wecom:、web:、sim- 开头）换成 ref 或短码，带凭据的查询参数与 Bearer 盖掉，以后新加的日志行漏了也出不去。
@@ -66,9 +66,9 @@ export function convLabel(conversationId: string): string {
   return profile().name === 'prod' ? convCode(conversationId) : conversationId;
 }
 
-/** prod profile 下返回「«N字»」（N 按字符数），demo 下原样返回 */
+/** prod profile 下返回「«N字»」（N 按字符数）；demo 只遮盖链接凭据。 */
 export function logQuote(text: string): string {
-  return profile().name === 'prod' ? `«${[...text].length}字»` : text;
+  return profile().name === 'prod' ? `«${[...text].length}字»` : scrubWxTokens(text);
 }
 
 /**
@@ -76,7 +76,10 @@ export function logQuote(text: string): string {
  * demo 下原样交给 console（与原来逐字节相同）
  */
 export function logError(e: unknown): unknown {
-  if (profile().name !== 'prod') return e;
+  if (profile().name !== 'prod') {
+    if (e instanceof Error && scrubWxTokens(e.message) !== e.message) return scrubWxTokens(e.stack ?? e.message);
+    return typeof e === 'string' ? scrubWxTokens(e) : e;
+  }
   if (!(e instanceof Error)) return typeof e;
   const pos = /\bposition (\d+)/.exec(e.message)?.[1];
   return pos ? `${e.name}（位置 ${pos}）` : e.name;
@@ -93,10 +96,18 @@ export function scrubConvIds(text: string): string {
 
 /** 文本里的会话原 id：prod 下换成 ref 或短码，demo 下原样（请求路径之类整段打出来的地方用） */
 export function convLabelsIn(text: string): string {
-  return profile().name === 'prod' ? scrubConvIds(text) : text;
+  const safe = scrubWxTokens(text);
+  return profile().name === 'prod' ? scrubConvIds(safe) : safe;
 }
 
 const CENSOR = '[已遮盖]';
+/** R21：两种 profile、两种日志格式都盖链接凭据，包括编码的请求路径与 Cookie。 */
+export function scrubWxTokens(text: string): string {
+  return text
+    .replace(/((?:\/|%2f)wx(?:\/|%2f))[^/\s? #"'\\]+/gi, `$1${CENSOR}`)
+    .replace(/(__Host-sbxw=)[^;\s"'\\]+/gi, `$1${CENSOR}`)
+    .replace(/((?:linkToken|link_token|__Host-sbxw)["']?\s*:\s*["'])[A-Za-z0-9_-]+/gi, `$1${CENSOR}`);
+}
 // 带凭据的查询参数（webhook 的 key、企微的 access_token / corpsecret）与 Authorization 的 Bearer（大小写不分；
 // 分隔符允许真实空白或 JSON 转义之后的 \t、\n 两个字符——审查第 3 条）
 const SECRET_PARAM = /([?&](?:key|access_token|corpsecret|secret|token|password)=)[^&\s"'\\]+/gi;
@@ -125,6 +136,9 @@ const REDACT_KEYS = [
   'secretsCt',
   'secrets_ct',
   'token',
+  'linkToken',
+  'link_token',
+  '__Host-sbxw',
   'accessToken',
   'access_token',
   'webhook',
@@ -145,9 +159,9 @@ const REDACT_KEY_ALT = [...REDACT_SET].map((k) => k.replace(/[.*+?^${}()|[\]\\]/
 const REDACT_JSON_FIELD = new RegExp(`"(${REDACT_KEY_ALT})"\\s*:\\s*"(?:[^"\\\\]|\\\\.)*"`, 'gi');
 
 /** JSON 行写出之前的兜底：会话原 id 换成 ref 或短码，凭据（查询参数、Bearer、连接串密码、Cookie 头、任意深度的敏感字段）
- * 都盖掉。只在 LOG_FORMAT=json 时用，纯文本一个字节不动 */
+ * 都盖掉。纯文本的链接令牌由 scrubWxTokens 单独遮盖。 */
 function scrubLine(line: string): string {
-  return scrubConvIds(line)
+  return scrubConvIds(scrubWxTokens(line))
     .replace(SECRET_PARAM, `$1${CENSOR}`)
     .replace(BEARER, `$1${CENSOR}`)
     .replace(CONN_PASSWORD, `$1${CENSOR}$2`)
@@ -202,13 +216,27 @@ function json(): pino.Logger | null {
 }
 
 let consoleHooked = false;
+let textConsoleHooked = false;
 /**
  * LOG_FORMAT=json 时把 console.log / info / warn / error 接到 pino（同一行 JSON，msg 是 console 原本会打出的那一行），返回 true；
- * 没设时什么都不做、返回 false。可以调多次：profile-boot 在导入期就调（导入期的日志也是 JSON），boot() 照 spec 再调一次
+ * 纯文本下只安装链接令牌遮盖、返回 false。可以调多次：profile-boot 在导入期就调，boot() 再调一次
  */
 export function installJsonConsole(): boolean {
   const j = json();
-  if (!j) return false;
+  if (!j) {
+    if (!textConsoleHooked) {
+      textConsoleHooked = true;
+      for (const level of ['log', 'info', 'warn', 'error'] as const) {
+        const original = console[level].bind(console);
+        console[level] = (...args: unknown[]) => {
+          const line = format(...args);
+          if (scrubWxTokens(line) === line) original(...args);
+          else original(scrubWxTokens(line));
+        };
+      }
+    }
+    return false;
+  }
   if (consoleHooked) return true;
   consoleHooked = true;
   console.log = (...a: unknown[]) => j.info(format(...a));
@@ -234,7 +262,7 @@ function emit(level: 'info' | 'warn' | 'error', msg: string, fields?: LogFields)
     else j[level](msg);
     return;
   }
-  const line = fields ? `${msg} ${textFields(fields)}` : msg;
+  const line = scrubWxTokens(fields ? `${msg} ${textFields(fields)}` : msg);
   if (level === 'info') console.log(line);
   else if (level === 'warn') console.warn(line);
   else console.error(line);
