@@ -169,7 +169,15 @@ class SandboxWechatIndex {
           const decoded = rest
             .replace(/\\u([0-9a-f]{4})/gi, (_match, hex: string) => String.fromCharCode(parseInt(hex, 16)))
             .replace(/\\([\\/])/g, '$1')
-            .replace(/%([0-9a-f]{2})/gi, (_match, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+            .replace(/(?:%[0-9a-f]{2})+/gi, (encoded) => {
+              try {
+                return decodeURIComponent(encoded);
+              } catch {
+                return encoded.replace(/%([0-9a-f]{2})/gi, (_match, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+              }
+            })
+            .normalize('NFKC')
+            .replace(/[。．｡]/g, '.');
           if (decoded === rest) break;
           rest = decoded;
         }

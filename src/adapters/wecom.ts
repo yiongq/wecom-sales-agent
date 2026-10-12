@@ -3248,6 +3248,7 @@ export class SandboxWecomRuntime {
 
   /** 规范化只是用来识别别名；输入必须本身就是白名单中的逐字规范写法。 */
   private endpoint(value: string): string {
+    if (typeof value !== 'string') sandboxWechatIndex.refuse();
     const allowed = ['gettoken', 'kf/sync_msg', 'kf/add_contact_way', 'media/upload', 'kf/send_msg', 'kf/send_msg_on_event'];
     let canonical: string | undefined;
     try {
@@ -3293,27 +3294,33 @@ export class SandboxWecomRuntime {
 
   /** 素材没有收件人字段；上传前仍核对本次发送目标、沙箱状态与取消信号。 */
   upload(token: string, form: FormData, target: string | undefined): Promise<Response> {
+    if (typeof token !== 'string' || typeof target !== 'string') sandboxWechatIndex.refuse();
     this.endpoint('media/upload');
+    const url = `${API_BASE}/media/upload?access_token=${encodeURIComponent(token)}&type=image`;
+    const signal = AbortSignal.any([this.abort.signal, AbortSignal.timeout(20_000)]);
     this.assertRunning();
     sandboxWechatIndex.assertUpload(target);
-    return this.#request(`${API_BASE}/media/upload?access_token=${encodeURIComponent(token)}&type=image`, {
+    return this.#request(url, {
       method: 'POST',
       body: form,
-      signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(20_000)]),
+      signal,
     });
   }
 
   /** 两条共用发送路的最终同步边界。核对之后到发请求之间不让出执行权。 */
   requestMessage(token: string, endpoint: string, body: Record<string, unknown>): Promise<Response> {
+    if (typeof token !== 'string') sandboxWechatIndex.refuse();
     this.endpoint(endpoint);
+    const url = `${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`;
+    const signal = AbortSignal.any([this.abort.signal, AbortSignal.timeout(15_000)]);
     this.assertRunning();
     const prepared = sandboxWechatIndex.prepare(endpoint, body, this.cfg.openKfid, this.cfg.host, this.now());
-    if (this.abort.signal.aborted) throw new Error('sandbox_wecom_stopped');
-    return this.#request(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
+    if (signal.aborted) throw new Error('sandbox_wecom_stopped');
+    return this.#request(url, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: prepared,
-      signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(15_000)]),
+      signal,
     });
   }
 
@@ -3340,14 +3347,18 @@ export class SandboxWecomRuntime {
         let data: T;
         if (endpoint === 'kf/send_msg') data = (await postSendMsg(token, body, this)) as T;
         else {
+          if (typeof token !== 'string') sandboxWechatIndex.refuse();
+          const url = `${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`;
+          const bytes = JSON.stringify(body);
+          const signal = AbortSignal.any([this.abort.signal, AbortSignal.timeout(15_000)]);
           if (endpoint === 'media/upload') sandboxWechatIndex.assertUpload(typeof body.touser === 'string' ? body.touser : undefined);
           const res = sending
             ? await this.requestMessage(token, endpoint, body)
-            : await this.#request(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
+            : await this.#request(url, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify(body),
-                signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(15_000)]),
+                body: bytes,
+                signal,
               });
           data = (await res.json()) as T;
           if (!res.ok) throw this.problem(endpoint, data.errcode ? String(data.errcode) : `http_${res.status}`, !!data.errcode);

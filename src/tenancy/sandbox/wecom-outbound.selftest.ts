@@ -212,6 +212,32 @@ async function suite(db: Db, q: Query): Promise<void> {
     assert.throws(() => Reflect.get(api, 'request')(`${base}/fake`, { body: JSON.stringify(text('wmB')) }), TypeError);
     assert.equal(requests.length, before);
   });
+  await review('request-parameters-before-guard-no-network', async () => {
+    let conversions = 0;
+    const hostile = {
+      toString() {
+        conversions++;
+        sandboxWechatIndex.publishBinding(A, 'wmNew');
+        return 'fake-access';
+      },
+    };
+    const before = requests.length;
+    for (const token of [hostile, new String('fake-access'), null, 1]) {
+      assert.throws(() => withTenantScope(A, () => api.requestMessage(token as string, 'kf/send_msg', text())), SandboxSendRefused);
+      assert.throws(() => withTenantScope(A, () => api.upload(token as string, new FormData(), 'wmA')), SandboxSendRefused);
+    }
+    assert.throws(
+      () => withTenantScope(A, () => api.requestMessage('fake-access', hostile as unknown as string, text())),
+      SandboxSendRefused,
+    );
+    assert.throws(
+      () => withTenantScope(A, () => api.upload('fake-access', new FormData(), hostile as unknown as string)),
+      SandboxSendRefused,
+    );
+    assert.equal(conversions, 0, '非字符串参数拒绝，不执行 toString，也不允许它改绑');
+    assert.equal(sandboxWechatIndex.forUser('wmA'), A);
+    assert.equal(requests.length, before, '消息与上传均没有请求');
+  });
   await review('final-json-getter-recipient', async () => {
     for (const direct of [false, true]) {
       let reads = 0;
@@ -481,6 +507,50 @@ async function suite(db: Db, q: Query): Promise<void> {
     await __alertTest.settle();
     assert.equal(__alertTest.isActive('sandbox_send_refused'), true);
     assert.ok(otherRequests.length > 0, '推实例级拒绝告警');
+  });
+  await review('final-host-guard-unicode-host-variants', async () => {
+    const previous = process.env.PUBLIC_BASE_URL;
+    process.env.PUBLIC_BASE_URL = 'https://main.example.invalid';
+    const fullwidth = (host: string) => host.replace(/[A-Za-z]/g, (c) => String.fromCharCode(c.charCodeAt(0) + 0xfee0));
+    try {
+      for (const host of [cfg.host, 'main.example.invalid']) {
+        const variants = [
+          fullwidth(host),
+          ...['。', '．', '｡'].flatMap((dot) => [host.replaceAll('.', dot), fullwidth(host.toUpperCase()).replaceAll('.', dot)]),
+        ];
+        for (const variant of variants) {
+          for (const authority of [
+            variant,
+            `${variant}:8443`,
+            `u;s@${variant}`,
+            `u;s@${variant}:8443`,
+            `u;s@${encodeURIComponent(variant)}:8443`,
+          ]) {
+            const source = `https://${authority}/privacy`;
+            await withTenantScope(A, () => refused(() => raw(text('wmA', cfg.openKfid, source))));
+            const before = requests.length;
+            assert.equal(await withTenantScope(A, () => api.push('wecom:wmA', source, { kind: 'human' })), false);
+            assert.equal(requests.length, before, 'Unicode 主机变体整条拒绝，不先上传或发卡片');
+            assert.equal(
+              withTenantScope(A, () => __ledgerTest.rows('wecom:wmA').at(-1)!.status),
+              'rejected',
+            );
+          }
+          // 正文里字面 JSON 转义也要先解码，再按主机规则规范化。
+          const escaped = [...variant].map((c) => String.fromCharCode(92) + 'u' + c.charCodeAt(0).toString(16).padStart(4, '0')).join('');
+          await withTenantScope(A, () => refused(() => raw(text('wmA', cfg.openKfid, `https://u;s@${escaped}/privacy`))));
+        }
+      }
+    } finally {
+      if (previous === undefined) delete process.env.PUBLIC_BASE_URL;
+      else process.env.PUBLIC_BASE_URL = previous;
+    }
+  });
+  await review('final-host-guard-chinese-period-preserved', async () => {
+    for (const source of ['已收到，我稍后回复您。', `请看隐私说明：${base}/privacy。`, '参考：https://other.example.invalid/privacy。']) {
+      await withTenantScope(A, () => raw(text('wmA', cfg.openKfid, source)));
+      assert.equal(sends.at(-1)!.body.text.content, source.replaceAll(base, `${base}/wx/${tokenA}`));
+    }
   });
   await review('final-host-guard-fixed-text-and-third-party', async () => {
     for (const content of sandboxWechatIndex.fixedTexts(cfg.host)) {
