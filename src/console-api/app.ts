@@ -1,4 +1,5 @@
 import { SandboxLimitError } from '../tenancy/sandbox/limits.js';
+import { sandboxWechatIndex } from '../tenancy/sandbox/outbound.js';
 import { BudgetExhausted } from '../llm-gate.js';
 import { publicHostMiddleware } from '../tenancy/hosts.js';
 import { sandboxSessionOf, resolveSandboxSession } from '../tenancy/sandbox/session.js';
@@ -348,7 +349,11 @@ const meOf = (u: AuthedUser): Me => ({
   tenantName: currentTenant().name,
   sandbox:
     currentRuntime().kind === 'sandbox'
-      ? { expiresAt: new Date(currentRuntime().expiresAt!).toISOString(), wechat: 'off', steps: [false, false, false, false] }
+      ? {
+          expiresAt: new Date(currentRuntime().expiresAt!).toISOString(),
+          wechat: sandboxWechatIndex.wechatState(currentRuntime()),
+          steps: [false, false, false, false],
+        }
       : null,
 });
 

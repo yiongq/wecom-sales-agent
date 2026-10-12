@@ -70,6 +70,7 @@ import { loadSandboxRuntime } from './load.js';
 import { SandboxReaper } from './reaper.js';
 import { drainSandboxProvisioning, provisionSandbox, SandboxProvisionError, type ProvisionedSandbox } from './provision.js';
 import { sandboxWechatIndex, wxPage, wxResource } from './outbound.js';
+import { SandboxWechatError } from './binding.js';
 import { sandboxPage, sandboxTryLinks } from './pages.js';
 
 export class SandboxProcess {
@@ -125,6 +126,7 @@ export class SandboxProcess {
         db: this.deps.db,
         acquireTenant: (id) => this.lock!.acquireTenant(id),
         idleMs: Number(this.env.SANDBOX_IDLE_MINUTES ?? 120) * 60_000,
+        refreshWecom: () => this.wecom?.refreshFull() ?? Promise.resolve(),
       });
       // R2：先删已到期的，不装载它们；失败留给每分钟的重试。
       await this.reaper.tick();
@@ -205,6 +207,11 @@ export class SandboxProcess {
     await this.reaper.end(tenantId);
   }
 
+  wechatCode(rt: import('../runtime.js').TenantRuntime) {
+    if (!this.accepting || !this.wecom) return Promise.reject(new SandboxWechatError(503, 'sandbox_wecom_unavailable'));
+    return this.wecom.issueCode(rt);
+  }
+
   async close(): Promise<void> {
     this.accepting = false;
     await this.wecom?.close();
@@ -214,6 +221,7 @@ export class SandboxProcess {
     await this.reaper?.drain();
     this.reaper = null;
     await drainSandboxProvisioning();
+    await sandboxWechatIndex.drain();
     this.unsubscribe?.();
     this.unsubscribe = null;
     for (const rt of tenantRuntimes()) {
@@ -265,7 +273,7 @@ export class SandboxProcess {
 
 /** 沙箱边界在共用路由之前运行；选择结果沿 Hono Context 传给 console 与公开页面。 */
 export function sandboxApp(
-  process: Pick<SandboxProcess, 'health' | 'resolve' | 'provision' | 'end'> & Partial<Pick<SandboxProcess, 'wecomRoutes'>>,
+  process: Pick<SandboxProcess, 'health' | 'resolve' | 'provision' | 'end'> & Partial<Pick<SandboxProcess, 'wecomRoutes' | 'wechatCode'>>,
   host: string,
   routes?: Hono,
 ) {
@@ -378,8 +386,15 @@ export function sandboxApp(
     clearSandboxCookie(c);
     return c.json({ ok: true }, 200);
   });
+  app.post('/api/sandbox/wechat/code', async (c) => {
+    const session = sandboxSessionOf(c)!;
+    if (!process.wechatCode) throw new SandboxWechatError(503, 'sandbox_wecom_unavailable');
+    c.header('Cache-Control', 'no-store');
+    return c.json(await process.wechatCode(session.runtime));
+  });
   if (routes) app.route('/', routes);
   app.onError((error, c) => {
+    if (error instanceof SandboxWechatError) return c.json({ error: error.reason }, error.status);
     if (error instanceof BudgetExhausted) return c.json({ error: 'llm_budget_exhausted' }, 429);
     if (error instanceof SandboxLimitError) {
       c.header('Retry-After', String(error.retryAfter));

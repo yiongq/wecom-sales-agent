@@ -1,23 +1,27 @@
-// 05 R21：体验客服实例收件。收件不建会话、不调用模型；第 27 步接绑定派发。
+// 05 R21/R22：体验客服收件、绑定派发与名额状态；未绑定路径不建会话、不调用模型。
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import { SandboxWecomRuntime, installSandboxWecomOutbound } from '../../adapters/wecom.js';
 import type { KfMessage } from '../../adapters/wecom-state.js';
+export type { KfMessage } from '../../adapters/wecom-state.js';
 import type { CallbackQuery } from '../../adapters/wecom-callback.js';
-import { readSandboxWecomState, commitSandboxWecomCursor } from '../../db/repo/sandbox-wecom.js';
+import { readSandboxWecomState, commitSandboxWecomCursor, markSandboxWecomFull } from '../../db/repo/sandbox-wecom.js';
 import type { Db } from '../../db/client.js';
 import { alert } from '../../ops/alert.js';
 import { computeSignature, decryptWecom, safeEqual } from '../../wecom-crypto.js';
-import { sandboxWechatIndex } from './outbound.js';
+import { sandboxWechatIndex, SandboxSendRefused } from './outbound.js';
 import { onSendFail } from '../../quota/ledger.js';
-import { withTenantScope, withoutTenantScope } from '../runtime.js';
+import { withTenantScope, withoutTenantScope, type TenantRuntime } from '../runtime.js';
+import { SandboxWechatBinding, SandboxWechatError } from './binding.js';
+import { todayIso } from '../../env.js';
 import { sandboxStopped } from './lifecycle.js';
 import { SANDBOX_WECOM_NAMES, SandboxStartupError } from './role.js';
 
 interface WecomState {
   cursor: string | null;
   fullSince: Date | string | null;
+  fullRevision?: string;
 }
 interface Problem {
   endpoint: string;
@@ -34,6 +38,9 @@ interface WecomDeps {
   now?: () => number;
   notify?: (failing: boolean, problem?: Problem) => void;
   schedule?: (fn: () => void, ms: number) => () => void;
+  binding?: SandboxWechatBinding;
+  markFull?: () => Promise<void>;
+  notifyFull?: () => void;
 }
 
 function tag(xml: string, name: string): string | undefined {
@@ -55,6 +62,14 @@ export class SandboxWecom {
   private cursor: string | null = null;
   private cold = true;
   private full = false;
+  private fullPending = false;
+  private fullRevision = 0;
+  private readonly fullTasks = new Map<number, Promise<void>>();
+  private persistedFullRevision: string | undefined;
+  private readonly seen = new Map<string, number>();
+  private stateTask: Promise<void> | null = null;
+  private fullAlertDay = '';
+  private readonly users = new Map<string, Promise<void>>();
   private link: string | null = null;
   private lastSyncOkAt: number | null = null;
   private readonly failures = new Map<'ready' | 'pull' | 'send', Failure>();
@@ -85,7 +100,25 @@ export class SandboxWecom {
       deps.request,
       this.now,
       () => this.running(),
-      (endpoint, errcode) => this.warn(endpoint, errcode),
+      (endpoint, errcode) => {
+        if (['kf/send_msg', 'kf/send_msg_on_event'].includes(endpoint)) {
+          if (errcode === '0') {
+            this.failures.delete('send');
+            return;
+          }
+          if (!['42001', '40014', '95003'].includes(errcode))
+            this.failure('send', { endpoint, errcode }, { endpoint, errcode: 'request_failed' });
+        }
+        this.warn(endpoint, errcode);
+        if (errcode === '95003' && this.running()) {
+          this.full = true;
+          this.fullRevision++;
+          this.fullPending = true;
+          this.publishAvailability();
+          this.notifyFull();
+          void this.persistFull();
+        }
+      },
     );
     this.routes.use('/wecom/callback', bodyLimit({ maxSize: 64 * 1024 }));
     this.routes.get('/wecom/callback', (c) => {
@@ -139,6 +172,9 @@ export class SandboxWecom {
     this.cursor = state.cursor;
     this.cold = !this.cursor;
     this.full = state.fullSince !== null;
+    this.persistedFullRevision = state.fullRevision;
+    if (this.full) this.fullAlertDay = todayIso();
+    this.publishAvailability();
     installSandboxWecomOutbound(this.api);
     // 凭据占位时 API 失败不拒绝启动，GET 校验完全独立。
     // 首轮 API 在后台跑，慢拉取 / 发送不阻塞 HTTP 监听。
@@ -158,12 +194,74 @@ export class SandboxWecom {
     return this.running() && !this.failures.size && !this.full ? this.link : null;
   }
 
+  issueCode(rt: TenantRuntime) {
+    if (this.full) return Promise.reject(new SandboxWechatError(409, 'sandbox_wecom_full'));
+    if (!this.deps.binding) return Promise.reject(new SandboxWechatError(503, 'sandbox_wecom_unavailable'));
+    return this.deps.binding.issue(
+      rt,
+      () => this.contactLink(),
+      () => this.full,
+    );
+  }
+  private publishAvailability(): void {
+    sandboxWechatIndex.setAvailability(this.running() && !!this.link && !this.failures.size, this.full);
+  }
+  private notifyFull(): void {
+    const day = todayIso();
+    if (this.full && this.fullAlertDay !== day) {
+      this.fullAlertDay = day;
+      this.deps.notifyFull?.();
+    }
+  }
+  private persistFull(): Promise<void> {
+    if (!this.running() || !this.fullPending) return Promise.resolve();
+    const revision = this.fullRevision;
+    const existing = this.fullTasks.get(revision);
+    if (existing) return existing;
+    const task = withoutTenantScope(async () => {
+      try {
+        await this.deps.markFull?.();
+        if (revision === this.fullRevision) this.fullPending = false;
+      } catch {
+        this.warn('state', 'full_write_failed');
+      } finally {
+        this.fullTasks.delete(revision);
+      }
+    });
+    this.fullTasks.set(revision, task);
+    return task;
+  }
+
+  /** R22：reaper 每拍和 API 重试共用一次状态重读，避免迟到的旧快照覆盖新状态。 */
+  refreshFull(): Promise<void> {
+    if (!this.running()) return Promise.resolve();
+    this.stateTask ??= withoutTenantScope(async () => {
+      try {
+        await this.deps.binding?.refresh();
+        await this.persistFull();
+        const revision = this.fullRevision;
+        const state = await this.deps.read();
+        if (this.running() && !this.fullPending && revision === this.fullRevision) {
+          if (state.fullRevision !== this.persistedFullRevision) this.fullRevision++;
+          this.persistedFullRevision = state.fullRevision;
+          this.full = state.fullSince !== null;
+        }
+      } catch (error) {
+        this.failure('pull', error, { endpoint: 'state', errcode: 'read_failed' });
+      } finally {
+        this.stateTask = null;
+        if (this.running()) this.notify();
+      }
+    });
+    return this.stateTask;
+  }
+
   health() {
     this.notify();
     return {
       configured: true,
       full: this.full,
-      bound: 0,
+      bound: sandboxWechatIndex.boundCount(),
       lastSyncOkAt: this.lastSyncOkAt === null ? null : new Date(this.lastSyncOkAt).toISOString(),
       failing: this.failures.size > 0,
     };
@@ -196,6 +294,7 @@ export class SandboxWecom {
       /^(-?\d{1,12}|http_\d{3}|request_failed|missing_token|missing_url)$/.test(value.errcode)
         ? { endpoint: value.endpoint!, errcode: value.errcode }
         : fallback;
+    if (kind === 'send' && problem.errcode === '95003') return;
     const now = this.now();
     const old = this.failures.get(kind);
     this.failures.set(kind, { ...problem, firstAt: old && now - old.lastAt < 10 * 60_000 ? old.firstAt : now, lastAt: now });
@@ -214,6 +313,8 @@ export class SandboxWecom {
       this.alerted = false;
       this.deps.notify?.(false);
     }
+    this.publishAvailability();
+    this.notifyFull();
   }
 
   tick(): Promise<void> {
@@ -233,12 +334,7 @@ export class SandboxWecom {
             this.failure('ready', error, { endpoint: 'kf/add_contact_way', errcode: 'request_failed' });
           }
         }
-        try {
-          const state = await this.deps.read();
-          if (this.running()) this.full = state.fullSince !== null;
-        } catch (error) {
-          this.failure('pull', error, { endpoint: 'state', errcode: 'read_failed' });
-        }
+        await this.refreshFull();
         if (this.link) void this.sync();
         if (this.running()) this.notify();
       } finally {
@@ -294,6 +390,9 @@ export class SandboxWecom {
   }
 
   private dispatch(message: KfMessage, arrivedAt: number): void {
+    for (const [id, at] of this.seen) if (arrivedAt - at >= 7 * 86400_000) this.seen.delete(id);
+    if (this.seen.has(message.msgid)) return;
+    this.seen.set(message.msgid, arrivedAt);
     if (message.origin === 4 && message.event?.event_type === 'msg_send_fail') {
       const msgid = message.event.fail_msgid;
       const rt = msgid && sandboxWechatIndex.forReceipt(msgid, this.now());
@@ -301,13 +400,67 @@ export class SandboxWecom {
       else this.warn('receipt', 'unknown_msgid');
       return;
     }
-    // 第 27 步绑定发布后接客户对话；未绑定的话术仍在空作用域里发送。
     const entered = message.event?.event_type === 'enter_session';
-    if (this.full || (!entered && message.origin !== 3)) return;
+    if (!entered && message.origin !== 3) return;
     const user = entered ? (message.event?.external_userid ?? message.external_userid) : message.external_userid;
     if (!user) return;
-    const now = this.now();
     if (entered && message.event?.welcome_code) sandboxWechatIndex.rememberWelcome(message.event.welcome_code, user, arrivedAt);
+    if (this.deps.binding) {
+      const hash = createHash('sha256').update(user).digest('hex');
+      const previous = this.users.get(hash) ?? Promise.resolve();
+      const task = previous
+        .then(() => this.handle(message, user, entered))
+        .catch((error: unknown) => {
+          if (error instanceof SandboxSendRefused) return;
+          this.failure('send', error, { endpoint: 'binding', errcode: 'request_failed' });
+        })
+        .finally(() => {
+          this.tasks.delete(task);
+          if (this.users.get(hash) === task) this.users.delete(hash);
+          if (this.running()) this.notify();
+        });
+      this.users.set(hash, task);
+      this.tasks.add(task);
+      return;
+    }
+    this.replyFixed(user, entered ? message.event?.welcome_code : undefined);
+  }
+
+  private async handle(message: KfMessage, user: string, entered: boolean): Promise<void> {
+    if (!this.running()) return;
+    const welcome = entered ? message.event?.welcome_code : undefined;
+    const text = entered ? message.event?.scene_param : message.text?.content;
+    const previouslyBound = await this.deps.binding!.resolve(user);
+    const typedCode = text && /^[0-9a-z]{8}$/i.test(text.replace(/[\s-]/g, ''));
+    if ((entered && text !== undefined) || typedCode) {
+      let result;
+      try {
+        result = await this.deps.binding!.bind(user, text!, welcome, entered);
+      } catch {
+        // 同一条失败欢迎码保持未归属，只能用于固定话术。
+        if (!entered || !previouslyBound) this.replyFixed(user, welcome);
+        return;
+      }
+      if (!this.running()) return;
+      if (result.status === 'bound') {
+        await withTenantScope(result.runtime, () => this.api.welcomeUser(user, welcome, entered ? undefined : message.send_time * 1000));
+        return;
+      }
+      if (!entered || !previouslyBound) this.replyFixed(user, welcome, result.status === 'expired');
+      return;
+    }
+    const rt = await this.deps.binding!.resolve(user, welcome);
+    if (!this.running()) return;
+    if (!rt) {
+      this.replyFixed(user, welcome);
+      return;
+    }
+    await withTenantScope(rt, () => (entered ? this.api.welcomeUser(user, welcome) : this.api.receive(message)));
+  }
+
+  private replyFixed(user: string, welcomeCode?: string, expired = false): void {
+    if (this.full || !this.running()) return;
+    const now = this.now();
     for (const [key, at] of this.replies) if (now - at.at >= 10 * 60_000) this.replies.delete(key);
     this.hourly = this.hourly.filter((at) => now - at < 60 * 60_000);
     const hash = createHash('sha256').update(user).digest('hex');
@@ -316,14 +469,15 @@ export class SandboxWecom {
     this.replies.set(hash, reservation);
     this.hourly.push(now);
     const task = this.api
-      .replyUnbound(user, entered ? message.event?.welcome_code : undefined)
+      .replyUnbound(user, welcomeCode, expired)
       .then(() => {
         if (this.running()) this.failures.delete('send');
       })
       .catch((error: unknown) => {
         // 只撤销这次认领，不能删除晚到期间另一个请求的新记录。
         if (this.replies.get(hash) === reservation) this.replies.delete(hash);
-        this.failure('send', error, { endpoint: entered ? 'kf/send_msg_on_event' : 'kf/send_msg', errcode: 'request_failed' });
+        if (error instanceof SandboxSendRefused) return;
+        this.failure('send', error, { endpoint: welcomeCode ? 'kf/send_msg_on_event' : 'kf/send_msg', errcode: 'request_failed' });
       })
       .finally(() => {
         this.tasks.delete(task);
@@ -334,7 +488,8 @@ export class SandboxWecom {
 
   /** 等实例后台与已派发任务落定；不重放已提交页面。 */
   async drain(): Promise<void> {
-    while (this.tickTask || this.syncTask || this.tasks.size) await Promise.allSettled([this.tickTask, this.syncTask, ...this.tasks]);
+    while (this.tickTask || this.syncTask || this.fullTasks.size || this.stateTask || this.tasks.size)
+      await Promise.allSettled([this.tickTask, this.syncTask, ...this.fullTasks.values(), this.stateTask, ...this.tasks]);
   }
 
   stop(): void {
@@ -343,8 +498,10 @@ export class SandboxWecom {
     this.cancelTick = null;
     this.api.stop();
     this.link = null;
+    this.publishAvailability();
     this.replies.clear();
     this.hourly.length = 0;
+    this.seen.clear();
   }
 
   async close(): Promise<void> {
@@ -358,6 +515,10 @@ export function createSandboxWecom(env: NodeJS.ProcessEnv, db: Db, epoch: string
   return new SandboxWecom(env, {
     read: () => readSandboxWecomState(db, env.SANDBOX_WECOM_OPEN_KFID!),
     commit: (cursor) => commitSandboxWecomCursor(db, epoch, env.SANDBOX_WECOM_OPEN_KFID!, cursor),
+    binding: new SandboxWechatBinding(db, epoch),
+    markFull: () => markSandboxWecomFull(db, epoch, env.SANDBOX_WECOM_OPEN_KFID!),
+    notifyFull: () =>
+      alert('sandbox_wecom_full', '微信体验名额已满，已退回模拟器', { instance: true, scope: `sandbox-full:${todayIso()}` }),
     notify: (failing, problem) =>
       alert(
         'channel',

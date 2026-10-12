@@ -205,6 +205,8 @@ export interface HandleOpts {
    * 与这条消息同一次落库提交。alreadyRecorded 时不排（这句上次已经记过）
    */
   inboxId?: string;
+  /** 沙箱微信入站的同步归属核对；宿主入口不传。失效时调用方记录去重系统说明。 */
+  stillCurrent?: () => boolean;
 }
 
 /** 这一轮写进会话的那条回复消息（02 第 12 步：渠道发送时交给发送账本，账本行据它取 seq）。不往 AgentReply 上加字段 */
@@ -228,7 +230,8 @@ const SENSITIVE_CATEGORIES: readonly SensitiveCategory[] = ['health', 'minor'];
  * （写进会话、经渠道发送，message_seq 为空）。没有发布隐私说明时 currentPrivacyNotice() 为 null，什么都不做（demo 恒为 null，
  * 不变量 40）。送达才记进会话——跟欢迎语同一个口径，没送达的话不该在后台显得「AI 已经问过」
  */
-async function maybeAskConsent(sessionId: string, text: string): Promise<void> {
+async function maybeAskConsent(sessionId: string, text: string, stillCurrent?: () => boolean): Promise<void> {
+  if (stillCurrent && !stillCurrent()) return;
   const notice = currentPrivacyNotice();
   if (!notice) return;
   const categories = createHandoffTriggers(currentPack().runtime.vocab.handoff).sensitiveCategoriesOf(text);
@@ -243,7 +246,7 @@ async function maybeAskConsent(sessionId: string, text: string): Promise<void> {
   for (const [i, category] of toAsk.entries()) {
     const content = consentMenuText(category);
     const ok = await pushToChannel(sessionId, content, { kind: 'menu', category, prepared: prepared[i] ?? null });
-    if (ok) {
+    if (ok && (!stillCurrent || stillCurrent())) {
       session.messages.push({ role: 'agent', content, at: Date.now() });
       saveSession(session);
     } else {
@@ -262,10 +265,12 @@ export function handleMessage(sessionId: string, text: string, channel: string, 
   const work = () =>
     serialize(sessionId, async () => {
       rt.cancel.throwIfAborted();
+      if (opts.stillCurrent && !opts.stillCurrent())
+        return { text: '', stage: getSession(sessionId)?.stage ?? currentPack().runtime.stages[0]!.id, silent: true };
       const reply = await pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts)));
       if (currentRuntime().cancel.aborted) return reply;
       try {
-        await maybeAskConsent(sessionId, text);
+        await maybeAskConsent(sessionId, text, opts.stillCurrent);
       } catch (e) {
         console.error(`[engine] 同意菜单处理异常（会话 ${convLabel(sessionId)}）:`, e instanceof Error ? e.message : e);
       }
@@ -302,10 +307,10 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   try {
     model = await callModel(state, turnContext, tools.runTool);
   } catch (error) {
-    if (currentRuntime().cancel.aborted) return state.unsentTakenOver();
+    if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent())) return state.unsentTakenOver();
     throw error;
   }
-  if (currentRuntime().cancel.aborted) return state.unsentTakenOver();
+  if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent())) return state.unsentTakenOver();
   return finishTurn(state, model, tools, stageAtStart, ordersBefore);
 }
 
@@ -342,9 +347,11 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
   // 接手代次（02 spec「接手、人工回复与交还」、不变量 28）：这一轮开始时记下，模型返回之后与 AI 回复 push 进会话之前各同步比一次，
   // 变了（这一轮里有人接手，含接手之后又交还）就不发，记一条「本轮未发送（顾问已接手）」
   const turnGen = takeoverGen(sessionId);
-  const takenOver = (): boolean => currentRuntime().cancel.aborted || takeoverGen(sessionId) !== turnGen;
+  const takenOver = (): boolean =>
+    currentRuntime().cancel.aborted || takeoverGen(sessionId) !== turnGen || !!(opts.stillCurrent && !opts.stillCurrent());
   const unsentTakenOver = (): AgentReply => {
-    if (currentRuntime().cancel.aborted) return { text: '', stage: session.stage, silent: true };
+    if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent()))
+      return { text: '', stage: session.stage, silent: true };
     session.messages.push({ role: 'system', content: TAKEN_OVER_NOTE, at: Date.now() });
     saveSession(session);
     return done('silent', { text: '', stage: session.stage, ...(session.handedOver ? { handoff: true } : {}), silent: true });
@@ -576,9 +583,11 @@ function turnTools(state: TurnState) {
         // 完整结果在注册表记结果之前补上提醒，afterTool 只补会话状态。
         execute: async (args: unknown, ctx: TurnToolContext) => {
           ctx.cancel?.throwIfAborted();
+          if (state.opts.stillCurrent && !state.opts.stillCurrent()) throw new Error('sandbox_binding_changed');
           ctx.hints = runtime.engineHooks.hintsFor(def.function.name, ctx);
           const result = await spec.execute(args, ctx);
           ctx.cancel?.throwIfAborted();
+          if (state.opts.stillCurrent && !state.opts.stillCurrent()) throw new Error('sandbox_binding_changed');
           return runtime.engineHooks.withNotes(result, ctx.notes);
         },
       };
@@ -694,6 +703,7 @@ async function callModel(state: TurnState, turnContext: TurnContext, runTool: Re
         // 命中较早缓存后的展示状态重放由工具声明提供，门面适配旧回调签名。
         onReuse: (name, _args, result) => {
           currentRuntime().cancel.throwIfAborted();
+          if (state.opts.stillCurrent && !state.opts.stillCurrent()) return;
           return runtime.tools
             .find((t) => t.def.function.name === name)
             ?.onReuse?.(result, { session, hints: {}, text, args: _args, notes: {}, handoffDeclined: false });
@@ -772,6 +782,7 @@ async function finishTurn(
     recordGuard: noteGuard,
     recordSignals: noteSignals,
     appendMessage(message) {
+      if (state.opts.stillCurrent && !state.opts.stillCurrent()) return;
       session.messages.push(message);
       if (message.role === 'agent') replyMsg = message;
     },
@@ -803,7 +814,7 @@ async function finishTurn(
   await binding.pipelines.reply.run(ctx, {
     onVerdict: noteGuardVerdict,
     onComplete(result) {
-      if (result.aborted) {
+      if (result.aborted || (state.opts.stillCurrent && !state.opts.stillCurrent())) {
         finishedReply = unsentTakenOver();
         return;
       }
