@@ -163,7 +163,7 @@ if [ -n "$rollback_target" ]; then
       4) echo "错误：${TAG} 是 02 之前的版本，拒绝部署（服务器上什么都没动）。改过上架条目的内容（或看不出改没改过）：回到 02 之前的镜像会让已发出的方案书链接显示旧价，只能部署 02 之后的 tag。" >&2 ;;
       5) echo "错误：${TAG} 是 03 之前的版本，拒绝部署（服务器上什么都没动）。渠道状态在库里：按上面的步骤先 channel-export，再部署它。" >&2 ;;
       6) echo "错误：${TAG} 是 04 之前的版本，拒绝部署（服务器上什么都没动）。有品牌风险：按上面对应品牌状态的步骤恢复，检查通过后再部署它。" >&2 ;;
-      7) echo "错误：${TAG} 是 05 之前的版本，拒绝部署。按上面的删沙箱容器、改名 .env.sandbox、摘站点与 tenant-host clear 步骤处理。" >&2 ;;
+      7) echo "错误：${TAG} 是 05 之前的版本，拒绝部署（服务器上什么都没动）。按上面对应原因的步骤检查与处理，检查通过后再部署它。" >&2 ;;
       *) echo "错误：${TAG} 是旧版本，回滚前检查没跑完，拒绝部署（服务器上什么都没动）。" >&2 ;;
     esac
     exit 1
@@ -303,7 +303,7 @@ if ssh "${SERVER}" "set -e
       echo "错误：沙箱换容器或健康检查失败。宿主已上线、沙箱已停；修好之后重新部署。" >&2
       # 服务端 8 秒后终止、再给 2 秒强杀；本地 ssh 12 秒封顶，取日志失败也继续删除。
       perl -e 'alarm 12; exec @ARGV' ssh "${SERVER}" "timeout --kill-after=2s 8s docker logs --tail 40 ${NAME}-sandbox" >&2 || true
-      perl -e 'alarm 12; exec @ARGV' ssh "${SERVER}" "cd ${REMOTE_DIR} && APP_IMAGE=${NAME}:latest APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} SANDBOX_PORT=${SANDBOX_PORT} timeout --kill-after=2s 8s docker compose -p ${NAME} -f deploy/compose.yml --profile sandbox rm -sf sandbox" >&2 || {
+      perl -e 'alarm 12; exec @ARGV' ssh "${SERVER}" "cd ${REMOTE_DIR} && APP_IMAGE=${NAME}:latest APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} SANDBOX_PORT=${SANDBOX_PORT} timeout --kill-after=2s 8s docker compose -p ${NAME} -f deploy/compose.yml --profile sandbox rm -sfv sandbox" >&2 || {
         echo "错误：删除沙箱容器失败，需立即人工处理。" >&2
       }
       exit 1
@@ -338,7 +338,7 @@ else
   if ! ssh "${SERVER}" "set -e
     cd ${REMOTE_DIR}
     containers=\$(timeout --kill-after=2s 8s docker container ls -aq --filter 'name=^/${NAME}-sandbox\$')
-    if [ -n \"\$containers\" ]; then docker rm -f ${NAME}-sandbox; fi
+    if [ -n \"\$containers\" ]; then docker rm -fv ${NAME}-sandbox; fi
     if [ -f .env.sandbox ]; then mv .env.sandbox .env.sandbox.off; fi"; then
     echo "错误：pre-05 回滚前清理沙箱失败，没有自动回滚。" >&2
     exit 1

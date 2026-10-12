@@ -218,28 +218,55 @@ case "$target" in
   pre-02 | pre-03 | pre-04 | pre-05) ;;
   *) pre05_image "$target" >/dev/null 2>&1; [ $? = 0 ] && is_pre05=0 ;;
 esac
+# 超级用户跨租户检查；旧库没有新列就没有这类数据风险。
+tenancy_state() {
+  local has host rows
+  has=$(db_query "select exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'tenants' and column_name = 'kind')") || return 1
+  case "$has" in
+    f) echo 'f f' ;;
+    t)
+      host=$(env_val DEFAULT_TENANT_SLUG "$env_file")
+      [[ "$host" =~ ^[a-z0-9][a-z0-9-]{1,62}$ ]] || return 1
+      rows=$(db_query "select exists(select 1 from public.tenants where kind = 'standard' and public_host is not null and slug <> '${host}') as other_hosts, exists(select 1 from public.tenants where kind = 'sandbox') as sandboxes") || return 1
+      printf '%s\n' "$rows" | tr '|' ' ' ;;
+    *) return 1 ;;
+  esac
+}
 if [ "$is_pre05" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
   sandbox_refuse() {
     echo "拒绝回滚：目标是 05 之前的镜像（没有 src/tenancy/runtime.ts）：$1" >&2
-    echo "先 tenant-host clear 宿主以外设了 public_host 的 standard 租户，并从反向代理摘掉它们的域名。" >&2
-    echo "  APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f deploy/compose.yml --profile sandbox rm -sf sandbox" >&2
-    echo "  mv .env.sandbox .env.sandbox.off" >&2
-    echo "从反向代理摘掉沙箱站点；只 stop sandbox 不够。再重跑检查（由当前镜像 sandbox purge --all，库里没有沙箱行才放行）。" >&2
-    exit 7
-  }
-  # 超级用户跨租户检查；旧库没有新列就没有这类数据风险。
-  tenancy_state() {
-    local has host rows
-    has=$(db_query "select exists(select 1 from information_schema.columns where table_schema = 'public' and table_name = 'tenants' and column_name = 'kind')") || return 1
-    case "$has" in
-      f) echo 'f f' ;;
-      t)
-        host=$(env_val DEFAULT_TENANT_SLUG "$env_file")
-        [[ "$host" =~ ^[a-z0-9][a-z0-9-]{1,62}$ ]] || return 1
-        rows=$(db_query "select exists(select 1 from public.tenants where kind = 'standard' and public_host is not null and slug <> '${host}') as other_hosts, exists(select 1 from public.tenants where kind = 'sandbox') as sandboxes") || return 1
-        printf '%s\n' "$rows" | tr '|' ' ' ;;
-      *) return 1 ;;
+    case "$1" in
+      '宿主以外的 standard 租户仍设了 public_host')
+        echo "查库确认宿主以外哪些 standard 租户有 public_host；先 tenant-host clear 这些租户，并从反向代理摘掉它们的域名。" >&2 ;;
+      '沙箱容器仍存在（包括已停的容器）' | '.env.sandbox 仍存在')
+        if [ "$1" != '.env.sandbox 仍存在' ]; then
+          echo "删掉沙箱容器及其匿名卷（只 stop sandbox 不够）：" >&2
+          echo "  APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f deploy/compose.yml --profile sandbox rm -sfv sandbox" >&2
+        fi
+        if [ -f "$dir/.env.sandbox" ]; then
+          echo "把沙箱环境文件改名，避免再次启用沙箱：" >&2
+          echo "  mv .env.sandbox .env.sandbox.off" >&2
+        fi
+        echo "从反向代理摘掉沙箱站点；只清理沙箱自己的匿名卷，不删除宿主、db 的命名卷或 var/ 绑定挂载。" >&2 ;;
+      'sandbox purge --all 失败')
+        echo "查看上方 CLI 错误码（如 sandbox_tenant_lock_held、sandbox_already_running）；通常是沙箱进程还在跑或有挂住的事务。查沙箱进程与数据库锁、事务，处理后再试。" >&2 ;;
+      '当前镜像不能执行 sandbox purge --all')
+        echo "确认当前容器镜像是可运行 sandbox purge --all 的 05 之后版本，再重跑检查。" >&2 ;;
+      'purge 后库里仍有沙箱行或库问不到')
+        echo "重新查库确认 kind=sandbox 的行是否残留，以及 db 连接与查询是否正常；确认 purge 结果后再试。" >&2 ;;
+      '无法确认沙箱容器是否存在')
+        echo "确认 Docker 可达，查 docker container ls -a 中的 ${project}-sandbox（包括已停的容器），再重跑检查。" >&2 ;;
+      *)
+        echo "确认 db 在跑（docker compose -p ${project} ps db），检查数据库连接、tenants 的 kind/public_host 与 .env 的 DEFAULT_TENANT_SLUG，能确认查询结果后再试。" >&2
+        if [ -z "${running:-}" ]; then
+          all_containers=$(timeout --kill-after=2s 8s docker container ls -aq --filter "label=com.docker.compose.project=${project}" </dev/null 2>/dev/null) &&
+            if [ -z "$all_containers" ]; then
+              echo "若这是没有任何容器、库不可达的空服务器，pre-05 tag 也会从严拒绝；新服务器先部署 05 之后的 tag，或确认库后再试。" >&2
+            fi
+        fi ;;
     esac
+    echo "处理上述原因后再重跑检查；有沙箱行时由当前镜像 sandbox purge --all，库里没有沙箱行才放行。" >&2
+    exit 7
   }
   tenancy=$(tenancy_state) || tenancy=unknown
   case "$tenancy" in
@@ -316,7 +343,24 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
       echo "  curl -fsS http://127.0.0.1:${port}/healthz"
       echo "  （确认 promptHash 回到该租户旧版模式的值）"
     fi
-    echo "再重跑回滚检查，确认品牌风险已消除；其他风险也须按下面的步骤消除。"
+    echo "再重跑回滚检查，确认品牌风险已消除；其他风险也须按对应步骤消除。"
+    if [ "$is_pre05" = 1 ]; then
+      echo "处理完品牌风险后再跑，还可能因沙箱风险以 7 拒绝（以下只读探测，不执行 purge）："
+      tenancy=$(tenancy_state) || tenancy=unknown
+      case "$tenancy" in
+        't t' | 't f') echo "  - 宿主以外的 standard 租户有 public_host" ;;
+        'f f' | 'f t') ;;
+        *) echo "  - 库不可达或查询结果无法确认：需确认其他 standard 的 public_host 与沙箱行" ;;
+      esac
+      case "$tenancy" in 't t' | 'f t') echo "  - 库里仍有沙箱行，前置风险消除后需 purge；purge 失败或删除后仍有行也以 7 拒绝" ;; esac
+      containers=$(timeout --kill-after=2s 8s docker container ls -aq --filter "name=^/${project}-sandbox$" </dev/null 2>/dev/null) || containers=unknown
+      if [ "$containers" = unknown ]; then
+        echo "  - 沙箱容器是否存在无法确认"
+      elif [ -n "$containers" ]; then
+        echo "  - 沙箱容器仍存在（包括已停的容器）"
+      fi
+      [ ! -f "$dir/.env.sandbox" ] || echo "  - .env.sandbox 仍存在"
+    fi
     if [ "$brand_auto" = 1 ]; then
       echo "检查退出码 0 后，直接起目标镜像并重打 :current（不跑迁移）："
       echo "  APP_IMAGE=${target} ${dc} up -d --no-deps app && docker tag ${target} ${project}:current"

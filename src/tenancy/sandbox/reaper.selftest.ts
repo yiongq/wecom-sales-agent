@@ -915,9 +915,71 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     check(subscribed === (loss === 'process' ? 1 : 2), 'CLI 订阅进程与租户锁');
     check((await q('select id from tenants where id=$1 and expires_at>now()', [startup.rt.id])).length === 1, '丢锁不继续 expire / purge');
   }
+  const endAllLogs: string[] = [];
+  const endAllErrors: string[] = [];
+  const savedLog = console.log;
+  const savedError = console.error;
+  const endAllCount = (await listSandboxes(db)).length;
+  console.log = (...args: unknown[]) => endAllLogs.push(args.join(' '));
+  console.error = (...args: unknown[]) => endAllErrors.push(args.join(' '));
+  try {
+    check((await runSandbox(['end', '--all'], cli)) === 0, '演练二·5 end --all 成功退出 0');
+    check(
+      endAllLogs.length === 1 && endAllLogs[0] === `[sandbox] 已标记 ${endAllCount} 个沙箱到期` && endAllErrors.length === 0,
+      '演练二·5 end --all 成功只打印一行真实到期计数',
+    );
+    check(
+      (await listSandboxes(db)).every((row) => row.expired),
+      '演练二·5 计数对应库里沙箱全部到期',
+    );
+    endAllLogs.length = 0;
+    check(
+      (await runSandbox(['end', '--all'], {
+        ...cli,
+        connect: async () => {
+          throw new Error('unreachable');
+        },
+      })) === 1,
+      '演练二·5 end --all 失败退出码不变',
+    );
+    check(
+      endAllLogs.length === 0 && endAllErrors.length === 1 && endAllErrors[0] === '[sandbox] sandbox_command_failed',
+      '演练二·5 end --all 失败照旧、不打印成功计数',
+    );
+    endAllErrors.length = 0;
+    check(
+      (await runSandbox(['end', '--all'], {
+        ...cli,
+        connect: async () => ({
+          db,
+          close: async () => {
+            throw new Error('close failed');
+          },
+        }),
+      })) === 1,
+      '演练二·5 end --all 关闭连接失败退出码不变',
+    );
+    check(
+      endAllLogs.length === 0 && endAllErrors.length === 1 && endAllErrors[0] === '[sandbox] sandbox_command_failed',
+      '演练二·5 end --all 关闭失败也不打印成功计数',
+    );
+  } finally {
+    console.log = savedLog;
+    console.error = savedError;
+  }
   const cliLock = { ...fakeLock(), acquireTenant: acquire };
   check((await runSandbox(['purge', '--all'], { ...cli, lock: async () => cliLock })) === 0, 'sandbox purge --all 到期并直接删');
   await zero(q, startup.rt.id, startup.slug);
+  console.log = (...args: unknown[]) => endAllLogs.push(args.join(' '));
+  try {
+    check(
+      (await runSandbox(['end', '--all'], cli)) === 0 && endAllLogs.length === 1 && endAllLogs[0] === '[sandbox] 已标记 0 个沙箱到期',
+      '演练二·5 end --all 空池也打印一行零计数',
+    );
+  } finally {
+    console.log = savedLog;
+  }
+
   check((await q('select id from tenants where id=$1', [host!.id])).length === 1, 'standard 模板不删除');
   check((await runSandbox(['end', 'reaper-template'], cli)) === 1, 'CLI 不能结束 standard');
   const app = sandboxApp(

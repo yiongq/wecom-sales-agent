@@ -3939,7 +3939,7 @@ if (text.startsWith('logs') && text.includes('-sandbox')) {
   if (process.env.FAIL_SANDBOX_LOGS === 'hang') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   process.exit(process.env.FAIL_SANDBOX_LOGS === 'fail' ? 1 : 0);
 }
-if (text.includes('rm -sf sandbox') || text.startsWith('rm -f ')) {
+if (text.includes('rm -sfv sandbox') || text.startsWith('rm -fv ')) {
   mark('remove-attempted');
   if (process.env.FAIL_SANDBOX_REMOVE === 'hang') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
   if (process.env.FAIL_SANDBOX_REMOVE === 'fail') process.exit(1);
@@ -4035,7 +4035,7 @@ console.log(JSON.stringify(result));
           r.out.includes('服务恢复') &&
           r.log.includes('image=side05:prev') &&
           !r.log.includes('up -d --no-deps sandbox') &&
-          !r.log.includes('rm -sf sandbox') &&
+          !r.log.includes('rm -sfv sandbox') &&
           fs.readFileSync(path.join(flags, 'sandbox'), 'utf8') === 'old',
         r.out + r.log,
       );
@@ -4048,7 +4048,11 @@ console.log(JSON.stringify(result));
           r.out.includes('宿主已上线、沙箱已停') &&
           !r.out.includes('部署成功') &&
           !r.log.includes('up -d --no-deps app') &&
-          r.log.includes('--profile sandbox rm -sf sandbox') &&
+          r.log.includes('--profile sandbox rm -sfv sandbox') &&
+          !r.log.includes('down -v') &&
+          !r.log.includes('volume rm') &&
+          !r.log.includes('rm -sfv app') &&
+          !r.log.includes('rm -sfv db') &&
           !fs.existsSync(path.join(flags, 'sandbox')),
         r.out + r.log,
       );
@@ -4192,7 +4196,11 @@ console.log(JSON.stringify(result));
         r.out.includes('服务恢复') &&
         fs.existsSync(path.join(remote, '.env.sandbox.off')) &&
         !fs.existsSync(path.join(remote, '.env.sandbox')) &&
-        r.log.indexOf('rm -f side05-sandbox') < r.log.indexOf("column_name = 'kind'") &&
+        r.log.includes('rm -fv side05-sandbox') &&
+        !r.log.includes('down -v') &&
+        !r.log.includes('volume rm') &&
+        !r.log.includes('rm -fv side05-db') &&
+        r.log.indexOf('rm -fv side05-sandbox') < r.log.indexOf("column_name = 'kind'") &&
         !r.log.includes('up -d --no-deps sandbox') &&
         !fs.existsSync(path.join(flags, 'sandbox')),
       r.out + r.log,
@@ -4242,6 +4250,17 @@ console.log(JSON.stringify(result));
     check('05-15① host revision 不匹配：拒绝上线并恢复 prev', r.code === 1 && r.out.includes('服务恢复'), r.out);
     const compose = fs.readFileSync(path.join(sourceRoot, 'deploy/compose.yml'), 'utf8');
     const sandbox = compose.split('  sandbox:\n')[1]!.split('  platform:')[0]!;
+    check(
+      '演练一/二·4 compose 手工步骤带匿名卷清理、platform demo profile、保留 db 命名卷与 var 挂载',
+      compose.includes('--profile sandbox rm -sfv sandbox') &&
+        /# +\.env.platform[^\n]*DEPLOY_PROFILE=demo/.test(compose) &&
+        !compose.includes('down -v') &&
+        !compose.includes('volume rm') &&
+        compose.includes('- db-data:/var/lib/postgresql/data') &&
+        compose.includes('- ../var:/app/var'),
+      compose,
+    );
+
     check(
       '05 compose sandbox：同镜像、独立 profile/env/角色/回环端口、10s、无 var 卷、无文件仍可解析',
       sandbox.includes('image: ${APP_IMAGE:-${APP_CONTAINER:-wecom-sales-agent}:current}') &&
