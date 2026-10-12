@@ -676,7 +676,7 @@ try {
   host.remove();
   await win.happyDOM.abort();
 }
-// 执行同一份宿主开场函数；沙箱脚本只替换显示，覆盖已渲染、异步恢复和新会话。
+// 执行同一份宿主开场函数，再加载沙箱脚本：页脚隐藏，开场句原样。
 const simulator = new Window({ url: 'http://localhost/chat.html' });
 try {
   const doc = simulator.document;
@@ -687,63 +687,27 @@ try {
   footer.textContent = '演示页脚';
   doc.body.append(messages, footer);
   const originalHandoff = '需要真人服务时，回复「人工」即可转真人顾问。';
-  const sandboxHandoff = '回复「人工」，会话会转到你的工作台，由你来接手。';
   const html = fs.readFileSync(new URL('../../../public/chat.html', import.meta.url), 'utf8');
   const opening = html.slice(html.indexOf('  function welcome()'), html.indexOf('  // 恢复历史'));
-  const stored: string[] = [];
-  const welcome = () =>
-    vm.runInNewContext(opening + '\nwelcome();', {
-      addMsg: (_role: string, text: string) => {
-        stored.push(text);
-        const row = doc.createElement('div');
-        row.className = 'row ai';
-        const bubble = doc.createElement('div');
-        bubble.className = 'bubble';
-        bubble.textContent = text;
-        row.append(bubble);
-        messages.append(row);
-      },
-      showChips: () => {},
-    });
-  welcome();
-  check(() => assert.ok(messages.textContent.includes(originalHandoff), '宿主开场句不变'));
+  vm.runInNewContext(opening + '\nwelcome();', {
+    addMsg: (_role: string, text: string) => {
+      const row = doc.createElement('div');
+      row.className = 'row ai';
+      const bubble = doc.createElement('div');
+      bubble.className = 'bubble';
+      bubble.textContent = text;
+      row.append(bubble);
+      messages.append(row);
+    },
+    showChips: () => {},
+  });
   vm.runInNewContext(fs.readFileSync(new URL('../../../public/sandbox-ui.js', import.meta.url), 'utf8'), {
     document: doc,
-    MutationObserver: simulator.MutationObserver,
-    NodeFilter: simulator.NodeFilter,
   });
-  check(() => assert.ok(messages.textContent.includes(sandboxHandoff), '已渲染的沙箱开场句替换'));
   check(() => assert.equal(footer.hidden, true));
-  messages.replaceChildren();
-  welcome();
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  check(() => assert.ok(messages.textContent.includes(sandboxHandoff), '新会话和异步开场句替换'));
-  const bubble = messages.querySelector('.bubble')!;
-  const link = doc.createElement('a');
-  link.href = '/privacy';
-  link.textContent = '隐私说明';
-  bubble.replaceChildren(link, doc.createElement('br'), doc.createTextNode('需要真人服务'));
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  bubble.lastChild!.nodeValue = originalHandoff;
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  check(() => assert.ok(bubble.textContent.includes(sandboxHandoff), '打字机或历史文字更新后替换'));
-  check(() => assert.equal(bubble.querySelector('a')!.getAttribute('href'), '/privacy', '保留链接'));
-  check(() => assert.equal(bubble.querySelectorAll('br').length, 1, '保留换行'));
-  const customer = doc.createElement('div');
-  customer.className = 'row me';
-  const customerBubble = doc.createElement('div');
-  customerBubble.className = 'bubble';
-  customerBubble.textContent = originalHandoff;
-  customer.append(customerBubble);
-  messages.append(customer);
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  check(() => assert.equal(customer.textContent, originalHandoff, '客户原话不改'));
-  check(() =>
-    assert.ok(
-      stored.every((text) => text.includes(originalHandoff) && !text.includes(sandboxHandoff)),
-      '会话原文不改',
-    ),
-  );
+  // 开场句是对客户说的话：访客在扮演客户，沙箱沿用宿主原句，不写体验说明。
+  check(() => assert.ok(messages.textContent.includes(originalHandoff), '沙箱开场句与宿主相同'));
+  check(() => assert.ok(!messages.textContent.includes('工作台'), '开场句不提访客的工作台'));
 } finally {
   await simulator.happyDOM.close();
 }

@@ -3208,12 +3208,10 @@ export class SandboxWecomRuntime {
   thumbInflight: Promise<string | null> | null = null;
   thumbFailUntil = 0;
   sendsClosedAt = Number.POSITIVE_INFINITY;
+  // 欢迎语是对客户说的话：访客在微信里扮演客户，沿用宿主原句，不写体验说明。
   get welcomeText(): string {
     const binding = currentPack();
-    return brandTexts(binding.runtime, binding.brand).welcomeText.replace(
-      '需要真人服务时，回复「人工」即可转真人顾问。',
-      '回复「人工」，会话会转到你的工作台，由你来接手。',
-    );
+    return brandTexts(binding.runtime, binding.brand).welcomeText;
   }
   readonly #request: typeof fetch;
   private readonly sending = new Set<SendHandle>();
