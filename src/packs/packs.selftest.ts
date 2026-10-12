@@ -437,6 +437,29 @@ const DATA: Record<CatalogKind, Payload[]> = {
   hotel: JSON.parse(fs.readFileSync(path.join(root, 'data/hotels.json'), 'utf8')) as Payload[],
 };
 
+// 来源：企微发送含「达赖」的产品库文案，实测 msg_send_fail、fail_type 13（安全限制）。
+const WECOM_BLOCKED_WORDS = ['达赖'] as const;
+
+// 递归检查全部字符串，覆盖亮点、逐日行程、酒店说明等客户文本，也避免漏掉以后新增的字段。
+function checkCustomerText(value: unknown, file: string, id: string, field: string): void {
+  if (typeof value === 'string') {
+    for (const word of WECOM_BLOCKED_WORDS) {
+      check('产品库客户文本不含微信拦截词', !value.includes(word), `${file} 条目 ${id} 字段 ${field} 含「${word}」`);
+    }
+  } else if (Array.isArray(value)) {
+    value.forEach((item, index) => checkCustomerText(item, file, id, `${field}[${index}]`));
+  } else if (value !== null && typeof value === 'object') {
+    for (const [key, item] of Object.entries(value)) checkCustomerText(item, file, id, field ? `${field}.${key}` : key);
+  }
+}
+
+for (const [file, items] of [
+  ['data/routes.json', DATA.route],
+  ['data/hotels.json', DATA.hotel],
+] as const) {
+  for (const item of items) checkCustomerText(item, file, String(item.id), '');
+}
+
 interface Case {
   name: string;
   payload: Payload;
