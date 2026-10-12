@@ -411,7 +411,7 @@ export class SandboxWecom {
             // 先提交再派发，崩溃或发送失败后不重放。
             for (const message of messages) {
               if (!this.running()) return;
-              if (message.open_kfid !== this.env.SANDBOX_WECOM_OPEN_KFID) continue;
+              if ((message.open_kfid || message.event?.open_kfid) !== this.env.SANDBOX_WECOM_OPEN_KFID) continue;
               if (this.cold && message.send_time * 1000 < this.startedAt - 10 * 60_000) continue;
               this.dispatch(message, arrivedAt);
             }

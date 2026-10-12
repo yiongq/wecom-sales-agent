@@ -342,21 +342,25 @@ async function suite(db: Db, q: Query, backend: string) {
     msgtype: 'text',
     text: { content },
   });
-  const enter = (user: string, code: string): KfMessage => ({
-    ...message(user, ''),
-    origin: 4,
-    msgtype: 'event',
-    event: {
-      event_type: 'enter_session',
-      external_userid: user,
-      scene_param: code.replace('-', ''),
-      welcome_code: `fake-welcome-${++serial}`,
-    },
-  });
+  // 企微事件消息顶层没有 open_kfid、external_userid，2026-10-12 线上 sync_msg 实测。
+  const enter = (user: string, code: string): KfMessage =>
+    ({
+      msgid: `fake-msg-${++serial}`,
+      send_time: Date.now() / 1000,
+      origin: 4,
+      msgtype: 'event',
+      event: {
+        event_type: 'enter_session',
+        open_kfid: env.SANDBOX_WECOM_OPEN_KFID,
+        external_userid: user,
+        scene_param: code.replace('-', ''),
+        welcome_code: `fake-welcome-${++serial}`,
+      },
+    }) as KfMessage; // 保留宿主共用类型，事件按真实 wire 布局构造。
   const callback = async (...messages: KfMessage[]) => {
     for (const incoming of messages) {
       const entered = incoming.event?.event_type === 'enter_session';
-      const user = incoming.external_userid;
+      const user = entered ? incoming.event!.external_userid! : incoming.external_userid;
       const text = entered ? incoming.event?.scene_param : incoming.text?.content;
       const row = text ? expectedCodes.get(normalize(text)) : undefined;
       const old = [...expectedBindings].find(([, bound]) => bound === user)?.[0];

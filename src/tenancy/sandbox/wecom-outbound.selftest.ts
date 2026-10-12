@@ -16,7 +16,7 @@ import { SandboxWecomRuntime, installSandboxWecomOutbound, wecomAdapter } from '
 import { getOrCreateSession, saveSession, flushSession, drainStore, listOrders } from '../../store.js';
 import { __alertTest } from '../../ops/alert.js';
 import { __ledgerTest } from '../../quota/ledger.js';
-import { SandboxWecom } from './wecom.js';
+import { SandboxWecom, type KfMessage } from './wecom.js';
 import { sandboxWechatIndex, SandboxSendRefused } from './outbound.js';
 import { sandboxApp, SandboxProcess } from './process.js';
 import { provisionSandbox } from './provision.js';
@@ -71,6 +71,17 @@ async function review(name: string, fn: () => Promise<void>): Promise<void> {
   checks++;
   console.log(`REVIEW PASS: ${name}`);
 }
+// 企微事件消息顶层没有 open_kfid、external_userid，2026-10-12 线上 sync_msg 实测。
+function eventMessage(id: string, user: string, event: NonNullable<KfMessage['event']>): KfMessage {
+  return {
+    msgid: id,
+    send_time: Date.now() / 1000,
+    origin: 4,
+    msgtype: 'event',
+    event: { open_kfid: cfg.openKfid, external_userid: user, ...event },
+  } as KfMessage; // 保留宿主共用类型的顶层必填字段；假事件按真实 wire 布局构造。
+}
+
 async function cleanup(): Promise<void> {
   for (const rt of tenantRuntimes()) {
     await withTenantScope(rt, () => drainStore(5000));
@@ -703,18 +714,7 @@ async function suite(db: Db, q: Query): Promise<void> {
               next_cursor: 'fake-next',
               has_more: 0,
               msg_list: page
-                ? ((page = false),
-                  [
-                    {
-                      msgid: 'fake-receipt',
-                      open_kfid: cfg.openKfid,
-                      external_userid: 'wmA',
-                      send_time: Date.now() / 1000,
-                      origin: 4,
-                      msgtype: 'event',
-                      event: { event_type: 'msg_send_fail', fail_msgid: sentId, fail_type: 4 },
-                    },
-                  ])
+                ? ((page = false), [eventMessage('fake-receipt', 'wmA', { event_type: 'msg_send_fail', fail_msgid: sentId, fail_type: 4 })])
                 : [],
             }),
     },
@@ -726,6 +726,7 @@ async function suite(db: Db, q: Query): Promise<void> {
     assert.equal(
       withTenantScope(A, () => __ledgerTest.rows('wecom:wmA').find((r) => r.msgid === sentId)?.status),
       'failed',
+      '事件回执按 event.open_kfid 路由并将账本置为 failed',
     ),
   );
   // 提交游标的等待也计入 welcome_code 的 20 秒；超时后不会因为派发才开始而延长。
@@ -759,13 +760,8 @@ async function suite(db: Db, q: Query): Promise<void> {
           has_more: 0,
           msg_list: [
             {
-              msgid: 'fake-late-event',
-              open_kfid: cfg.openKfid,
-              external_userid: 'wmLate',
+              ...eventMessage('fake-late-event', 'wmLate', { event_type: 'enter_session', welcome_code: 'fake-late-code' }),
               send_time: lateNow / 1000,
-              origin: 4,
-              msgtype: 'event',
-              event: { event_type: 'enter_session', welcome_code: 'fake-late-code' },
             },
           ],
         });

@@ -3,16 +3,34 @@ import '../../selftest-env.js';
 import assert from 'node:assert/strict';
 import { createCipheriv } from 'node:crypto';
 import { openDb, type Db } from '../../db/client.js';
-import { openTestDb, createRealPgFixture } from '../../db/testing.js';
+import { openTestDb, createRealPgFixture, testConfigDeps, fakeLock } from '../../db/testing.js';
+import { importConfig } from '../../config/transfer.js';
+import { closeConfig } from '../../config/source.js';
+import { shanhaiBrand } from '../../packs/travel/brand-fixture.js';
+import { drainStore } from '../../store.js';
+import { dropShutdownHooks } from '../../shutdown.js';
 import { readSandboxWecomState, commitSandboxWecomCursor } from '../../db/repo/sandbox-wecom.js';
 import { __alertTest } from '../../ops/alert.js';
 import { computeSignature } from '../../wecom-crypto.js';
 import { __test, __wecomTest, isWecomEnabled } from '../../adapters/wecom.js';
 import type { KfMessage } from '../../adapters/wecom-state.js';
 import { ENV_ACCOUNT_ID } from '../../channels/accounts.js';
-import { configureTenancy, hostRuntime, withTenantScope, scopedRuntime, withoutTenantScope } from '../runtime.js';
+import {
+  configureTenancy,
+  hostRuntime,
+  withTenantScope,
+  scopedRuntime,
+  withoutTenantScope,
+  createTenantRuntime,
+  runtimeOf,
+  unregisterRuntime,
+} from '../runtime.js';
+import { dropTenantState } from '../state.js';
 import { SandboxProcess, sandboxApp } from './process.js';
 import { SandboxWecom, createSandboxWecom } from './wecom.js';
+import { SandboxWechatBinding } from './binding.js';
+import { sandboxWechatIndex } from './outbound.js';
+import { provisionSandbox } from './provision.js';
 
 const env = {
   SANDBOX_HOST: 'sandbox.example.invalid',
@@ -69,6 +87,17 @@ function message(id: string, user = 'wmUnbound', seconds = now / 1000): KfMessag
     msgtype: 'text',
     text: { content: '假客户文字' },
   };
+}
+
+// 企微事件消息顶层没有 open_kfid、external_userid，2026-10-12 线上 sync_msg 实测。
+function eventMessage(id: string, user: string, event: NonNullable<KfMessage['event']>): KfMessage {
+  return {
+    msgid: id,
+    send_time: now / 1000,
+    origin: 4,
+    msgtype: 'event',
+    event: { open_kfid: env.SANDBOX_WECOM_OPEN_KFID, external_userid: user, ...event },
+  } as KfMessage; // 保留宿主共用类型的顶层必填字段；假事件按真实 wire 布局构造。
 }
 
 async function flushMicrotasks(): Promise<void> {
@@ -128,6 +157,7 @@ class VirtualClock {
 }
 
 class FakeWecom {
+  sendRuntime: ReturnType<typeof scopedRuntime>;
   calls: { path: string; body: Record<string, unknown>; at: number }[] = [];
   aborted: string[] = [];
   active = 0;
@@ -142,8 +172,8 @@ class FakeWecom {
   onSend: (() => Promise<void>) | null = null;
   private serial = 0;
   request: typeof fetch = async (input, init) => {
-    check(() => assert.equal(scopedRuntime(), undefined, '企微实例 I/O 必须在空作用域'));
     const path = new URL(String(input)).pathname.split('/cgi-bin/')[1]!;
+    check(() => assert.equal(scopedRuntime(), path.startsWith('kf/send_msg') ? this.sendRuntime : undefined, '企微 I/O 使用预期作用域'));
     const body = init?.body ? (JSON.parse(String(init.body)) as Record<string, unknown>) : {};
     this.calls.push({ path, body, at: now });
     assert.ok(init?.signal, '假企微必须收到 AbortSignal');
@@ -208,10 +238,7 @@ async function reviewSuite(): Promise<void> {
   const fake = new FakeWecom();
   const started = now;
   fake.pause = (path, _, signal) => (path === 'kf/send_msg' ? clock.wait(11_000, signal) : Promise.resolve());
-  const welcome = message('urgent', 'wmUrgent');
-  welcome.origin = 4;
-  welcome.msgtype = 'event';
-  welcome.event = { event_type: 'enter_session', external_userid: 'wmUrgent', welcome_code: 'fake-urgent' };
+  const welcome = eventMessage('urgent', 'wmUrgent', { event_type: 'enter_session', welcome_code: 'fake-urgent' });
   fake.pages.push(
     { next_cursor: 'slow-page', has_more: 1, msg_list: [message('slow-one', 'wmSlowOne'), message('slow-two', 'wmSlowTwo'), welcome] },
     { next_cursor: 'next-slow-page', has_more: 0, msg_list: [] },
@@ -443,10 +470,7 @@ async function diagnosticSuite(): Promise<void> {
     await instance.drain();
     fake.syncFails = false;
     fake.sendFails = true;
-    const event = message('diagnostic-event', 'wmLogEvent');
-    event.origin = 4;
-    event.msgtype = 'event';
-    event.event = { event_type: 'enter_session', external_userid: 'wmLogEvent', welcome_code: 'fake-log-welcome' };
+    const event = eventMessage('diagnostic-event', 'wmLogEvent', { event_type: 'enter_session', welcome_code: 'fake-log-welcome' });
     fake.pages.push({ next_cursor: 'diagnostic-send', has_more: 0, msg_list: [message('diagnostic-text', 'wmLogText'), event] });
     await instance.sync();
     await instance.drain();
@@ -607,6 +631,98 @@ async function callbackSuite(): Promise<void> {
   }
 }
 
+async function eventAccountSuite(
+  db: Db,
+  q: <T = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<T[]>,
+): Promise<void> {
+  const [template] = await q<{ id: string }>(
+    "insert into tenants(slug,name,pack_id,brand) values('event-template','事件模板','travel',$1::json) returning id",
+    [JSON.stringify(shanhaiBrand)],
+  );
+  const host = createTenantRuntime({ id: template!.id, slug: 'event-template', isHost: true });
+  const deps = testConfigDeps({ db }, { tenantSlug: host.slug, usePackRuntime: true });
+  const imported = await withTenantScope(host, () =>
+    importConfig({ db, tenantSlug: host.slug, dataDir: 'data', imageSop: deps.imageSop, lock: async () => fakeLock() }),
+  );
+  assert.equal(imported.code, 0, imported.message);
+  await q("insert into privacy_notices(tenant_id,version,body) values($1,1,'假隐私说明')", [host.id]);
+  const [epoch] = await q<{ epoch: string }>('select epoch::text from sandbox_process_epoch where id=1');
+  const created = await provisionSandbox({
+    deps,
+    templateSlug: host.slug,
+    host: env.SANDBOX_HOST,
+    epoch: epoch!.epoch,
+    acquireTenant: async () => fakeLock(),
+    ip: null,
+    userAgent: null,
+  });
+  const rt = runtimeOf(created.tenantId)!;
+  const binding = new SandboxWechatBinding(db, epoch!.epoch);
+  const fake = new FakeWecom();
+  fake.sendRuntime = rt;
+  const instance = new SandboxWecom(env, {
+    request: fake.request,
+    binding,
+    now: () => Date.now(),
+    read: () => readSandboxWecomState(db, env.SANDBOX_WECOM_OPEN_KFID),
+    commit: (cursor) => commitSandboxWecomCursor(db, epoch!.epoch, env.SANDBOX_WECOM_OPEN_KFID, cursor),
+  });
+  try {
+    await instance.start();
+    await instance.drain();
+    const { code } = await binding.issue(
+      rt,
+      () => instance.contactLink(),
+      () => false,
+    );
+    const entered = eventMessage('nested-entry', 'wmNested', {
+      event_type: 'enter_session',
+      scene: 'try',
+      scene_param: code.replace('-', ''),
+      welcome_code: 'fake-nested-welcome',
+    });
+    entered.send_time = Date.now() / 1000;
+    assert.ok(!Object.hasOwn(entered, 'open_kfid') && !Object.hasOwn(entered, 'external_userid'));
+    const foreign = eventMessage('foreign-entry', 'wmForeign', {
+      ...entered.event,
+      open_kfid: 'fake-other-kf',
+      external_userid: 'wmForeign',
+      welcome_code: 'fake-foreign-welcome',
+    });
+    foreign.send_time = entered.send_time;
+    fake.pages.push({ next_cursor: 'foreign-event-page', has_more: 0, msg_list: [foreign] });
+    await instance.sync();
+    await instance.drain();
+    verify('event.open_kfid 为其他账号的 enter_session 被跳过且无发送', () => {
+      assert.equal(fake.sends().length, 0);
+      assert.equal(sandboxWechatIndex.forUser('wmForeign'), undefined);
+      assert.equal(sandboxWechatIndex.boundUser(rt), undefined);
+    });
+    fake.pages.push({ next_cursor: 'nested-event-page', has_more: 0, msg_list: [entered] });
+    await instance.sync();
+    await instance.drain();
+    const rows = await q<{ external_userid: string }>('select external_userid from sandbox_wechat where tenant_id=$1', [rt.id]);
+    verify('仅 event.open_kfid 的 enter_session 绑定有效码并经 send_msg_on_event 欢迎', () => {
+      assert.equal(rows[0]!.external_userid, 'wmNested');
+      assert.equal(sandboxWechatIndex.forUser('wmNested'), rt);
+      assert.equal(fake.sends().length, 1);
+      assert.equal(fake.sends()[0]!.path, 'kf/send_msg_on_event');
+      assert.equal(fake.sends()[0]!.body.code, 'fake-nested-welcome');
+      assert.match((fake.sends()[0]!.body.text as { content: string }).content, /AI/);
+    });
+  } finally {
+    await instance.close();
+    await withTenantScope(rt, () => drainStore(5000));
+    rt.state = 'closed';
+    rt.store.pgBackend?.close();
+    await withTenantScope(rt, closeConfig);
+    dropShutdownHooks(rt);
+    dropTenantState(rt.id);
+    unregisterRuntime(rt.id);
+    sandboxWechatIndex.reset();
+  }
+}
+
 async function runtimeSuite(db: Db, q: <T = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<T[]>): Promise<void> {
   const tables = await q<{ name: string }>(
     "select table_name as name from information_schema.columns where table_schema='public' and column_name='tenant_id' order by table_name",
@@ -684,13 +800,8 @@ async function runtimeSuite(db: Db, q: <T = Record<string, unknown>>(text: strin
     await instance.drain();
     check(() => assert.equal(fake.sends().length, 200));
     now += 60 * 60_000;
-    const entered = message('entry', 'wmEnter');
-    entered.origin = 4;
-    entered.msgtype = 'event';
-    entered.event = { event_type: 'enter_session', external_userid: 'wmEnter', welcome_code: 'fake-welcome' };
-    const receipt = message('receipt', 'wmReceipt');
-    receipt.origin = 4;
-    receipt.event = { event_type: 'msg_send_fail' };
+    const entered = eventMessage('entry', 'wmEnter', { event_type: 'enter_session', welcome_code: 'fake-welcome' });
+    const receipt = eventMessage('receipt', 'wmReceipt', { event_type: 'msg_send_fail' });
     fake.pages.push({ next_cursor: 'event-page', has_more: 0, msg_list: [entered, receipt] });
     fake.expireOnce = true;
     await instance.sync();
@@ -987,6 +1098,14 @@ try {
       await t.pg.exec('SET ROLE agent_app');
     }
   });
+  await eventAccountSuite(t.db, async <T>(text: string, params: unknown[] = []) => {
+    await t.pg.exec('RESET ROLE');
+    try {
+      return (await t.pg.query<T>(text, params)).rows;
+    } finally {
+      await t.pg.exec('SET ROLE agent_app');
+    }
+  });
   await alertSuite(t.db, '0');
 } finally {
   await t.close();
@@ -997,6 +1116,7 @@ if (process.env.PG_TEST_URL) {
   try {
     await processSuite(fixture.urls.app);
     await runtimeSuite(app.db, fixture.query);
+    await eventAccountSuite(app.db, fixture.query);
   } finally {
     await app.close();
     await fixture.drop();

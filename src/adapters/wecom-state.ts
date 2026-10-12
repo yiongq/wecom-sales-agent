@@ -27,6 +27,8 @@ export interface KfMessage {
     event_type?: string; // 如 enter_session（客户进入会话）、msg_send_fail（消息发送失败）
     welcome_code?: string; // 进入会话事件专用，20s 内单次有效，用于 send_msg_on_event 发欢迎语
     external_userid?: string;
+    open_kfid?: string;
+    scene?: string;
     scene_param?: string;
     fail_msgid?: string; // msg_send_fail 专用：发送失败的那条的 msgid（我们随 send_msg 下发的）
     fail_type?: number; // msg_send_fail 专用：4 超过 48 小时、6 超过 5 条，其余见企微文档
