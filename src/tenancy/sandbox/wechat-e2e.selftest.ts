@@ -39,6 +39,7 @@ import {
   unregisterRuntime,
   withTenantScope,
   withoutTenantScope,
+  scopedRuntime,
   type TenantRuntime,
 } from '../runtime.js';
 import { dropTenantState } from '../state.js';
@@ -79,7 +80,15 @@ type Body = {
   text?: { content: string };
   link?: { url: string };
 };
-type Recorded = { endpoint: string; body: Body; bytes: string; tenant?: string; bound?: string };
+type Recorded = {
+  endpoint: string;
+  body: Body;
+  bytes: string;
+  tenant?: string;
+  expectedUser?: string;
+  welcomeOwner?: string | null;
+  expectedWelcomeUser?: string;
+};
 let checks = 0;
 async function reportScenario(name: string, fn: () => Promise<void>) {
   await fn();
@@ -133,6 +142,24 @@ async function suite(db: Db, q: Query, backend: string) {
   assert.equal(imported.code, 0, imported.message);
   await q("insert into privacy_notices(tenant_id,version,body) values($1,1,'假隐私说明')", [host.id]);
   const records: Recorded[] = [];
+  // 测试自己记录签码、消费与绑定事实；不从生产授权索引推导期望收件人。
+  const expectedBindings = new Map<string, string>();
+  const expectedCodes = new Map<string, { tenant: string; expiresAt: number; used: boolean }>();
+  const expectedWelcomes = new Map<string, { tenant: string | null; user: string }>();
+  const attempts = new Map<string, number>();
+  const fixedTexts = [`这是体验客服，去 ${base}/try 开一个体验，扫页面上的码就能连上`, '这个码过期了，回工作台换一个'];
+  const normalize = (text: string) => text.replace(/[\s-]/g, '').toUpperCase();
+  const assertRecorded = (record: Recorded) => {
+    if (record.endpoint === 'kf/send_msg') {
+      assert.equal(record.body.open_kfid, env.SANDBOX_WECOM_OPEN_KFID);
+      if (record.tenant) assert.equal(record.body.touser, record.expectedUser, 'HTTP 文本收件人必须等于独立绑定事实');
+      else assert.ok(fixedTexts.includes(record.body.text?.content ?? ''), '无租户文本只能是固定话术');
+    } else if (record.endpoint === 'kf/send_msg_on_event') {
+      assert.ok(record.expectedWelcomeUser, '每条欢迎请求必须有测试登记的入站事件');
+      assert.equal(record.tenant ?? null, record.welcomeOwner, 'HTTP 欢迎码归属必须等于发送方沙箱');
+      if (!record.tenant) assert.ok(fixedTexts.includes(record.body.text?.content ?? ''));
+    }
+  };
   const warnings: string[] = [];
   const warnBefore = console.warn;
   console.warn = (...args) => {
@@ -151,15 +178,19 @@ async function suite(db: Db, q: Query, backend: string) {
       let bytes = '';
       for await (const chunk of req) bytes += chunk;
       const body: Body = bytes && req.headers['content-type']?.includes('application/json') ? JSON.parse(bytes) : {};
-      const rt = body.touser && sandboxWechatIndex.forUser(body.touser);
+      const tenant = typeof req.headers['x-fake-tenant'] === 'string' ? req.headers['x-fake-tenant'] : undefined;
+      const welcome = body.code ? expectedWelcomes.get(body.code) : undefined;
       const record: Recorded = {
         endpoint,
         body,
         bytes,
-        tenant: rt ? rt.id : undefined,
-        bound: rt ? sandboxWechatIndex.boundUser(rt) : undefined,
+        tenant,
+        expectedUser: typeof req.headers['x-fake-expected-user'] === 'string' ? req.headers['x-fake-expected-user'] : undefined,
+        welcomeOwner: welcome?.tenant,
+        expectedWelcomeUser: welcome?.user,
       };
       records.push(record);
+      assertRecorded(record);
       let response: unknown;
       if (endpoint === 'gettoken') {
         const hook = tokenHook;
@@ -187,7 +218,16 @@ async function suite(db: Db, q: Query, backend: string) {
   globalThis.fetch = (input, init) => {
     const url = new URL(String(input));
     if (url.origin === fakeBase) return originalFetch(input, init);
-    if (url.hostname === 'qyapi.weixin.qq.com') return originalFetch(`${fakeBase}${url.pathname}${url.search}`, init);
+    if (url.hostname === 'qyapi.weixin.qq.com') {
+      const headers = new Headers(init?.headers);
+      const sender = scopedRuntime();
+      if (sender) {
+        headers.set('x-fake-tenant', sender.id);
+        const bound = expectedBindings.get(sender.id);
+        if (bound) headers.set('x-fake-expected-user', bound);
+      }
+      return originalFetch(`${fakeBase}${url.pathname}${url.search}`, { ...init, headers });
+    }
     throw new Error('禁止非本地网络');
   };
   let service: SandboxWecom;
@@ -200,6 +240,7 @@ async function suite(db: Db, q: Query, backend: string) {
       markFull: () => markSandboxWecomFull(db, '0', env.SANDBOX_WECOM_OPEN_KFID),
       notifyFull: () => alert('sandbox_wecom_full', '微信体验名额已满，已退回模拟器', { instance: true }),
       schedule: () => () => {},
+      touch: (rt) => reaper.touch(rt),
     });
     await service.start();
     await service.drain();
@@ -209,7 +250,6 @@ async function suite(db: Db, q: Query, backend: string) {
     db,
     acquireTenant: async () => fakeLock(),
     idleMs: 99999999,
-    refreshWecom: () => service.refreshFull(),
   });
   let configured = true;
   const app = sandboxApp(
@@ -226,7 +266,10 @@ async function suite(db: Db, q: Query, backend: string) {
           env: { SANDBOX_PER_IP_DAY: '20' },
           acquireTenant: async () => fakeLock(),
         }),
-      end: (id) => reaper.end(id),
+      end: (id) => {
+        expectedBindings.delete(id);
+        return reaper.end(id);
+      },
       wechatCode: (rt) => service.issueCode(rt),
       wecomRoutes: () => (configured ? service.routes : null),
     },
@@ -286,6 +329,8 @@ async function suite(db: Db, q: Query, backend: string) {
     assert.equal(res.headers.get('cache-control'), 'no-store');
     const value = await res.json();
     assert.match(value.code, /^[0-9A-HJKMNP-TV-Z]{4}-[0-9A-HJKMNP-TV-Z]{4}$/);
+    for (const row of expectedCodes.values()) if (row.tenant === v.id) row.used = true;
+    expectedCodes.set(normalize(value.code), { tenant: v.id, expiresAt: Date.parse(value.expiresAt), used: false });
     return value.code as string;
   };
   const message = (user: string, content: string): KfMessage => ({
@@ -309,6 +354,26 @@ async function suite(db: Db, q: Query, backend: string) {
     },
   });
   const callback = async (...messages: KfMessage[]) => {
+    for (const incoming of messages) {
+      const entered = incoming.event?.event_type === 'enter_session';
+      const user = incoming.external_userid;
+      const text = entered ? incoming.event?.scene_param : incoming.text?.content;
+      const row = text ? expectedCodes.get(normalize(text)) : undefined;
+      const old = [...expectedBindings].find(([, bound]) => bound === user)?.[0];
+      let welcomeOwner: string | null = old ?? null;
+      if (row && !row.used && row.expiresAt > Date.now() && (attempts.get(user) ?? 0) < 10) {
+        for (const [tenant, bound] of expectedBindings) if (tenant === row.tenant || bound === user) expectedBindings.delete(tenant);
+        expectedBindings.set(row.tenant, user);
+        row.used = true;
+        welcomeOwner = row.tenant;
+      } else if ((entered && text !== undefined) || (!old && text && /^[0-9a-z]{8}$/i.test(normalize(text)))) {
+        if (!old) {
+          attempts.set(user, (attempts.get(user) ?? 0) + 1);
+          welcomeOwner = null;
+        }
+      }
+      if (incoming.event?.welcome_code) expectedWelcomes.set(incoming.event.welcome_code, { tenant: welcomeOwner, user });
+    }
     pages.push(messages);
     const xml = `<xml><OpenKfId>${env.SANDBOX_WECOM_OPEN_KFID}</OpenKfId><Token>fake-sync-token</Token></xml>`;
     const length = Buffer.alloc(4);
@@ -523,6 +588,7 @@ async function suite(db: Db, q: Query, backend: string) {
     await scenario(`${backend} 16③ 过期码、手打改绑、旧会话拒发`, async () => {
       const stale = await sign(A);
       await q("update sandbox_wechat set code_expires_at=now()-interval '1 second' where tenant_id=$1", [A.id]);
+      expectedCodes.get(normalize(stale))!.expiresAt = Date.now() - 1000;
       await deliver(enter('wmExpired', stale));
       assert.equal(sends().at(-1)!.body.text!.content, sandboxWechatIndex.fixedTexts(env.SANDBOX_HOST)[1]);
       assert.equal(sandboxWechatIndex.forUser('wmExpired'), undefined);
@@ -547,7 +613,7 @@ async function suite(db: Db, q: Query, backend: string) {
       await deliver(message('wm1', '你好'), message('wm2', '你好'));
       assert.ok(sends(before).some((r) => r.body.touser === 'wm1'));
       assert.ok(sends(before).some((r) => r.body.touser === 'wm2'));
-      assert.ok(sends(before).every((r) => r.body.touser === r.bound));
+      sends(before).forEach(assertRecorded);
       tokenB = (await q<{ link_token: string }>('select link_token from sandbox_wechat where tenant_id=$1', [B.id]))[0]!.link_token;
       assert.notEqual(tokenA, tokenB);
     });
@@ -901,6 +967,7 @@ async function suite(db: Db, q: Query, backend: string) {
       assert.equal((await req(`/wx/${tokenB}/privacy`)).status, 302);
       await flush(B);
       await q("update tenants set expires_at=now()-interval '1 second' where id=$1", [B.id]);
+      expectedBindings.delete(B.id);
       await reaper.tick();
       assert.equal(runtimeOf(B.id), undefined);
       assert.equal((await q('select * from sandbox_wechat where tenant_id=$1', [B.id])).length, 0);
@@ -920,11 +987,8 @@ async function suite(db: Db, q: Query, backend: string) {
       assert.equal((await req('/api/sandbox/end', C.cookie, 'POST')).status, 200);
       await reaper.tick();
     });
-    assert.ok(
-      sends()
-        .filter((r) => r.body.touser && r.tenant)
-        .every((r) => r.body.open_kfid === env.SANDBOX_WECOM_OPEN_KFID && r.body.touser === r.bound),
-    );
+    sends().forEach(assertRecorded);
+    console.log(`ASSERT PASS: ALL_TEXT_AND_WELCOME_HTTP_REQUESTS_MATCH_INDEPENDENT_BINDINGS ${sends().length}`);
     assert.equal(records.filter((r) => r.endpoint === 'kf/customer/batchget').length, 0);
     await __alertTest.settle();
     assert.ok(records.filter((r) => r.endpoint === '/alert').every((r) => /发送边界拒绝|进程级告警|微信体验名额已满/.test(r.bytes)));

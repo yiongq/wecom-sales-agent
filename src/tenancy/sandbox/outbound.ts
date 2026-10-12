@@ -21,6 +21,7 @@ class SandboxWechatIndex {
   private readonly links = new Map<string, { tenant: string; token: string }>();
   private readonly users = new Map<string, string>();
   private readonly boundAt = new Map<string, bigint>();
+  private readonly quarantined = new Map<string, { users: Set<string>; codes: Set<string> }>();
   private readonly bindingUsers = new Map<string, Set<Promise<void>>>();
   private readonly welcomes = new Map<string, { user: string; tenant: string | null; at: number }>();
   private readonly receipts = new Map<string, { tenant: string; at: number }>();
@@ -59,12 +60,26 @@ class SandboxWechatIndex {
     while (this.bindingUsers.has(user)) await Promise.all(this.bindingUsers.get(user) ?? []);
   }
   /** 提交回执不确定且重读失败：三张解析表一起撤下，不能猜测授权。 */
-  quarantine(tenant: string): void {
+  quarantine(tenant: string, users: string[] = []): void {
+    const blocked = this.quarantined.get(tenant) ?? { users: new Set<string>(), codes: new Set<string>() };
+    for (const [user, owner] of this.users) if (owner === tenant) blocked.users.add(user);
+    users.forEach((user) => blocked.users.add(user));
+    for (const [hash, row] of this.codes) if (row.tenant === tenant) blocked.codes.add(hash);
+    this.quarantined.set(tenant, blocked);
     this.clearCode(tenant);
     this.links.delete(tenant);
     this.withdraw(tenant);
     for (const [key, row] of this.welcomes) if (row.tenant === tenant) this.welcomes.delete(key);
     for (const [key, row] of this.receipts) if (row.tenant === tenant) this.receipts.delete(key);
+  }
+  isQuarantined(tenant?: string, user?: string, hash?: string): boolean {
+    return (
+      (!!tenant && this.quarantined.has(tenant)) ||
+      [...this.quarantined.values()].some((entry) => (!!user && entry.users.has(user)) || (!!hash && entry.codes.has(hash)))
+    );
+  }
+  restore(tenant: string): void {
+    this.quarantined.delete(tenant);
   }
   setAvailability(available: boolean, full: boolean): void {
     this.available = available;
@@ -336,6 +351,7 @@ class SandboxWechatIndex {
   }
   keyCount(tenant: string): number {
     return (
+      Number(this.quarantined.has(tenant)) +
       Number(this.links.has(tenant)) +
       Number(this.issued.has(tenant)) +
       [...this.codes.values()].filter((r) => r.tenant === tenant).length +
@@ -345,6 +361,7 @@ class SandboxWechatIndex {
     );
   }
   drop(tenant: string): void {
+    this.quarantined.delete(tenant);
     this.clearCode(tenant);
     this.issued.delete(tenant);
     this.links.delete(tenant);
@@ -353,6 +370,7 @@ class SandboxWechatIndex {
     for (const [key, row] of this.receipts) if (row.tenant === tenant) this.receipts.delete(key);
   }
   reset(): void {
+    this.quarantined.clear();
     this.codes.clear();
     this.issued.clear();
     this.available = false;

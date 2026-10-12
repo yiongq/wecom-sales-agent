@@ -41,6 +41,7 @@ interface WecomDeps {
   binding?: SandboxWechatBinding;
   markFull?: () => Promise<void>;
   notifyFull?: () => void;
+  touch?: (rt: TenantRuntime) => void;
 }
 
 function tag(xml: string, name: string): string | undefined {
@@ -101,6 +102,8 @@ export class SandboxWecom {
       this.now,
       () => this.running(),
       (endpoint, errcode) => {
+        if (endpoint === 'gettoken' && errcode !== '0')
+          this.failure('ready', { endpoint, errcode }, { endpoint, errcode: 'request_failed' });
         if (['kf/send_msg', 'kf/send_msg_on_event'].includes(endpoint)) {
           if (errcode === '0') {
             this.failures.delete('send');
@@ -168,6 +171,7 @@ export class SandboxWecom {
   }
 
   async start(): Promise<void> {
+    await this.deps.binding?.rebuild();
     const state = await this.deps.read();
     this.cursor = state.cursor;
     this.cold = !this.cursor;
@@ -191,7 +195,7 @@ export class SandboxWecom {
   /** 客服链接只在实例内存中；签码步骤可在可用时读取，不进入任何观测投影。 */
   contactLink(): string | null {
     this.notify();
-    return this.running() && !this.failures.size && !this.full ? this.link : null;
+    return this.running() && !this.failures.has('ready') && !this.full ? this.link : null;
   }
 
   issueCode(rt: TenantRuntime) {
@@ -204,7 +208,7 @@ export class SandboxWecom {
     );
   }
   private publishAvailability(): void {
-    sandboxWechatIndex.setAvailability(this.running() && !!this.link && !this.failures.size, this.full);
+    sandboxWechatIndex.setAvailability(this.running() && !!this.link && !this.failures.has('ready'), this.full);
   }
   private notifyFull(): void {
     const day = todayIso();
@@ -232,7 +236,7 @@ export class SandboxWecom {
     return task;
   }
 
-  /** R22：reaper 每拍和 API 重试共用一次状态重读，避免迟到的旧快照覆盖新状态。 */
+  /** R22：体验客服独立、单飞的定时任务重读状态，避免迟到的旧快照覆盖新状态。 */
   refreshFull(): Promise<void> {
     if (!this.running()) return Promise.resolve();
     this.stateTask ??= withoutTenantScope(async () => {
@@ -321,9 +325,12 @@ export class SandboxWecom {
     if (!this.running()) return Promise.resolve();
     // 上一拍可能仍在拉取 / 派发；持续失败的告警不等待那条处理链。
     this.notify();
+    void this.refreshFull();
     this.tickTask ??= withoutTenantScope(async () => {
+      // 即使链接已就绪，也让任务先完成登记，避免同步 finally 留下已完成的单飞 promise。
+      await Promise.resolve();
       try {
-        if (!this.link) {
+        if (!this.link || this.failures.has('ready')) {
           try {
             const link = await this.api.contactWay();
             if (this.running()) {
@@ -334,7 +341,6 @@ export class SandboxWecom {
             this.failure('ready', error, { endpoint: 'kf/add_contact_way', errcode: 'request_failed' });
           }
         }
-        await this.refreshFull();
         if (this.link) void this.sync();
         if (this.running()) this.notify();
       } finally {
@@ -432,7 +438,8 @@ export class SandboxWecom {
     const text = entered ? message.event?.scene_param : message.text?.content;
     const previouslyBound = await this.deps.binding!.resolve(user);
     const typedCode = text && /^[0-9a-z]{8}$/i.test(text.replace(/[\s-]/g, ''));
-    if ((entered && text !== undefined) || typedCode) {
+    const bindingText = (entered && text !== undefined) || (typedCode && (!previouslyBound || this.deps.binding!.matchesCode(text!)));
+    if (bindingText) {
       let result;
       try {
         result = await this.deps.binding!.bind(user, text!, welcome, entered);
@@ -455,6 +462,7 @@ export class SandboxWecom {
       this.replyFixed(user, welcome);
       return;
     }
+    if (!entered) this.deps.touch?.(rt);
     await withTenantScope(rt, () => (entered ? this.api.welcomeUser(user, welcome) : this.api.receive(message)));
   }
 
@@ -510,9 +518,15 @@ export class SandboxWecom {
   }
 }
 
-export function createSandboxWecom(env: NodeJS.ProcessEnv, db: Db, epoch: string): SandboxWecom | null {
+export function createSandboxWecom(
+  env: NodeJS.ProcessEnv,
+  db: Db,
+  epoch: string,
+  touch?: (rt: TenantRuntime) => void,
+): SandboxWecom | null {
   if (!SANDBOX_WECOM_NAMES.some((key) => env[key] !== undefined)) return null;
   return new SandboxWecom(env, {
+    touch,
     read: () => readSandboxWecomState(db, env.SANDBOX_WECOM_OPEN_KFID!),
     commit: (cursor) => commitSandboxWecomCursor(db, epoch, env.SANDBOX_WECOM_OPEN_KFID!, cursor),
     binding: new SandboxWechatBinding(db, epoch),

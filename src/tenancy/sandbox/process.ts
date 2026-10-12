@@ -70,7 +70,7 @@ import { loadSandboxRuntime } from './load.js';
 import { SandboxReaper } from './reaper.js';
 import { drainSandboxProvisioning, provisionSandbox, SandboxProvisionError, type ProvisionedSandbox } from './provision.js';
 import { sandboxWechatIndex, wxPage, wxResource } from './outbound.js';
-import { SandboxWechatError } from './binding.js';
+import { SandboxWechatBinding, SandboxWechatError } from './binding.js';
 import { sandboxPage, sandboxTryLinks } from './pages.js';
 
 export class SandboxProcess {
@@ -126,7 +126,6 @@ export class SandboxProcess {
         db: this.deps.db,
         acquireTenant: (id) => this.lock!.acquireTenant(id),
         idleMs: Number(this.env.SANDBOX_IDLE_MINUTES ?? 120) * 60_000,
-        refreshWecom: () => this.wecom?.refreshFull() ?? Promise.resolve(),
       });
       // R2：先删已到期的，不装载它们；失败留给每分钟的重试。
       await this.reaper.tick();
@@ -155,7 +154,8 @@ export class SandboxProcess {
           console.error('[sandbox] sandbox_data_invalid，已标到期并跳过');
         }
       }
-      this.wecom = createSandboxWecom(this.env, this.deps.db, this.epoch);
+      this.wecom = createSandboxWecom(this.env, this.deps.db, this.epoch, (rt) => this.reaper?.touch(rt));
+      if (!this.wecom) await new SandboxWechatBinding(this.deps.db, this.epoch).rebuild();
       await withoutTenantScope(() => this.wecom?.start());
       withoutTenantScope(() => onShutdown(() => this.wecom?.close()));
       this.unsubscribe = withoutTenantScope(() =>
