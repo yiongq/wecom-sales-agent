@@ -60,6 +60,9 @@ const limited = (error: unknown) =>
   (error.reason === 'sandbox_write_rate_limited' || error.reason === 'sandbox_write_capacity_limited');
 const env = { SANDBOX_PER_HOUR: '100', SANDBOX_PER_IP_DAY: '100' };
 // 任意运行时刻都选一个与 UTC 日期不同的会话时区。
+// 这套自测按「进程时区是 UTC」写（应用的「今天」= UTC 日期，与库的远方时区错开一天）。CI 机器默认 UTC；
+// 部署前在北京时间的机器上跑，0–8 点两边不是同一天会误报，所以这里固定进程时区（Node 运行时改 TZ 即生效）。
+process.env.TZ = 'UTC';
 const testTimezone = new Date().getUTCHours() >= 10 ? 'Pacific/Kiritimati' : 'Etc/GMT+12';
 const now = Date.now();
 const input = { live: 0, provisioned: 0, day: '2026-10-11', ip: '192.0.2.1' };
