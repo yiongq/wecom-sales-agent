@@ -3210,6 +3210,7 @@ export class SandboxWecomRuntime {
     const binding = currentPack();
     return brandTexts(binding.runtime, binding.brand).welcomeText;
   }
+  readonly #request: typeof fetch;
   private readonly sending = new Set<SendHandle>();
   private token: Redacted<string> | null = null;
   private expiresAt = 0;
@@ -3218,11 +3219,12 @@ export class SandboxWecomRuntime {
 
   constructor(
     private readonly cfg: { corpId: string; secret: string; openKfid: string; host: string },
-    private readonly request: typeof fetch = fetch,
+    request: typeof fetch = fetch,
     private readonly now: () => number = Date.now,
     private readonly running: () => boolean = () => true,
     private readonly diagnostic: (endpoint: string, errcode: string) => void = () => {},
   ) {
+    this.#request = request;
     this.cfg = { ...cfg, host: normalizeHost(cfg.host) ?? cfg.host };
   }
 
@@ -3264,7 +3266,7 @@ export class SandboxWecomRuntime {
     if (!force && this.token && this.now() < this.expiresAt) return this.token.reveal();
     this.tokenTask ??= (async () => {
       try {
-        const res = await this.request(
+        const res = await this.#request(
           `${API_BASE}/gettoken?corpid=${encodeURIComponent(this.cfg.corpId)}&corpsecret=${encodeURIComponent(this.cfg.secret)}`,
           { signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(10_000)]) },
         );
@@ -3294,7 +3296,7 @@ export class SandboxWecomRuntime {
     this.endpoint('media/upload');
     this.assertRunning();
     sandboxWechatIndex.assertUpload(target);
-    return this.request(`${API_BASE}/media/upload?access_token=${encodeURIComponent(token)}&type=image`, {
+    return this.#request(`${API_BASE}/media/upload?access_token=${encodeURIComponent(token)}&type=image`, {
       method: 'POST',
       body: form,
       signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(20_000)]),
@@ -3304,18 +3306,26 @@ export class SandboxWecomRuntime {
   /** 两条共用发送路的最终同步边界。核对之后到发请求之间不让出执行权。 */
   requestMessage(token: string, endpoint: string, body: Record<string, unknown>): Promise<Response> {
     this.endpoint(endpoint);
-    const prepared = sandboxWechatIndex.prepare(endpoint, body, this.cfg.openKfid, this.cfg.host, this.now());
     this.assertRunning();
-    return this.request(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
+    const prepared = sandboxWechatIndex.prepare(endpoint, body, this.cfg.openKfid, this.cfg.host, this.now());
+    if (this.abort.signal.aborted) throw new Error('sandbox_wecom_stopped');
+    return this.#request(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify(prepared),
+      body: prepared,
       signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(15_000)]),
     });
   }
 
   async callApi<T extends { errcode?: number }>(endpoint: string, body: Record<string, unknown>): Promise<T> {
     this.endpoint(endpoint);
+    // 在 token await 之前脱离调用者的 getter / toJSON；重试与 welcome 消费只读这个副本。
+    try {
+      body = JSON.parse(JSON.stringify(body));
+    } catch {
+      sandboxWechatIndex.refuse();
+    }
+    if (!body || typeof body !== 'object' || Array.isArray(body)) sandboxWechatIndex.refuse();
     const sending = endpoint === 'kf/send_msg' || endpoint === 'kf/send_msg_on_event';
     try {
       let token: string;
@@ -3333,7 +3343,7 @@ export class SandboxWecomRuntime {
           if (endpoint === 'media/upload') sandboxWechatIndex.assertUpload(typeof body.touser === 'string' ? body.touser : undefined);
           const res = sending
             ? await this.requestMessage(token, endpoint, body)
-            : await this.request(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
+            : await this.#request(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
                 body: JSON.stringify(body),

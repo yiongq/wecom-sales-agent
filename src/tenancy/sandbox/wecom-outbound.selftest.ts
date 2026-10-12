@@ -203,11 +203,86 @@ async function suite(db: Db, q: Query): Promise<void> {
       assert.equal(logs.filter((s) => s.includes('[sandbox-wecom] sandbox_send_refused')).length, warnings + 1);
     });
   };
-  const privateApiTypeCheck = (runtime: SandboxWecomRuntime) => {
-    // @ts-expect-error 底层请求能力必须私有，外部只能通过核对入口。
-    void runtime.request;
-  };
-  void privateApiTypeCheck;
+  await review('runtime-private-request-no-network', async () => {
+    const before = requests.length;
+    assert.equal(api['request' as keyof SandboxWecomRuntime], undefined);
+    assert.equal(Reflect.get(api, 'request'), undefined);
+    assert.equal(Reflect.get(api, '#request'), undefined);
+    assert.throws(() => (api as any)['request'](`${base}/fake`, { body: JSON.stringify(text('wmB')) }), TypeError);
+    assert.throws(() => Reflect.get(api, 'request')(`${base}/fake`, { body: JSON.stringify(text('wmB')) }), TypeError);
+    assert.equal(requests.length, before);
+  });
+  await review('final-json-getter-recipient', async () => {
+    for (const direct of [false, true]) {
+      let reads = 0;
+      const body = {
+        ...text(),
+        get touser() {
+          return ++reads === 1 ? 'wmA' : 'wmB';
+        },
+      };
+      const before = sends.length;
+      await withTenantScope(A, () => (direct ? api.requestMessage('fake-access', 'kf/send_msg', body) : raw(body)));
+      assert.equal(reads, 1, '核对前固化一次，之后不再调用原对象 getter');
+      assert.equal(sends.length, before + 1);
+      assert.equal(sends.at(-1)!.body.touser, 'wmA', '假企微只收到核对过的收件人');
+    }
+    const body = {
+      ...text(),
+      get touser() {
+        return 'wmB';
+      },
+    };
+    await withTenantScope(A, () => refused(() => raw(body)));
+  });
+  await review('final-json-tojson-recipient-and-content', async () => {
+    for (const replacement of [text('wmB'), text('wmA', 'fake-other'), text('wmC', cfg.openKfid, '任意正文')]) {
+      const body = { ...text(), toJSON: () => replacement };
+      await withTenantScope(A, () => refused(() => raw(body)));
+      const before = sends.length;
+      assert.throws(() => withTenantScope(A, () => api.requestMessage('fake-access', 'kf/send_msg', body)), SandboxSendRefused);
+      assert.equal(sends.length, before);
+    }
+    const body = { ...text('wmC', cfg.openKfid, sandboxWechatIndex.fixedTexts(cfg.host)[0]), toJSON: () => text('wmC') };
+    await withoutTenantScope(() => refused(() => raw(body)));
+    let calls = 0;
+    const once = {
+      ...text(),
+      toJSON() {
+        calls++;
+        return calls === 1 ? text() : text('wmB', 'fake-other', '换正文');
+      },
+    };
+    await withTenantScope(A, () => raw(once));
+    assert.equal(calls, 1);
+    assert.deepEqual(sends.at(-1)!.body, text());
+  });
+  await review('final-wire-json-identical', async () => {
+    let wire: unknown;
+    const fresh = new SandboxWecomRuntime(cfg, async (input, init) => {
+      wire = init?.body;
+      return request(input, init);
+    });
+    const original = {
+      ...text(),
+      toJSON() {
+        const snapshot = text('wmA', cfg.openKfid, `${base}/privacy`);
+        this.touser = 'wmB';
+        this.open_kfid = 'fake-other';
+        this.text.content = '序列化以后换正文';
+        return snapshot;
+      },
+    };
+    try {
+      await withTenantScope(A, () => fresh.requestMessage('fake-access', 'kf/send_msg', original));
+      assert.equal(typeof wire, 'string');
+      assert.equal(wire, JSON.stringify(text('wmA', cfg.openKfid, `${base}/wx/${tokenA}/privacy`)));
+      assert.deepEqual(sends.at(-1)!.body, JSON.parse(wire as string));
+      assert.equal(original.touser, 'wmB', '原对象已变，核对和发出仍只用固化副本');
+    } finally {
+      fresh.stop();
+    }
+  });
   await review('endpoint-whitelist-no-network', async () => {
     const fresh = new SandboxWecomRuntime(cfg, request);
     try {
@@ -345,6 +420,110 @@ async function suite(db: Db, q: Query): Promise<void> {
         'rejected',
       );
       await withTenantScope(A, () => refused(() => raw(text('wmA', cfg.openKfid, source))));
+    }
+  });
+  await review('final-host-guard-aliases-all-message-fields', async () => {
+    const encodedHost = [...cfg.host].map((c) => `%${c.charCodeAt(0).toString(16)}`).join('');
+    const escapedHost = [...cfg.host].map((c) => String.fromCharCode(92) + 'u' + c.charCodeAt(0).toString(16).padStart(4, '0')).join('');
+    const aliases = [
+      `https://u;s@${cfg.host}/privacy`,
+      `https://u,s@${cfg.host}/privacy`,
+      `https://u(s)@${cfg.host}/privacy`,
+      `https://${cfg.host}:443/privacy`,
+      `https://${cfg.host}:8443/privacy`,
+      `https://${cfg.host.toUpperCase()}/privacy`,
+      `https://${encodedHost}/privacy`,
+      `https://${encodedHost.replaceAll('%', '%25')}/privacy`,
+      `https://${cfg.host}./privacy`,
+      `https://[${cfg.host}]/privacy`,
+      `https://%5b${encodedHost}%5d/privacy`,
+      `https://${escapedHost}/privacy`,
+      String.raw`https:\/\/${escapedHost}\/privacy`,
+      `本站：${cfg.host}`,
+      `${base}/try?extra=1`,
+      `${base}/wx/${tokenB}/privacy`,
+      `${base}/wx/${tokenA}/console/`,
+      `${base}/wx/${tokenA}/privacy?next=${encodedHost}`,
+    ];
+    for (const source of aliases) {
+      await withTenantScope(A, () => refused(() => raw(text('wmA', cfg.openKfid, source))));
+      await withTenantScope(A, () => refused(() => raw({ ...text(), msgtype: 'link', link: { url: source } })));
+      const before = requests.length;
+      assert.equal(await withTenantScope(A, () => api.push('wecom:wmA', source, { kind: 'human' })), false);
+      assert.equal(requests.length, before, '正文/补文预检拒绝，不能先上传或发卡片');
+      assert.equal(
+        withTenantScope(A, () => __ledgerTest.rows('wecom:wmA').at(-1)!.status),
+        'rejected',
+      );
+    }
+    // 最终序列化副本也检查字段名和 toJSON 临时换入的内容。
+    await withTenantScope(A, () => refused(() => raw({ ...text(), [encodedHost]: '附加字段' })));
+    await withTenantScope(A, () => refused(() => raw({ ...text(), toJSON: () => text('wmA', cfg.openKfid, aliases[0]) })));
+    // 真正的 JSON \u 转义解析后也不能藏住 Host。
+    const escapedJson = JSON.stringify(text('wmA', cfg.openKfid, `${base}/console/`)).replace(cfg.host, escapedHost);
+    await withTenantScope(A, () => refused(() => raw(JSON.parse(escapedJson))));
+    const code = 'fake-host-code';
+    sandboxWechatIndex.rememberWelcome(code, 'wmA');
+    sandboxWechatIndex.assignWelcome(code, A);
+    await withTenantScope(A, () => refused(() => raw({ code, msgtype: 'text', text: { content: aliases[0] } }, 'kf/send_msg_on_event')));
+    sandboxWechatIndex.rememberWelcome('fake-welcome-host', 'wmA');
+    sandboxWechatIndex.assignWelcome('fake-welcome-host', A);
+    Object.defineProperty(api, 'welcomeText', { configurable: true, value: aliases[0] });
+    try {
+      await withTenantScope(A, () => refused(() => api.welcome('fake-welcome-host')));
+      assert.equal(
+        withTenantScope(A, () => __ledgerTest.rows('wecom:wmA').at(-1)!.status),
+        'rejected',
+      );
+    } finally {
+      Reflect.deleteProperty(api, 'welcomeText');
+    }
+    await __alertTest.settle();
+    assert.equal(__alertTest.isActive('sandbox_send_refused'), true);
+    assert.ok(otherRequests.length > 0, '推实例级拒绝告警');
+  });
+  await review('final-host-guard-fixed-text-and-third-party', async () => {
+    for (const content of sandboxWechatIndex.fixedTexts(cfg.host)) {
+      await withoutTenantScope(() => raw(text('wmC', cfg.openKfid, content)));
+      assert.equal(sends.at(-1)!.body.text.content, content);
+    }
+    for (const content of [
+      sandboxWechatIndex.fixedTexts(cfg.host)[0] + '附加正文',
+      sandboxWechatIndex.fixedTexts(cfg.host)[0].replace('/try', '/try?x=1'),
+      sandboxWechatIndex.fixedTexts(cfg.host)[0].replace('/try', '/try/'),
+    ])
+      await withTenantScope(A, () => refused(() => raw(text('wmA', cfg.openKfid, content))));
+    const thirdParty = 'https://u;s@other.example.invalid:8443/privacy?x=1； https://OTHER.EXAMPLE.INVALID/pay/o';
+    await withTenantScope(A, () => raw(text('wmA', cfg.openKfid, thirdParty)));
+    assert.equal(sends.at(-1)!.body.text.content, thirdParty);
+    // 当前令牌的三个精确路径照常发出；其他令牌与页面不放行。
+    const valid = `${base}/wx/${tokenA}/privacy ${base}/wx/${tokenA}/pay/o1 ${base}/wx/${tokenA}/proposal/route/2?v=1`;
+    await withTenantScope(A, () => raw(text('wmA', cfg.openKfid, valid.replaceAll(`/wx/${tokenA}`, ''))));
+    assert.equal(sends.at(-1)!.body.text.content, valid);
+  });
+  await review('final-host-guard-main-site-no-outbound-allowlist', async () => {
+    const previous = process.env.PUBLIC_BASE_URL;
+    process.env.PUBLIC_BASE_URL = 'https://main.example.invalid';
+    try {
+      for (const content of [
+        'https://main.example.invalid/privacy',
+        'https://u;s@MAIN.EXAMPLE.INVALID/try',
+        'https://%6dain.example.invalid/pay/o1',
+      ]) {
+        await withTenantScope(A, () => refused(() => raw(text('wmA', cfg.openKfid, content))));
+        const before = requests.length;
+        assert.equal(await withTenantScope(A, () => api.push('wecom:wmA', content)), false);
+        assert.equal(requests.length, before);
+        assert.equal(
+          withTenantScope(A, () => __ledgerTest.rows('wecom:wmA').at(-1)!.status),
+          'rejected',
+        );
+      }
+      await withoutTenantScope(() => api.replyUnbound('wmC'));
+      await withTenantScope(A, () => raw(text('wmA', cfg.openKfid, `${base}/privacy https://other.example.invalid/try`)));
+    } finally {
+      if (previous === undefined) delete process.env.PUBLIC_BASE_URL;
+      else process.env.PUBLIC_BASE_URL = previous;
     }
   });
   await review('rebind-before-upload', async () => {

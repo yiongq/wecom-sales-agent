@@ -80,10 +80,23 @@ class SandboxWechatIndex {
     for (const [key, row] of this.welcomes) if (now - row.at >= 20_000) this.welcomes.delete(key);
     for (const [key, row] of this.receipts) if (now - row.at >= 24 * 60 * 60_000) this.receipts.delete(key);
   }
-  /** 同步核对并复制请求体；调用方必须紧接着发 fetch。原正文永不改动。 */
-  prepare(endpoint: string, body: Record<string, unknown>, openKfid: string, host: string, now = Date.now()): Record<string, unknown> {
+  /** 先固化、改写，再核对最终字节的纯数据副本；fetch 必须原封不动发送返回值。 */
+  prepare(endpoint: string, original: Record<string, unknown>, openKfid: string, host: string, now = Date.now()): string {
     this.prune(now);
     const rt = scopedRuntime();
+    let bytes: string;
+    let body: Record<string, unknown>;
+    try {
+      // getter / toJSON 只在核对前执行；后面不再读取原对象。
+      const snapshot: unknown = JSON.parse(JSON.stringify(original));
+      const rewritten = rt ? this.rewriteLinks(snapshot, this.links.get(rt.id)?.token ?? '', host, true) : snapshot;
+      bytes = JSON.stringify(rewritten);
+      body = JSON.parse(bytes);
+      if (!body || typeof body !== 'object' || Array.isArray(body)) this.refuse();
+    } catch (error) {
+      if (error instanceof SandboxSendRefused) throw error;
+      this.refuse();
+    }
     const welcome = typeof body.code === 'string' ? this.welcomes.get(body.code) : undefined;
     const user = endpoint === 'kf/send_msg_on_event' ? welcome?.user : body.touser;
     let allowed =
@@ -99,10 +112,9 @@ class SandboxWechatIndex {
       if (welcome) allowed &&= welcome.tenant === null;
     }
     if (!allowed) this.refuse();
-    if (!rt) return body;
-    const rewritten = this.rewriteLinks(body, this.links.get(rt.id)!.token, host, true) as Record<string, unknown>;
-    if (typeof body.msgid === 'string') this.rememberReceipt(body.msgid, rt, now);
-    return rewritten;
+    this.assertFinalLinks(bytes, host, rt ? this.links.get(rt.id)!.token : undefined);
+    if (rt && typeof body.msgid === 'string') this.rememberReceipt(body.msgid, rt, now);
+    return bytes;
   }
   refuse(): never {
     console.warn('[sandbox-wecom] sandbox_send_refused');
@@ -115,7 +127,63 @@ class SandboxWechatIndex {
     if (!this.live(rt) || !user || this.forUser(user) !== rt) this.refuse();
   }
   assertLinks(text: string, host: string): void {
-    this.rewriteLinks(text, 'x'.repeat(43), host, true);
+    const token = 'x'.repeat(43);
+    this.assertFinalLinks(JSON.stringify(this.rewriteLinks(text, token, host, true)), host, token);
+  }
+  /** 与 URL 提取无关的最终检查：字段名、正文、卡片及所有嵌套字符串都扫描。 */
+  private assertFinalLinks(bytes: string, host: string, token?: string): void {
+    const base = `https://${host}`;
+    const protectedHosts = new Set([host]);
+    // 主站链接仅用于 /try 网页导航，不属于体验客服的出站文案。
+    if (process.env.PUBLIC_BASE_URL) {
+      try {
+        const mainHost = normalizeHost(new URL(process.env.PUBLIC_BASE_URL).hostname);
+        if (mainHost) protectedHosts.add(mainHost);
+      } catch {
+        /* 启动配置检查负责非法 PUBLIC_BASE_URL。 */
+      }
+    }
+    const scan = (value: unknown): void => {
+      if (typeof value === 'string') {
+        // 白名单只能在原始、精确的形式上匹配；解码后的别名不能借白名单放行。
+        let rest = value === this.fixedTexts(host)[0] ? value.replace(`${base}/try`, '/try') : value;
+        rest = rest.replace(/https?:\/\/[^\s<>"'(),;；、：】」』～。，！？（）【「『[\]］》〉}]+/gi, (raw) => {
+          const core = raw.replace(/[；、：】」』～。，.,);:!?！？）\]］》〉}]+$/u, '');
+          if (!token || !core.startsWith(`${base}/wx/${token}/`)) return raw;
+          let url: URL;
+          try {
+            url = new URL(core);
+          } catch {
+            return raw;
+          }
+          const page = url.pathname.slice(`/wx/${token}`.length);
+          // 逐项写死三种公开页；精确 origin、当前令牌、路径及序列化结果均须相同。
+          const allowed =
+            page === '/privacy' || /^\/pay\/[A-Za-z0-9_-]+$/.test(page) || /^\/proposal\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(page);
+          if (!allowed || core !== `${base}${url.pathname}${url.search}${url.hash}`) return raw;
+          // 只去掉获准的 origin；query/hash 里夹带的 Host 仍然必须检查。
+          return raw.slice(base.length);
+        });
+        // JSON.parse 已解开真实 JSON 转义；同时检查正文里的字面转义与多层百分号编码。
+        for (;;) {
+          const decoded = rest
+            .replace(/\\u([0-9a-f]{4})/gi, (_match, hex: string) => String.fromCharCode(parseInt(hex, 16)))
+            .replace(/\\([\\/])/g, '$1')
+            .replace(/%([0-9a-f]{2})/gi, (_match, hex: string) => String.fromCharCode(parseInt(hex, 16)));
+          if (decoded === rest) break;
+          rest = decoded;
+        }
+        const folded = rest.toLowerCase();
+        for (const protectedHost of protectedHosts) if (folded.includes(protectedHost)) this.refuse();
+      } else if (Array.isArray(value)) value.forEach(scan);
+      else if (value && typeof value === 'object') {
+        for (const [key, item] of Object.entries(value)) {
+          scan(key);
+          scan(item);
+        }
+      }
+    };
+    scan(JSON.parse(bytes));
   }
   /** 令牌扩展也占 UTF-8 字节；这里只测长度，实际请求体仍在发送边界改写。 */
   textBytes(text: string, host: string): number {
@@ -139,7 +207,7 @@ class SandboxWechatIndex {
             return raw;
           }
           if (normalizeHost(url.hostname) !== host) return raw;
-          if (url.origin !== base || url.username || url.password || !wxPage(url.pathname)) {
+          if (core !== `${base}${url.pathname}${url.search}${url.hash}` || url.username || url.password || !wxPage(url.pathname)) {
             if (strict) this.refuse();
             return raw;
           }
