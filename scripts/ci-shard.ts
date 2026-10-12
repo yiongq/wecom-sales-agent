@@ -52,7 +52,12 @@ export function buildUnits(scripts: TestScripts, weights: Weights): Unit[] {
     const command = commands[index]!;
     if (command === STRICT) {
       for (const suite of STRICT_SUITES) {
-        units.push({ id: `strict:${suite}`, commands: [strictCommand(suite)], seconds: weights[suite] ?? 10, strictSuite: suite });
+        units.push({
+          id: `strict:${suite}`,
+          commands: [strictCommand(suite)],
+          seconds: weights[`strict:${suite}`] ?? weights[suite] ?? 10,
+          strictSuite: suite,
+        });
       }
     } else {
       const dependency = DEPENDENCIES.find((rule) => rule[0] === command);
