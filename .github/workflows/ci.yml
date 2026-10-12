@@ -8,25 +8,13 @@ permissions:
   contents: read
 
 env:
-  # Git hooks never run inside CI; CI runs the same four gate names directly.
+  # Git hooks never run inside CI; gates and test shards enforce the complete local chain.
   LEFTHOOK: '0'
 
 jobs:
-  check:
+  gates:
     runs-on: ubuntu-latest
-    # src/db/db.selftest.ts 的真实 PG 部分靠它（经 PG_TEST_URL）；CI=true 而没有 PG_TEST_URL 时那部分直接失败
-    services:
-      postgres:
-        image: pgvector/pgvector:pg17
-        env:
-          POSTGRES_PASSWORD: postgres
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
-          --health-interval 5s
-          --health-timeout 3s
-          --health-retries 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,8 +62,8 @@ jobs:
       # 的读取位置对不上，esbuild 构建脚本被忽略直接 exit 1。
       - run: corepack enable && corepack install
       - run: pnpm install --frozen-lockfile
-      # 四个门禁名是唯一接口：CI、lefthook、Claude Code 的 Stop hook 都只调这四个名字，
-      # 背后接什么工具只在 package.json 里改。
+      # 本机与 hook 仍用四个门禁名；CI 的测试从 package.json 完整链生成分片，
+      # format / lint / typecheck 仍用同一入口，测试覆盖检查在每片执行前完成。
       - run: pnpm format:check
       # lint 里的公开边界检查：内容黑名单的词表从仓库 secret 注入（词表本身不能进仓库），
       # 命中只报「文件:行号」。来自 fork 的 PR 拿不到 secret，这一项会跳过。
@@ -83,7 +71,49 @@ jobs:
         env:
           SENSITIVE_PATTERNS: ${{ secrets.SENSITIVE_PATTERNS }}
       - run: pnpm typecheck
-      # pnpm test 依次跑（任何一步失败即失败）：
+      # Python 仅用于生成器的一致性检查；结构检查在测试完整链中直接读取 JSON。
+      - name: Sandbox seed fixture matches generator
+        run: |
+          set -euo pipefail
+          fixture_tmp=$(mktemp)
+          trap 'rm -f "$fixture_tmp"' EXIT
+          python3 scripts/seed-demo.py --fixture > "$fixture_tmp"
+          if ! cmp -s data/sandbox-seeds.json "$fixture_tmp"; then
+            echo "data/sandbox-seeds.json differs from scripts/seed-demo.py --fixture"
+            diff -u data/sandbox-seeds.json "$fixture_tmp" | head -n 80 || true
+            exit 1
+          fi
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    # src/db/db.selftest.ts 的真实 PG 部分靠它（经 PG_TEST_URL）；CI=true 而没有 PG_TEST_URL 时那部分直接失败
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: corepack enable && corepack install
+      - run: pnpm install --frozen-lockfile
+      # 完整 pnpm test 链的覆盖如下；CI 分片执行，不删任何一项（任何一步失败即失败）：
       # - src/engine.selftest.ts：阶段/画像、出口护栏、发给模型的请求形状
       # - src/adapters/wecom.selftest.ts：企微发送链路——分段不劈开 URL/emoji、多链接不硬做卡片、
       #   剥离链接不吞正文。这几条只有对着微信实机才看得见，没有断言就会悄悄坏掉。
@@ -139,6 +169,26 @@ jobs:
       # - console 生产构建，再扫描产物：浏览器包里混进数据库驱动或 Node 内置模块不会报错，只会把服务端代码发给浏览器；
       #   样张页（VITE_SPECIMEN=1 才有）也不能混进生产产物；⌘K 的拼音库只能在懒加载的分块里，不进入口。
       #   假包（家装整装，只给自测与走查）的模块和文字都不能进生产产物，文字按 JS 里的字符串逐个整串比对。
-      - run: pnpm test
+      - name: Verify complete shard coverage
+        run: pnpm exec tsx scripts/ci-shard.ts --check 4
+      - name: Run shard ${{ matrix.shard }}/4
+        run: pnpm exec tsx scripts/ci-shard.ts ${{ matrix.shard }} 4
         env:
           PG_TEST_URL: postgres://postgres:postgres@localhost:5432/postgres
+
+  # required status check 的名字不变；不能让失败、取消或跳过被 GitHub 当成通过。
+  check:
+    needs: [gates, test]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require all gates and shards to succeed
+        env:
+          GATES_RESULT: ${{ needs.gates.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+        run: |
+          if [ "$GATES_RESULT" != success ] || [ "$TEST_RESULT" != success ]; then
+            echo "CI failed: gates=$GATES_RESULT test=$TEST_RESULT"
+            exit 1
+          fi
