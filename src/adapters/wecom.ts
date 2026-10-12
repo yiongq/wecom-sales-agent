@@ -3343,6 +3343,9 @@ export class SandboxWecomRuntime {
     }
     if (!body || typeof body !== 'object' || Array.isArray(body)) sandboxWechatIndex.refuse();
     const sending = endpoint === 'kf/send_msg' || endpoint === 'kf/send_msg_on_event';
+    // 本地越权拒绝不进入消费路径，不能删掉另一个沙箱仍在强刷 / 重试的欢迎码。
+    // requestMessage 仍在每次实际 fetch 前重新核对，覆盖下面所有 await 的间隙。
+    if (endpoint === 'kf/send_msg_on_event') sandboxWechatIndex.prepare(endpoint, body, this.cfg.openKfid, this.cfg.host, this.now());
     try {
       let token: string;
       try {

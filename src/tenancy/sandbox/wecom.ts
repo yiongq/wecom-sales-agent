@@ -41,6 +41,7 @@ interface WecomDeps {
   binding?: SandboxWechatBinding;
   markFull?: () => Promise<void>;
   notifyFull?: () => void;
+  touch?: (rt: TenantRuntime) => void;
 }
 
 function tag(xml: string, name: string): string | undefined {
@@ -68,6 +69,11 @@ export class SandboxWecom {
   private persistedFullRevision: string | undefined;
   private readonly seen = new Map<string, number>();
   private stateTask: Promise<void> | null = null;
+  private recoveryStartedAt: number | null = null;
+  private recoveryLastFailureAt: number | null = null;
+  private recoveryQuarantinedSince: number | null = null;
+  private recoveryFailing = false;
+  private recoveryAlerted = false;
   private fullAlertDay = '';
   private readonly users = new Map<string, Promise<void>>();
   private link: string | null = null;
@@ -101,6 +107,8 @@ export class SandboxWecom {
       this.now,
       () => this.running(),
       (endpoint, errcode) => {
+        if (endpoint === 'gettoken' && errcode !== '0')
+          this.failure('ready', { endpoint, errcode }, { endpoint, errcode: 'request_failed' });
         if (['kf/send_msg', 'kf/send_msg_on_event'].includes(endpoint)) {
           if (errcode === '0') {
             this.failures.delete('send');
@@ -168,6 +176,7 @@ export class SandboxWecom {
   }
 
   async start(): Promise<void> {
+    await this.deps.binding?.rebuild();
     const state = await this.deps.read();
     this.cursor = state.cursor;
     this.cold = !this.cursor;
@@ -191,7 +200,7 @@ export class SandboxWecom {
   /** 客服链接只在实例内存中；签码步骤可在可用时读取，不进入任何观测投影。 */
   contactLink(): string | null {
     this.notify();
-    return this.running() && !this.failures.size && !this.full ? this.link : null;
+    return this.running() && !this.failures.has('ready') && !this.full ? this.link : null;
   }
 
   issueCode(rt: TenantRuntime) {
@@ -204,7 +213,7 @@ export class SandboxWecom {
     );
   }
   private publishAvailability(): void {
-    sandboxWechatIndex.setAvailability(this.running() && !!this.link && !this.failures.size, this.full);
+    sandboxWechatIndex.setAvailability(this.running() && !!this.link && !this.failures.has('ready'), this.full);
   }
   private notifyFull(): void {
     const day = todayIso();
@@ -232,10 +241,14 @@ export class SandboxWecom {
     return task;
   }
 
-  /** R22：reaper 每拍和 API 重试共用一次状态重读，避免迟到的旧快照覆盖新状态。 */
+  /** R22：体验客服独立、单飞的定时任务重读状态，避免迟到的旧快照覆盖新状态。 */
   refreshFull(): Promise<void> {
     if (!this.running()) return Promise.resolve();
+    if (this.stateTask) return this.stateTask;
+    this.recoveryStartedAt = this.now();
     this.stateTask ??= withoutTenantScope(async () => {
+      // 先登记单飞与开始时刻，健康检查无需等待恢复链。
+      await Promise.resolve();
       try {
         await this.deps.binding?.refresh();
         await this.persistFull();
@@ -247,9 +260,11 @@ export class SandboxWecom {
           this.full = state.fullSince !== null;
         }
       } catch (error) {
+        this.recoveryLastFailureAt = this.now();
         this.failure('pull', error, { endpoint: 'state', errcode: 'read_failed' });
       } finally {
         this.stateTask = null;
+        this.recoveryStartedAt = null;
         if (this.running()) this.notify();
       }
     });
@@ -263,7 +278,7 @@ export class SandboxWecom {
       full: this.full,
       bound: sandboxWechatIndex.boundCount(),
       lastSyncOkAt: this.lastSyncOkAt === null ? null : new Date(this.lastSyncOkAt).toISOString(),
-      failing: this.failures.size > 0,
+      failing: this.failures.size > 0 || this.recoveryFailing,
     };
   }
 
@@ -304,6 +319,28 @@ export class SandboxWecom {
   private notify(): void {
     if (!this.running()) return;
     const now = this.now();
+    const recovery = this.deps.binding?.recoveryStatus();
+    // 两次观测之间已经解除隔离再失败，也应视为新的一段。
+    if (recovery && this.recoveryQuarantinedSince !== null && recovery.since > this.recoveryQuarantinedSince && this.recoveryAlerted) {
+      this.recoveryAlerted = false;
+      this.deps.notify?.(false, { endpoint: 'binding_recovery', errcode: 'recovered' });
+    }
+    this.recoveryQuarantinedSince = recovery?.since ?? null;
+    if (recovery) this.recoveryLastFailureAt = recovery.lastFailureAt;
+    else if (this.recoveryStartedAt === null) this.recoveryLastFailureAt = null;
+    const quarantined =
+      this.recoveryLastFailureAt !== null && this.recoveryQuarantinedSince !== null && now - this.recoveryQuarantinedSince >= 10 * 60_000;
+    const stalled = this.recoveryStartedAt !== null && now - this.recoveryStartedAt >= 10 * 60_000;
+    this.recoveryFailing = quarantined || stalled;
+    if (this.recoveryFailing && !this.recoveryAlerted) {
+      this.recoveryAlerted = true;
+      const problem = { endpoint: 'binding_recovery', errcode: stalled ? 'stalled' : 'recovery_pending' };
+      this.warn(problem.endpoint, problem.errcode);
+      this.deps.notify?.(true, problem);
+    } else if (!recovery && this.recoveryStartedAt === null && this.recoveryAlerted) {
+      this.recoveryAlerted = false;
+      this.deps.notify?.(false, { endpoint: 'binding_recovery', errcode: 'recovered' });
+    }
     for (const [kind, failure] of this.failures) if (now - failure.lastAt >= 10 * 60_000) this.failures.delete(kind);
     const sustained = [...this.failures.values()].find((failure) => now - failure.firstAt >= 10 * 60_000);
     if (sustained && !this.alerted) {
@@ -321,9 +358,12 @@ export class SandboxWecom {
     if (!this.running()) return Promise.resolve();
     // 上一拍可能仍在拉取 / 派发；持续失败的告警不等待那条处理链。
     this.notify();
+    void this.refreshFull();
     this.tickTask ??= withoutTenantScope(async () => {
+      // 即使链接已就绪，也让任务先完成登记，避免同步 finally 留下已完成的单飞 promise。
+      await Promise.resolve();
       try {
-        if (!this.link) {
+        if (!this.link || this.failures.has('ready')) {
           try {
             const link = await this.api.contactWay();
             if (this.running()) {
@@ -334,7 +374,6 @@ export class SandboxWecom {
             this.failure('ready', error, { endpoint: 'kf/add_contact_way', errcode: 'request_failed' });
           }
         }
-        await this.refreshFull();
         if (this.link) void this.sync();
         if (this.running()) this.notify();
       } finally {
@@ -432,7 +471,8 @@ export class SandboxWecom {
     const text = entered ? message.event?.scene_param : message.text?.content;
     const previouslyBound = await this.deps.binding!.resolve(user);
     const typedCode = text && /^[0-9a-z]{8}$/i.test(text.replace(/[\s-]/g, ''));
-    if ((entered && text !== undefined) || typedCode) {
+    const bindingText = (entered && text !== undefined) || (typedCode && (!previouslyBound || this.deps.binding!.matchesCode(text!)));
+    if (bindingText) {
       let result;
       try {
         result = await this.deps.binding!.bind(user, text!, welcome, entered);
@@ -455,6 +495,7 @@ export class SandboxWecom {
       this.replyFixed(user, welcome);
       return;
     }
+    if (!entered) this.deps.touch?.(rt);
     await withTenantScope(rt, () => (entered ? this.api.welcomeUser(user, welcome) : this.api.receive(message)));
   }
 
@@ -510,9 +551,15 @@ export class SandboxWecom {
   }
 }
 
-export function createSandboxWecom(env: NodeJS.ProcessEnv, db: Db, epoch: string): SandboxWecom | null {
+export function createSandboxWecom(
+  env: NodeJS.ProcessEnv,
+  db: Db,
+  epoch: string,
+  touch?: (rt: TenantRuntime) => void,
+): SandboxWecom | null {
   if (!SANDBOX_WECOM_NAMES.some((key) => env[key] !== undefined)) return null;
   return new SandboxWecom(env, {
+    touch,
     read: () => readSandboxWecomState(db, env.SANDBOX_WECOM_OPEN_KFID!),
     commit: (cursor) => commitSandboxWecomCursor(db, epoch, env.SANDBOX_WECOM_OPEN_KFID!, cursor),
     binding: new SandboxWechatBinding(db, epoch),
@@ -523,11 +570,11 @@ export function createSandboxWecom(env: NodeJS.ProcessEnv, db: Db, epoch: string
       alert(
         'channel',
         failing
-          ? `企微账号 sandbox 连续 10 分钟拉取或发送失败 · interface=${problem?.endpoint} errcode=${problem?.errcode}`
+          ? `企微账号 sandbox 连续 10 分钟收发或绑定恢复失败 · interface=${problem?.endpoint} errcode=${problem?.errcode}`
           : '企微账号 sandbox 收发已恢复',
         {
           instance: true,
-          scope: 'pull:sandbox',
+          scope: problem?.endpoint === 'binding_recovery' ? 'binding_recovery:sandbox' : 'pull:sandbox',
           resolved: !failing,
           escalate: failing,
         },
