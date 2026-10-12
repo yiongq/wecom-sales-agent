@@ -43,6 +43,17 @@ const { enterHandoff } = await import('../../handoff/record.js');
 const { executeTool } = await import('../../tools.js');
 const simulator = await import('../../adapters/simulator.js');
 const web = await import('../../adapters/web.js');
+// 企微事件消息顶层没有 open_kfid、external_userid，2026-10-12 线上 sync_msg 实测。
+function eventMessage(id: string, user: string, event: NonNullable<KfMessage['event']>): KfMessage {
+  return {
+    msgid: id,
+    send_time: Date.now() / 1000,
+    origin: 4,
+    msgtype: 'event',
+    event: { open_kfid: 'fixture-kf', external_userid: user, ...event },
+  } as KfMessage; // 保留宿主共用类型的顶层必填字段；假事件按真实 wire 布局构造。
+}
+
 const wecom = await import('../../adapters/wecom.js');
 const accounts = await import('../../channels/accounts.js');
 const { alert, watchStoreAlerts, __alertTest } = await import('../../ops/alert.js');
@@ -284,15 +295,7 @@ async function suite(
           msgtype: 'text',
           text: { content: '你好' },
         },
-        {
-          msgid: `welcome-${suffix}`,
-          open_kfid: 'fixture-kf',
-          external_userid: 'wmSbxWelcome',
-          send_time: Math.floor(Date.now() / 1000),
-          origin: 4,
-          msgtype: 'event',
-          event: { event_type: 'enter_session', external_userid: 'wmSbxWelcome', welcome_code: `fixture-${suffix}` },
-        },
+        eventMessage(`welcome-${suffix}`, 'wmSbxWelcome', { event_type: 'enter_session', welcome_code: `fixture-${suffix}` }),
       ];
       requests.length = 0;
       incoming = page('standard');

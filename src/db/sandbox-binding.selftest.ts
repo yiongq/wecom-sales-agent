@@ -70,6 +70,17 @@ async function until(fn: () => boolean | Promise<boolean>) {
     await new Promise((r) => setTimeout(r, 10));
   }
 }
+// 企微事件消息顶层没有 open_kfid、external_userid，2026-10-12 线上 sync_msg 实测。
+function eventMessage(id: string, user: string, event: NonNullable<KfMessage['event']>): KfMessage {
+  return {
+    msgid: id,
+    send_time: Date.now() / 1000,
+    origin: 4,
+    msgtype: 'event',
+    event: { open_kfid: env.SANDBOX_WECOM_OPEN_KFID, external_userid: user, ...event },
+  } as KfMessage; // 保留宿主共用类型的顶层必填字段；假事件按真实 wire 布局构造。
+}
+
 function namedCheck(name: string, fn: () => void): void {
   check(fn);
   console.log(`ASSERT PASS: ${name}`);
@@ -276,12 +287,8 @@ async function suite(db: Db, q: Query, appUrl?: string) {
     msgtype: 'text',
     text: { content: text },
   });
-  const enter = (user: string, code: string, welcome: string): KfMessage => ({
-    ...message(user, ''),
-    origin: 4,
-    msgtype: 'event',
-    event: { event_type: 'enter_session', external_userid: user, scene_param: code.replace('-', ''), welcome_code: welcome },
-  });
+  const enter = (user: string, code: string, welcome: string): KfMessage =>
+    eventMessage(`fake-msg-${++serial}`, user, { event_type: 'enter_session', scene_param: code.replace('-', ''), welcome_code: welcome });
   const deliver = async (...messages: KfMessage[]) => {
     pages.push(messages);
     await service.sync();
@@ -694,12 +701,7 @@ async function suite(db: Db, q: Query, appUrl?: string) {
       return msgid;
     };
     const failReply = async (msgid: string) => {
-      await deliver({
-        ...message('wm6', ''),
-        origin: 4,
-        msgtype: 'event',
-        event: { event_type: 'msg_send_fail', fail_msgid: msgid, fail_type: 4 },
-      });
+      await deliver(eventMessage(`fake-msg-${++serial}`, 'wm6', { event_type: 'msg_send_fail', fail_msgid: msgid, fail_type: 4 }));
       await withTenantScope(B, () => drainStore(5000));
       await until(
         async () =>
