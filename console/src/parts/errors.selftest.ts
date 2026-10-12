@@ -62,7 +62,16 @@ const SPEC: ReadonlyArray<readonly [string, number, string, string | null, strin
   ['bad_request', 400, '无法完成这项操作', '刷新页面后重试', 'danger', 'page'],
   ['unsupported_media_type', 415, '无法完成这项操作', '刷新页面后重试', 'danger', 'page'],
   // 05 R14 / R15：沙箱写入与模型额度提示。
-  ['sandbox_write_limited', 429, '体验环境的写入次数已达上限', '稍后再试', 'caution', 'inline'],
+  // 05 Revisions 2026-10-12：速率与容量分开，容量不是终生总写入次数。
+  ['sandbox_write_rate_limited', 429, '操作太快了，稍等几秒再试', null, 'caution', 'inline'],
+  [
+    'sandbox_write_capacity_limited',
+    429,
+    '这项操作已达到体验环境的容量上限',
+    '产品数量、版本、导入行数、快捷回复或当天话术发布次数有限，可以结束后再开一个',
+    'caution',
+    'inline',
+  ],
   ['llm_budget_exhausted', 429, '体验的模型额度已用完', '仍可用模拟器继续体验', 'caution', 'inline'],
   ['rate_limited', 429, '尝试太频繁', '稍后再试', 'danger', 'form'],
   ['busy', 429, '尝试太频繁', '稍后再试', 'danger', 'form'],

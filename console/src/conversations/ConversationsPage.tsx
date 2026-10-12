@@ -17,6 +17,7 @@ import { digits } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { api, unwrap } from '../api.js';
 import type { ConversationsSearch } from '../conversations-search.js';
+import { OwnConversationTag } from '../sandbox/Sandbox.js';
 import { PrimaryButton } from '../parts/PrimaryButton.js';
 import { EmptyBlock, Skeleton, StateView } from '../parts/StateView.js';
 import { Status } from '../parts/Status.js';
@@ -324,8 +325,14 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
           render: (_, r) => (
             <span className="cv-conv">
               <Icon of={MessagesSquare} className="cv-conv-icon" />
-              <Link to="/conversations/$id" params={{ id: r.id }} className="cv-conv-link" aria-label={rowAria(r)}>
-                {cjk(r.label)}
+              <Link
+                to="/conversations/$id"
+                params={{ id: r.id }}
+                className={`cv-conv-link${r.sandboxOwner ? ' has-owner' : ''}`}
+                aria-label={rowAria(r)}
+              >
+                <span className="own-conversation-label">{cjk(r.label)}</span>
+                <OwnConversationTag owner={r.sandboxOwner} />
               </Link>
             </span>
           ),

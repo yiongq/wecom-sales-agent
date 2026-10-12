@@ -82,6 +82,7 @@ export type TodoTarget =
 
 export interface TodoRow {
   key: string;
+  sandboxOwner?: ConversationRow['sandboxOwner'];
   /** 图标：会话、话术，或行业包给实体配的图标名 */
   icon: { page: 'conversations' | 'sop' } | { entity: string };
   /** 类型：「等人接手」画状态胶囊，其余是 13/500 text-3 的文字 */
@@ -172,6 +173,7 @@ function handoffEntry(row: ConversationRow, paid: boolean, pack: IndustryPack, n
   return {
     row: {
       key: `conv:${row.id}`,
+      sandboxOwner: row.sandboxOwner,
       icon: { page: 'conversations' },
       type: paid ? { text: '已成交客户要人工' } : { status: 'human' },
       title: row.needSummary ? [...conversationLabel(row, pack), row.needSummary] : conversationLabel(row, pack),
@@ -202,6 +204,7 @@ function paymentEntry(
   return {
     row: {
       key: `order:${o.id}`,
+      sandboxOwner: conv.sandboxOwner,
       icon: { page: 'conversations' },
       type: { text: '待付款' },
       title: conv.needSummary ? [...label, conv.needSummary] : label,
@@ -240,7 +243,7 @@ export function attentionTodos(
     ...paidNeedsHuman.map((row) => handoffEntry(row, true, pack, now)),
     ...withConversation.map((o) => paymentEntry(o, paymentMode, pack, now)),
   ];
-  entries.sort(byAttention);
+  entries.sort((a, b) => Number(Boolean(b.row.sandboxOwner)) - Number(Boolean(a.row.sandboxOwner)) || byAttention(a, b));
   const rows = entries.map((e) => e.row);
   const hidden = waitingTotal - waiting.length;
   return hidden > 0 ? [...rows, moreWaitingTodo(hidden, waiting.length)] : rows;

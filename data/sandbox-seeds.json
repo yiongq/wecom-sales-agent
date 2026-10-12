@@ -1,5 +1,5 @@
 {
-  "$comment": "由 scripts/seed-demo.py --fixture 生成；sessions 与 orders 沿用默认场景字段。仅夹具将旧 r-bali-lux 样例改为目录中的 r-bali，标题与单价取目录、总价为单价乘人数；各会话 updatedAt 等于最后一条消息时间。所有 at、createdAt、updatedAt、paidAt 均为相对最新消息的毫秒偏移（整数，<=0，最新消息为0）；开通时加上开通时刻减5分钟。profile.dates 与 departDate 是行程日期文本，不是时间戳。会话 id、channel 与订单引用在开通时重映射。",
+  "$comment": "由 scripts/seed-demo.py --fixture 生成；sessions 与 orders 沿用默认场景字段。沿用既有沙箱夹具的旧线路修正：B01 的 r-bali-lux 改为目录 r-bali，正文、标题与金额按目录对应。各会话 updatedAt 等于最后一条消息时间。沙箱是默认场景的5段会话、2个对应订单子集。所有 at、createdAt、updatedAt、paidAt 均为相对最新消息的毫秒偏移（整数，<=0，最新消息为0）；开通时加上开通时刻减5分钟。profile.dates 与 departDate 是行程日期文本，不是时间戳。会话 id、channel 与订单引用在开通时重映射。",
   "sessions": [
     {
       "id": "wecom:cust_A01",
@@ -53,49 +53,6 @@
       "handedOver": false,
       "createdAt": -10980000,
       "updatedAt": -10620000
-    },
-    {
-      "id": "wecom:cust_A02",
-      "channel": "wecom",
-      "stage": "paid",
-      "profile": {
-        "nickname": "王姐",
-        "destinationInterest": "日本",
-        "travelers": "4人",
-        "dates": "2026-09-20",
-        "budget": "每人3万"
-      },
-      "messages": [
-        {
-          "role": "customer",
-          "content": "一家四口想去日本，两个大人两个小孩",
-          "at": -14580000
-        },
-        {
-          "role": "agent",
-          "content": "亲子游好选择！日本迪士尼+环球双乐园 7 日很适合，孩子玩疯～",
-          "at": -14520000
-        },
-        {
-          "role": "customer",
-          "content": "9月20号出发，就定这个吧",
-          "at": -14460000
-        },
-        {
-          "role": "agent",
-          "content": "已下单，东京迪士尼·大阪环球 7 日，4 人共 101,840 元，请支付～",
-          "at": -14400000
-        },
-        {
-          "role": "agent",
-          "content": "已收到支付，感谢信任！行程确认书稍后发您～",
-          "at": -14340000
-        }
-      ],
-      "orderIds": ["ord_seed_A02"],
-      "handedOver": false,
-      "createdAt": -14580000,
-      "updatedAt": -14340000
     },
     {
       "id": "wecom:cust_B01",
@@ -173,120 +130,6 @@
       "updatedAt": -7200000
     },
     {
-      "id": "wecom:cust_C02",
-      "channel": "wecom",
-      "stage": "quote",
-      "profile": {
-        "nickname": "Summer",
-        "destinationInterest": "北欧极光",
-        "travelers": "2人",
-        "dates": "2026-12-05"
-      },
-      "messages": [
-        {
-          "role": "customer",
-          "content": "想去看极光",
-          "at": -14580000
-        },
-        {
-          "role": "agent",
-          "content": "芬兰玻璃屋 8 日，躺床上看极光划过夜空～",
-          "at": -14520000
-        },
-        {
-          "role": "customer",
-          "content": "12月初，报个价",
-          "at": -14460000
-        },
-        {
-          "role": "agent",
-          "content": "每人 46,800，2 人共 93,600 元～",
-          "at": -14400000
-        }
-      ],
-      "orderIds": [],
-      "handedOver": false,
-      "createdAt": -14580000,
-      "updatedAt": -14400000
-    },
-    {
-      "id": "wecom:cust_D01",
-      "channel": "wecom",
-      "stage": "recommend",
-      "profile": {
-        "nickname": "赵一帆",
-        "destinationInterest": "迪拜",
-        "travelers": "3人"
-      },
-      "messages": [
-        {
-          "role": "customer",
-          "content": "迪拜适合带老人孩子吗",
-          "at": -3780000
-        },
-        {
-          "role": "agent",
-          "content": "很适合！棕榈岛亚特兰蒂斯水世界家庭乐园 6 日，老少皆宜～几位出行？",
-          "at": -3720000
-        }
-      ],
-      "orderIds": [],
-      "handedOver": false,
-      "createdAt": -3780000,
-      "updatedAt": -3720000
-    },
-    {
-      "id": "wecom:cust_D02",
-      "channel": "wecom",
-      "stage": "recommend",
-      "profile": {
-        "nickname": "橙子",
-        "destinationInterest": "三亚"
-      },
-      "messages": [
-        {
-          "role": "customer",
-          "content": "春节想去三亚",
-          "at": -10980000
-        },
-        {
-          "role": "agent",
-          "content": "三亚亲子奢华度假 5 日，亚特兰蒂斯水世界+柏悦连住～大概几位？",
-          "at": -10920000
-        }
-      ],
-      "orderIds": [],
-      "handedOver": false,
-      "createdAt": -10980000,
-      "updatedAt": -10920000
-    },
-    {
-      "id": "wecom:cust_D03",
-      "channel": "wecom",
-      "stage": "recommend",
-      "profile": {
-        "nickname": "Anna何",
-        "destinationInterest": "新西兰",
-        "travelers": "2人"
-      },
-      "messages": [
-        {
-          "role": "customer",
-          "content": "新西兰南岛",
-          "at": -7380000
-        },
-        {
-          "role": "agent",
-          "content": "南岛峡湾与星空 10 日，皇后镇+米尔福德峡湾～蜜月还是家庭呢？",
-          "at": -7320000
-        }
-      ],
-      "orderIds": [],
-      "handedOver": false,
-      "createdAt": -7380000,
-      "updatedAt": -7320000
-    },
-    {
       "id": "wecom:cust_E01",
       "channel": "wecom",
       "stage": "discovery",
@@ -307,72 +150,6 @@
       "handedOver": false,
       "createdAt": -180000,
       "updatedAt": -120000
-    },
-    {
-      "id": "wecom:cust_E02",
-      "channel": "wecom",
-      "stage": "discovery",
-      "profile": {},
-      "messages": [
-        {
-          "role": "customer",
-          "content": "有什么好玩的推荐",
-          "at": -3780000
-        },
-        {
-          "role": "agent",
-          "content": "看您偏好啦～是想海岛度假、欧洲人文，还是极光探险？",
-          "at": -3720000
-        }
-      ],
-      "orderIds": [],
-      "handedOver": false,
-      "createdAt": -3780000,
-      "updatedAt": -3720000
-    },
-    {
-      "id": "wecom:cust_E03",
-      "channel": "wecom",
-      "stage": "discovery",
-      "profile": {},
-      "messages": [
-        {
-          "role": "customer",
-          "content": "想带爸妈出去玩",
-          "at": -7380000
-        },
-        {
-          "role": "agent",
-          "content": "孝心之选！方便告诉我大概去哪个方向、几位长辈吗？",
-          "at": -7320000
-        }
-      ],
-      "orderIds": [],
-      "handedOver": false,
-      "createdAt": -7380000,
-      "updatedAt": -7320000
-    },
-    {
-      "id": "wecom:cust_E04",
-      "channel": "wecom",
-      "stage": "discovery",
-      "profile": {},
-      "messages": [
-        {
-          "role": "customer",
-          "content": "最近想旅游",
-          "at": -10980000
-        },
-        {
-          "role": "agent",
-          "content": "好呀～这次是蜜月、亲子还是纯放松？想去国内还是出境？",
-          "at": -10920000
-        }
-      ],
-      "orderIds": [],
-      "handedOver": false,
-      "createdAt": -10980000,
-      "updatedAt": -10920000
     },
     {
       "id": "wecom:cust_F01",
@@ -419,18 +196,6 @@
       "status": "paid",
       "createdAt": -10980000,
       "paidAt": -10500000
-    },
-    {
-      "id": "ord_seed_A02",
-      "sessionId": "wecom:cust_A02",
-      "routeId": "r-japan-family",
-      "routeTitle": "日本 东京迪士尼·大阪环球双乐园亲子7日",
-      "travelers": 4,
-      "departDate": "2026-09-20",
-      "totalPrice": 101840,
-      "status": "paid",
-      "createdAt": -14580000,
-      "paidAt": -14100000
     },
     {
       "id": "ord_seed_B01",

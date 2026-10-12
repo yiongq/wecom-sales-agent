@@ -107,7 +107,7 @@ import { defaultQuickRepliesOf } from '../packs/registry.js';
 import { paymentMode } from '../payment/mode.js';
 import { cancelOrder, confirmOrder, markPaidByAdvisor, OrderNotFoundError, OrderStateError } from '../payment/orders.js';
 import { profile } from '../profile.js';
-import { sandboxTryUrl } from './entry.js';
+import { loginShowcase, sandboxTryUrl } from './entry.js';
 import { indexHealth } from '../retrieval.js';
 import { csvLabelsOf } from '../shared/catalog-csv.js';
 import {
@@ -173,6 +173,8 @@ import { addListener, ensureEventHub, eventTiming, replayAfter, tailId, type Buf
 import { maskNumbers } from './mask.js';
 import {
   actorOf,
+  sandboxOwnConversationId,
+  sandboxOwnedFirst,
   byRecent,
   conversationCounts,
   conversationDetail,
@@ -350,6 +352,7 @@ const meOf = (u: AuthedUser): Me => ({
   sandbox:
     currentRuntime().kind === 'sandbox'
       ? {
+          ownConversationId: sandboxOwnConversationId(),
           expiresAt: new Date(currentRuntime().expiresAt!).toISOString(),
           wechat: sandboxWechatIndex.wechatState(currentRuntime()),
           steps: [false, false, false, false],
@@ -418,7 +421,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
   .basePath('/api/console')
   // requestLogContext：req 与 x-request-id（02 spec R24）；挂在 server.ts 下时沿用外层生成的那个
   .use('*', requestLogContext, publicHostMiddleware, securityHeaders)
-  .get('/entry', (c) => c.json({ tryUrl: sandboxTryUrl() ? '/try' : null }))
+  .get('/entry', (c) => c.json({ tryUrl: sandboxTryUrl() ? '/try' : null, showcase: loginShowcase() }))
   .use('*', requireDbMode, loadSession, guardWrites)
 
   // ---------------- 登录 ----------------
@@ -438,7 +441,12 @@ export const consoleApi = new Hono<ConsoleEnv>()
   })
   .get('/me', signedIn, async (c) => {
     const me = meOf(c.var.user!);
-    if (me.sandbox) me.sandbox.steps = await readTx(c, (tx) => readSandboxSteps(tx, currentTenant().pack));
+    if (me.sandbox) {
+      me.sandbox.steps = await readTx(c, (tx) => readSandboxSteps(tx, currentTenant().pack));
+      const bound = sandboxWechatIndex.boundUser(currentRuntime());
+      const id = bound ? `wecom:${bound}` : undefined;
+      if (id && getSession(id)) me.sandbox.conversationId = id;
+    }
     return c.json(me, 200);
   })
 
@@ -616,7 +624,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
           (!stage || s.stage === stage) &&
           (group !== 'paid_needs_human' || inPaidNeedsHuman(s, pack)),
       )
-      .toSorted(order === 'waiting_first' ? waitingFirst(pack) : byRecent);
+      .toSorted(sandboxOwnedFirst(order === 'waiting_first' ? waitingFirst(pack) : byRecent));
     const vocab = needVocabulary();
     const page: ConversationPage = {
       total: all.length,

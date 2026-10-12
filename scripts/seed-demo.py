@@ -237,6 +237,10 @@ if args.fixture:
     )
     for s in S:
         s["updatedAt"] = s["messages"][-1]["at"]
+    # 沙箱只保留五类各一段；宿主默认场景仍保留全部会话，已有内容不改。
+    sandbox_ids = {"wecom:cust_F01", "wecom:cust_B01", "wecom:cust_A01", "wecom:cust_C01", "wecom:cust_E01"}
+    S = [s for s in S if s["id"] in sandbox_ids]
+    O = [o for o in O if o["sessionId"] in sandbox_ids]
     latest = max(m["at"] for s in S for m in s["messages"])
 
     def relative_times(value):
@@ -251,8 +255,9 @@ if args.fixture:
 
     fixture = {
         "$comment": "由 scripts/seed-demo.py --fixture 生成；sessions 与 orders 沿用默认场景字段。"
-                    "仅夹具将旧 r-bali-lux 样例改为目录中的 r-bali，标题与单价取目录、总价为单价乘人数；"
+                    "沿用既有沙箱夹具的旧线路修正：B01 的 r-bali-lux 改为目录 r-bali，正文、标题与金额按目录对应。"
                     "各会话 updatedAt 等于最后一条消息时间。"
+                    "沙箱是默认场景的5段会话、2个对应订单子集。"
                     "所有 at、createdAt、updatedAt、paidAt 均为相对最新消息的毫秒偏移（整数，<=0，最新消息为0）；"
                     "开通时加上开通时刻减5分钟。profile.dates 与 departDate 是行程日期文本，不是时间戳。"
                     "会话 id、channel 与订单引用在开通时重映射。",

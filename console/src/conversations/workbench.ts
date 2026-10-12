@@ -29,6 +29,7 @@ export const WB_GROUP_ORDER: readonly ConversationState[] = ['human', 'assigned'
 
 export interface WbRow {
   id: string;
+  sandboxOwner?: ConversationRow['sandboxOwner'];
   /** 「企微客户」「F01」，带 needSummary 时再加一段（与 I 页首列同一条写法） */
   label: readonly string[];
   state: ConversationState;
@@ -58,6 +59,7 @@ export function wbRow(row: ConversationRow, pack: IndustryPack, now: number, sel
   const waitMs = waiting ? now - Date.parse(row.handoff!.at) : null;
   return {
     id: row.id,
+    sandboxOwner: row.sandboxOwner,
     label: row.needSummary ? [...conversationLabel(row, pack), row.needSummary] : conversationLabel(row, pack),
     state,
     context: wbContext(row, pack, state),
@@ -70,7 +72,7 @@ export function wbRow(row: ConversationRow, pack: IndustryPack, now: number, sel
 }
 
 export interface WbGroup {
-  state: ConversationState;
+  state: ConversationState | 'own';
   label: string;
   /** 组标题的计数：取同一次 counts 响应（没取到时退回这个组里已经取到的行数） */
   count: number;
@@ -88,19 +90,24 @@ export function wbGroups(
   selectedId: string | null,
 ): WbGroup[] {
   const rows = items.map((r) => wbRow(r, pack, now, selectedId));
-  return WB_GROUP_ORDER.flatMap((state) => {
-    const rowsOfState = rows.filter((r) => r.state === state);
-    if (rowsOfState.length === 0) return [];
-    return [
-      {
-        state,
-        label: STATUS_LABEL[state],
-        count: counts?.byState[state] ?? rowsOfState.length,
-        soft: state === 'human',
-        rows: rowsOfState,
-      },
-    ];
-  });
+  const owned = rows.filter((r) => r.sandboxOwner);
+  const pinned: WbGroup[] = owned.length ? [{ state: 'own', label: '你的会话', count: owned.length, soft: false, rows: owned }] : [];
+  return [
+    ...pinned,
+    ...WB_GROUP_ORDER.flatMap((state) => {
+      const rowsOfState = rows.filter((r) => r.state === state && !r.sandboxOwner);
+      if (rowsOfState.length === 0) return [];
+      return [
+        {
+          state,
+          label: STATUS_LABEL[state],
+          count: counts ? counts.byState[state] - owned.filter((r) => r.state === state).length : rowsOfState.length,
+          soft: state === 'human',
+          rows: rowsOfState,
+        },
+      ];
+    }),
+  ];
 }
 
 /** 读屏念的一行：「企微客户 F01，等人接手」 */

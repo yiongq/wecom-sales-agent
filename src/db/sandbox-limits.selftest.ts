@@ -55,7 +55,9 @@ function check(fn: () => void): void {
   fn();
   checks++;
 }
-const limited = (error: unknown) => error instanceof SandboxLimitError && error.reason === 'sandbox_write_limited';
+const limited = (error: unknown) =>
+  error instanceof SandboxLimitError &&
+  (error.reason === 'sandbox_write_rate_limited' || error.reason === 'sandbox_write_capacity_limited');
 const env = { SANDBOX_PER_HOUR: '100', SANDBOX_PER_IP_DAY: '100' };
 // 任意运行时刻都选一个与 UTC 日期不同的会话时区。
 const testTimezone = new Date().getUTCHours() >= 10 ? 'Pacific/Kiritimati' : 'Etc/GMT+12';
@@ -270,7 +272,7 @@ async function suite(db: Db, q: Query, real: boolean) {
   const b = await provisionSandbox(options);
   await assert.rejects(
     () => provisionSandbox({ ...options, env: { ...env, SANDBOX_PER_IP_DAY: '2' } }),
-    (e) => e instanceof SandboxProvisionError && e.reason === 'sandbox_limited',
+    (e) => e instanceof SandboxProvisionError && e.reason === 'sandbox_limited' && e.scope === 'ip',
   );
   checks++;
   const [pool] = await q<{ day: string; provisioned: number }>('select day::text as day,provisioned from sandbox_pool_daily');
@@ -280,7 +282,7 @@ async function suite(db: Db, q: Query, real: boolean) {
   __sandboxLimitsTest.resetProvisioned();
   await assert.rejects(
     () => provisionSandbox({ ...options, env: { ...env, SANDBOX_PER_DAY: '2' } }),
-    (e) => e instanceof SandboxProvisionError && e.reason === 'sandbox_limited',
+    (e) => e instanceof SandboxProvisionError && e.reason === 'sandbox_limited' && e.scope === 'pool',
   );
   checks++;
   const rt = runtimeOf(a.tenantId)!;
@@ -307,7 +309,7 @@ async function suite(db: Db, q: Query, real: boolean) {
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-  const expectLimit = async (res: Response, code = 'sandbox_write_limited') => {
+  const expectLimit = async (res: Response, code = 'sandbox_write_capacity_limited') => {
     check(() => assert.equal(res.status, 429));
     check(() => assert.equal((res.headers.get('content-type') ?? '').includes('application/json'), true));
     const body = (await res.json()) as { error: string; retryAfter?: number };
@@ -317,6 +319,8 @@ async function suite(db: Db, q: Query, real: boolean) {
   };
   const dailyRefused = await request('/api/sandbox', 'POST', {}, '');
   check(() => assert.ok(Number(dailyRefused.headers.get('retry-after')) > 0));
+  const dailyScope = (await dailyRefused.clone().json()).scope;
+  check(() => assert.equal(dailyScope, 'pool'));
   await expectLimit(dailyRefused, 'sandbox_limited');
   const reused = await request('/api/sandbox', 'POST', {});
   check(() => assert.equal(reused.status, 200));
@@ -362,8 +366,8 @@ async function suite(db: Db, q: Query, real: boolean) {
     check(() => assert.deepEqual(outcomes, ['budget', 'budget']));
     check(() => assert.equal(budgetRefusals, 2));
     check(() => assert.equal(fetches, 0));
-    await expectLimit(await request('/api/chat', 'POST', { text: '你好', sessionId: seed.id }));
-    await expectLimit(await request('/api/console/quick-replies', 'POST', { title: '拒绝', body: '正文' }));
+    await expectLimit(await request('/api/chat', 'POST', { text: '你好', sessionId: seed.id }), 'sandbox_write_rate_limited');
+    await expectLimit(await request('/api/console/quick-replies', 'POST', { title: '拒绝', body: '正文' }), 'sandbox_write_rate_limited');
     check(() => assert.equal(budgetRefusals, 2));
     const otherReply = await request('/api/console/quick-replies', 'POST', { title: '另一沙箱', body: '正文' }, b.token);
     check(() => assert.equal(otherReply.status, 200));
@@ -380,13 +384,13 @@ async function suite(db: Db, q: Query, real: boolean) {
   }
   // 新会话种子不算；并发路径的核心同步创建在 store 里，超限时没有消息或模型调用。
   await withTenantScope(rt, async () => {
-    check(() => assert.equal(listSessions().length, 13));
+    check(() => assert.equal(listSessions().length, 5));
     for (let i = 0; i < 30; i++) {
       const id = `sbx-${i.toString(16).padStart(24, '0')}`;
       getOrCreateSession(id, 'simulator');
       await flushSession(id);
     }
-    check(() => assert.equal(listSessions().length, 43));
+    check(() => assert.equal(listSessions().length, 35));
     check(() => assert.throws(() => getOrCreateSession(`sbx-${'f'.repeat(24)}`, 'simulator'), SandboxLimitError));
     check(() => assert.doesNotThrow(() => getOrCreateSession(listSessions()[0]!.id, 'simulator')));
   });

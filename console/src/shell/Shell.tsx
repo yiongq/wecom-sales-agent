@@ -14,7 +14,7 @@ import { Info, LogIn, LogOut, Menu, Moon, Sun, SunMoon } from 'lucide-react';
 import { type MouseEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { catalogKind } from '../api.js';
-import { SandboxBanner, SandboxChecklist } from '../sandbox/Sandbox.js';
+import { SandboxBanner, SandboxChecklist, SandboxControls } from '../sandbox/Sandbox.js';
 import { LoginPage } from '../pages/LoginPage.js';
 import { ErrorAlert } from '../parts/ErrorAlert.js';
 import { EmptyBlock, StateView } from '../parts/StateView.js';
@@ -104,7 +104,7 @@ export function Shell() {
     );
   }
   if (v.kind === 'redirect') return <BootSkeleton />;
-  if (v.kind === 'login') return <LoginPage demo={v.demo} tryUrl={v.tryUrl} />;
+  if (v.kind === 'login') return <LoginPage demo={v.demo} tryUrl={v.tryUrl} showcase={v.showcase} returning={v.returning} />;
   return <Frame viewer={v} />;
 }
 
@@ -269,6 +269,34 @@ function Frame({ viewer: v }: { viewer: Framed }) {
     />
   );
 
+  const panel = (
+    <div className="shell-panel">
+      {sandbox && <SandboxBanner sandbox={sandbox} />}
+      <div className={sandbox ? 'sandbox-body' : 'shell-body'} ref={sandbox ? sandboxScrollRef : undefined}>
+        {sandbox && v.kind === 'member' && (
+          <SandboxChecklist
+            key={v.me.tenantSlug}
+            slug={v.me.tenantSlug}
+            sandbox={sandbox}
+            presentation={selected === '/' ? 'inline' : 'drawer'}
+            error={progress.error}
+            onRetry={() => void progress.refetch()}
+          />
+        )}
+        <div className="shell-scroll" ref={scrollRef}>
+          <main id="main" tabIndex={-1} className="shell-content">
+            {sv.kind === 'member' && logoutError !== null && (
+              <div className="shell-alert">
+                <ErrorAlert error={logoutError} title="没退出登录" onRetry={() => void signOut()} />
+              </div>
+            )}
+            <Outlet />
+          </main>
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <div className={`shell shell-${mode}`}>
       <a className="skip-link" href="#main" onClick={skipToMain}>
@@ -282,30 +310,13 @@ function Frame({ viewer: v }: { viewer: Framed }) {
       ) : (
         sidebar(false)
       )}
-      <div className="shell-panel">
-        {sandbox && <SandboxBanner sandbox={sandbox} />}
-        <div className={sandbox ? 'sandbox-body' : 'shell-body'} ref={sandbox ? sandboxScrollRef : undefined}>
-          {sandbox && v.kind === 'member' && (
-            <SandboxChecklist
-              key={v.me.tenantSlug}
-              slug={v.me.tenantSlug}
-              sandbox={sandbox}
-              error={progress.error}
-              onRetry={() => void progress.refetch()}
-            />
-          )}
-          <div className="shell-scroll" ref={scrollRef}>
-            <main id="main" tabIndex={-1} className="shell-content">
-              {sv.kind === 'member' && logoutError !== null && (
-                <div className="shell-alert">
-                  <ErrorAlert error={logoutError} title="没退出登录" onRetry={() => void signOut()} />
-                </div>
-              )}
-              <Outlet />
-            </main>
-          </div>
-        </div>
-      </div>
+      {sandbox && v.kind === 'member' ? (
+        <SandboxControls key={v.me.tenantSlug} slug={v.me.tenantSlug} overview={selected === '/'} page={path}>
+          {panel}
+        </SandboxControls>
+      ) : (
+        panel
+      )}
       {mode === 'hidden' && (
         <Drawer
           open={drawerOpen}

@@ -17,10 +17,10 @@ import { sandboxSessionResolve } from '../../db/repo/sandbox.js';
 import { csrfFor, __authTest } from '../../auth/session.js';
 import { subscribe } from '../../adapters/simulator.js';
 import { dropShutdownHooks } from '../../shutdown.js';
-import { listSessions, listOrders, flushSession, createOrder, getSession, saveSession } from '../../store.js';
+import { listSessions, listOrders, getOrCreateSession, flushSession, createOrder, getSession, saveSession } from '../../store.js';
 import { scrubConvIds } from '../../log.js';
 import { shanhaiBrand } from '../../packs/travel/brand-fixture.js';
-import type { Me, CatalogItem, SopOverview } from '../../shared/console-api.js';
+import type { Me, CatalogItem, SopOverview, ConversationPage } from '../../shared/console-api.js';
 import {
   configureTenancy,
   createTenantRuntime,
@@ -32,6 +32,8 @@ import {
   withTenantScope,
 } from '../runtime.js';
 import { dropTenantState } from '../state.js';
+import { sandboxWechatIndex } from './outbound.js';
+import { sandboxOwnedFirst, byRecent, waitingFirst, conversationRow, sandboxOwnConversationId } from '../../console-api/workbench.js';
 import { SandboxProcess, sandboxApp } from './process.js';
 import { provisionSandbox } from './provision.js';
 import { __sandboxLimitsTest } from './limits.js';
@@ -201,7 +203,18 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   check(() => assert.equal(me.displayName, '体验访客'));
   check(() => assert.equal(me.csrf, csrfFor(token)));
   check(() => assert.equal(me.tenantSlug, a.slug));
-  check(() => assert.deepEqual(me.sandbox, { expiresAt: openBody.expiresAt, wechat: 'off', steps: [false, false, false, false] }));
+  check(() =>
+    assert.deepEqual(me.sandbox, {
+      ownConversationId: null,
+      expiresAt: openBody.expiresAt,
+      wechat: 'off',
+      steps: [false, false, false, false],
+    }),
+  );
+  withTenantScope(a, () => {
+    check(() => assert.equal(listSessions().length, 5));
+    check(() => assert.equal(listOrders().length, 2));
+  });
   // 与宿主相同的 IP 桶：有效会话退回名额；无效 cookie 并发也最多查 60 次。
   const goodIp = { 'x-forwarded-for': '198.51.100.151' };
   for (let i = 0; i < 70; i++) await expect(await request('/api/console/me', token, { headers: goodIp }), 200);
@@ -294,6 +307,77 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   check(() => assert.ok(restored.messages.length >= 2));
   await expect(await request(`/api/console/conversations/${sbxId}`, token), 200);
   await expect(await request(`/api/sessions/${sbxId}`, bResult.token), 404);
+  // 第一个自己的模拟器会话出现，不能把更晚更新的种子当作自己的会话。
+  const ownId = async () => ((await (await request('/api/console/me', token)).json()) as Me).sandbox!.ownConversationId;
+  const firstOwn = await ownId();
+  check(() => assert.equal(firstOwn, sbxId));
+  const newerId = `sbx-${randomBytes(12).toString('hex')}`;
+  withTenantScope(a, () => {
+    const newer = getOrCreateSession(newerId, 'simulator');
+    newer.createdAt = a.expiresAt! - 86_400_000 + 1;
+    newer.updatedAt = Date.now() + 1000;
+    for (const seed of listSessions().filter((s) => s.createdAt < a.expiresAt! - 86_400_000)) seed.updatedAt = Date.now() + 10_000;
+  });
+  const newestOwn = await ownId();
+  check(() => assert.equal(newestOwn, newerId));
+  for (const order of ['', '&order=waiting_first']) {
+    const rows = (await (await request('/api/console/conversations?limit=2' + order, token)).json()) as ConversationPage;
+    check(() =>
+      assert.deepEqual(
+        rows.items.map((s) => s.id),
+        [newerId, sbxId],
+        '分页之前置顶自己的会话，超过更新时间更晚的种子',
+      ),
+    );
+    check(() => assert.ok(rows.items.every((s) => s.sandboxOwner === 'simulator')));
+  }
+  sandboxWechatIndex.publishBinding(a, 'wmOwn');
+  // 只有绑定、还没有会话时继续指向模拟器。
+  const beforeWechat = await ownId();
+  check(() => assert.equal(beforeWechat, newerId));
+  withTenantScope(a, () => {
+    const own = getOrCreateSession('wecom:wmOwn', 'wecom');
+    own.createdAt = a.expiresAt! - 86_400_000 + 1;
+    own.updatedAt = Date.now() - 2000;
+    getOrCreateSession('wecom:wmOld', 'wecom');
+  });
+  const boundOwn = await ownId();
+  check(() => assert.equal(boundOwn, 'wecom:wmOwn', '绑定会话优先于最近模拟器'));
+  const boundRows = (await (await request('/api/console/conversations?order=waiting_first', token)).json()) as ConversationPage;
+  check(() =>
+    assert.deepEqual(
+      boundRows.items.slice(0, 3).map((s) => s.sandboxOwner),
+      ['simulator', 'simulator', 'wechat'],
+    ),
+  );
+  check(() =>
+    assert.ok(
+      boundRows.items.slice(3).every((s) => !s.sandboxOwner),
+      '种子与非当前绑定微信均不标记',
+    ),
+  );
+  sandboxWechatIndex.withdraw(a.id);
+  const unboundOwn = await ownId();
+  check(() => assert.equal(unboundOwn, newerId, '解绑后回退最近模拟器'));
+  // 宿主比较器和投影保持原样，即使有同名 sbx/wecom 会话也不视为沙箱访客。
+  const sandboxPack = withTenantScope(a, () => currentTenant().pack);
+  withTenantScope(host, () => {
+    const samples = withTenantScope(a, listSessions);
+    const pack = sandboxPack;
+    for (const compare of [byRecent, waitingFirst(pack)])
+      check(() =>
+        assert.deepEqual(
+          [...samples].sort(sandboxOwnedFirst(compare)).map((s) => s.id),
+          [...samples].sort(compare).map((s) => s.id),
+        ),
+      );
+    check(() =>
+      assert.ok(
+        samples.every((s) => !('sandboxOwner' in conversationRow({ ...s, orderIds: [] }, { destinations: [], segments: {} }, false))),
+      ),
+    );
+    check(() => assert.equal(sandboxOwnConversationId(), null));
+  });
   const html = await page(`/chat.html?c=${sbxId}`, token);
   check(() => assert.ok(html.includes(`ssj_session_id:${a.slug}`)));
   check(() => assert.ok(html.includes("new URLSearchParams(location.search).get('c')")));
@@ -301,7 +385,12 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   // 租户品牌与会话键会改变脚本，不能用 public 源文件的固定 hash。
   const originalScript = /<script>([\s\S]*?)<\/script>/.exec(fs.readFileSync('public/chat.html', 'utf8'))![1]!;
   check(() => assert.notEqual(/<script>([\s\S]*?)<\/script>/.exec(html)![1], originalScript));
-  for (const url of ['/pay.html', '/proposal.html', '/try', '/proposal/r-xian/2']) await page(url, token);
+  for (const url of ['/pay.html', '/proposal.html', '/proposal/r-xian/2']) await page(url, token);
+  for (const query of ['', '?start=1', '?ended=1']) {
+    const existing = await request('/try' + query, token);
+    await expect(existing, 302);
+    check(() => assert.equal(existing.headers.get('location'), '/console/'));
+  }
   await page('/proposal/r-xian/2?v=999', token, 404);
   // 执行真实页面的启动代码和按钮回调：?c 优先；新会话删 c、保留其余 URL，再启动产生新 id。
   const key = /LS_KEY = '([^']+)'/.exec(html)![1]!;

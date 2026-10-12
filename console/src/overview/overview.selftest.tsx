@@ -664,6 +664,20 @@ eq(
 }
 // WAITING（F01、A01）都没有报价（amount null）；PENDING_HIGH（120,000）> PENDING_B01（85,600）> 两个等人接手（null，
 // 并列时按沉默久的在前：A01 26分钟 > F01 8分钟）
+// 自己的待办超过种子的紧急/金额排序；订单会话同样带标记。
+{
+  const waiting = [{ ...WAITING[0]!, sandboxOwner: 'wechat' as const }, ...WAITING.slice(1)];
+  const ownOrder = { ...PENDING_B01, conversation: { ...PENDING_B01.conversation!, sandboxOwner: 'simulator' as const } };
+  const rows = attentionTodos(waiting, [], [ownOrder, PENDING_HIGH], 'advisor', TRAVEL, NOW);
+  eq(
+    '总览自己的两种会话都在金额更高的种子前',
+    rows
+      .slice(0, 2)
+      .map((r) => r.sandboxOwner)
+      .sort(),
+    ['simulator', 'wechat'],
+  );
+}
 const plain = attentionTodos(WAITING, [], [PENDING_B01, PENDING_HIGH], 'advisor', TRAVEL, NOW);
 eq(
   '需要你处理的顺序（验收 16）：按金额（HIGH 120,000 > B01 85,600 > 两个等人接手 null，null 按沉默久的在前）、话术草稿、线路草稿、6条酒店草稿',
@@ -1802,6 +1816,62 @@ for (const w of BANNED) {
     !hit,
     hit ? `出现在「${hit.slice(Math.max(0, at - 16), at + w.length + 16).replace(/\s+/g, ' ')}」` : '',
   );
+}
+
+{
+  server = {
+    pack: TRAVEL,
+    lists: { route: ROUTES, hotel: HOTELS },
+    waiting: [{ ...WAITING[0]!, sandboxOwner: 'wechat' }, ...WAITING.slice(1)],
+    pendingOrders: [{ ...PENDING_B01, conversation: { ...PENDING_B01.conversation!, sandboxOwner: 'simulator' } }, PENDING_HIGH],
+  };
+  const m = await mountOverview(member('owner'));
+  const tags = [...document.querySelectorAll('.ov-todo-title .ant-tag')];
+  eq('实际总览自己的会话置顶且显示对应Tag', tags.map((el) => el.textContent).sort(), ['你的微信', '你的模拟器会话']);
+  check('总览第一项属于访客', Boolean(document.querySelector('.ov-todo-title')?.querySelector('.ant-tag')));
+  await m.unmount();
+}
+
+{
+  server = { pack: TRAVEL, lists: SCENE };
+  const originalActor = AUDIT[0]!.actorName;
+  AUDIT[0]!.actorName = '体验访客';
+  const style = document.createElement('style');
+  style.textContent = fs.readFileSync(new URL('./overview.css', import.meta.url), 'utf8');
+  document.head.append(style);
+  try {
+    for (const sandbox of [
+      null,
+      {
+        ownConversationId: null,
+        expiresAt: new Date(NOW + 86_400_000).toISOString(),
+        wechat: 'off' as const,
+        steps: [false, false, false, false] as [boolean, boolean, boolean, boolean],
+      },
+    ]) {
+      const m = await mountOverview({ kind: 'member', me: { ...me('owner'), tenantName: '体验沙箱', sandbox }, pack: TRAVEL });
+      m.box.classList.toggle('sandbox-body', !!sandbox);
+      const name = sandbox ? 'AI销售工作台' : '体验沙箱';
+      eq(
+        `${sandbox ? '沙箱' : '宿主'}总览：标签页与状态句`,
+        [document.title, m.texts('.page-status')],
+        [`总览 · ${name}`, [`${name}·9月26日 周六`]],
+      );
+      eq(`${sandbox ? '沙箱' : '宿主'}总览：最近变更访客头像`, m.texts('.ov-tl-row .avatar')[0], sandbox ? '访' : '体');
+      for (const selector of ['.ov-kpi-caption', '.ov-kpi-detail']) {
+        const css = win.getComputedStyle(m.$(selector)[0]! as never);
+        eq(
+          `${sandbox ? '沙箱' : '宿主'} KPI ${selector}：完整折行且不截断，宿主照旧`,
+          [css.whiteSpace, css.overflow, css.textOverflow],
+          sandbox ? ['normal', 'visible', 'clip'] : ['nowrap', 'hidden', 'ellipsis'],
+        );
+      }
+      await m.unmount();
+    }
+  } finally {
+    AUDIT[0]!.actorName = originalActor;
+    style.remove();
+  }
 }
 
 if (fails.length) {

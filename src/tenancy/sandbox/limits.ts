@@ -20,7 +20,7 @@ export type SandboxWriteLimits = { -readonly [K in keyof typeof WRITE_DEFAULTS]:
 export class SandboxLimitError extends Error {
   readonly status = 429;
   constructor(
-    readonly reason: 'sandbox_limited' | 'sandbox_write_limited',
+    readonly reason: 'sandbox_limited' | 'sandbox_write_rate_limited' | 'sandbox_write_capacity_limited',
     readonly retryAfter = 60,
     readonly global = false,
   ) {
@@ -123,13 +123,14 @@ export function assertSandboxWriteRate(now = Date.now()): void {
   const state = tenantState.get();
   state.writes = state.writes.filter((at) => now - at < 60_000);
   if (state.writes.length >= sandboxWriteLimits().requestsPerMinute)
-    throw new SandboxLimitError('sandbox_write_limited', Math.max(1, Math.ceil((state.writes[0]! + 60_000 - now) / 1000)));
+    throw new SandboxLimitError('sandbox_write_rate_limited', Math.max(1, Math.ceil((state.writes[0]! + 60_000 - now) / 1000)));
   state.writes.push(now);
 }
 
 /** 必须在相应写锁内调用；无内容变化的更新不产生版本，也不占版本名额。 */
 export function assertSandboxWriteCapacity(kind: Exclude<keyof SandboxWriteLimits, 'requestsPerMinute'>, count: number, add = 1): void {
-  if (scopedRuntime()?.kind === 'sandbox' && count + add > sandboxWriteLimits()[kind]) throw new SandboxLimitError('sandbox_write_limited');
+  if (scopedRuntime()?.kind === 'sandbox' && count + add > sandboxWriteLimits()[kind])
+    throw new SandboxLimitError('sandbox_write_capacity_limited');
 }
 
 /** 种子的 createdAt 在开通前；重启后仍按同一持久化字段排除，不依赖内存基线。 */
