@@ -2,6 +2,7 @@ import { SandboxLimitError } from '../tenancy/sandbox/limits.js';
 import { BudgetExhausted } from '../llm-gate.js';
 import { publicHostMiddleware } from '../tenancy/hosts.js';
 import { sandboxSessionOf, resolveSandboxSession } from '../tenancy/sandbox/session.js';
+import { readSandboxSteps } from '../db/repo/sandbox-steps.js';
 import { currentRuntime, withoutTenantScope, tenantCallback, withTenantScope } from '../tenancy/runtime.js';
 import { brandTexts } from '../core/brand.js';
 // 后台接口子应用（docs/architecture/01-pg-config-console/spec.md「后台 API 与页面」）。
@@ -430,7 +431,11 @@ export const consoleApi = new Hono<ConsoleEnv>()
     c.header('Set-Cookie', cookie('', 0));
     return c.json({ ok: true as const }, 200);
   })
-  .get('/me', signedIn, (c) => c.json(meOf(c.var.user!), 200))
+  .get('/me', signedIn, async (c) => {
+    const me = meOf(c.var.user!);
+    if (me.sandbox) me.sandbox.steps = await readTx(c, (tx) => readSandboxSteps(tx, currentTenant().pack));
+    return c.json(me, 200);
+  })
 
   // ---------------- 行业包 ----------------
   // 当前租户（tenants.pack_id）的界面配置，取自启动时装载的租户行、不查库。它是代码里的公开配置，不含租户名、成员、草稿，

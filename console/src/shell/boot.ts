@@ -22,7 +22,8 @@ export type Viewer =
   | AnonViewer
   /** demo：必须经「只看演示数据」进入匿名外壳（05 R23） */
   | { kind: 'login'; demo?: AnonViewer; tryUrl?: string | null }
-  | { kind: 'disabled' };
+  | { kind: 'disabled' }
+  | { kind: 'redirect'; url: '/try' | '/try?ended=1' };
 
 /** 一个请求的结局：拿到了响应（状态码与解析出的 JSON），或者 fetch 自己抛了错（连不上） */
 export type Outcome = { status: number; body: unknown } | { thrown: unknown };
@@ -36,6 +37,8 @@ const httpError = (o: { status: number; body: unknown }): HttpError =>
   new HttpError(o.status, errorOf(o) ? (o.body as ApiError) : { error: 'bad_response' });
 
 export function resolveBoot(me: Outcome, pack: Outcome, memberSession: boolean): Viewer {
+  const sandboxError = [me, pack].find((o) => errorOf(o) === 'sandbox_required' || errorOf(o) === 'sandbox_expired');
+  if (sandboxError) return { kind: 'redirect', url: errorOf(sandboxError) === 'sandbox_expired' ? '/try?ended=1' : '/try' };
   if (is503(me, 'db_disabled') || is503(pack, 'db_disabled')) return { kind: 'disabled' };
   if (is503(me, 'not_ready')) throw httpError(me as { status: number; body: unknown });
   if (is503(pack, 'not_ready')) throw httpError(pack as { status: number; body: unknown });

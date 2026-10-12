@@ -36,6 +36,7 @@ import { conversationLabel, documentTitle } from '../shell/model.js';
 import { shellViewerOf } from '../shell/PageHeader.js';
 import { cjk } from '../typography.js';
 import { usePack, useViewer } from '../viewer.js';
+import { SimulatorLink } from '../sandbox/Sandbox.js';
 import { stageLabel } from './model.js';
 import { QuickRepliesCard } from './QuickReplies.js';
 import {
@@ -293,6 +294,8 @@ function ConversationHead({
   takeoverError: unknown;
   releaseError: unknown;
 }) {
+  const viewer = useViewer().data;
+  const sandbox = viewer?.kind === 'member' && !!viewer.me.sandbox;
   const { row } = cd;
   const state = conversationState(row, pack);
   const label = conversationLabel(row, pack);
@@ -315,6 +318,7 @@ function ConversationHead({
           ) : (
             row.assignee && <span className="wb-head-note">{`${row.assignee.name}处理中`}</span>
           )}
+          {sandbox && <SimulatorLink id={row.id} />}
           <MoreMenu
             canRelease={cd.can.release}
             canReassign={cd.can.reassign}

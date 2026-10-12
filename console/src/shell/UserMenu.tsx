@@ -49,7 +49,15 @@ export interface UserMenuProps {
 const checkable = (role: 'menuitemradio' | 'menuitemcheckbox', checked: boolean): object => ({ role, 'aria-checked': checked });
 
 /** 用户菜单的条目（外观子菜单、减少动态效果、关于、退出登录）；身份块在 popupRender 里 */
-export function userMenuItems({ appearance, reduce }: { appearance: Appearance; reduce: boolean }): NonNullable<MenuProps['items']> {
+export function userMenuItems({
+  appearance,
+  reduce,
+  sandbox = false,
+}: {
+  appearance: Appearance;
+  reduce: boolean;
+  sandbox?: boolean;
+}): NonNullable<MenuProps['items']> {
   return [
     {
       key: 'appearance',
@@ -85,8 +93,7 @@ export function userMenuItems({ appearance, reduce }: { appearance: Appearance; 
       ),
     },
     { key: 'about', label: '关于' },
-    { type: 'divider' },
-    { key: 'logout', label: '退出登录', icon: <Icon of={LogOut} /> },
+    ...(!sandbox ? [{ type: 'divider' as const }, { key: 'logout', label: '退出登录', icon: <Icon of={LogOut} /> }] : []),
   ];
 }
 
@@ -107,7 +114,7 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
   // 缓存弹层），点得快时外观子菜单还会被点之前悬停排下的定时器重新打开，勾停在旧值上，直到再打开菜单（验收之后在浏览器里看到）
   const keepOpen = useRef(false);
   const button = useRef<HTMLButtonElement>(null);
-  const items = userMenuItems({ appearance, reduce });
+  const items = userMenuItems({ appearance, reduce, sandbox: !!me.sandbox });
 
   const onClick: MenuProps['onClick'] = ({ key, domEvent }) => {
     // 键盘的 Enter 在 keydown 里就点了菜单项：拦下默认动作，这一下不再落到随即拿到焦点的按钮上（同话术页、条目详情的「更多」）
