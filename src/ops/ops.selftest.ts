@@ -21,6 +21,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import type { AddressInfo } from 'node:net';
+import { CHANNEL_KEY_ENV } from '../channels/secrets.js';
 import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
 import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
@@ -2543,6 +2544,8 @@ await captureAlertLogs(async () => {
   }
 });
 
+sandboxDeploySelftest();
+
 // ================ 部署脚本：deploy/watch.sh 与 backup.sh 的告警（PATH 里的假 docker、curl、df、age） ================
 const wtmp = fs.mkdtempSync(path.join(VAR_DIR, 'watch-'));
 const wbin = path.join(wtmp, 'bin');
@@ -2565,6 +2568,7 @@ const fakeCmd = (name: string, lines: string[]): void =>
   fs.writeFileSync(path.join(wbin, name), ['#!/usr/bin/env bash', ...lines, ''].join('\n'), { mode: 0o755 });
 fakeCmd('docker', [
   'case "$*" in',
+  '  *RestartCount*-sandbox*) cat "$FAKE_DIR/sandbox-restart" 2>/dev/null || exit 1 ;;',
   '  *RestartCount*) cat "$FAKE_DIR/restart" 2>/dev/null || exit 1 ;;',
   '  *"volume inspect"*) echo "$FAKE_DIR/volume" ;;',
   '  *pg_dumpall*) echo "-- globals" ;;',
@@ -2579,7 +2583,7 @@ fakeCmd('docker', [
 fakeCmd('curl', [
   'for a in "$@"; do',
   '  case "$a" in',
-  '    */healthz) h="$(cat "$FAKE_DIR/health")"; if [ "$h" = down ]; then exit 7; fi; printf "%s" "$h"; exit 0 ;;',
+  '    */healthz) echo "$a" >> "$FAKE_DIR/health-probes"; case "$a" in *:3211/*|*:3998/*) file=sandbox-health ;; *) file=health ;; esac; h="$(cat "$FAKE_DIR/$file")"; if [ "$h" = down ]; then exit 7; fi; printf "%s" "$h"; exit 0 ;;',
   '  esac',
   'done',
   'exec "$REAL_CURL" "$@"',
@@ -2636,7 +2640,7 @@ const scriptEnv = Object.fromEntries(
   Object.entries(process.env).filter(
     (e): e is [string, string] =>
       e[1] !== undefined &&
-      !/^(ALERT_WEBHOOK_URL|INSTANCE_LABEL|COMPOSE_PROJECT|BACKUP_.*|WATCH_.*|APP_CONTAINER|HOST_PORT|DISK_PATHS)$/.test(e[0]),
+      !/^(ALERT_WEBHOOK_URL|INSTANCE_LABEL|COMPOSE_PROJECT|BACKUP_.*|WATCH_.*|APP_CONTAINER|HOST_PORT|SANDBOX_PORT|DISK_PATHS)$/.test(e[0]),
   ),
 );
 Object.assign(scriptEnv, { PATH: `${wbin}${path.delimiter}${process.env.PATH ?? ''}`, FAKE_DIR: wfake, REAL_CURL: realCurl ?? 'curl' });
@@ -3021,6 +3025,58 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
       .some((m) => m.includes('已恢复：磁盘使用率回到 80% 以下')),
     json(fresh().slice(recoverBefore)),
   );
+
+  // 05：只增加启用沙箱时的探测；宿主、备份和去重状态继续由上面的回归断言覆盖。
+  fs.rmSync(path.join(wtmp, 'state', 'watch.state'), { force: true });
+  writeOps([`ALERT_WEBHOOK_URL=${watchHook}`, 'WATCH_BACKUP=0']);
+  setFake('restart', '0');
+  setFake('health', '{"ok":true}');
+  setFake('sandbox-restart', '0');
+  setFake('sandbox-health', 'down');
+  setFake('health-probes', '');
+  const beforeSandbox = contents().length;
+  await runWatch(100_000);
+  check(
+    '05 watch 无环境文件：只拨 host，宿主状态/备份行为照旧',
+    fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').trim().endsWith(':3999/healthz') &&
+      fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').trim().split('\n').length === 1 &&
+      contents().length === beforeSandbox,
+  );
+  fs.writeFileSync(path.join(srv, '.env.sandbox'), 'placeholder');
+  for (let i = 0; i < 4; i++) await runWatch(100_060 + i * 60);
+  check(
+    '05 watch 沙箱不可达连续三拍告警、第四拍去重；宿主成功不冲掉沙箱失败',
+    contents().length === beforeSandbox + 1 &&
+      contents().at(-1)!.includes('沙箱健康检查连续 3 分钟失败') &&
+      fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').includes(':3211/healthz'),
+  );
+  setFake('sandbox-health', '{"ok":false,"purgeOverdue":1}');
+  await runWatch(100_300);
+  check('05 watch purgeOverdue/ok false 延续沙箱失败状态、不误恢复', contents().length === beforeSandbox + 1);
+  setFake('sandbox-health', '{"ok":true}');
+  for (let i = 0; i < 3; i++) await runWatch(100_360 + i * 60, { SANDBOX_PORT: '3998' });
+  check(
+    '05 watch 沙箱独立端口：三拍恢复、宿主状态不变',
+    contents().length === beforeSandbox + 2 &&
+      contents().at(-1)!.includes('已恢复：沙箱健康检查') &&
+      fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').includes(':3998/healthz'),
+  );
+  setFake('sandbox-restart', '2');
+  await runWatch(100_540);
+  await runWatch(100_600);
+  check(
+    '05 watch 沙箱反复重启独立告警、三十分钟去重',
+    contents().length === beforeSandbox + 3 && contents().at(-1)!.includes('sandbox 容器 10 分钟内重启了 2 次'),
+  );
+  await runWatch(102_340);
+  check(
+    '05 watch 沙箱三十分钟不再重启独立恢复',
+    contents().length === beforeSandbox + 4 && contents().at(-1)!.includes('已恢复：sandbox 容器'),
+  );
+  fs.rmSync(path.join(srv, '.env.sandbox'));
+  setFake('health-probes', '');
+  await runWatch(102_400);
+  check('05 watch 停用后不拨沙箱，宿主照常', !fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').includes(':3211/healthz'));
 
   check(
     'watch.sh 与 backup.sh 的输出里一次都没有 webhook 的 key 与地址',
@@ -3751,5 +3807,454 @@ async function channelObservationSelftest(): Promise<void> {
     registry.__channelsTest.setObservationClock(null);
     wecom.__wecomTest.setObservationClock(null);
     await t.close();
+  }
+}
+
+/** 05 R18/R20：执行真实 deploy.sh 与 ssh bash -s，docker/psql/rsync 全部用隔离替身。 */
+function sandboxDeploySelftest(): void {
+  const dir = fs.mkdtempSync(path.join(VAR_DIR, 'deploy-05-'));
+  const bin = path.join(dir, 'bin');
+  const repo = path.join(dir, 'repo');
+  const remote = path.join(dir, 'remote');
+  const calls = path.join(dir, 'calls');
+  const flags = path.join(dir, 'flags');
+  for (const folder of [bin, repo, remote, flags, path.join(repo, 'deploy'), path.join(repo, 'src/db')])
+    fs.mkdirSync(folder, { recursive: true });
+  const sourceRoot = path.join(import.meta.dirname, '../..');
+  for (const file of ['deploy.sh', 'deploy/rollback-guard.sh']) fs.copyFileSync(path.join(sourceRoot, file), path.join(repo, file));
+  for (const file of ['package.json', 'Dockerfile', 'deploy/compose.yml', 'src/db/migrate.ts'])
+    fs.writeFileSync(path.join(repo, file), '{}');
+  const baseline = [
+    'DEPLOY_PROFILE=demo',
+    'CONFIG_SOURCE=db',
+    'SESSION_STORE=db',
+    'SANDBOX_HOST=sandbox-placeholder',
+    'SANDBOX_TEMPLATE_SLUG=demo',
+    '',
+  ];
+  fs.writeFileSync(path.join(remote, '.env'), 'DEPLOY_PROFILE=demo\nDEFAULT_TENANT_SLUG=demo\n');
+  fs.writeFileSync(
+    path.join(remote, '.env.db'),
+    ['POSTGRES_PASSWORD=x', 'AGENT_OWNER_PASSWORD=x', 'AGENT_APP_PASSWORD=x', 'AGENT_PLATFORM_PASSWORD=x', ''].join('\n'),
+  );
+  fs.writeFileSync(path.join(remote, '.env.migrate'), '');
+  const shell = (name: string, body: string): void =>
+    fs.writeFileSync(path.join(bin, name), `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
+  shell(
+    'git',
+    `case "$1" in
+    show-ref) exit 0 ;;
+    cat-file) case "$3" in *runtime.ts) [ "\${NEW_PHASE:-5}" = 5 ] ;; *) exit 0 ;; esac ;;
+    archive) tar -cf - package.json Dockerfile deploy src ;;
+    *) exit 98 ;;
+  esac`,
+  );
+  shell(
+    'ssh',
+    `shift
+    if [ "$1" = bash ]; then exec "$@"; fi
+    case "$1" in *"docker logs"*"-sandbox"*)
+      if [ "\${SSH_HANG_LOGS:-0}" = 1 ]; then
+        echo 1 > "$FLAGS/ssh-log-hang"
+        exec node -e 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)'
+      fi ;;
+    esac
+    exec bash -c "$1"`,
+  );
+  shell('pnpm', 'exit 0');
+  shell('rsync', 'echo "rsync" >> "$CALLS"');
+  shell('sleep', 'echo "sleep $*" >> "$CALLS"');
+  shell(
+    'perl',
+    `if [ "$1" = -e ] && [ "$2" = 'alarm 12; exec @ARGV' ] && [ "\${FAST_SSH_TIMEOUT:-0}" = 1 ]; then
+    shift 2; exec /usr/bin/perl -e 'alarm 1; exec @ARGV' "$@"
+  fi
+  exec /usr/bin/perl "$@"`,
+  );
+  // 真正监督子进程并终止挂住的假 docker；仅日志/删除的故障测试缩短时限。
+  fs.writeFileSync(
+    path.join(bin, 'timeout'),
+    `#!/usr/bin/env node
+${String.raw`
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const [kill, limit, command, ...args] = process.argv.slice(2);
+if (kill !== '--kill-after=2s' || !/^[0-9]+s$/.test(limit)) process.exit(99);
+fs.appendFileSync(process.env.CALLS, 'timeout ' + process.argv.slice(2).join(' ') + '\n');
+const short = process.env.FAST_REMOTE_TIMEOUT === '1' && (args[0] === 'logs' || args.includes('rm'));
+const r = spawnSync(command, args, { stdio: ['inherit', 'pipe', 'pipe'], encoding: 'utf8',
+  timeout: short ? 300 : parseInt(limit, 10) * 1000, killSignal: 'SIGKILL' });
+process.stdout.write(r.stdout || ''); process.stderr.write(r.stderr || '');
+process.exit(r.error?.code === 'ETIMEDOUT' ? 124 : (r.status ?? 1));
+`}`,
+    { mode: 0o755 },
+  );
+  for (const name of ['chown', 'install']) shell(name, `echo "${name} $*" >> "$CALLS"`);
+  // deploy.sh 安装 cron 脚本的目录在部署目录外；替身只让隔离目录的 mkdir 真正执行。
+  shell('mkdir', 'case "$*" in */usr/local/lib/*) exit 0 ;; esac; exec /bin/mkdir "$@"');
+  fs.writeFileSync(
+    path.join(bin, 'docker'),
+    `#!/usr/bin/env node
+${String.raw`
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const a = process.argv.slice(2), text = a.join(' '), f = process.env.FLAGS;
+fs.readFileSync(0);
+fs.appendFileSync(process.env.CALLS, 'docker ' + text + ' image=' + (process.env.APP_IMAGE || '') + '\n');
+const mark = (key) => fs.writeFileSync(f + '/' + key, '1');
+const marked = (key) => fs.existsSync(f + '/' + key);
+if (text.includes('src/tenancy/runtime.ts') && !text.includes('resolveRole')) {
+  process.exit(process.env.PREV_PHASE === 'error' ? 125 : Number(process.env.PREV_PHASE || 5) >= 5 ? 0 : 1);
+}
+if (text.includes('psql')) { console.log(text.includes("column_name = 'kind'") ? 't' : text.includes("kind = 'standard'") ? 'f|f' : 'f'); process.exit(0); }
+if (text.includes('container ls')) { if (marked('sandbox')) console.log('placeholder'); process.exit(0); }
+if (text.includes('container inspect') && text.includes('-sandbox')) process.exit(marked('sandbox') ? 0 : 1);
+if (text.includes('inspect')) {
+  console.log(text.includes('com.docker.compose.project') ? 'fixture' : text.includes('.Config.Env') ? 'APP_REVISION=previous' : 'sha256:previous');
+  process.exit(0);
+}
+if (text.includes('.env.sandbox')) {
+  const lines = fs.readFileSync(a[a.indexOf('--env-file') + 1], 'utf8').split('\n');
+  const invalid = lines.find((line) => line.trimStart().startsWith('='));
+  if (process.env.BAD_ENV_PARSE === '1' || invalid !== undefined) {
+    const line = invalid ?? '=SECRET_VALUE';
+    fs.writeFileSync(f + '/parser-stderr', line);
+    process.stderr.write('docker: invalid env line ' + JSON.stringify(line) + '\n');
+    process.exit(1);
+  }
+  const env = { PATH: process.env.PATH, APP_ROLE: 'sandbox' };
+  for (let line of lines) {
+    line = line.replace(/^[ \t]+/, '').replace(/\r$/, '');
+    const eq = line.indexOf('='); if (eq > 0 && !line.startsWith('#')) env[line.slice(0, eq)] = line.slice(eq + 1);
+  }
+  env.APP_ROLE = 'sandbox';
+  const code = a[a.indexOf('-e', a.indexOf('--entrypoint')) + 1].replace('./src/tenancy/sandbox/role.ts', process.env.ROLE_ROOT + '/src/tenancy/sandbox/role.ts');
+  const r = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], { cwd: process.env.ROLE_ROOT, env, encoding: 'utf8', timeout: 5000 });
+  process.stdout.write(r.stdout || ''); process.stderr.write(r.stderr || ''); process.exit(r.status ?? 1);
+}
+if (text.includes('run --rm migrate')) process.exit(process.env.FAIL_MIGRATE === '1' ? 1 : 0);
+if (text.includes('up -d --no-deps sandbox')) { mark('sandbox'); process.exit(process.env.FAIL_SANDBOX === 'up' ? 1 : 0); }
+if (text.startsWith('logs') && text.includes('-sandbox')) {
+  mark('logs-started');
+  if (process.env.FAIL_SANDBOX_LOGS === 'hang') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  process.exit(process.env.FAIL_SANDBOX_LOGS === 'fail' ? 1 : 0);
+}
+if (text.includes('rm -sf sandbox') || text.startsWith('rm -f ')) {
+  mark('remove-attempted');
+  if (process.env.FAIL_SANDBOX_REMOVE === 'hang') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  if (process.env.FAIL_SANDBOX_REMOVE === 'fail') process.exit(1);
+  fs.rmSync(f + '/sandbox', { force: true }); mark('removed'); process.exit(0);
+}
+if (text.includes('up -d --no-deps app')) { mark('rollback'); process.exit(0); }
+if (text.includes('up -d app')) { mark('host'); process.exit(process.env.FAIL_HOST === 'up' ? 1 : 0); }
+process.exit(0);
+`}`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(bin, 'curl'),
+    `#!/usr/bin/env node
+${String.raw`
+const fs = require('node:fs');
+const text = process.argv.slice(2).join(' '), f = process.env.FLAGS;
+const sandbox = text.includes(':' + process.env.SANDBOX_PORT + '/');
+const key = sandbox ? 'sandbox-health' : 'host-health', file = f + '/' + key;
+const n = Number(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : 0) + 1;
+fs.writeFileSync(file, String(n)); fs.appendFileSync(process.env.CALLS, 'health ' + (sandbox ? 'sandbox' : 'host') + '\n');
+const rollback = fs.existsSync(f + '/rollback');
+const failure = process.env[sandbox ? 'FAIL_SANDBOX' : 'FAIL_HOST'];
+if (!rollback && failure === 'health') process.exit(7);
+if (sandbox && n <= Number(process.env.LOCK_POLLS || 0)) process.exit(7);
+const old = rollback ? process.env.PREV_PHASE === '4' : process.env.NEW_PHASE === '4';
+const result = { ok: !(sandbox && process.env.SANDBOX_OK_FALSE === '1'), revision: rollback ? 'previous' : process.env.BAD_REVISION === (sandbox ? 'sandbox' : 'host') ? 'wrong' : 'candidate' };
+if (!old) result.role = rollback && process.env.BAD_PREV_ROLE === '1' ? 'wrong' : !rollback && failure === 'role' ? 'wrong' : sandbox ? 'sandbox' : 'host';
+if (rollback && process.env.BAD_PREV_REVISION === '1') result.revision = 'wrong';
+console.log(JSON.stringify(result));
+`}`,
+    { mode: 0o755 },
+  );
+  const run = (options: Record<string, string> = {}, enabled = true, extra = '') => {
+    fs.writeFileSync(calls, '');
+    for (const name of fs.readdirSync(flags)) fs.rmSync(path.join(flags, name));
+    for (const name of ['.env.sandbox', '.env.sandbox.off']) fs.rmSync(path.join(remote, name), { force: true });
+    if (enabled) {
+      fs.writeFileSync(path.join(remote, '.env.sandbox'), baseline.join('\n') + extra);
+      fs.writeFileSync(path.join(flags, 'sandbox'), 'old');
+    }
+    const started = performance.now();
+    const result = spawnSync('bash', ['deploy.sh', 'candidate'], {
+      cwd: repo,
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        TMPDIR: dir,
+        SERVER: 'placeholder',
+        REMOTE_DIR: remote,
+        NAME: 'side05',
+        HOST_PORT: '3999',
+        SANDBOX_PORT: '3998',
+        CALLS: calls,
+        FLAGS: flags,
+        ROLE_ROOT: sourceRoot,
+        ...options,
+      },
+    });
+    if (result.error) throw result.error;
+    return {
+      code: result.status,
+      out: result.stdout + result.stderr,
+      log: fs.readFileSync(calls, 'utf8'),
+      elapsed: performance.now() - started,
+    };
+  };
+  try {
+    let r = run();
+    check(
+      '05-15① 先换 host 并核对 revision/role，再换 sandbox，两者健康才成功',
+      r.code === 0 &&
+        r.out.includes('"role":"host"') &&
+        r.out.includes('"role":"sandbox"') &&
+        r.out.includes('部署成功') &&
+        r.log.indexOf('up -d app') < r.log.indexOf('health host') &&
+        r.log.indexOf('health host') < r.log.indexOf('up -d --no-deps sandbox') &&
+        r.log.includes('--profile sandbox up -d --no-deps sandbox'),
+      r.out + r.log,
+    );
+    r = run({ SANDBOX_OK_FALSE: '1' });
+    check(
+      '05 评审3 按 R20 只核对 revision/role，ok false 仍部署成功，由巡检告警',
+      r.code === 0 && r.out.includes('"ok":false') && r.out.includes('"role":"sandbox"') && r.out.includes('部署成功'),
+      r.out,
+    );
+    for (const fail of ['up', 'health', 'role']) {
+      r = run({ FAIL_HOST: fail });
+      check(
+        `05-15② host ${fail} 失败：回到 prev、sandbox 上一版容器没动，退出 1`,
+        r.code === 1 &&
+          r.out.includes('服务恢复') &&
+          r.log.includes('image=side05:prev') &&
+          !r.log.includes('up -d --no-deps sandbox') &&
+          !r.log.includes('rm -sf sandbox') &&
+          fs.readFileSync(path.join(flags, 'sandbox'), 'utf8') === 'old',
+        r.out + r.log,
+      );
+    }
+    for (const fail of ['up', 'health', 'role', 'revision']) {
+      r = run(fail === 'revision' ? { BAD_REVISION: 'sandbox' } : { FAIL_SANDBOX: fail });
+      check(
+        `05-15③ sandbox ${fail} 失败：删容器、host 新版保留、退出 1`,
+        r.code === 1 &&
+          r.out.includes('宿主已上线、沙箱已停') &&
+          !r.out.includes('部署成功') &&
+          !r.log.includes('up -d --no-deps app') &&
+          r.log.includes('--profile sandbox rm -sf sandbox') &&
+          !fs.existsSync(path.join(flags, 'sandbox')),
+        r.out + r.log,
+      );
+    }
+    for (const mode of ['hang', 'fail']) {
+      r = run({ FAIL_SANDBOX: 'up', FAIL_SANDBOX_LOGS: mode, FAST_REMOTE_TIMEOUT: '1' });
+      check(
+        `05 评审4 取日志 ${mode}：限时返回后仍删沙箱，宿主保留、总耗时有界`,
+        r.code === 1 &&
+          r.elapsed < 6000 &&
+          fs.existsSync(path.join(flags, 'logs-started')) &&
+          fs.existsSync(path.join(flags, 'removed')) &&
+          !fs.existsSync(path.join(flags, 'sandbox')) &&
+          r.log.includes('timeout --kill-after=2s 8s docker logs') &&
+          r.log.includes('timeout --kill-after=2s 8s docker compose') &&
+          !r.log.includes('up -d --no-deps app'),
+        r.out + r.log,
+      );
+    }
+    r = run({ FAIL_SANDBOX: 'up', SSH_HANG_LOGS: '1', FAST_SSH_TIMEOUT: '1' });
+    check(
+      '05 评审4 取日志 ssh 挂住：本地封顶后仍执行删容器、总耗时有界',
+      r.code === 1 &&
+        r.elapsed < 6000 &&
+        fs.existsSync(path.join(flags, 'ssh-log-hang')) &&
+        fs.existsSync(path.join(flags, 'removed')) &&
+        !fs.existsSync(path.join(flags, 'sandbox')) &&
+        !r.log.includes('up -d --no-deps app'),
+      r.out + r.log,
+    );
+    for (const mode of ['hang', 'fail']) {
+      r = run({ FAIL_SANDBOX: 'up', FAIL_SANDBOX_REMOVE: mode, FAST_REMOTE_TIMEOUT: '1' });
+      check(
+        `05 评审4 删容器 ${mode}：限时退出 1、报告需立即人工处理、宿主不回滚`,
+        r.code === 1 &&
+          r.elapsed < 6000 &&
+          r.out.includes('删除沙箱容器失败，需立即人工处理') &&
+          fs.existsSync(path.join(flags, 'remove-attempted')) &&
+          fs.existsSync(path.join(flags, 'sandbox')) &&
+          !r.log.includes('up -d --no-deps app'),
+        r.out + r.log,
+      );
+    }
+    for (const field of ['BAD_PREV_ROLE', 'BAD_PREV_REVISION']) {
+      r = run({ FAIL_HOST: 'up', [field]: '1' });
+      check(
+        `05-15② 自动回滚 05 仍核对 ${field}，不误报恢复`,
+        r.code === 1 && r.out.includes('回滚后健康检查仍失败') && !r.out.includes('服务恢复') && !r.log.includes('up -d --no-deps sandbox'),
+        r.out,
+      );
+    }
+    r = run({ FAIL_HOST: 'up', PREV_PHASE: 'error' });
+    check(
+      '05 回滚镜像探测出错：不误删上一版 sandbox、不改环境文件',
+      r.code === 1 &&
+        r.out.includes('无法确认上一版是否为 pre-05') &&
+        !r.log.includes('docker rm') &&
+        fs.existsSync(path.join(remote, '.env.sandbox')) &&
+        fs.readFileSync(path.join(flags, 'sandbox'), 'utf8') === 'old',
+      r.out,
+    );
+    r = run({ LOCK_POLLS: '15' });
+    check(
+      '05-15③ 等旧进程锁 30 秒仍能上线，sandbox 第 16 拍成功（host 仍只有 10 拍）',
+      r.code === 0 &&
+        Number(fs.readFileSync(path.join(flags, 'sandbox-health'))) === 16 &&
+        r.log.split('\n').filter((line) => line === 'sleep 2').length === 15,
+      r.out + r.log,
+    );
+    for (const name of [
+      'DEFAULT_TENANT_SLUG',
+      'WECOM_FAKE',
+      CHANNEL_KEY_ENV,
+      'NOTIFY_WEBHOOK_URL',
+      'OTEL_EXPORTER_OTLP_ENDPOINT',
+      'LLM_HEDGE_MODEL',
+    ]) {
+      r = run({}, true, `${name}=\n`);
+      check(
+        `05-15④ ${name} 即使空值也在第 5 步拒绝，没迁移、没换容器`,
+        r.code === 1 &&
+          r.out.includes('sandbox_env_forbidden') &&
+          !r.log.includes('run --rm migrate') &&
+          !r.log.includes('up -d app') &&
+          fs.readFileSync(path.join(flags, 'sandbox'), 'utf8') === 'old',
+        r.out,
+      );
+    }
+    r = run({}, true, 'SANDBOX_WECOM_SECRET=placeholder\n');
+    check(
+      '05 R16 体验客服缺部分：第 5 步拒绝 sandbox_wecom_partial',
+      r.code === 1 && r.out.includes('sandbox_wecom_partial') && !r.log.includes('run --rm migrate'),
+      r.out,
+    );
+    r = run({}, true, ['CORP_ID', 'SECRET', 'TOKEN', 'AES_KEY', 'OPEN_KFID'].map((key) => `SANDBOX_WECOM_${key}=placeholder\n`).join(''));
+    check('05 R16 五项体验客服占位变量齐全通过环境试读', r.code === 0, r.out);
+    for (const line of ['DEFAULT_TENANT_SLUG', '=SECRET_VALUE', '1BAD=SECRET_VALUE', 'BAD NAME=SECRET_VALUE']) {
+      r = run({}, true, `${line}\n`);
+      check(
+        `05 评审1/2 非赋值或非法名字 ${line.split('=')[0] || '空名字'}：只报行号、退出 1、容器未动`,
+        r.code === 1 &&
+          r.out.includes('sandbox_env_format line=6') &&
+          !r.out.includes('SECRET_VALUE') &&
+          !r.out.includes(line) &&
+          !r.log.includes('docker ') &&
+          !fs.existsSync(path.join(flags, 'host')) &&
+          fs.readFileSync(path.join(flags, 'sandbox'), 'utf8') === 'old',
+        r.out + r.log,
+      );
+    }
+    // 对照证明替身实际把整行写到 stderr；部署路径必须先挡格式错误，并遮住 Docker 其他解析错误。
+    fs.writeFileSync(path.join(remote, '.env.sandbox'), '=SECRET_VALUE\n');
+    const parserControl = spawnSync(path.join(bin, 'docker'), ['run', '--env-file', path.join(remote, '.env.sandbox')], {
+      encoding: 'utf8',
+      timeout: 5000,
+      env: { PATH: `${bin}:${process.env.PATH}`, FLAGS: flags, CALLS: calls },
+    });
+    if (parserControl.error) throw parserControl.error;
+    check(
+      '05 评审1 Docker 替身对照：格式错误真的将整行输出到 stderr',
+      parserControl.status === 1 && parserControl.stderr.includes('=SECRET_VALUE'),
+      parserControl.stderr,
+    );
+    r = run({ BAD_ENV_PARSE: '1' });
+    check(
+      '05 评审1 Docker 原文 stderr 被丢弃：退出 1、输出无 SECRET_VALUE、旧容器不动',
+      r.code === 1 &&
+        !r.out.includes('SECRET_VALUE') &&
+        fs.readFileSync(path.join(flags, 'parser-stderr'), 'utf8') === '=SECRET_VALUE' &&
+        !r.log.includes('up -d app') &&
+        !r.log.includes('run --rm migrate') &&
+        fs.readFileSync(path.join(flags, 'sandbox'), 'utf8') === 'old',
+      r.out,
+    );
+    r = run({}, true, ' \t# comment\n\nA_1=placeholder\n');
+    check('05 评审1/2 空行、注释及合法变量名字正常部署', r.code === 0, r.out);
+    r = run({ PREV_PHASE: '4', FAIL_HOST: 'health' });
+    check(
+      '05-15⑤ 首次 05 host 失败：先删 sandbox、改名环境，再 guard、恢复 pre-05（不要求 role）',
+      r.code === 1 &&
+        r.out.includes('服务恢复') &&
+        fs.existsSync(path.join(remote, '.env.sandbox.off')) &&
+        !fs.existsSync(path.join(remote, '.env.sandbox')) &&
+        r.log.indexOf('rm -f side05-sandbox') < r.log.indexOf("column_name = 'kind'") &&
+        !r.log.includes('up -d --no-deps sandbox') &&
+        !fs.existsSync(path.join(flags, 'sandbox')),
+      r.out + r.log,
+    );
+    r = run({ PREV_PHASE: '4', FAIL_HOST: 'up', BAD_PREV_REVISION: '1' });
+    check(
+      '05-15⑤ pre-05 回滚也核对上一版 revision，不要求 role、错误版本不误报恢复',
+      r.code === 1 &&
+        r.out.includes('回滚后健康检查仍失败') &&
+        !r.out.includes('服务恢复') &&
+        fs.existsSync(path.join(remote, '.env.sandbox.off')) &&
+        !r.log.includes('up -d --no-deps sandbox'),
+      r.out,
+    );
+    r = run({}, false);
+    check(
+      '05-15⑥ 无 .env.sandbox：只换 host，不启 profile；备份安装、prev/current 与迁移路径不变',
+      r.code === 0 &&
+        !r.log.includes('--profile sandbox') &&
+        !r.log.includes('docker rm') &&
+        r.log.includes('run --rm migrate') &&
+        r.log.includes('backup.sh /usr/local/lib/side05/backup.sh') &&
+        r.log.includes('tag sha256:previous side05:prev') &&
+        r.log.includes('tag side05:latest side05:current'),
+      r.out + r.log,
+    );
+    r = run({ NEW_PHASE: '4', PREV_PHASE: '4' }, false);
+    check('05-15⑥ 无沙箱部署 pre-05：不要求 health.role，旧部署成功', r.code === 0 && !r.out.includes('"role"'), r.out);
+    r = run({ NEW_PHASE: '4', PREV_PHASE: '4', FAIL_HOST: 'health' }, false);
+    check(
+      '05-15⑥ 无沙箱 pre-05 health 失败：10 拍后回滚、无迁移回滚、旧 health 无 role 仍恢复',
+      r.code === 1 &&
+        r.out.includes('服务恢复') &&
+        r.log.split('\n').filter((line) => line === 'sleep 2').length === 10 &&
+        r.log.includes('up -d --no-deps app') &&
+        !r.log.includes('docker rm') &&
+        r.log.split('\n').filter((line) => line.includes('run --rm migrate')).length === 1,
+      r.out + r.log,
+    );
+    r = run({ FAIL_MIGRATE: '1' }, false);
+    check(
+      '05-15⑥ 无沙箱迁移失败：宿主与 rollback 路径不动',
+      r.code === 1 && !r.log.includes('up -d app') && !r.log.includes('up -d --no-deps app'),
+      r.out,
+    );
+    r = run({ BAD_REVISION: 'host' }, false);
+    check('05-15① host revision 不匹配：拒绝上线并恢复 prev', r.code === 1 && r.out.includes('服务恢复'), r.out);
+    const compose = fs.readFileSync(path.join(sourceRoot, 'deploy/compose.yml'), 'utf8');
+    const sandbox = compose.split('  sandbox:\n')[1]!.split('  platform:')[0]!;
+    check(
+      '05 compose sandbox：同镜像、独立 profile/env/角色/回环端口、10s、无 var 卷、无文件仍可解析',
+      sandbox.includes('image: ${APP_IMAGE:-${APP_CONTAINER:-wecom-sales-agent}:current}') &&
+        sandbox.includes('profiles: [sandbox]') &&
+        sandbox.includes('../.env.sandbox') &&
+        sandbox.includes('required: false') &&
+        sandbox.includes('APP_ROLE: sandbox') &&
+        sandbox.includes('${SANDBOX_PORT:-3211}:3200') &&
+        sandbox.includes('stop_grace_period: 10s') &&
+        !sandbox.includes('volumes:'),
+      sandbox,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }
