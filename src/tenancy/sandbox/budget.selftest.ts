@@ -327,6 +327,13 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<import('
         '转人工只留一条执行记录',
       ),
     );
+    // spec Revisions（第 20 步）：转人工的那一轮照常记 handoff，不被预算收尾盖掉
+    await scope(handoffBox.rt, () => handoffBox.rt.store.pgBackend!.drain(2000));
+    const [handoffTrace] = await q<{ outcome: string }>('select outcome from turn_traces where tenant_id=$1 and conversation_id=$2', [
+      handoffBox.rt.id,
+      handing.id,
+    ]);
+    check(() => assert.equal(handoffTrace?.outcome, 'handoff', '转人工后预算收尾仍记录 handoff'));
   } finally {
     globalThis.fetch = fetchBeforeWrite;
   }
