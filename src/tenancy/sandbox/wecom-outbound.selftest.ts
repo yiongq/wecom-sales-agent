@@ -370,6 +370,8 @@ async function suite(db: Db, q: Query): Promise<void> {
   mode = 'expired';
   await withTenantScope(A, () => api.welcome('fake-welcome'));
   check(() => assert.ok(JSON.stringify(sends.at(-1)!.body).includes(`/wx/${tokenA}/privacy`)));
+  check(() => assert.match(sends.at(-1)!.body.text.content, /回复「人工」，会话会转到你的工作台，由你来接手。/));
+  check(() => assert.doesNotMatch(sends.at(-1)!.body.text.content, /需要真人服务时，回复「人工」即可转真人顾问。/));
   await withTenantScope(A, () =>
     refused(() => raw({ code: 'fake-welcome', msgtype: 'text', text: { content: '测试' } }, 'kf/send_msg_on_event')),
   );

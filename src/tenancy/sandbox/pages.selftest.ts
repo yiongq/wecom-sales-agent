@@ -49,6 +49,9 @@ class Element {
   before(element: Element) {
     this.banner = element;
   }
+  querySelectorAll() {
+    return [];
+  }
 }
 
 function boot(html: string, fetch: (url: string, init: RequestInit) => Promise<Response>, search = '', visible = true) {
@@ -149,23 +152,34 @@ try {
   check(() => assert.equal(uiSource, fs.readFileSync('public/sandbox-ui.js', 'utf8')));
   for (const wechat of ['off', 'full', 'unbound', 'bound']) {
     const messages = new Element();
+    const footer = new Element();
     const close = new Element();
     close.setAttribute('onclick', 'closeWebview()');
     let closed = 0;
     let prevented = 0;
     vm.runInNewContext(uiSource, {
       document: {
-        getElementById: () => messages,
+        getElementById: (id: string) => (id === 'msgs' ? messages : null),
+        querySelector: (selector: string) => (selector === '.foot' ? footer : null),
         querySelectorAll: () => [close],
         createElement: () => new Element(),
         createElementNS: () => new Element(),
       },
       window: { closeWebview: () => closed++ },
+      MutationObserver: class {
+        observe() {}
+      },
       fetch: async () => Response.json({ sandbox: { wechat, expiresAt: new Date(Date.now() + 3600000).toISOString() } }),
     });
     await new Promise((resolve) => setImmediate(resolve));
     check(() => assert.match(messages.banner!.children[1]!.children[0]!.textContent, /体验环境 · 你在扮演客户/));
-    check(() => assert.match(messages.banner!.children[1]!.children[1]!.textContent, /这里的回复只出现在网页上，不会发给任何人/));
+    check(() =>
+      assert.equal(
+        messages.banner!.children[1]!.children[1]!.textContent,
+        '对话会出现在你的工作台里，不会发到任何微信；体验结束后一起删除',
+      ),
+    );
+    check(() => assert.equal(footer.hidden, true));
     check(() => assert.equal(messages.banner!.children[2]!.attrs.get('href'), '/console/'));
     await close.events.get('click')!({ preventDefault: () => prevented++ });
     check(() => assert.equal(closed, 1));
@@ -173,6 +187,16 @@ try {
     check(() => assert.equal(close.hasAttribute('onclick'), false));
     check(() => assert.equal(close.attrs.get('href'), '#'));
   }
+  // 支付等没有聊天区域的沙箱页面不隐藏页脚。
+  const otherFooter = new Element();
+  vm.runInNewContext(uiSource, {
+    document: {
+      getElementById: () => null,
+      querySelectorAll: () => [],
+      querySelector: () => otherFooter,
+    },
+  });
+  check(() => assert.equal(otherFooter.hidden, false));
 
   process.env.PUBLIC_BASE_URL = 'https://host.example.invalid/';
   const app = sandboxApp(service, 'sandbox.example.invalid');
@@ -193,10 +217,13 @@ try {
   check(() => assert.doesNotMatch(html, /\.try-steps[^}]+border-top/));
   check(() => assert.match(html, /id="dataWarning">别填真实的姓名和手机号 · <\/span><a/));
   check(() => assert.match(html, /一份只属于你的示例后台，<br class="try-lead-break">带示例会话、订单和产品。/));
+  check(() => assert.match(html, /工作台只能在这个浏览器里打开；扫码绑定后，微信里的回复只发到你自己的微信/));
+  check(() => assert.match(html, /之后在微信里再发消息，只会收到「去开一个新体验」的提示/));
 
   check(() => assert.equal(response.status, 200));
   check(() => assert.equal(provisions, 0));
   const page = boot(html, fetch, '?ended=1');
+  check(() => assert.equal(page.ids.get('tryLead')!.textContent, '上一次体验已结束，里面的数据会全部删除。想再看一遍，可以重新开一个。'));
   check(() => assert.equal(page.ids.get('ended')!.hidden, false));
   check(() => assert.equal(page.ids.get('hostConsole')!.attrs.get('href'), 'https://host.example.invalid/console/?view=demo'));
   check(() => assert.equal(page.ids.get('hostChat')!.attrs.get('href'), 'https://host.example.invalid/chat.html'));
@@ -217,13 +244,17 @@ try {
   await attempt;
   check(() => assert.equal(provisions, 1, '重复点击只发一次 POST'));
   check(() => assert.equal(page.ids.get('fallback')!.hidden, false));
-  check(() => assert.match(page.ids.get('tryTitle')!.textContent, /今天的体验名额满了/));
-  check(() => assert.match(page.ids.get('tryLead')!.textContent, /大约2小时后恢复/));
+  check(() => assert.match(page.ids.get('tryTitle')!.textContent, /暂时没有空余的体验名额/));
+  check(() => assert.match(page.ids.get('tryLead')!.textContent, /约2小时后再试/));
   check(() => assert.equal(page.ids.get('startLabel')!.textContent, '重试'));
   check(() => assert.equal(page.ids.get('startBtn')!.disabled, false));
   check(() => assert.equal(page.ids.get('startBtn')!.attrs.get('aria-busy'), 'false'));
   check(() => assert.equal(page.ids.get('dataNote')!.hidden, true));
   check(() => assert.equal(page.ids.get('tryData')!.hidden, true));
+  const minutePage = boot(html, async () => Response.json({ error: 'sandbox_limited', scope: 'pool', retryAfter: 120 }, { status: 429 }));
+  await minutePage.click();
+  check(() => assert.equal(minutePage.ids.get('tryTitle')!.textContent, '暂时没有空余的体验名额'));
+  check(() => assert.equal(minutePage.ids.get('tryLead')!.textContent, '体验环境的名额有限，约2分钟后再试。先看看这些：'));
   failure = 'unavailable';
   await page.click();
   check(() => assert.equal(provisions, 2));
@@ -327,6 +358,9 @@ try {
   check(() => assert.match(html, /href="\/console\/assets\/[^" ]+\.css"/));
   check(() => assert.match(html, /src="\/login-showcase.png"/));
   check(() => assert.match(html, /本地7天、异地30天/));
+  check(() => assert.match(html, /对话内容会发送给大模型服务商，用于生成AI回复。/));
+  check(() => assert.match(html, /体验结束后，这份环境及其会话、订单、配置和微信绑定将整体删除。/));
+  check(() => assert.match(html, /企业微信服务器上的聊天记录按企业微信的规则保存，不随这次体验一起删除。/));
   check(() => assert.equal(ipPage.ids.get('hostLogin')!.attrs.get('href'), 'https://host.example.invalid/console/'));
   const runtime = createTenantRuntime({ id: 'try-visitor', slug: 'sbx-try', kind: 'sandbox' });
   session = {
@@ -366,7 +400,12 @@ try {
     check(() => assert.equal(hostResponse.headers.get('content-security-policy'), null));
     const body = await hostResponse.text();
     check(() => assert.equal(body.includes('<script src="/sandbox-ui.js">'), false));
-    if (url === '/chat.html') check(() => assert.equal(body, fs.readFileSync('public/chat.html', 'utf8')));
+    if (url === '/chat.html') {
+      check(() => assert.equal(body, fs.readFileSync('public/chat.html', 'utf8')));
+      check(() => assert.match(body, /演示：模拟企业微信里的客户对话。/));
+      check(() => assert.match(body, /需要真人服务时，回复「人工」即可转真人顾问。/));
+      check(() => assert.doesNotMatch(body, /回复「人工」，会话会转到你的工作台，由你来接手。/));
+    }
   }
 } finally {
   if (savedBase === undefined) delete process.env.PUBLIC_BASE_URL;

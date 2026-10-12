@@ -1,4 +1,4 @@
-// 仅由沙箱页面加载；宿主的页面源码和品牌自测基准保持不变。
+// 仅由沙箱页面加载；宿主的开场句和品牌自测基准保持不变。
 // 服务端在原页面内联脚本之后插入同源 script 标签，并对渲染后的内联脚本生成 CSP hash。
 (() => {
   // 支付页的事件属性不在 CSP 的放行范围；改用本脚本的监听器。
@@ -13,6 +13,22 @@
 
   const messages = document.getElementById('msgs');
   if (!messages) return;
+  const footer = document.querySelector('.foot');
+  if (footer) footer.hidden = true;
+  // 开场句会在异步恢复、新会话和打字机渲染后出现；只改 AI 气泡的显示，不改会话原文。
+  const replaceHandoff = () => {
+    for (const bubble of messages.querySelectorAll('.row.ai .bubble')) {
+      const walker = document.createTreeWalker(bubble, NodeFilter.SHOW_TEXT);
+      for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+        const text = node.nodeValue;
+        if (text?.includes('需要真人服务时，回复「人工」即可转真人顾问。')) {
+          node.nodeValue = text.replace('需要真人服务时，回复「人工」即可转真人顾问。', '回复「人工」，会话会转到你的工作台，由你来接手。');
+        }
+      }
+    }
+  };
+  replaceHandoff();
+  new MutationObserver(replaceHandoff).observe(messages, { childList: true, subtree: true, characterData: true });
   const banner = document.createElement('div');
   banner.setAttribute('role', 'region');
   banner.setAttribute('aria-label', '体验环境');
@@ -39,7 +55,7 @@
   summary.textContent = '体验环境 · 你在扮演客户';
   const privacy = document.createElement('div');
   privacy.style.cssText = 'font-size:13px;line-height:20px;color:var(--text-2,#4d4d55)';
-  privacy.textContent = '这里的回复只出现在网页上，不会发给任何人';
+  privacy.textContent = '对话会出现在你的工作台里，不会发到任何微信；体验结束后一起删除';
   copy.append(summary, privacy);
   const back = document.createElement('a');
   back.setAttribute('href', '/console/');

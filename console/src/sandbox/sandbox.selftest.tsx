@@ -3,6 +3,8 @@ import '../overview/selftest-env.js';
 import { win } from '../fields/selftest-dom.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import vm from 'node:vm';
+import { Window } from 'happy-dom';
 import { encode } from 'uqr';
 import { setReduceMotion } from '../theme/prefs.js';
 import { WechatStep } from './WechatStep.js';
@@ -55,11 +57,15 @@ for (const ownConversationId of [null, 'wecom:wmOwn', 'sbx-own'] as const) {
     const href = ownConversationId ? `/console/conversations/${encodeURIComponent(ownConversationId)}` : '/chat.html';
     check(() => assert.match(html, new RegExp(String.raw`href="${href}"[^>]*>[\s\S]*?${action}`)));
     if (step === 1) check(() => assert.match(html, /把时间、人数说具体，AI会给出正式报价/));
+    if (step === 2) check(() => assert.match(html, /接手会话后自己回一句，到微信或模拟器里看看/));
   }
 }
 // 四种微信状态下，清单进度自身的加载、空态和错误均由 /me 决定。
 for (const wechat of ['off', 'full', 'unbound', 'bound'] as const) {
   const sandbox = { ...info, wechat };
+  check(() =>
+    assert.match(markup({ sandbox: { ...sandbox, steps: [true, true, false, false] } }), /接手会话后自己回一句，到微信或模拟器里看看/),
+  );
   check(() => assert.match(markup({ sandbox, pending: true }), /正在载入体验进度/));
   check(() => assert.match(markup({ sandbox, error: new TypeError('offline') }), /没取到体验进度/));
   check(() => assert.match(markup({ sandbox }), /0\/4/));
@@ -68,10 +74,10 @@ for (const wechat of ['off', 'full', 'unbound', 'bound'] as const) {
     assert.match(
       banner,
       wechat === 'off' || wechat === 'full'
-        ? /回复只出现在网页模拟器里/
+        ? /对话只在网页模拟器和你的工作台里/
         : wechat === 'bound'
-          ? /已连上你的微信，回复只发给它/
-          : /扫码后，回复只发到你自己的微信/,
+          ? /已连上你的微信，微信里的回复只发给它/
+          : /扫码绑定后，微信里的回复只发到你自己的微信/,
     ),
   );
 }
@@ -90,7 +96,7 @@ for (let mask = 0; mask < 16; mask++) {
   check(() => assert.equal((html.match(/aria-label="未完成"/g) ?? []).length, steps.filter((v) => !v).length));
 }
 check(() => assert.match(markup({ sandbox: { ...info, steps: [true, true, true, true] } }), /四步已完成/));
-check(() => assert.match(renderToStaticMarkup(createElement(SandboxBanner, { sandbox: info })), /回复只出现在网页模拟器里/));
+check(() => assert.match(renderToStaticMarkup(createElement(SandboxBanner, { sandbox: info })), /对话只在网页模拟器和你的工作台里/));
 check(() => assert.equal(simulatorHref('sbx-a&x=1'), '/chat.html?c=sbx-a%26x%3D1'));
 check(() => assert.equal(simulatorHref('sim-a'), null));
 check(() => assert.equal(renderToStaticMarkup(createElement(SimulatorLink, { id: 'wecom:wmTest' })), ''));
@@ -199,6 +205,12 @@ try {
   check(() => assert.equal(readCollapsed('sbx-integrated'), false));
   await click('数据怎么处理', host);
   check(() => assert.ok(SANDBOX_DATA_COPY.every((line) => document.querySelector('.ant-modal')?.textContent?.includes(line))));
+  check(() => assert.ok(document.querySelector('.ant-modal')?.textContent?.includes('对话内容会发送给大模型服务商，用于生成AI回复。')));
+  check(() =>
+    assert.ok(
+      document.querySelector('.ant-modal')?.textContent?.includes('企业微信服务器上的聊天记录按企业微信的规则保存，不随这次体验一起删除。'),
+    ),
+  );
   await act(async () => {
     document.querySelector<HTMLButtonElement>('.ant-modal-close')!.click();
     await new Promise((r) => setTimeout(r, 30));
@@ -209,6 +221,15 @@ try {
   });
   check(() => assert.equal(document.activeElement?.textContent?.replace(/\s/g, ''), '继续体验'));
   check(() => assert.equal(document.querySelectorAll('.sandbox-end-effects li').length, 3));
+  check(() =>
+    assert.equal(document.querySelectorAll('.sandbox-end-effects li')[0]!.textContent, '体验立即结束，数据随后全部删除，不能恢复'),
+  );
+  check(() =>
+    assert.equal(
+      document.querySelectorAll('.sandbox-end-effects li')[1]!.textContent,
+      '之后在微信里再发消息，只会收到「去开一个新体验」的提示',
+    ),
+  );
   await click('继续体验');
   // 非总览清单走右侧 S 抽屉；进度只在新步骤完成时闪一次，按钮本身不重挂。
   const journey = (sandbox: SandboxInfo = info) => (
@@ -654,5 +675,76 @@ try {
   await act(async () => root.unmount());
   host.remove();
   await win.happyDOM.abort();
+}
+// 执行同一份宿主开场函数；沙箱脚本只替换显示，覆盖已渲染、异步恢复和新会话。
+const simulator = new Window({ url: 'http://localhost/chat.html' });
+try {
+  const doc = simulator.document;
+  const messages = doc.createElement('div');
+  messages.id = 'msgs';
+  const footer = doc.createElement('div');
+  footer.className = 'foot';
+  footer.textContent = '演示页脚';
+  doc.body.append(messages, footer);
+  const originalHandoff = '需要真人服务时，回复「人工」即可转真人顾问。';
+  const sandboxHandoff = '回复「人工」，会话会转到你的工作台，由你来接手。';
+  const html = fs.readFileSync(new URL('../../../public/chat.html', import.meta.url), 'utf8');
+  const opening = html.slice(html.indexOf('  function welcome()'), html.indexOf('  // 恢复历史'));
+  const stored: string[] = [];
+  const welcome = () =>
+    vm.runInNewContext(opening + '\nwelcome();', {
+      addMsg: (_role: string, text: string) => {
+        stored.push(text);
+        const row = doc.createElement('div');
+        row.className = 'row ai';
+        const bubble = doc.createElement('div');
+        bubble.className = 'bubble';
+        bubble.textContent = text;
+        row.append(bubble);
+        messages.append(row);
+      },
+      showChips: () => {},
+    });
+  welcome();
+  check(() => assert.ok(messages.textContent.includes(originalHandoff), '宿主开场句不变'));
+  vm.runInNewContext(fs.readFileSync(new URL('../../../public/sandbox-ui.js', import.meta.url), 'utf8'), {
+    document: doc,
+    MutationObserver: simulator.MutationObserver,
+    NodeFilter: simulator.NodeFilter,
+  });
+  check(() => assert.ok(messages.textContent.includes(sandboxHandoff), '已渲染的沙箱开场句替换'));
+  check(() => assert.equal(footer.hidden, true));
+  messages.replaceChildren();
+  welcome();
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  check(() => assert.ok(messages.textContent.includes(sandboxHandoff), '新会话和异步开场句替换'));
+  const bubble = messages.querySelector('.bubble')!;
+  const link = doc.createElement('a');
+  link.href = '/privacy';
+  link.textContent = '隐私说明';
+  bubble.replaceChildren(link, doc.createElement('br'), doc.createTextNode('需要真人服务'));
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  bubble.lastChild!.nodeValue = originalHandoff;
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  check(() => assert.ok(bubble.textContent.includes(sandboxHandoff), '打字机或历史文字更新后替换'));
+  check(() => assert.equal(bubble.querySelector('a')!.getAttribute('href'), '/privacy', '保留链接'));
+  check(() => assert.equal(bubble.querySelectorAll('br').length, 1, '保留换行'));
+  const customer = doc.createElement('div');
+  customer.className = 'row me';
+  const customerBubble = doc.createElement('div');
+  customerBubble.className = 'bubble';
+  customerBubble.textContent = originalHandoff;
+  customer.append(customerBubble);
+  messages.append(customer);
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  check(() => assert.equal(customer.textContent, originalHandoff, '客户原话不改'));
+  check(() =>
+    assert.ok(
+      stored.every((text) => text.includes(originalHandoff) && !text.includes(sandboxHandoff)),
+      '会话原文不改',
+    ),
+  );
+} finally {
+  await simulator.happyDOM.close();
 }
 console.log(`SELFTEST PASS: 沙箱 console ${checks} 项`);

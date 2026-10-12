@@ -117,8 +117,8 @@ export const travelTemplates: BrandTemplates = {
       { legacy: '云</span>', template: '{brandInitial}</span>', context: 'js-string', htmlContext: 'text' },
       { legacy: webWelcome.replaceAll('\n', '\\n'), template: webWelcomeTemplate, context: 'js-string' },
       {
-        legacy: 'Demo：模拟企业微信会话。生产环境经企微回调接入，界面即企业微信本身。',
-        template: 'Demo：模拟客户咨询会话。生产环境经已配置的接待渠道接入。',
+        legacy: '演示：模拟企业微信里的客户对话。',
+        template: '演示：模拟企业微信里的客户对话。',
         context: 'html-text',
       },
     ],

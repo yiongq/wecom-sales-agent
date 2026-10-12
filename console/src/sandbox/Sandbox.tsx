@@ -85,10 +85,10 @@ export function SandboxControls({
 
 export function wechatCopy(wechat: SandboxInfo['wechat']): string {
   return wechat === 'unbound'
-    ? '扫码后，回复只发到你自己的微信'
+    ? '扫码绑定后，微信里的回复只发到你自己的微信'
     : wechat === 'bound'
-      ? '已连上你的微信，回复只发给它'
-      : '回复只出现在网页模拟器里';
+      ? '已连上你的微信，微信里的回复只发给它'
+      : '对话只在网页模拟器和你的工作台里';
 }
 
 export function SandboxBanner({ sandbox }: { sandbox: SandboxInfo }) {
@@ -186,8 +186,8 @@ export function SandboxBanner({ sandbox }: { sandbox: SandboxInfo }) {
           onConfirm={end}
         >
           <ul className="sandbox-end-effects">
-            <li>环境和里面的数据马上删除，不能恢复</li>
-            <li>绑定的微信同时解除，之后再发消息不会有回复</li>
+            <li>体验立即结束，数据随后全部删除，不能恢复</li>
+            <li>之后在微信里再发消息，只会收到「去开一个新体验」的提示</li>
             <li>企业微信服务器上的聊天记录，按企业微信的规则保存</li>
           </ul>
         </ConfirmDanger>
@@ -253,10 +253,7 @@ export function SandboxChecklist({
     },
     {
       title: '接手会话，自己回一句',
-      description:
-        sandbox.wechat === 'off' || sandbox.wechat === 'full'
-          ? '接手一个会话，模拟器里马上收到顾问回复。'
-          : '接手微信会话，微信里马上收到顾问回复。',
+      description: '接手会话后自己回一句，到微信或模拟器里看看',
       href: sandbox.ownConversationId ? `/console/conversations/${encodeURIComponent(sandbox.ownConversationId)}` : '/chat.html',
       action: sandbox.ownConversationId ? '接手这段会话' : '打开模拟器',
     },
