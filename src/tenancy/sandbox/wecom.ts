@@ -69,6 +69,11 @@ export class SandboxWecom {
   private persistedFullRevision: string | undefined;
   private readonly seen = new Map<string, number>();
   private stateTask: Promise<void> | null = null;
+  private recoveryStartedAt: number | null = null;
+  private recoveryLastFailureAt: number | null = null;
+  private recoveryQuarantinedSince: number | null = null;
+  private recoveryFailing = false;
+  private recoveryAlerted = false;
   private fullAlertDay = '';
   private readonly users = new Map<string, Promise<void>>();
   private link: string | null = null;
@@ -239,7 +244,11 @@ export class SandboxWecom {
   /** R22：体验客服独立、单飞的定时任务重读状态，避免迟到的旧快照覆盖新状态。 */
   refreshFull(): Promise<void> {
     if (!this.running()) return Promise.resolve();
+    if (this.stateTask) return this.stateTask;
+    this.recoveryStartedAt = this.now();
     this.stateTask ??= withoutTenantScope(async () => {
+      // 先登记单飞与开始时刻，健康检查无需等待恢复链。
+      await Promise.resolve();
       try {
         await this.deps.binding?.refresh();
         await this.persistFull();
@@ -251,9 +260,11 @@ export class SandboxWecom {
           this.full = state.fullSince !== null;
         }
       } catch (error) {
+        this.recoveryLastFailureAt = this.now();
         this.failure('pull', error, { endpoint: 'state', errcode: 'read_failed' });
       } finally {
         this.stateTask = null;
+        this.recoveryStartedAt = null;
         if (this.running()) this.notify();
       }
     });
@@ -267,7 +278,7 @@ export class SandboxWecom {
       full: this.full,
       bound: sandboxWechatIndex.boundCount(),
       lastSyncOkAt: this.lastSyncOkAt === null ? null : new Date(this.lastSyncOkAt).toISOString(),
-      failing: this.failures.size > 0,
+      failing: this.failures.size > 0 || this.recoveryFailing,
     };
   }
 
@@ -308,6 +319,28 @@ export class SandboxWecom {
   private notify(): void {
     if (!this.running()) return;
     const now = this.now();
+    const recovery = this.deps.binding?.recoveryStatus();
+    // 两次观测之间已经解除隔离再失败，也应视为新的一段。
+    if (recovery && this.recoveryQuarantinedSince !== null && recovery.since > this.recoveryQuarantinedSince && this.recoveryAlerted) {
+      this.recoveryAlerted = false;
+      this.deps.notify?.(false, { endpoint: 'binding_recovery', errcode: 'recovered' });
+    }
+    this.recoveryQuarantinedSince = recovery?.since ?? null;
+    if (recovery) this.recoveryLastFailureAt = recovery.lastFailureAt;
+    else if (this.recoveryStartedAt === null) this.recoveryLastFailureAt = null;
+    const quarantined =
+      this.recoveryLastFailureAt !== null && this.recoveryQuarantinedSince !== null && now - this.recoveryQuarantinedSince >= 10 * 60_000;
+    const stalled = this.recoveryStartedAt !== null && now - this.recoveryStartedAt >= 10 * 60_000;
+    this.recoveryFailing = quarantined || stalled;
+    if (this.recoveryFailing && !this.recoveryAlerted) {
+      this.recoveryAlerted = true;
+      const problem = { endpoint: 'binding_recovery', errcode: stalled ? 'stalled' : 'recovery_pending' };
+      this.warn(problem.endpoint, problem.errcode);
+      this.deps.notify?.(true, problem);
+    } else if (!recovery && this.recoveryStartedAt === null && this.recoveryAlerted) {
+      this.recoveryAlerted = false;
+      this.deps.notify?.(false, { endpoint: 'binding_recovery', errcode: 'recovered' });
+    }
     for (const [kind, failure] of this.failures) if (now - failure.lastAt >= 10 * 60_000) this.failures.delete(kind);
     const sustained = [...this.failures.values()].find((failure) => now - failure.firstAt >= 10 * 60_000);
     if (sustained && !this.alerted) {
@@ -537,11 +570,11 @@ export function createSandboxWecom(
       alert(
         'channel',
         failing
-          ? `企微账号 sandbox 连续 10 分钟拉取或发送失败 · interface=${problem?.endpoint} errcode=${problem?.errcode}`
+          ? `企微账号 sandbox 连续 10 分钟收发或绑定恢复失败 · interface=${problem?.endpoint} errcode=${problem?.errcode}`
           : '企微账号 sandbox 收发已恢复',
         {
           instance: true,
-          scope: 'pull:sandbox',
+          scope: problem?.endpoint === 'binding_recovery' ? 'binding_recovery:sandbox' : 'pull:sandbox',
           resolved: !failing,
           escalate: failing,
         },

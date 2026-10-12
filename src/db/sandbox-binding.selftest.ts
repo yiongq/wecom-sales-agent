@@ -231,10 +231,15 @@ async function suite(db: Db, q: Query, appUrl?: string) {
     return Response.json({ errcode: sendError });
   };
   let fullWriteHook: ((write: () => Promise<void>) => Promise<void>) | undefined;
+  let stateReadHook: (() => Promise<void>) | undefined;
+  let clockOffset = 0;
+  const recoveryAlerts: { failing: boolean; endpoint?: string }[] = [];
   let service!: SandboxWecom;
   const start = async () => {
     service = new SandboxWecom(env, {
       binding: activeBinding,
+      now: () => Date.now() + clockOffset,
+      notify: (failing, problem) => recoveryAlerts.push({ failing, endpoint: problem?.endpoint }),
       touch: (rt) => reaper.touch(rt),
       request,
       schedule: (fn, ms) => {
@@ -242,7 +247,12 @@ async function suite(db: Db, q: Query, appUrl?: string) {
         minute = fn;
         return () => {};
       },
-      read: () => readSandboxWecomState(db, env.SANDBOX_WECOM_OPEN_KFID),
+      read: async () => {
+        const hook = stateReadHook;
+        stateReadHook = undefined;
+        await hook?.();
+        return readSandboxWecomState(db, env.SANDBOX_WECOM_OPEN_KFID);
+      },
       commit: (cursor) => commitSandboxWecomCursor(db, serviceEpoch, env.SANDBOX_WECOM_OPEN_KFID, cursor),
       markFull: async () => {
         const hook = fullWriteHook;
@@ -670,6 +680,58 @@ async function suite(db: Db, q: Query, appUrl?: string) {
       (await q<{ external_userid: string }>('select external_userid from sandbox_wechat where tenant_id=$1', [R.id]))[0]!.external_userid,
       'wmCommit',
     );
+    // B 的实际 accepted 请求在 A 成功重读前后都应能收到失败回执；欢迎码归属也不能被 A 清掉。
+    const acceptedReply = async () => {
+      const before = sends.length;
+      await deliver(message('wm6', '你好'));
+      await withTenantScope(B, () => drainStore(5000));
+      const sent = sends.slice(before).find((s) => s.path === 'kf/send_msg' && s.body.touser === 'wm6');
+      assert.ok(sent, 'B 应有实际发送请求');
+      const msgid = (sent.body as { msgid?: string }).msgid;
+      assert.ok(msgid);
+      const [row] = await q<{ status: string }>('select status from outbound_sends where tenant_id=$1 and channel_msgid=$2', [B.id, msgid]);
+      assert.equal(row!.status, 'accepted');
+      return msgid;
+    };
+    const failReply = async (msgid: string) => {
+      await deliver({
+        ...message('wm6', ''),
+        origin: 4,
+        msgtype: 'event',
+        event: { event_type: 'msg_send_fail', fail_msgid: msgid, fail_type: 4 },
+      });
+      await withTenantScope(B, () => drainStore(5000));
+      await until(
+        async () =>
+          (await q<{ status: string }>('select status from outbound_sends where tenant_id=$1 and channel_msgid=$2', [B.id, msgid]))[0]
+            ?.status === 'failed',
+      );
+      const [row] = await q<{ status: string }>('select status from outbound_sends where tenant_id=$1 and channel_msgid=$2', [B.id, msgid]);
+      return row!.status;
+    };
+    const controlStatus = await failReply(await acceptedReply());
+    namedCheck('UNRELATED_RECEIPT_CONTROL_MARKS_ACCEPTED_FAILED', () => assert.equal(controlStatus, 'failed'));
+    const unaffectedReceipt = await acceptedReply();
+    sandboxWechatIndex.rememberWelcome('fake-unaffected-welcome', 'wm6');
+    sandboxWechatIndex.assignWelcome('fake-unaffected-welcome', B);
+    probe.lose('commit');
+    await assert.rejects(codeFor(R));
+    namedCheck('RECOVER_ONE_SANDBOX_PRESERVES_OTHER_WELCOME_OWNER', () => {
+      assert.equal(sandboxWechatIndex.welcomeUser('fake-unaffected-welcome'), 'wm6');
+      assert.doesNotThrow(() =>
+        withTenantScope(B, () =>
+          sandboxWechatIndex.prepare(
+            'kf/send_msg_on_event',
+            { code: 'fake-unaffected-welcome', open_kfid: env.SANDBOX_WECOM_OPEN_KFID, msgtype: 'text', text: { content: 'AI' } },
+            env.SANDBOX_WECOM_OPEN_KFID,
+            env.SANDBOX_HOST,
+          ),
+        ),
+      );
+    });
+    const unaffectedStatus = await failReply(unaffectedReceipt);
+    namedCheck('RECOVER_ONE_SANDBOX_OTHER_ACTUAL_RECEIPT_MARKS_FAILED', () => assert.equal(unaffectedStatus, 'failed'));
+    sandboxWechatIndex.consumeWelcome('fake-unaffected-welcome');
     const rollbackCode = await codeFor(R);
     probe.lose('rollback');
     await deliver(message('wmRollback', rollbackCode.code));
@@ -778,7 +840,7 @@ async function suite(db: Db, q: Query, appUrl?: string) {
     namedCheck('DUPLICATE_OLDER_ROW_PURGED_WINNER_DELETE_RESTART_SAFE', () =>
       assert.equal(sandboxWechatIndex.forUser('wmDuplicate'), undefined),
     );
-    // 待恢复 Q 的状态刷新会排锁；R 的签码在借连接前挂住，reaper 仍能删 Q。
+    // 待恢复 Q 的状态刷新会排锁；R 的签码在借连接前挂住，健康与告警无需等锁。
     await deliver(message('wmPending', (await codeFor(Q)).code));
     probe.lose('commit');
     probe.failReads(true);
@@ -794,27 +856,118 @@ async function suite(db: Db, q: Query, appUrl?: string) {
     try {
       await acquireEntered.promise;
       const pendingRecovery = service.refreshFull();
-      let closingObserved = false;
-      Q.events.storeEvents.once('close', () => {
-        closingObserved = Q.state === 'closing';
+      const alertsBefore = recoveryAlerts.length;
+      const syncBefore = service.health().lastSyncOkAt;
+      clockOffset = 12 * 60_000;
+      await service.tick();
+      await service.sync();
+      namedCheck('RECOVERY_QUEUED_TWELVE_MINUTES_FAILING_AND_ONE_CHANNEL_ALERT', () => {
+        assert.equal(sandboxWechatIndex.forUser('wmPending'), undefined);
+        assert.equal(service.health().failing, true);
+        assert.notEqual(service.health().lastSyncOkAt, syncBefore);
+        assert.deepEqual(recoveryAlerts.slice(alertsBefore), [{ failing: true, endpoint: 'binding_recovery' }]);
       });
-      await q("update tenants set expires_at=now()-interval '1 second' where id=$1", [Q.id]);
-      const sweep = reaper.tick();
-      assert.equal(await settleWithin(sweep, 1500), true, 'reaper 不能等待绑定互斥锁');
-      namedCheck('REAPER_DELETES_EXPIRED_WITH_SIGN_ACQUIRE_AND_RECOVERY_LOCKED', () => {
-        assert.equal(closingObserved, true);
-        assert.equal(Q.cancel.aborted, true);
-        assert.equal(Q.state, 'closed');
-        assert.equal(runtimeOf(Q.id), undefined);
-      });
+      clockOffset = 24 * 60_000;
+      await service.tick();
+      assert.equal(service.health().failing, true);
+      namedCheck('RECOVERY_CONTINUOUS_STALL_ALERT_ONLY_ONCE', () => assert.equal(recoveryAlerts.length, alertsBefore + 1));
       acquireRelease.release();
       await hangingSign;
       await pendingRecovery;
-      await service.drain();
-      assert.equal(sandboxWechatIndex.forUser('wmPending'), undefined);
+      namedCheck('RECOVERY_RELEASE_CLEARS_FAILING_AND_RESOLVES_ALERT', () => {
+        assert.equal(sandboxWechatIndex.forUser('wmPending'), Q);
+        assert.equal(service.health().failing, false);
+        assert.deepEqual(recoveryAlerts.slice(alertsBefore), [
+          { failing: true, endpoint: 'binding_recovery' },
+          { failing: false, endpoint: 'binding_recovery' },
+        ]);
+      });
+      clockOffset = 0;
+      // 恢复之后新的一段隔离，不能受上一段告警去重影响；这次恢复任务快速失败并结束。
+      probe.lose('commit');
+      probe.failReads(true);
+      await assert.rejects(codeFor(Q));
+      await service.refreshFull();
+      clockOffset = 12 * 60_000;
+      namedCheck('RECOVERY_QUARANTINE_WITHOUT_RUNNING_TASK_ALERTS_NEW_EPISODE', () => {
+        assert.equal(service.health().failing, true);
+        assert.equal(recoveryAlerts.filter((a) => a.failing && a.endpoint === 'binding_recovery').length, 2);
+      });
+      probe.failReads(false);
+      // 再排一轮恢复与签码锁，确认可观测性没有把 reaper 重新耦合进来。
+      const deleteEntered = barrier(),
+        deleteRelease = barrier();
+      probe.pauseBeforeAcquire(async () => {
+        deleteEntered.release();
+        await deleteRelease.promise;
+      });
+      const deleteSign = codeFor(R);
+      await deleteEntered.promise;
+      const deleteRecovery = service.refreshFull();
+      try {
+        let closingObserved = false;
+        Q.events.storeEvents.once('close', () => {
+          closingObserved = Q.state === 'closing';
+        });
+        await q("update tenants set expires_at=now()-interval '1 second' where id=$1", [Q.id]);
+        const sweep = reaper.tick();
+        assert.equal(await settleWithin(sweep, 1500), true, 'reaper 不能等待绑定互斥锁');
+        namedCheck('REAPER_DELETES_EXPIRED_WITH_SIGN_ACQUIRE_AND_RECOVERY_LOCKED', () => {
+          assert.equal(closingObserved, true);
+          assert.equal(Q.cancel.aborted, true);
+          assert.equal(Q.state, 'closed');
+          assert.equal(runtimeOf(Q.id), undefined);
+        });
+        deleteRelease.release();
+        await deleteSign;
+        await deleteRecovery;
+        await service.drain();
+        assert.equal(sandboxWechatIndex.forUser('wmPending'), undefined);
+        assert.equal(service.health().failing, false);
+      } finally {
+        deleteRelease.release();
+        await deleteSign;
+        await deleteRecovery;
+      }
     } finally {
+      clockOffset = 0;
+      probe.failReads(false);
       acquireRelease.release();
       await hangingSign;
+      await service.drain();
+    }
+    // 隔离已经全解除，单飞本身卡在重读仍须独立计时，不能只靠隔离对象告警。
+    const readEntered = barrier(),
+      readRelease = barrier();
+    const beforeReadAlerts = recoveryAlerts.length;
+    stateReadHook = async () => {
+      readEntered.release();
+      await readRelease.promise;
+    };
+    const hangingRefresh = service.refreshFull();
+    try {
+      await readEntered.promise;
+      assert.equal(recoveryBinding.recoveryStatus(), null);
+      clockOffset = 12 * 60_000;
+      await service.tick();
+      await service.sync();
+      namedCheck('RECOVERY_TASK_STALLED_WITHOUT_QUARANTINE_FAILING_AND_ALERT', () => {
+        assert.equal(service.health().failing, true);
+        assert.deepEqual(recoveryAlerts.slice(beforeReadAlerts), [{ failing: true, endpoint: 'binding_recovery' }]);
+      });
+      readRelease.release();
+      await hangingRefresh;
+      namedCheck('RECOVERY_TASK_STALL_RELEASE_RESTORES_HEALTH', () => {
+        assert.equal(service.health().failing, false);
+        assert.deepEqual(recoveryAlerts.slice(beforeReadAlerts), [
+          { failing: true, endpoint: 'binding_recovery' },
+          { failing: false, endpoint: 'binding_recovery' },
+        ]);
+      });
+    } finally {
+      readRelease.release();
+      await hangingRefresh;
+      clockOffset = 0;
       await service.drain();
     }
     const textBox = await create(),

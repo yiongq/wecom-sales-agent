@@ -37,7 +37,7 @@ export type BindingResult = { status: 'bound'; runtime: TenantRuntime } | { stat
 export class SandboxWechatBinding {
   // 只留微信的哈希与失败时刻；重启归零，不是租户数据。
   private readonly failures = new Map<string, number[]>();
-  private readonly recovering = new Map<string, TenantRuntime>();
+  private readonly recovering = new Map<string, { rt: TenantRuntime; since: number; lastFailureAt: number }>();
   constructor(
     private readonly db: Db,
     private readonly epoch: string,
@@ -87,8 +87,9 @@ export class SandboxWechatBinding {
         row.externalUserid = null;
         row.boundAt = null;
       }
-      for (const { rt } of rows) sandboxWechatIndex.quarantine(rt.id);
-      for (const { rt, row } of rows) {
+      const changed = rows.filter(({ rt }) => affected.has(rt.id));
+      for (const { rt } of changed) sandboxWechatIndex.quarantine(rt.id);
+      for (const { rt, row } of changed) {
         this.recovering.delete(rt.id);
         sandboxWechatIndex.restore(rt.id);
         if (!serving(rt) || !row) continue;
@@ -103,11 +104,14 @@ export class SandboxWechatBinding {
       }
       return true;
     } catch {
+      const now = Date.now();
+      const since = this.recoveryStatus()?.since ?? now;
       for (const rt of affected.values()) {
         const id = rt.id;
         sandboxWechatIndex.quarantine(id, users);
-        if (serving(rt)) this.recovering.set(id, rt);
-        else this.recovering.delete(id);
+        if (serving(rt)) {
+          this.recovering.set(id, { rt, since, lastFailureAt: now });
+        } else this.recovering.delete(id);
       }
       console.warn('[sandbox-wecom] binding_recovery_pending');
       return false;
@@ -124,12 +128,19 @@ export class SandboxWechatBinding {
     const row = code && sandboxWechatIndex.code(codeHash(code));
     return !!row && row.expiresAt > Date.now() && serving(row.runtime);
   }
+  /** 无锁读取恢复事实；拉取成功不能清掉仍隔离的故障。 */
+  recoveryStatus(): { since: number; lastFailureAt: number } | null {
+    const pending = [...this.recovering.values()].filter(({ rt }) => serving(rt));
+    return pending.length
+      ? { since: Math.min(...pending.map((entry) => entry.since)), lastFailureAt: Math.max(...pending.map((entry) => entry.lastFailureAt)) }
+      : null;
+  }
   /** 实例每分钟调用；不另建定时器，关闭过程仍由同一互斥链 drain。 */
   refresh(): Promise<void> {
     if (!this.recovering.size) return Promise.resolve();
     return sandboxWechatIndex.exclusive(async () => {
-      const runtimes = [...this.recovering.values()].filter(serving);
-      for (const [id, rt] of this.recovering) if (!serving(rt)) this.recovering.delete(id);
+      const runtimes = [...this.recovering.values()].map(({ rt }) => rt).filter(serving);
+      for (const [id, { rt }] of this.recovering) if (!serving(rt)) this.recovering.delete(id);
       if (runtimes.length) await this.recover(runtimes);
     });
   }
