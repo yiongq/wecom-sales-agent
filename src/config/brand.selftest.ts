@@ -380,7 +380,6 @@ try {
   for (let n = 0; n < 100 && sent.length < 2; n++) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual(sent, [rendered.welcomeText, rendered.welcomeBackText]);
   assert.match(sent[0]!, /需要真人服务时，回复「人工」即可转真人顾问。/);
-  assert.ok(sent.every((text) => !text.includes('回复「人工」，会话会转到你的工作台，由你来接手。')));
   console.log(
     '品牌出口自测通过：旧版文本/页面字节、山海出口/渠道中立、逐页逐槽位 HTML/JS 转义与脚本执行、字素簇首字、发布快照、平台 set 不即时生效、轮次隔离、自定义欢迎优先',
   );

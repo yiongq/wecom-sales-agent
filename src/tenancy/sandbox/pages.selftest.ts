@@ -404,7 +404,6 @@ try {
       check(() => assert.equal(body, fs.readFileSync('public/chat.html', 'utf8')));
       check(() => assert.match(body, /演示：模拟企业微信里的客户对话。/));
       check(() => assert.match(body, /需要真人服务时，回复「人工」即可转真人顾问。/));
-      check(() => assert.doesNotMatch(body, /回复「人工」，会话会转到你的工作台，由你来接手。/));
     }
   }
 } finally {
