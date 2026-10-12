@@ -11,7 +11,7 @@ import { useSyncExternalStore } from 'react';
 import type { QueryClient } from '@tanstack/react-query';
 import type { ConsoleEventMap, ConsoleEventName } from '../../../src/shared/console-api.js';
 import { endMemberSession } from '../session.js';
-import { VIEWER_KEY } from '../viewer.js';
+import { refreshSandboxProgress, VIEWER_KEY } from '../viewer.js';
 import { conversationCountsQuery } from '../queries.js';
 
 /** 断线超过这么久仍没重连，退回轮询（spec「通知」：30 秒） */
@@ -96,8 +96,7 @@ const defaultCreate = (url: string): EventSourceLike => new EventSource(url, { w
 /** ['conversations', …] 开头的查询全部让它们重取：铃铛的等人接手列表、已成交客户要人工、I 页的列表都跟着新 */
 function invalidateConversations(qc: QueryClient): void {
   void qc.invalidateQueries({ queryKey: ['conversations'] });
-  const viewer = qc.getQueryData<import('../viewer.js').Viewer>(VIEWER_KEY);
-  if (viewer?.kind === 'member' && viewer.me.sandbox) void qc.invalidateQueries({ queryKey: VIEWER_KEY });
+  refreshSandboxProgress(qc);
 }
 
 /**

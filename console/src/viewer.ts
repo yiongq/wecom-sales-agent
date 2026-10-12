@@ -1,6 +1,6 @@
 // 当前是谁在看：成员（带角色与 csrf）、demo 下的匿名只读、要登录、或服务端在文件模式（后台不可用）；
 // 成员与匿名都带着当前租户的行业包配置（/pack）。启动时并发取 /me 与 /pack，判定见 shell/boot.ts（spec「外壳 · 启动」）
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { type QueryClient, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Me } from '../../src/shared/console-api.js';
 import type { IndustryPack } from '../../src/shared/pack.js';
 import { api, HttpError, unwrap } from './api.js';
@@ -10,6 +10,12 @@ import { beginMemberSession, isMemberSession, logoutMemberSession } from './sess
 export type { AnonViewer, Viewer } from './shell/boot.js';
 
 export const VIEWER_KEY = ['viewer'] as const;
+
+/** 沙箱写入成功后重取服务端计算的体验进度，宿主不增加请求。 */
+export function refreshSandboxProgress(qc: QueryClient): void {
+  const viewer = qc.getQueryData<Viewer>(VIEWER_KEY);
+  if (viewer?.kind === 'member' && viewer.me.sandbox) void qc.invalidateQueries({ queryKey: VIEWER_KEY });
+}
 
 async function outcome(req: Promise<{ status: number; json(): Promise<unknown> }>): Promise<Outcome> {
   try {

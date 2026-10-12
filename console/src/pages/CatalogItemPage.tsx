@@ -22,7 +22,7 @@ import { useDocumentTitle } from '../shell/hooks.js';
 import { documentTitle } from '../shell/model.js';
 import { PageHeader, shellViewerOf } from '../shell/PageHeader.js';
 import { NotFound } from '../shell/Shell.js';
-import { canEdit, usePack, useViewer } from '../viewer.js';
+import { canEdit, refreshSandboxProgress, usePack, useViewer } from '../viewer.js';
 
 /**
  * 刚建好、刚复制出来的一条：页面随后去它的详情，那一页打开时念这一句、焦点放在标题上（CatalogDetail 的 arrival）。
@@ -108,8 +108,11 @@ function ItemLoader({ pack, entity, code }: { pack: IndustryPack; entity: Entity
     void qc.invalidateQueries({ queryKey: catalogListQuery(kind).queryKey, exact: true });
     return item as unknown as DetailItem;
   };
-  const save = async (body: PatchBody): Promise<DetailItem> =>
-    keep(await unwrap(api.catalog[':kind'][':code'].$patch({ param: { kind, code }, json: body })));
+  const save = async (body: PatchBody): Promise<DetailItem> => {
+    const item = keep(await unwrap(api.catalog[':kind'][':code'].$patch({ param: { kind, code }, json: body })));
+    refreshSandboxProgress(qc);
+    return item;
+  };
   /** 409 之后载入最新版本：不看缓存，重取 */
   const loadLatest = async (): Promise<DetailItem> =>
     (await qc.fetchQuery({ ...catalogItemQuery(kind, code), staleTime: 0 })) as unknown as DetailItem;
