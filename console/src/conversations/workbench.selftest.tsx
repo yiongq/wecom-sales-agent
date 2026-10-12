@@ -1279,6 +1279,71 @@ for (const [sandbox, id, shown] of [
   await m.unmount();
 }
 
+// 05 第 28 步：沙箱微信沿用真实渠道的窗口、条数、送达与解绑历史投影。
+for (const remaining of [3, 0]) {
+  const id = 'wecom:wmSandbox';
+  server = {
+    cur: detail({
+      row: row({ id, channel: 'wecom', handedOver: true, assignee: { userId: 'u1', name: '老板' } }),
+      can: { takeover: false, reply: true, release: true, reassign: false, confirmOrder: true, markPaid: false, traces: false },
+      sendWindow: { lastCustomerAt: NOW, closesAt: NOW + 3_600_000, used: 5 - remaining, remaining },
+      messages: [
+        {
+          seq: 1,
+          role: 'agent',
+          author: 'human',
+          authorName: '老板',
+          text: '顾问回复',
+          kind: 'message',
+          at: atIso('2026-09-26T14:00:00'),
+          turnId: null,
+          guarded: null,
+          delivery: { status: 'failed', failType: 4 },
+        },
+        {
+          seq: 2,
+          role: 'system',
+          author: 'system',
+          authorName: null,
+          text: '这个微信已不再连着这次体验',
+          kind: 'message',
+          at: atIso('2026-09-26T14:01:00'),
+          turnId: null,
+          guarded: null,
+          delivery: null,
+        },
+      ],
+    }),
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  const visitor: Viewer = {
+    kind: 'member',
+    me: {
+      ...me('owner'),
+      sandbox: { expiresAt: new Date(NOW + 3600_000).toISOString(), wechat: 'bound', steps: [true, true, true, false] },
+    },
+    pack: TRAVEL,
+  };
+  const m = await mount(visitor, id);
+  eq('沙箱微信剩余条数决定输入框是否禁用', (m.$('textarea')[0] as HTMLTextAreaElement)?.disabled, remaining === 0);
+  check(
+    '沙箱微信：窗口与剩余条数或不可发送说明',
+    remaining === 0
+      ? m.texts('.wb-send-reason').some((t) => t.includes('发满 5 条'))
+      : m.texts('.wb-replybox-hint').some((t) => t.includes('还能发3条') && t.includes('窗口到')),
+  );
+  check(
+    '沙箱微信：显示送达失败',
+    m.texts('.wb-delivery-note').some((t) => t.includes('这条发不出去了')),
+  );
+  check(
+    '沙箱微信：显示旧微信解绑说明',
+    m.texts('.wb-system').some((t) => t.includes('这个微信已不再连着这次体验')),
+  );
+  await m.unmount();
+}
+
 Date.now = realNow;
 
 if (fails.length) {

@@ -88,6 +88,30 @@
   background: var(--selected);
   color: var(--text);
 }
+.sandbox-qr {
+  display: block;
+  width: 180px;
+  max-width: 100%;
+  height: auto;
+  margin: 12px 0;
+  shape-rendering: crispEdges;
+}
+.sandbox-wechat-code {
+  font-family: var(--mono);
+  font-size: 18px;
+  color: var(--text);
+}
+.sandbox-open-wechat {
+  display: none;
+}
+@media (max-width: 767px) {
+  .sandbox-qr.is-wechat {
+    display: none;
+  }
+  .sandbox-open-wechat {
+    display: inline-block;
+  }
+}
 @media (max-width: 1439px) {
   .sandbox-body {
     flex-direction: column;
