@@ -80,7 +80,6 @@ import {
   planOutbound,
   planRuntimeSegment,
   recordSend,
-  sendWindow,
   recoverAsUnknown,
   replyDelivered,
   settleIntent,
@@ -1177,11 +1176,12 @@ function postSendMsg(
   token: string,
   body: Record<string, unknown>,
   sandbox?: SandboxWecomRuntime,
+  expectedRejection = false,
 ): Promise<{ errcode?: number; errmsg?: string }> {
   if (sandbox)
     return sandbox.requestMessage(token, 'kf/send_msg', body).then(async (res) => {
       const data = (await res.json()) as { errcode?: number; errmsg?: string };
-      sandbox.reportError('kf/send_msg', data.errcode ?? 0);
+      sandbox.reportError('kf/send_msg', data.errcode ?? 0, expectedRejection);
       if (!res.ok)
         throw new SandboxWecomApiError('kf/send_msg', data.errcode ? String(data.errcode) : `http_${res.status}`, !!data.errcode);
       return data;
@@ -3224,7 +3224,7 @@ export class SandboxWecomRuntime {
     request: typeof fetch = fetch,
     private readonly now: () => number = Date.now,
     private readonly running: () => boolean = () => true,
-    private readonly diagnostic: (endpoint: string, errcode: string) => void = () => {},
+    private readonly diagnostic: (endpoint: string, errcode: string, expectedRejection?: boolean) => void = () => {},
   ) {
     this.#request = request;
     this.cfg = { ...cfg, host: normalizeHost(cfg.host) ?? cfg.host };
@@ -3248,8 +3248,8 @@ export class SandboxWecomRuntime {
     return new SandboxWecomApiError(endpoint, errcode, rejected);
   }
 
-  reportError(endpoint: string, errcode: number | string): void {
-    this.diagnostic(endpoint, String(errcode));
+  reportError(endpoint: string, errcode: number | string, expectedRejection = false): void {
+    this.diagnostic(endpoint, String(errcode), expectedRejection);
   }
 
   /** 规范化只是用来识别别名；输入必须本身就是白名单中的逐字规范写法。 */
@@ -3333,7 +3333,7 @@ export class SandboxWecomRuntime {
     });
   }
 
-  async callApi<T extends { errcode?: number }>(endpoint: string, body: Record<string, unknown>): Promise<T> {
+  async callApi<T extends { errcode?: number }>(endpoint: string, body: Record<string, unknown>, expectedRejection = false): Promise<T> {
     this.endpoint(endpoint);
     // 在 token await 之前脱离调用者的 getter / toJSON；重试与 welcome 消费只读这个副本。
     try {
@@ -3357,7 +3357,7 @@ export class SandboxWecomRuntime {
       for (let attempt = 0; attempt < 2; attempt++) {
         this.assertRunning();
         let data: T;
-        if (endpoint === 'kf/send_msg') data = (await postSendMsg(token, body, this)) as T;
+        if (endpoint === 'kf/send_msg') data = (await postSendMsg(token, body, this, expectedRejection)) as T;
         else {
           if (typeof token !== 'string') sandboxWechatIndex.refuse();
           const url = `${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`;
@@ -3395,9 +3395,13 @@ export class SandboxWecomRuntime {
     }
   }
 
-  private async api<T extends { errcode?: number }>(endpoint: string, body: Record<string, unknown>): Promise<T> {
+  private async api<T extends { errcode?: number }>(
+    endpoint: string,
+    body: Record<string, unknown>,
+    expectedRejection = false,
+  ): Promise<T> {
     try {
-      const data = await this.callApi<T>(endpoint, body);
+      const data = await this.callApi<T>(endpoint, body, expectedRejection);
       if (data.errcode) {
         if (endpoint === 'kf/send_msg' || endpoint === 'kf/send_msg_on_event')
           throw new SandboxWecomApiError(endpoint, String(data.errcode), true);
@@ -3536,28 +3540,29 @@ export class SandboxWecomRuntime {
     });
   }
 
-  async welcomeUser(user: string, code?: string, inboundAt?: number): Promise<void> {
+  async welcomeUser(user: string, code?: string): Promise<void> {
     if (code) return this.welcome(code);
-    const now = Date.now();
-    const window = sendWindow(this.prefix + user, now);
-    // 手打绑定码本身也是客户开口，但码不进会话与模型历史；企微窗口已由这条消息打开。
-    const freshBinding = inboundAt !== undefined && Number.isFinite(inboundAt) && Math.min(inboundAt, now) > now - 48 * 3600_000;
-    if (freshBinding || (window.closesAt !== null && window.closesAt > now && window.remaining > 0))
-      await this.push(this.prefix + user, withPrivacyLink(this.welcomeText), { kind: 'welcome' });
+    // 跨沙箱或重启后本地没有客户窗口记录；由企微判断是否还能发送。
+    return currentRuntime().inflight.track(() => this.sendWelcome(undefined, user));
   }
 
-  private async sendWelcome(code: string): Promise<void> {
-    const entry = recordRuntimeSend(this, this.prefix + (sandboxWechatIndex.welcomeUser(code) ?? ''), 'welcome', null);
+  private async sendWelcome(code?: string, user?: string): Promise<void> {
+    const entry = recordRuntimeSend(this, this.prefix + (user ?? sandboxWechatIndex.welcomeUser(code!) ?? ''), 'welcome', null);
     entry.attempt();
     try {
-      await this.api('kf/send_msg_on_event', { code, msgtype: 'text', text: { content: withPrivacyLink(this.welcomeText) } });
+      const body = { msgtype: 'text', text: { content: withPrivacyLink(this.welcomeText) } };
+      if (code) await this.api('kf/send_msg_on_event', { code, ...body });
+      else await this.api('kf/send_msg', { open_kfid: this.cfg.openKfid, touser: user, msgid: entry.msgid, ...body }, true);
       entry.settle('accepted');
     } catch (error) {
       if (error instanceof TokenError) entry.discard();
       else
         entry.settle(
           error instanceof SandboxSendRefused || (error instanceof SandboxWecomApiError && error.rejected) ? 'rejected' : 'unknown',
+          !code && error instanceof SandboxWecomApiError ? Number(error.errcode) || undefined : undefined,
         );
+      // 无欢迎码的固定欢迎语被企微明确拒绝时，绑定照常成功，不重试、不记故障。
+      if (!code && error instanceof SandboxWecomApiError && error.rejected) return;
       throw error;
     }
   }

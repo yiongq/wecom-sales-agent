@@ -343,7 +343,7 @@ export function sandboxApp(
     )
       return c.notFound();
     const token = getCookie(c, SANDBOX_COOKIE);
-    if (token === undefined && wxResource(c.req.path, c.req.method)) {
+    if (wxResource(c.req.path, c.req.method)) {
       const linkToken = getCookie(c, SANDBOX_WECHAT_COOKIE);
       const rt = linkToken && sandboxWechatIndex.forToken(linkToken);
       if (rt) {

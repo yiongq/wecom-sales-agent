@@ -7,7 +7,7 @@ import { openTestDb, createRealPgFixture, testConfigDeps, fakeLock } from '../..
 import { importConfig } from '../../config/transfer.js';
 import { closeConfig } from '../../config/source.js';
 import { shanhaiBrand } from '../../packs/travel/brand-fixture.js';
-import { drainStore } from '../../store.js';
+import { drainStore, getSession } from '../../store.js';
 import { dropShutdownHooks } from '../../shutdown.js';
 import { readSandboxWecomState, commitSandboxWecomCursor } from '../../db/repo/sandbox-wecom.js';
 import { __alertTest } from '../../ops/alert.js';
@@ -31,6 +31,7 @@ import { SandboxWecom, createSandboxWecom } from './wecom.js';
 import { SandboxWechatBinding } from './binding.js';
 import { sandboxWechatIndex } from './outbound.js';
 import { provisionSandbox } from './provision.js';
+import { __sandboxLimitsTest } from './limits.js';
 
 const env = {
   SANDBOX_HOST: 'sandbox.example.invalid',
@@ -167,6 +168,7 @@ class FakeWecom {
   contactFails = false;
   syncFails = false;
   sendFails = false;
+  sendErrcode = 0;
   expireOnce = false;
   beforeSync: (() => Promise<void>) | null = null;
   onSend: (() => Promise<void>) | null = null;
@@ -213,7 +215,7 @@ class FakeWecom {
         this.expireOnce = false;
         return Response.json({ errcode: 42001 });
       }
-      return Response.json({ errcode: this.sendFails ? 45009 : 0 });
+      return Response.json({ errcode: this.sendErrcode || (this.sendFails ? 45009 : 0) });
     }
     throw new Error('禁止未预期接口（含模型、昵称与头像）');
   }
@@ -635,6 +637,7 @@ async function eventAccountSuite(
   db: Db,
   q: <T = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<T[]>,
 ): Promise<void> {
+  __sandboxLimitsTest.resetProvisioned();
   const [template] = await q<{ id: string }>(
     "insert into tenants(slug,name,pack_id,brand) values('event-template','事件模板','travel',$1::json) returning id",
     [JSON.stringify(shanhaiBrand)],
@@ -647,23 +650,29 @@ async function eventAccountSuite(
   assert.equal(imported.code, 0, imported.message);
   await q("insert into privacy_notices(tenant_id,version,body) values($1,1,'假隐私说明')", [host.id]);
   const [epoch] = await q<{ epoch: string }>('select epoch::text from sandbox_process_epoch where id=1');
-  const created = await provisionSandbox({
-    deps,
-    templateSlug: host.slug,
-    host: env.SANDBOX_HOST,
-    epoch: epoch!.epoch,
-    acquireTenant: async () => fakeLock(),
-    ip: null,
-    userAgent: null,
-  });
+  const create = () =>
+    provisionSandbox({
+      deps,
+      templateSlug: host.slug,
+      host: env.SANDBOX_HOST,
+      epoch: epoch!.epoch,
+      acquireTenant: async () => fakeLock(),
+      ip: null,
+      userAgent: null,
+    });
+  const created = await create();
   const rt = runtimeOf(created.tenantId)!;
+  const rebound = await create();
+  const nextRuntime = runtimeOf(rebound.tenantId)!;
   const binding = new SandboxWechatBinding(db, epoch!.epoch);
   const fake = new FakeWecom();
   fake.sendRuntime = rt;
+  let welcomeNow = Date.now();
   const instance = new SandboxWecom(env, {
     request: fake.request,
     binding,
-    now: () => Date.now(),
+    now: () => welcomeNow,
+    schedule: () => () => {},
     read: () => readSandboxWecomState(db, env.SANDBOX_WECOM_OPEN_KFID),
     commit: (cursor) => commitSandboxWecomCursor(db, epoch!.epoch, env.SANDBOX_WECOM_OPEN_KFID, cursor),
   });
@@ -710,16 +719,94 @@ async function eventAccountSuite(
       assert.equal(fake.sends()[0]!.body.code, 'fake-nested-welcome');
       assert.match((fake.sends()[0]!.body.text as { content: string }).content, /AI/);
     });
+    const rebind = await binding.issue(
+      nextRuntime,
+      () => instance.contactLink(),
+      () => false,
+    );
+    const noCode = eventMessage('no-code-entry', 'wmNested', { event_type: 'enter_session', scene_param: rebind.code });
+    noCode.send_time = welcomeNow / 1000;
+    fake.sendRuntime = nextRuntime;
+    assert.equal(
+      withTenantScope(nextRuntime, () => getSession('wecom:wmNested')),
+      undefined,
+    );
+    const beforeRebind = fake.sends().length;
+    fake.pages.push({ next_cursor: 'no-code-page', has_more: 0, msg_list: [noCode] });
+    await instance.sync();
+    await instance.drain();
+    verify('无 welcome_code 换绑且无本地窗口记录仍经 send_msg 欢迎', () => {
+      assert.equal(sandboxWechatIndex.forUser('wmNested'), nextRuntime);
+      assert.equal(sandboxWechatIndex.boundUser(rt), undefined);
+      assert.equal(fake.sends().length, beforeRebind + 1);
+      const sent = fake.sends().at(-1)!;
+      assert.equal(sent.path, 'kf/send_msg');
+      assert.equal(sent.body.touser, 'wmNested');
+      assert.equal(sent.body.open_kfid, env.SANDBOX_WECOM_OPEN_KFID);
+      assert.match((sent.body.text as { content: string }).content, /AI/);
+      assert.equal(
+        (sent.body.text as { content: string }).content.replace(/\/wx\/[A-Za-z0-9_-]{43}/g, ''),
+        (fake.sends()[0]!.body.text as { content: string }).content.replace(/\/wx\/[A-Za-z0-9_-]{43}/g, ''),
+      );
+    });
+    const warningStart = warnings.length;
+    const sendStart = fake.sends().length;
+    __alertTest.reset();
+    // 反复绑定并持续拒绝超过 10 分钟，确认不会形成实例级 channel 告警。
+    for (let minute = 0; minute <= 11; minute++) {
+      welcomeNow += 60_000;
+      fake.sendErrcode = minute % 2 ? 95001 : 95002;
+      const { code } =
+        minute === 0
+          ? await binding.issue(
+              nextRuntime,
+              () => instance.contactLink(),
+              () => false,
+            )
+          : { code: undefined };
+      fake.pages.push({
+        next_cursor: `window-page-${minute}`,
+        has_more: 0,
+        msg_list: [
+          {
+            ...eventMessage(`window-entry-${minute}`, 'wmNested', { event_type: 'enter_session', scene_param: code }),
+            send_time: welcomeNow / 1000,
+          },
+        ],
+      });
+      await instance.sync();
+      await instance.drain();
+      await instance.tick();
+      await instance.drain();
+      await __alertTest.settle();
+      assert.equal(instance.health().failing, false);
+    }
+    verify('无欢迎码窗口拒绝不重试不告警且绑定仍成功', () => {
+      assert.equal(fake.sends().length, sendStart + 12);
+      assert.equal(sandboxWechatIndex.forUser('wmNested'), nextRuntime);
+      assert.ok(
+        fake
+          .sends()
+          .slice(sendStart)
+          .every((sent) => sent.path === 'kf/send_msg' && sent.body.touser === 'wmNested'),
+      );
+      assert.ok(warnings.slice(warningStart).some((line) => /interface=kf\/send_msg errcode=9500[12] count=/.test(line)));
+      assert.ok(!warnings.slice(warningStart).some((line) => line.includes('[alert]')));
+    });
+    fake.sendErrcode = 0;
   } finally {
     await instance.close();
-    await withTenantScope(rt, () => drainStore(5000));
-    rt.state = 'closed';
-    rt.store.pgBackend?.close();
-    await withTenantScope(rt, closeConfig);
-    dropShutdownHooks(rt);
-    dropTenantState(rt.id);
-    unregisterRuntime(rt.id);
+    for (const rt of [nextRuntime, runtimeOf(created.tenantId)!]) {
+      await withTenantScope(rt, () => drainStore(5000));
+      rt.state = 'closed';
+      rt.store.pgBackend?.close();
+      await withTenantScope(rt, closeConfig);
+      dropShutdownHooks(rt);
+      dropTenantState(rt.id);
+      unregisterRuntime(rt.id);
+    }
     sandboxWechatIndex.reset();
+    __alertTest.reset();
   }
 }
 

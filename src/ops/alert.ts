@@ -282,6 +282,9 @@ const wecomScope = (account: string): AlertOpts => (account === 'env' ? {} : { s
 function onSettled(s: SendSettled): void {
   if (currentRuntime().state !== 'serving') return;
   if (s.result === 'accepted') return;
+  // 无欢迎码的沙箱欢迎语由企微判窗口；明确拒绝带 errcode 记账，只记接口诊断。
+  // send_msg_on_event 欢迎语的失败仍沿用原来的空 errcode 与告警行为。
+  if (currentRuntime().kind === 'sandbox' && s.kind === 'welcome' && s.result === 'rejected' && s.errcode !== null) return;
   const t = clock();
   const st = wecomStateOf(s.account);
   st.lastFailAt = t;
