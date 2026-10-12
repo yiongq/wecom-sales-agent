@@ -3,7 +3,7 @@
 #   APP_IMAGE=<:prev> docker compose -f deploy/compose.yml up -d --no-deps app   # 回滚：不跑 migrate（旧镜像的迁移是新镜像的子集）
 # 05：只有 .env.sandbox 在才启用；手工只重建沙箱（不换宿主、不跑迁移）：
 #   docker compose -f deploy/compose.yml --profile sandbox up -d --no-deps sandbox
-# 长期停用：--profile sandbox rm -sf sandbox，把 .env.sandbox 改名为 .env.sandbox.off，并摘掉反向代理站点。
+# 长期停用：--profile sandbox rm -sfv sandbox，把 .env.sandbox 改名为 .env.sandbox.off，并摘掉反向代理站点。
 # .env.sandbox：DEPLOY_PROFILE=demo、CONFIG_SOURCE=db、SESSION_STORE=db、DATABASE_URL、SANDBOX_HOST=<Host>、
 # SANDBOX_TEMPLATE_SLUG=<宿主slug>；不能有 DEFAULT_TENANT_SLUG 或 R16 禁止的变量。
 # 体验客服可不配；配时 SANDBOX_WECOM_CORP_ID / SECRET / TOKEN / AES_KEY / OPEN_KFID 五项必须齐全。
@@ -35,7 +35,7 @@
 #   .env.db       POSTGRES_PASSWORD、AGENT_OWNER_PASSWORD、AGENT_APP_PASSWORD、AGENT_PLATFORM_PASSWORD；可选 AGENT_DB（缺省 agent）。
 #                 不要设 POSTGRES_DB：entrypoint 会以超级用户为属主先建出那个库，roles.sh 见库已存在就跳过，属主就错了。
 #   .env.migrate  DATABASE_OWNER_URL=postgres://agent_owner:<口令>@db:5432/agent
-#   .env.platform DATABASE_PLATFORM_URL=postgres://agent_platform:<口令>@db:5432/agent
+#   .env.platform DATABASE_PLATFORM_URL=postgres://agent_platform:<口令>@db:5432/agent；demo 部署还需 DEPLOY_PROFILE=demo
 #   .env          应用自己的 env（LLM key、企微、ADMIN_PASS、DEPLOY_PROFILE……）；DB 模式再加 CONFIG_SOURCE=db、
 #                 DATABASE_URL=postgres://agent_app:<口令>@db:5432/agent、DEFAULT_TENANT_SLUG。不能有 owner、platform
 #                 与超级用户的口令：应用启动时查到就拒绝启动（env_privileged）。

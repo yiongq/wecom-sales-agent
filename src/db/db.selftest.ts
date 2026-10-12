@@ -3780,6 +3780,17 @@ await t.close();
   // compose：env 文件都按 format: raw 读（与 docker --env-file 同一个解析器：$ 不展开、引号和 # 原样），
   // 与第 3 步的检查、第 5 步的试读是同一种读法；应用镜像缺省取 <容器名>:current，手工命令不用带 APP_IMAGE
   const composeSrc = fs.readFileSync(path.join(repoRoot, 'deploy', 'compose.yml'), 'utf8');
+  check(
+    '演练一/二·4：部署删除只针对 sandbox、清理匿名卷、无命名卷删除；platform 说明 demo profile',
+    deploySrc.includes('--profile sandbox rm -sfv sandbox') &&
+      deploySrc.includes('docker rm -fv ${NAME}-sandbox') &&
+      !deploySrc.includes('down -v') &&
+      !deploySrc.includes('volume rm') &&
+      !deploySrc.includes('rm -sfv app') &&
+      !deploySrc.includes('rm -sfv db') &&
+      /# +\.env.platform[^\n]*DEPLOY_PROFILE=demo/.test(composeSrc),
+  );
+
   const envBlocks = [...composeSrc.matchAll(/^( +)env_file:(.*)\n((?:\1 +\S.*\n)*)/gm)];
   const envPaths = ['../.env.db', '../.env.migrate', '../.env', '../.env.sandbox', '../.env.platform'];
   const envEntries = envBlocks.map((m) =>

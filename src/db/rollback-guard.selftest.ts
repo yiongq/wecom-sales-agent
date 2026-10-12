@@ -101,7 +101,7 @@ esac
 case "$*" in
   *"inspect --format {{.Image}}"*) [ "\${FAKE_RUNNING:-4}" = missing ] && exit 1; echo sha256:running ;;
   *"container ls"*) [ "\${FAKE_CONTAINER_DOWN:-0}" = 0 ] || exit 1; [ "\${FAKE_SANDBOX_CONTAINER:-absent}" = absent ] || echo placeholder; exit 0 ;;
-  *"sandbox.ts purge --all"*) [ "\${FAKE_PURGE_FAIL:-0}" = 0 ] || exit 3; echo "purge image=\${APP_IMAGE:-missing}" >> "$FAKE_LOG"; touch "$FAKE_PURGED" ;;
+  *"sandbox.ts purge --all"*) [ "\${FAKE_PURGE_FAIL:-0}" = 0 ] || { echo "[sandbox] sandbox_tenant_lock_held" >&2; exit 3; }; echo "purge image=\${APP_IMAGE:-missing}" >> "$FAKE_LOG"; touch "$FAKE_PURGED" ;;
   *pg-backend.ts*|*registry.ts*|*pack-api.ts*|*runtime.ts*)
     phase="\${FAKE_TARGET:-3}"
     case "$*" in *sha256:running*) phase="\${FAKE_RUNNING:-4}" ;; esac
@@ -431,10 +431,13 @@ exit 0`,
     const env = { ...sandboxEnv, FAKE_SANDBOX_CONTAINER: state === 'env-only' ? 'absent' : state };
     r = guard('pre-05', env);
     check(
-      `05-13① ${state}：拒绝 7，删容器、改名、摘站点，未 purge`,
+      `05-13① ${state}：拒绝 7，只打印适用的删容器/改名与摘站点，未 purge`,
       r.code === 7 &&
-        r.out.includes('--profile sandbox rm -sf sandbox') &&
-        r.out.includes('mv .env.sandbox .env.sandbox.off') &&
+        r.out.includes('--profile sandbox rm -sfv sandbox') === (state !== 'env-only') &&
+        r.out.includes('mv .env.sandbox .env.sandbox.off') === (state === 'env-only') &&
+        !r.out.includes('tenant-host clear') &&
+        !r.out.includes('down -v') &&
+        !r.out.includes('volume rm') &&
         r.out.includes('摘掉沙箱站点') &&
         !r.log.includes('sandbox.ts purge --all'),
       r.out,
@@ -443,6 +446,7 @@ exit 0`,
     check(
       `05-13① ${state}：deploy 转 1，不同步、不换容器、不改环境文件`,
       d.code === 1 &&
+        d.out.includes('服务器上什么都没动') &&
         !d.log.includes('rsync ') &&
         !d.log.includes('up -d app') &&
         (state !== 'env-only' || fs.existsSync(path.join(srv, '.env.sandbox'))),
@@ -465,25 +469,109 @@ exit 0`,
     ['purge 持续失败', { FAKE_SANDBOX_ROWS: 't', FAKE_PURGE_FAIL: '1' }],
     ['运行时为零，purge 成功但库仍有行', { FAKE_SANDBOX_ROWS: 't', FAKE_AFTER_PURGE: 't' }],
     ['库不可达', { FAKE_TENANCY_DOWN: '1' }],
+    ['查询结果无法确认', { FAKE_OTHER_HOST: 'unexpected' }],
     ['库元数据不可达', { FAKE_TENANCY_SCHEMA: 'down' }],
     ['容器列表不可确认', { FAKE_CONTAINER_DOWN: '1' }],
     ['其他 standard 有 public_host', { FAKE_OTHER_HOST: 't', FAKE_SANDBOX_ROWS: 't' }],
   ] as const) {
     r = guard('pre-05', { ...sandboxEnv, ...env });
     check(`05-13③ ${name}：拒绝 7`, r.code === 7, r.out);
+    const forbiddenSteps =
+      !r.out.includes('rm -sfv sandbox') &&
+      !r.out.includes('mv .env.sandbox') &&
+      !r.out.includes('down -v') &&
+      !r.out.includes('volume rm');
+    if ('FAKE_PURGE_FAIL' in env)
+      check(
+        '演练二·1 purge 失败：透出 CLI 错误码、查沙箱进程与挂住事务、不打印 Host/删除步骤',
+        r.out.includes('sandbox_tenant_lock_held') &&
+          r.out.includes('沙箱进程还在跑') &&
+          r.out.includes('挂住的事务') &&
+          r.out.includes('数据库锁') &&
+          !r.out.includes('tenant-host clear') &&
+          forbiddenSteps,
+        r.out,
+      );
+    if ('FAKE_TENANCY_DOWN' in env || 'FAKE_TENANCY_SCHEMA' in env || ('FAKE_OTHER_HOST' in env && env.FAKE_OTHER_HOST === 'unexpected'))
+      check(
+        `演练二·1 ${name}：查 db、连接与查询字段，不打印清理步骤`,
+        r.out.includes('确认 db 在跑') &&
+          r.out.includes('数据库连接') &&
+          r.out.includes('kind/public_host') &&
+          r.out.includes('DEFAULT_TENANT_SLUG') &&
+          !r.out.includes('tenant-host clear') &&
+          forbiddenSteps,
+        r.out,
+      );
+    if ('FAKE_AFTER_PURGE' in env)
+      check(
+        '演练二·1 purge 后仍有行：核查残留与查询结果、不打印无关清理步骤',
+        r.out.includes('kind=sandbox') && r.out.includes('确认 purge 结果') && forbiddenSteps,
+        r.out,
+      );
+    if ('FAKE_CONTAINER_DOWN' in env)
+      check(
+        '演练二·1 容器列表失败：查 Docker 与已停容器、不打印清理步骤',
+        r.out.includes('确认 Docker 可达') && r.out.includes('docker container ls -a') && forbiddenSteps,
+        r.out,
+      );
+
     const d = deploy('v04', { ...sandboxEnv, ...env });
-    check(`05-13③ ${name}：deploy 转 1、不 rsync`, d.code === 1 && !d.log.includes('rsync '), d.out);
-    if ('FAKE_OTHER_HOST' in env)
+    check(
+      `05-13③ ${name}：deploy 转 1、不 rsync`,
+      d.code === 1 && d.out.includes('服务器上什么都没动') && !d.log.includes('rsync '),
+      d.out,
+    );
+    if ('FAKE_OTHER_HOST' in env && env.FAKE_OTHER_HOST === 't')
       check(
         '05-13③ Host 风险先报，打印 clear 与摘域名、不 purge',
-        r.out.includes('tenant-host clear') && r.out.includes('摘掉它们的域名') && !r.log.includes('sandbox.ts purge --all'),
+        r.out.includes('tenant-host clear') &&
+          r.out.includes('standard') &&
+          r.out.includes('public_host') &&
+          r.out.includes('摘掉它们的域名') &&
+          forbiddenSteps &&
+          !r.log.includes('sandbox.ts purge --all'),
         r.out,
       );
   }
-  r = guard('pre-04', { ...sandboxEnv, FAKE_BRAND: 't', FAKE_SANDBOX_CONTAINER: 'stopped', FAKE_SANDBOX_ROWS: 't' });
+  r = deploy('v04', { ...sandboxEnv, FAKE_RUNNING: 'missing', FAKE_TENANCY_SCHEMA: 'down' });
   check(
-    '05-13④ 品牌与沙箱风险同时存在先报 6、不 purge',
-    r.code === 6 && r.out.includes(recovery) && !r.log.includes('sandbox.ts purge --all'),
+    '演练二·2 空服务器旧 tag：从严拒绝、新服务器处理办法、无删容器/改名/Host 步骤',
+    r.code === 1 &&
+      r.out.includes('没有任何容器、库不可达的空服务器') &&
+      r.out.includes('新服务器先部署 05 之后的 tag') &&
+      r.out.includes('或确认库后再试') &&
+      r.out.includes('服务器上什么都没动') &&
+      !r.out.includes('rm -sfv sandbox') &&
+      !r.out.includes('mv .env.sandbox') &&
+      !r.out.includes('tenant-host clear') &&
+      !r.log.includes('rsync '),
+    r.out,
+  );
+  fs.writeFileSync(path.join(srv, '.env.sandbox'), 'placeholder');
+  r = guard('pre-04', { ...sandboxEnv, FAKE_BRAND: 't', FAKE_OTHER_HOST: 't', FAKE_SANDBOX_CONTAINER: 'stopped', FAKE_SANDBOX_ROWS: 't' });
+  check(
+    '05-13④ 品牌与沙箱风险同时存在先报 6、只读列出 Host/容器/env/库行、不 purge',
+    r.code === 6 &&
+      r.out.includes(recovery) &&
+      r.out.includes('处理完品牌风险后再跑，还可能因沙箱风险以 7 拒绝') &&
+      r.out.includes('standard 租户有 public_host') &&
+      r.out.includes('沙箱容器仍存在（包括已停的容器）') &&
+      r.out.includes('.env.sandbox 仍存在') &&
+      r.out.includes('库里仍有沙箱行') &&
+      !r.log.includes('sandbox.ts purge --all') &&
+      !r.log.includes('docker rm') &&
+      !r.log.includes('rm -sfv'),
+    r.out,
+  );
+  fs.rmSync(path.join(srv, '.env.sandbox'));
+  r = guard('pre-04', { ...sandboxEnv, FAKE_BRAND: 't', FAKE_TENANCY_SCHEMA: 'down', FAKE_CONTAINER_DOWN: '1' });
+  check(
+    '演练二·3 品牌优先且沙箱查询不确定：提示库/容器无法确认、不 purge',
+    r.code === 6 &&
+      r.out.includes('库不可达或查询结果无法确认') &&
+      r.out.includes('沙箱容器是否存在无法确认') &&
+      !r.log.includes('sandbox.ts purge --all'),
     r.out,
   );
   r = guard('pre-05', { ...sandboxEnv, FAKE_RUNNING: '4', FAKE_TENANCY_SCHEMA: 'down' });

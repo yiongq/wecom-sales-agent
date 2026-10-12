@@ -43,6 +43,7 @@ export async function runSandbox(
     }
     signal.throwIfAborted();
     const conn = await deps.connect();
+    let endedCount: number | undefined;
     try {
       if (command === 'wecom-reset-full') {
         await resetSandboxWecomFull(conn.db);
@@ -84,9 +85,11 @@ export async function runSandbox(
           await tenantLock?.release();
         }
       }
+      if (command === 'end' && target === '--all') endedCount = rows.length;
       return 0;
     } finally {
       await conn.close();
+      if (endedCount !== undefined) console.log(`[sandbox] 已标记 ${endedCount} 个沙箱到期`);
     }
   } catch {
     console.error('[sandbox] sandbox_command_failed');
