@@ -106,7 +106,7 @@ export class SandboxWecom {
       deps.request,
       this.now,
       () => this.running(),
-      (endpoint, errcode) => {
+      (endpoint, errcode, expectedRejection) => {
         if (endpoint === 'gettoken' && errcode !== '0')
           this.failure('ready', { endpoint, errcode }, { endpoint, errcode: 'request_failed' });
         if (['kf/send_msg', 'kf/send_msg_on_event'].includes(endpoint)) {
@@ -114,7 +114,7 @@ export class SandboxWecom {
             this.failures.delete('send');
             return;
           }
-          if (!['42001', '40014', '95003'].includes(errcode))
+          if (!expectedRejection && !['42001', '40014', '95003'].includes(errcode))
             this.failure('send', { endpoint, errcode }, { endpoint, errcode: 'request_failed' });
         }
         this.warn(endpoint, errcode);
@@ -483,7 +483,7 @@ export class SandboxWecom {
       }
       if (!this.running()) return;
       if (result.status === 'bound') {
-        await withTenantScope(result.runtime, () => this.api.welcomeUser(user, welcome, entered ? undefined : message.send_time * 1000));
+        await withTenantScope(result.runtime, () => this.api.welcomeUser(user, welcome));
         return;
       }
       if (!entered || !previouslyBound) this.replyFixed(user, welcome, result.status === 'expired');

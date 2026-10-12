@@ -6,14 +6,14 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { openTestDb, testConfigDeps, fakeLock } from '../../db/testing.js';
+import { openTestDb, testConfigDeps, fakeLock, purgeTestSandbox } from '../../db/testing.js';
 import { openOutboundTestPg } from '../../db/sandbox-outbound-testing.js';
 import { type Db, type Tx } from '../../db/client.js';
 import { importConfig } from '../../config/transfer.js';
 import { closeConfig } from '../../config/source.js';
 import { shanhaiBrand } from '../../packs/travel/brand-fixture.js';
 import { SandboxWecomRuntime, installSandboxWecomOutbound, wecomAdapter } from '../../adapters/wecom.js';
-import { getOrCreateSession, saveSession, flushSession, drainStore, listOrders } from '../../store.js';
+import { getOrCreateSession, saveSession, flushSession, drainStore, listOrders, createOrder, getOrder } from '../../store.js';
 import { __alertTest } from '../../ops/alert.js';
 import { __ledgerTest } from '../../quota/ledger.js';
 import { SandboxWecom, type KfMessage } from './wecom.js';
@@ -21,7 +21,7 @@ import { sandboxWechatIndex, SandboxSendRefused } from './outbound.js';
 import { sandboxApp, SandboxProcess } from './process.js';
 import { provisionSandbox } from './provision.js';
 import { resolveSandboxSession } from './session.js';
-import { __sandboxLimitsTest } from './limits.js';
+import { __sandboxLimitsTest, assertSandboxWriteRate, sandboxWriteLimits } from './limits.js';
 import { readSandboxLink } from '../../db/repo/sandbox.js';
 import { loadSandboxRuntime } from './load.js';
 import {
@@ -772,7 +772,7 @@ async function suite(db: Db, q: Query): Promise<void> {
   await lateInbox.drain();
   await lateInbox.close();
   check(() => assert.equal(lateSends, 0));
-  // 受限链接 cookie 从真实路由走支付；两个 cookie 同时存在时登录 cookie 赢。
+  // 受限链接 cookie 从真实路由走支付；资源路由优先链接 cookie，其余仍用登录 cookie。
   const service = {
     health: () => new SandboxProcess({}).health(),
     resolve: (token: string | undefined) => resolveSandboxSession(db, token),
@@ -822,8 +822,130 @@ async function suite(db: Db, q: Query): Promise<void> {
   check(() => assert.equal(paid.status, 200));
   const priority = await req(`/api/orders/${order!.id}`, `__Host-sbx=${b.token}; ${cookie}`);
   check(() => assert.equal(priority.status, 200));
-  const invalidPriority = await req(`/pay/${order!.id}`, `__Host-sbx=bad; ${cookie}`);
-  check(() => assert.equal(invalidPriority.status, 302));
+  const linkOrder = withTenantScope(B, () => {
+    const session = getOrCreateSession('sbx-linkpay', 'simulator');
+    const created = createOrder({
+      sessionId: session.id,
+      routeId: order!.routeId,
+      routeTitle: '链接沙箱专属订单',
+      travelers: 2,
+      departDate: '2099-01-01',
+      totalPrice: 1234,
+      catalogVersion: 1,
+    });
+    session.orderIds.push(created.id);
+    saveSession(session);
+    return created;
+  });
+  await withTenantScope(B, () => flushSession(linkOrder.sessionId));
+  const loginCookie = `__Host-sbx=${a.token}`;
+  const linkJump = await req(`/wx/${tokenB}/pay/${linkOrder.id}`, loginCookie);
+  const dualCookie = `${loginCookie}; ${linkJump.headers.get('set-cookie')!.split(';')[0]}`;
+  await review('wx-link-cookie-wins-over-session', async () => {
+    assert.equal(linkJump.status, 302);
+    const page = await req(linkJump.headers.get('location')!, dualCookie);
+    assert.equal(page.status, 200);
+    assert.ok(
+      (await page.text()).includes('<title>链接沙箱专属订单 · 订单支付</title>'),
+      'wx-link-cookie-wins-over-session: 支付页必须属于 B',
+    );
+    const detail = await req(`/api/orders/${linkOrder.id}`, dualCookie);
+    assert.equal(detail.status, 200);
+    assert.equal((await detail.json()).routeTitle, linkOrder.routeTitle);
+    assert.equal(
+      withTenantScope(A, () => getOrder(linkOrder.id)),
+      undefined,
+    );
+  });
+  await review('wx-link-cookie-wins-over-invalid-session', async () => {
+    const invalidLogin = await req(`/pay/${order!.id}`, `__Host-sbx=bad; ${cookie}`);
+    assert.equal(invalidLogin.status, 200);
+  });
+  await review('wx-link-cookie-payment-belongs-to-link-sandbox', async () => {
+    const denied = await req(`/api/orders/${linkOrder.id}/pay`, dualCookie, 'POST', {
+      origin: 'https://other.example.invalid',
+      'sec-fetch-site': 'cross-site',
+    });
+    assert.equal(denied.status, 403);
+    assert.equal(linkOrder.status, 'pending_payment');
+    const payment = await req(`/api/orders/${linkOrder.id}/pay`, dualCookie, 'POST', { origin: base });
+    assert.equal(payment.status, 200);
+    assert.equal((await payment.json()).order.status, 'paid');
+    assert.equal(
+      withTenantScope(B, () => getOrder(linkOrder.id)!.status),
+      'paid',
+    );
+    assert.equal(
+      withTenantScope(A, () => getOrder(linkOrder.id)),
+      undefined,
+    );
+    const persisted = await q<{ status: string }>('select status from orders where tenant_id=$1 and id=$2', [B.id, linkOrder.id]);
+    assert.equal(persisted[0]!.status, 'paid');
+    const foreign = await q('select id from orders where tenant_id=$1 and id=$2', [A.id, linkOrder.id]);
+    assert.equal(foreign.length, 0);
+  });
+  await review('wx-link-cookie-payment-keeps-write-rate-limit', async () => {
+    __sandboxLimitsTest.dropTenantLimits(B.id);
+    try {
+      withTenantScope(B, () => {
+        for (let i = 0; i < sandboxWriteLimits().requestsPerMinute; i++) assertSandboxWriteRate();
+      });
+      const blocked = await req(`/api/orders/${linkOrder.id}/pay`, dualCookie, 'POST', { origin: base });
+      assert.equal(blocked.status, 429);
+      assert.equal((await blocked.json()).error, 'sandbox_write_rate_limited');
+    } finally {
+      __sandboxLimitsTest.dropTenantLimits(B.id);
+    }
+  });
+  await review('wx-link-cookie-keeps-console-and-simulator-on-session', async () => {
+    const me = await req('/api/console/me', dualCookie);
+    assert.equal(me.status, 200);
+    assert.equal((await me.json()).tenantSlug, A.slug);
+    const body = JSON.stringify({ sessionId: `sim-${randomBytes(12).toString('hex')}`, text: '你好' });
+    const chat = await http.request(base + '/api/chat', {
+      method: 'POST',
+      headers: {
+        host: cfg.host,
+        cookie: dualCookie,
+        origin: base,
+        'content-type': 'application/json',
+        'content-length': String(Buffer.byteLength(body)),
+      },
+      body,
+    });
+    assert.equal(chat.status, 200);
+    const id = (await chat.json()).sessionId;
+    const history = await req(`/api/sessions/${id}`, dualCookie);
+    assert.equal(history.status, 200);
+    assert.ok(withTenantScope(A, () => A.store.sessions.has(id)));
+    assert.ok(!withTenantScope(B, () => B.store.sessions.has(id)));
+  });
+  await review('wx-link-cookie-invalid-or-expired-falls-back-to-session', async () => {
+    for (const link of ['bad', randomBytes(32).toString('base64url')]) {
+      const detail = await req(`/api/orders/${order!.id}`, `${loginCookie}; __Host-sbxw=${link}`);
+      assert.equal(detail.status, 200);
+      assert.equal((await detail.json()).routeTitle, order!.routeTitle);
+    }
+    const expiresAt = B.expiresAt;
+    Object.defineProperty(B, 'expiresAt', { value: Date.now() - 1, configurable: true });
+    try {
+      const detail = await req(`/api/orders/${order!.id}`, dualCookie);
+      assert.equal(detail.status, 200);
+      assert.equal((await detail.json()).routeTitle, order!.routeTitle);
+      assert.equal((await req(`/api/orders/${linkOrder.id}`, dualCookie)).status, 404);
+    } finally {
+      Object.defineProperty(B, 'expiresAt', { value: expiresAt, configurable: true });
+    }
+    B.state = 'closing';
+    try {
+      assert.equal((await req(`/api/orders/${linkOrder.id}`, dualCookie)).status, 404);
+      const detail = await req(`/api/orders/${order!.id}`, dualCookie);
+      assert.equal(detail.status, 200);
+      assert.equal((await detail.json()).routeTitle, order!.routeTitle);
+    } finally {
+      B.state = 'serving';
+    }
+  });
   for (const p of [
     `/wx/${tokenA}/console/`,
     `/wx/${tokenA}/api/orders/o/pay`,
@@ -942,6 +1064,25 @@ async function suite(db: Db, q: Query): Promise<void> {
   sandboxWechatIndex.drop(A.id);
   check(() => assert.equal(sandboxWechatIndex.keyCount(A.id), 0));
   A.state = 'serving';
+  await review('wx-link-cookie-deleted-sandbox-falls-back-to-session', async () => {
+    // 前面的开通回归曾把 A 置为到期；本条回到有效 A 会话验证删除 B 后的回落。
+    await q('update tenants set expires_at=$2 where id=$1', [A.id, a.expiresAt]);
+    await withTenantScope(B, () => drainStore(5000));
+    B.state = 'closing';
+    await q('update tenants set expires_at=now() where id=$1', [B.id]);
+    await purgeTestSandbox(db, B.id);
+    B.state = 'closed';
+    B.store.pgBackend!.close();
+    await withTenantScope(B, closeConfig);
+    dropShutdownHooks(B);
+    dropTenantState(B.id);
+    unregisterRuntime(B.id);
+    assert.equal(sandboxWechatIndex.forToken(tokenB), undefined);
+    assert.equal((await req(`/api/orders/${linkOrder.id}`, dualCookie)).status, 404);
+    const detail = await req(`/api/orders/${order!.id}`, dualCookie);
+    assert.equal(detail.status, 200);
+    assert.equal((await detail.json()).routeTitle, order!.routeTitle);
+  });
   assert.ok(tokenCalls >= 4);
 }
 
