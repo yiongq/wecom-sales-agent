@@ -1,10 +1,11 @@
-// 05 R3 / R17：第 1 步列出的 24 份 DB 非锁定自测完整重跑，子进程继续继承严格模式。
+// 05 R3 / R17：DB 非锁定自测完整重跑，子进程继续继承严格模式；CI 可按原列表选择子集。
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const suites = Object.freeze([
+export const STRICT_SUITES = Object.freeze([
   'src/config/brand.selftest.ts',
   'src/config/brand-publish.selftest.ts',
   'src/config/brand-transfer.selftest.ts',
@@ -31,51 +32,74 @@ const suites = Object.freeze([
   'src/payment/legacy-pay-poisoned.selftest.ts',
   'eval/run.ts',
 ]);
-const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tenancy-strict-'));
-const preload = new URL('./tenancy-strict-preload.ts', import.meta.url).href;
-let whitelisted = 0;
-try {
-  for (const [index, suite] of suites.entries()) {
-    console.log(`[tenancy-strict] ${suite}`);
-    const report = path.join(reportDir, `${index}.jsonl`);
-    const child = spawn(process.execPath, ['--import', 'tsx', suite], {
-      stdio: 'inherit',
-      env: {
-        ...process.env,
-        TENANCY_STRICT: '1',
-        TENANCY_STRICT_REPORT: report,
-        TENANCY_STRICT_SUITE: suite,
-        NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=tsx --import=${preload}`.trim(),
-        ...(suite === 'eval/run.ts' ? { CONFIG_SOURCE: 'file', CONFIG_TEST_DB: 'pglite', LLM_MOCK: '1' } : {}),
-      },
-    });
-    // 渠道套件含数百个 CLI 子进程，真实 PG 与严格预载均增加启动成本；CI 机器上单套已超过 5 分钟，硬超时放到 15 分钟。
-    const timer = setTimeout(() => child.kill('SIGKILL'), 900_000);
-    const code = await new Promise<number | null>((resolve, reject) => {
-      child.once('error', reject);
-      child.once('close', resolve);
-    }).finally(() => clearTimeout(timer));
-    const events = fs.existsSync(report)
-      ? fs
-          .readFileSync(report, 'utf8')
-          .trim()
-          .split('\n')
-          .filter(Boolean)
-          .map((line) => JSON.parse(line) as { kind: string; expected?: boolean })
-      : [];
-    const loaded = events.filter((event) => event.kind === 'loaded').length;
-    const missing = events.filter((event) => event.kind === 'missing');
-    const unexpected = missing.filter((event) => !event.expected).length;
-    const expected = missing.length - unexpected;
-    const expectedCount = suite === 'src/adapters/wecom-03.selftest.ts' ? 1 : 0;
-    console.log(`[tenancy-strict] scope_missing=${unexpected} whitelist=${expected} processes=${loaded}`);
-    if (code !== 0 || !loaded || unexpected || expected !== expectedCount)
-      throw new Error(`严格模式重跑失败：${suite}（退出码 ${code}，非预期缺作用域 ${unexpected}，白名单 ${expected}/${expectedCount}）`);
-    whitelisted += expected;
+export function selectStrictSuites(args: readonly string[]): readonly string[] {
+  if (!args.length) return STRICT_SUITES;
+  const selected: string[] = [];
+  for (let i = 0; i < args.length; i += 2) {
+    const suite = args[i + 1];
+    if (args[i] !== '--suite' || !suite || !STRICT_SUITES.includes(suite))
+      throw new Error(`严格子集为空或未知：${suite ?? ''}；用法：--suite <原列表中的路径>`);
+    if (selected.includes(suite)) throw new Error(`严格子集重复：${suite}`);
+    selected.push(suite);
   }
-  console.log(
-    `TENANCY STRICT PASS: ${suites.length}/${suites.length} 个执行目标；scope_missing=0；whitelist=${whitelisted}（wecom-03 故意移除 owner）`,
-  );
-} finally {
-  fs.rmSync(reportDir, { recursive: true, force: true });
+  return selected;
+}
+
+async function main(): Promise<void> {
+  const suites = selectStrictSuites(process.argv.slice(2));
+  const reportDir = fs.mkdtempSync(path.join(os.tmpdir(), 'tenancy-strict-'));
+  const preload = new URL('./tenancy-strict-preload.ts', import.meta.url).href;
+  let whitelisted = 0;
+  try {
+    for (const [index, suite] of suites.entries()) {
+      console.log(`[tenancy-strict] ${suite}`);
+      const report = path.join(reportDir, `${index}.jsonl`);
+      const child = spawn(process.execPath, ['--import', 'tsx', suite], {
+        stdio: 'inherit',
+        env: {
+          ...process.env,
+          TENANCY_STRICT: '1',
+          TENANCY_STRICT_REPORT: report,
+          TENANCY_STRICT_SUITE: suite,
+          NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=tsx --import=${preload}`.trim(),
+          ...(suite === 'eval/run.ts' ? { CONFIG_SOURCE: 'file', CONFIG_TEST_DB: 'pglite', LLM_MOCK: '1' } : {}),
+        },
+      });
+      // 渠道套件含数百个 CLI 子进程，真实 PG 与严格预载均增加启动成本；CI 机器上单套已超过 5 分钟，硬超时放到 15 分钟。
+      const timer = setTimeout(() => child.kill('SIGKILL'), 900_000);
+      const code = await new Promise<number | null>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', resolve);
+      }).finally(() => clearTimeout(timer));
+      const events = fs.existsSync(report)
+        ? fs
+            .readFileSync(report, 'utf8')
+            .trim()
+            .split('\n')
+            .filter(Boolean)
+            .map((line) => JSON.parse(line) as { kind: string; expected?: boolean })
+        : [];
+      const loaded = events.filter((event) => event.kind === 'loaded').length;
+      const missing = events.filter((event) => event.kind === 'missing');
+      const unexpected = missing.filter((event) => !event.expected).length;
+      const expected = missing.length - unexpected;
+      const expectedCount = suite === 'src/adapters/wecom-03.selftest.ts' ? 1 : 0;
+      console.log(`[tenancy-strict] scope_missing=${unexpected} whitelist=${expected} processes=${loaded}`);
+      if (code !== 0 || !loaded || unexpected || expected !== expectedCount)
+        throw new Error(`严格模式重跑失败：${suite}（退出码 ${code}，非预期缺作用域 ${unexpected}，白名单 ${expected}/${expectedCount}）`);
+      whitelisted += expected;
+    }
+    console.log(
+      `TENANCY STRICT PASS: ${suites.length}/${suites.length} 个执行目标；scope_missing=0；whitelist=${whitelisted}${suites.includes('src/adapters/wecom-03.selftest.ts') ? '（wecom-03 故意移除 owner）' : ''}`,
+    );
+  } finally {
+    fs.rmSync(reportDir, { recursive: true, force: true });
+  }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  await main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
 }
