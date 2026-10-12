@@ -90,15 +90,24 @@ try {
   for (const [page, hash] of Object.entries(pages)) {
     const name = page as keyof typeof pages;
     const html = fs.readFileSync(`public/${name}.html`, 'utf8');
-    assert.equal(sha256(html), hash, `${page} 源文件必须与开工时逐字节相同`);
+    // owner 2026-10-13 只授权改 chat 页脚一句；替回旧句后仍按原哈希核对全部字节。
+    const footer = '演示：模拟企业微信里的客户对话。';
+    const baselineHtml =
+      page === 'chat' ? html.replace(footer, 'Demo：模拟企业微信会话。生产环境经企微回调接入，界面即企业微信本身。') : html;
+    if (page === 'chat') assert.ok(html.includes(footer));
+    assert.equal(sha256(baselineHtml), hash, `${page} 除授权页脚外必须与开工时逐字节相同`);
     assert.equal(renderBrandPage(html, name, runtime, null), html);
     const next = renderBrandPage(html, name, runtime, shanhaiBrand);
     // 检查全部客户文案（含 JS 中的动态文案）；技术注释不属于客户文案，支付产品名保留。
-    const customerText = next.replace(/\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->|^\s*\/\/.*$/gm, '').replaceAll('微信支付', '');
+    const customerText = next
+      .replace(/\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->|^\s*\/\/.*$/gm, '')
+      .replaceAll('微信支付', '')
+      .replace(page === 'chat' ? footer : '', '');
     assert.doesNotMatch(customerText, /云途|微信/);
     if (page === 'pay') assert.equal((next.match(/class="merchant">山海旅行</g) ?? []).length, 2);
     if (page === 'proposal') assert.match(next, /山海旅行 · 行程方案书/);
     if (page === 'chat') {
+      assert.ok(next.includes(footer), '模板模式的宿主页脚同样使用 owner 定稿');
       const js = /<script>([\s\S]*?)<\/script>/.exec(next)![1]!;
       assert.ok(new vm.Script(js));
       assert.match(next, /pc-logo">山/);
@@ -370,6 +379,8 @@ try {
   // 欢迎语独立于拉取链，等实际发送任务排空。
   for (let n = 0; n < 100 && sent.length < 2; n++) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual(sent, [rendered.welcomeText, rendered.welcomeBackText]);
+  assert.match(sent[0]!, /需要真人服务时，回复「人工」即可转真人顾问。/);
+  assert.ok(sent.every((text) => !text.includes('回复「人工」，会话会转到你的工作台，由你来接手。')));
   console.log(
     '品牌出口自测通过：旧版文本/页面字节、山海出口/渠道中立、逐页逐槽位 HTML/JS 转义与脚本执行、字素簇首字、发布快照、平台 set 不即时生效、轮次隔离、自定义欢迎优先',
   );

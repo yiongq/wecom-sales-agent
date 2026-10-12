@@ -63,7 +63,7 @@ const SPEC: ReadonlyArray<readonly [string, number, string, string | null, strin
   ['unsupported_media_type', 415, '无法完成这项操作', '刷新页面后重试', 'danger', 'page'],
   // 05 R14 / R15：沙箱写入与模型额度提示。
   // 05 Revisions 2026-10-12：速率与容量分开，容量不是终生总写入次数。
-  ['sandbox_write_rate_limited', 429, '操作太快了，稍等几秒再试', null, 'caution', 'inline'],
+  ['sandbox_write_rate_limited', 429, '操作太快了，稍等一会儿再试', null, 'caution', 'inline'],
   [
     'sandbox_write_capacity_limited',
     429,

@@ -3210,7 +3210,10 @@ export class SandboxWecomRuntime {
   sendsClosedAt = Number.POSITIVE_INFINITY;
   get welcomeText(): string {
     const binding = currentPack();
-    return brandTexts(binding.runtime, binding.brand).welcomeText;
+    return brandTexts(binding.runtime, binding.brand).welcomeText.replace(
+      '需要真人服务时，回复「人工」即可转真人顾问。',
+      '回复「人工」，会话会转到你的工作台，由你来接手。',
+    );
   }
   readonly #request: typeof fetch;
   private readonly sending = new Set<SendHandle>();

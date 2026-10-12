@@ -58,8 +58,8 @@
         <h2>进去以后可以</h2>
         <ol><li><span>1</span>用微信扫码，当一回客户</li><li><span>2</span>看AI怎么接待、报价</li><li><span>3</span>接手会话，自己回一句</li><li><span>4</span>改价、标已付或改话术</li></ol>
       </div>
-      <div class="try-notes" id="notes"><p class="try-note"><svg class="try-icon clock" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg><span>最长保留24小时，闲置2小时会提前结束</span></p><p class="try-note"><svg class="try-icon lock" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg><span>只有这个浏览器能进入；回复只发给你自己的微信</span></p></div>
-      <div class="try-notes try-ended-notes" id="ended" hidden><p>之前绑定的微信已经解除，再发消息不会有回复</p><p>企业微信服务器上的聊天记录按企业微信的规则保存</p></div>
+      <div class="try-notes" id="notes"><p class="try-note"><svg class="try-icon clock" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg><span>最长保留24小时，闲置2小时会提前结束</span></p><p class="try-note"><svg class="try-icon lock" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg><span>工作台只能在这个浏览器里打开；扫码绑定后，微信里的回复只发到你自己的微信</span></p></div>
+      <div class="try-notes try-ended-notes" id="ended" hidden><p>之后在微信里再发消息，只会收到「去开一个新体验」的提示</p><p>企业微信服务器上的聊天记录按企业微信的规则保存</p></div>
       <div class="try-note try-data-row" id="dataNote"><svg class="try-icon info" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4m0-4h.01"></path></svg><span><span id="dataWarning">别填真实的姓名和手机号 · </span><a class="try-data-link" id="dataToggle" href="#tryData" aria-controls="tryData" aria-expanded="false">体验数据怎么处理</a></span></div>
       <div class="try-data" id="tryData" hidden><!-- data copy --></div>
       <div class="try-fallback" id="fallback" hidden>
@@ -101,7 +101,7 @@
   document.getElementById('fallbackUnavailable').hidden = links.slice(0, 2).every((link) => link.hasAttribute('href'));
   if (ended) {
     title.textContent = '上一次体验已结束';
-    lead.textContent = '环境和里面的数据已经删除。想再看一遍，可以重新开一个。';
+    lead.textContent = '上一次体验已结束，里面的数据会全部删除。想再看一遍，可以重新开一个。';
     label.textContent = '再开一个体验';
     document.getElementById('dataWarning').hidden = true;
     document.getElementById('ended').hidden = false;
@@ -132,10 +132,10 @@
       const body = await response.json();
       clearTimeout(slow);
       if (body.error === 'sandbox_limited') {
-        title.textContent = body.scope === 'ip' ? '这个网络今天开得有点多了' : '今天的体验名额满了';
+        title.textContent = body.scope === 'ip' ? '这个网络今天开得有点多了' : '暂时没有空余的体验名额';
         const seconds = Number(body.retryAfter || response.headers.get('retry-after') || 3600);
         const delay = seconds < 3600 ? Math.max(1, Math.ceil(seconds / 60)) + '分钟' : Math.ceil(seconds / 3600) + '小时';
-        lead.textContent = body.scope === 'ip' ? '过一会儿再试，或者先看看这些：' : '体验环境的名额有限，大约' + delay + '后恢复。先看看这些：';
+        lead.textContent = body.scope === 'ip' ? '过一会儿再试，或者先看看这些：' : '体验环境的名额有限，约' + delay + '后再试。先看看这些：';
         document.getElementById('steps').hidden = true;
         document.getElementById('notes').hidden = true;
         dataNote.hidden = true;
