@@ -3131,3 +3131,110 @@ export const __wecomTest = {
     if (rt) rt.sendsClosedAt = at ?? Number.POSITIVE_INFINITY;
   },
 };
+
+/** 05 R21：第三种运行时的 API 能力。实例拥有它，不进入 env / 03 注册表、文件状态或租户状态。 */
+export class SandboxWecomRuntime {
+  private token: Redacted<string> | null = null;
+  private expiresAt = 0;
+  private tokenTask: Promise<string> | null = null;
+  private readonly abort = new AbortController();
+
+  constructor(
+    private readonly cfg: { corpId: string; secret: string; openKfid: string; host: string },
+    private readonly request: typeof fetch = fetch,
+    private readonly now: () => number = Date.now,
+    private readonly running: () => boolean = () => true,
+    private readonly diagnostic: (endpoint: string, errcode: string) => void = () => {},
+  ) {}
+
+  stop(): void {
+    this.abort.abort();
+    this.token = null;
+  }
+
+  private assertRunning(): void {
+    if (this.abort.signal.aborted || !this.running()) throw new Error('sandbox_wecom_stopped');
+  }
+
+  private problem(endpoint: string, errcode: string): Error {
+    this.diagnostic(endpoint, errcode);
+    return Object.assign(new Error('sandbox_wecom_api_failed'), { endpoint, errcode });
+  }
+
+  private async accessToken(force = false): Promise<string> {
+    this.assertRunning();
+    if (!force && this.token && this.now() < this.expiresAt) return this.token.reveal();
+    this.tokenTask ??= (async () => {
+      try {
+        const res = await this.request(
+          `${API_BASE}/gettoken?corpid=${encodeURIComponent(this.cfg.corpId)}&corpsecret=${encodeURIComponent(this.cfg.secret)}`,
+          { signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(10_000)]) },
+        );
+        const data = (await res.json()) as { errcode?: number; access_token?: string; expires_in?: number };
+        this.assertRunning();
+        if (!res.ok || data.errcode || !data.access_token)
+          throw this.problem(
+            'gettoken',
+            typeof data.errcode === 'number' ? String(data.errcode) : !res.ok ? `http_${res.status}` : 'missing_token',
+          );
+        this.token = new Redacted(data.access_token);
+        this.expiresAt = this.now() + Math.max(0, (data.expires_in ?? 7200) - 300) * 1000;
+        return data.access_token;
+      } catch (error) {
+        this.assertRunning();
+        if (error instanceof Error && 'endpoint' in error) throw error;
+        throw this.problem('gettoken', 'request_failed');
+      } finally {
+        this.tokenTask = null;
+      }
+    })();
+    return this.tokenTask;
+  }
+
+  private async api<T extends { errcode?: number }>(endpoint: string, body: unknown): Promise<T> {
+    let token = await this.accessToken();
+    for (let attempt = 0; attempt < 2; attempt++) {
+      this.assertRunning();
+      try {
+        const res = await this.request(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+          signal: AbortSignal.any([this.abort.signal, AbortSignal.timeout(15_000)]),
+        });
+        const data = (await res.json()) as T;
+        this.assertRunning();
+        if (attempt === 0 && (data.errcode === 42001 || data.errcode === 40014)) {
+          this.problem(endpoint, String(data.errcode));
+          token = await this.accessToken(true);
+          continue;
+        }
+        if (!res.ok || data.errcode)
+          throw this.problem(endpoint, typeof data.errcode === 'number' ? String(data.errcode) : `http_${res.status}`);
+        return data;
+      } catch (error) {
+        this.assertRunning();
+        if (error instanceof Error && 'endpoint' in error) throw error;
+        throw this.problem(endpoint, 'request_failed');
+      }
+    }
+    throw new Error('sandbox_wecom_token_invalid');
+  }
+
+  async contactWay(): Promise<string> {
+    const data = await this.api<{ errcode?: number; url?: string }>('kf/add_contact_way', { open_kfid: this.cfg.openKfid, scene: 'try' });
+    if (!data.url) throw this.problem('kf/add_contact_way', 'missing_url');
+    return data.url;
+  }
+
+  sync(cursor: string | null, token?: string): Promise<SyncMsgResp> {
+    return this.api('kf/sync_msg', { open_kfid: this.cfg.openKfid, cursor: cursor ?? '', token, limit: 1000 });
+  }
+
+  /** 唯一的作用域外发送：固定话术；不接受自定义正文，不拉客户昵称或头像。 */
+  async replyUnbound(user: string, welcomeCode?: string): Promise<void> {
+    const text = { content: `这是体验客服，去 https://${this.cfg.host}/try 开一个体验，扫页面上的码就能连上` };
+    if (welcomeCode) await this.api('kf/send_msg_on_event', { code: welcomeCode, msgtype: 'text', text });
+    else await this.api('kf/send_msg', { open_kfid: this.cfg.openKfid, touser: user, msgtype: 'text', text });
+  }
+}

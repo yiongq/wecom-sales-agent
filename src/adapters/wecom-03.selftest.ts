@@ -670,6 +670,45 @@ async function mainSuite(h: Harness): Promise<void> {
     json(h.fake.syncs),
   );
 
+  // 05 第 25 步宿主回归：第三种运行时的生命周期不改变已装载的 03 账号。
+  const { SandboxWecom } = await withoutTenantScope(() => import('../tenancy/sandbox/wecom.js'));
+  const oldIds = h.wecom.__wecomTest.ids();
+  const oldStates = oldIds.map((id) => h.wecom.__wecomTest.inspect(id));
+  const trial = new SandboxWecom(
+    {
+      SANDBOX_HOST: 'sandbox.example.invalid',
+      SANDBOX_WECOM_CORP_ID: 'fake-trial-corp',
+      SANDBOX_WECOM_TOKEN: 'fake-trial-token',
+      SANDBOX_WECOM_AES_KEY: Buffer.alloc(32, 7).toString('base64').slice(0, -1),
+      SANDBOX_WECOM_SECRET: 'fake-trial-secret',
+      SANDBOX_WECOM_OPEN_KFID: 'fake-trial-kf',
+    }, // gitleaks:allow
+    {
+      read: async () => ({ cursor: null, fullSince: null }),
+      commit: async () => {},
+      request: async (url) =>
+        Response.json(
+          String(url).includes('/gettoken?')
+            ? { access_token: 'fake-trial-access' }
+            : String(url).includes('/kf/add_contact_way?')
+              ? { url: 'https://contact.example.invalid/fake-trial' }
+              : { next_cursor: 'fake-trial-cursor', has_more: 0, msg_list: [] },
+        ),
+    },
+  );
+  try {
+    await withoutTenantScope(() => trial.start());
+    await trial.drain();
+  } finally {
+    await trial.close();
+  }
+  check('体验客服生命周期不进入宿主账号注册表', json(h.wecom.__wecomTest.ids()) === json(oldIds));
+  check(
+    '体验客服生命周期不改 03 cursor、收件、恢复与停机状态',
+    json(oldIds.map((id) => h.wecom.__wecomTest.inspect(id))) === json(oldStates),
+  );
+  check('体验客服生命周期不启用宿主 env 账号', !h.wecom.isWecomEnabled());
+
   // 05 第 6 步回归：停用 / 尚未启动的账号保留旧日志；存在账号丢了租户才推作用域告警。
   const tenancy = await withoutTenantScope(() => import('../tenancy/runtime.js'));
   const owner = tenancy.hostRuntime();

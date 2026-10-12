@@ -11,6 +11,7 @@ Revisions: 2026-10-11 owner 改方向（按 `d120c53`），尚无代码依赖。
 Revisions: 2026-10-11 开工期澄清（plan 第 1 步清单之后，尚无代码依赖）：沙箱进程上 `POST /api/console/auth/logout` 与口令登录一样回 404（R10 只写了没有口令登录，没写登出）；console 在 `Me.sandbox` 非空时不显示「退出登录」，只有横幅里的「结束体验」。
 Revisions: 2026-10-11 开工期澄清（第 14 步）：02 只给 `agent_app` 对 `privacy_notices` 的 SELECT，而 R9 要求开通事务复制宿主当前隐私说明。新增迁移 0009 与第五个沙箱函数 `sandbox_privacy_seed(p_tenant, …)`：`SECURITY DEFINER`、属主 `agent_owner`、只 `GRANT EXECUTE` 给 `agent_app`，只对 `kind = 'sandbox'` 且还没有隐私说明的租户写入版本 1，内容由调用方从只读快照传入；standard 租户的只读边界不变，不变量 10 与 01 不变量 23 的「沙箱函数」口径随之包含它。
 Revisions: 2026-10-11 开工期澄清（第 18 步）：R12 的闲置回收若只在内存计时，每次重启都会清零。新增迁移 0010 与一个只读的 `SECURITY DEFINER` 函数，只返回各未删沙箱登录会话的最近访问时刻（`auth_sessions.last_seen_at`，`sandbox_session_resolve` 每次都会刷新），只 `GRANT EXECUTE` 给 `agent_app`；沙箱进程启动时用它播种闲置计时。不返回 token、用户或任何 standard 租户的数据。
+Revisions: 2026-10-12 开工期澄清（第 25 步，owner 定 plan「Open」第 1 条）：企微后台要先通过回调 URL 校验，才拿得到体验客服的 Secret 与 open_kfid，所以上线到接通之间，`.env.sandbox` 里只有 CorpID、Token、EncodingAESKey 是真的，Secret 与 OPEN_KFID 放占位值（五个变量照旧全有或全无，R16 不变）。回调的 URL 校验（GET 回 echostr）只用 Token、EncodingAESKey、CorpID，不依赖 access_token 与客服链接；取 access_token 或客服链接失败时进程照常启动（R19 已定体验客服失败不影响 `ok`），`/healthz.wecom.failing` 为真、不签码、`Me.sandbox.wechat` 按 `off` 处理、体验清单第一步是模拟器，每分钟重试，取到即恢复；持续 10 分钟的 `channel` 告警照发（空当里预期有一条）。R21 原文只写启动时取客服链接，没写取不到怎么办。
 
 ## 背景与问题
 

@@ -6,7 +6,10 @@ export const STATE_MANIFEST: Record<
   'src/tenancy/sandbox/limits.ts:provisioned': { kind: 'instance', why: '进程开通的小时与 IP 日计数；崩溃归零，不随沙箱删除减去。' },
   'src/tenancy/sandbox/limits.ts:tenantState': { kind: 'tenant', state: 'sandbox.limits.writes' },
   'src/tenancy/sandbox/provision.ts:provisioning': { kind: 'instance', why: '开通的进程互斥链；不缓存租户或令牌，失败后仍可继续。' },
-  'src/server.ts:sandbox': { kind: 'instance', why: '沙箱进程的组合根；epoch、进程锁与停止策略只有一份。' },
+  'src/server.ts:sandbox': {
+    kind: 'instance',
+    why: '沙箱进程的组合根；epoch、进程锁、停止策略与体验客服实例（token、cursor、链接、限频、定时器）只有一份，不随租户 drop。',
+  },
   'src/server.ts:sandboxHttp': { kind: 'instance', why: '沙箱角色的 HTTP 路由能力；请求阶段才建立租户作用域。' },
   'src/tenancy/sandbox/lifecycle.ts:stopped': { kind: 'instance', why: '沙箱进程锁丢失后的永久停止闸；不按租户恢复。' },
   'src/adapters/simulator.ts:simulatorAdapter': { kind: 'instance', why: '固定适配器能力对象；所引用租户状态另登记' },
