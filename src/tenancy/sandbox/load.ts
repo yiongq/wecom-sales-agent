@@ -19,6 +19,8 @@ import {
 import { normalizeHost } from '../hosts.js';
 import { assertSandboxRunning } from './lifecycle.js';
 import { sandboxFlags } from './role.js';
+import { initializeSandboxBudget } from './budget.js';
+import { buildIndex } from '../../core/retrieval.js';
 
 export interface SandboxRow {
   id: string;
@@ -48,9 +50,11 @@ export async function loadSandboxRuntime(
     registerRuntime(rt);
     await withTenantScope(rt, async () => {
       await initConfig({ ...deps, tenantSlug: row.slug, lock: async () => held, closeDb: undefined });
+      await initializeSandboxBudget(rt, deps.db);
       await initSessionStore({ db: deps.db, tenantId: row.id, tenantSlug: row.slug, varDir: '' });
       await initPrivacy({ strict: true });
       watchStoreAlerts();
+      void buildIndex().catch(() => console.warn('[sandbox] sandbox_index_build_failed'));
     });
     assertSandboxRunning();
     return rt;

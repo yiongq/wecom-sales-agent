@@ -3,6 +3,7 @@ import { sql } from 'drizzle-orm';
 import { fenceSandboxEpoch, holdTenantLocks, rowsOf, withTenant, type Db, type Tx, type TenantCtx } from './client.js';
 import { assertSandboxRunning } from '../tenancy/sandbox/lifecycle.js';
 import { SandboxStartupError } from '../tenancy/sandbox/role.js';
+import { todayIso } from '../env.js';
 
 export async function acquireSandboxProcess(url: string, onLost: () => void) {
   const lock = await holdTenantLocks(url, ['sandbox-process'], { waitMs: 30_000 });
@@ -70,12 +71,12 @@ export async function expireBrokenSandbox(db: Db, tenantId: string): Promise<voi
 }
 
 /** 只读健康投影；不输出租户、凭据或令牌。后续开通、删除与预算步骤补充真实计数。 */
-export async function sandboxPoolHealth(db: Db) {
+export async function sandboxPoolHealth(db: Db | Tx, day = todayIso()) {
   const [row] = rowsOf<{ day: string; provisioned: number; costMilli: number }>(
     await db.execute(sql`
     select d.day::text as day, coalesce(p.provisioned, 0)::int as provisioned,
       coalesce(p.cost_milli, 0)::int as "costMilli"
-    from (select (now() at time zone 'UTC')::date as day) d left join public.sandbox_pool_daily p using (day)`),
+    from (select ${day}::date as day) d left join public.sandbox_pool_daily p using (day)`),
   );
   return row!;
 }

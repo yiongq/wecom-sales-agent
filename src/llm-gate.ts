@@ -1,6 +1,7 @@
 import { assertSandboxRunning } from './tenancy/sandbox/lifecycle.js';
-import { currentRuntime, withoutTenantScope } from './tenancy/runtime.js';
-import { costOf, type UsagePurpose } from './usage.js';
+import { currentRuntime, withoutTenantScope, withTenantScope } from './tenancy/runtime.js';
+import { costOf, sandboxCostOf, recordUsage, type UsagePurpose } from './usage.js';
+import { reserveSandboxIndex } from './tenancy/sandbox/budget.js';
 // LLM 请求的并发闸 + 退避重试。
 //
 // Node 的异步 I/O 解决的是「我们自己的服务器不被阻塞」：等 LLM 响应时线程去服务别的请求，
@@ -83,6 +84,8 @@ export interface GateResult {
   attempts: number;
   /** 成功响应由调用方沿原有路径解析后结算；解析失败传 null。不会额外读取 body。 */
   settleUsage(data: unknown): void;
+  /** 沙箱主对话在 onLlmCall 之后报告已结算的成功用量；失败与取消始终立即报告。 */
+  reportUsage?(): void;
   /** 错误响应的正文。重试时这里已经把 body 读掉了，调用方再 res.text() 会抛
    *  「Body is unusable」，把 429 的真实原因（配额说明、限频提示）整条吃掉，
    *  日志里只剩一个 TypeError。所以由本函数读一次并原样带出来。 */
@@ -102,8 +105,11 @@ export class BudgetExhausted extends Error {
 interface GateUsage {
   purpose?: UsagePurpose;
   estimateMilli?: number;
+  sessionId?: string;
+  poolOnly?: boolean;
+  deferUsage?: boolean;
 }
-/** 第 20 步可传用途与保守预占；standard 不因这个值拒绝。 */
+/** standard 保留既有估值；沙箱从实际请求体计算上限，调用方不能缩小预占绕过额度。 */
 function requestUsage(init: RequestInit, url: string, opts: GateUsage): { model: string; purpose: UsagePurpose; estimateMilli: number } {
   let body: { model?: string; max_tokens?: number; max_completion_tokens?: number } = {};
   try {
@@ -116,7 +122,10 @@ function requestUsage(init: RequestInit, url: string, opts: GateUsage): { model:
   return {
     model,
     purpose: opts.purpose ?? (url.endsWith('/embeddings') ? 'embedding' : 'chat'),
-    estimateMilli: opts.estimateMilli ?? costOf(model, inputTokens, body.max_tokens ?? body.max_completion_tokens ?? 0) * 1000,
+    estimateMilli:
+      currentRuntime().kind === 'sandbox'
+        ? sandboxCostOf(model, inputTokens, body.max_tokens ?? body.max_completion_tokens ?? 0, 0, true) * 1000
+        : (opts.estimateMilli ?? costOf(model, inputTokens, body.max_tokens ?? body.max_completion_tokens ?? 0) * 1000),
   };
 }
 function actualCost(data: unknown, model: string): number | null {
@@ -131,14 +140,22 @@ function actualCost(data: unknown, model: string): number | null {
     };
     if (!parsed?.usage) return null;
     const u = parsed.usage;
-    return (
-      costOf(
+    if (
+      currentRuntime().kind === 'sandbox' &&
+      (typeof u.prompt_tokens !== 'number' ||
+        !Number.isFinite(u.prompt_tokens) ||
+        u.prompt_tokens < 0 ||
+        (u.completion_tokens !== undefined && (!Number.isFinite(u.completion_tokens) || u.completion_tokens < 0)))
+    )
+      return null;
+    const milli =
+      (currentRuntime().kind === 'sandbox' ? sandboxCostOf : costOf)(
         model,
         u.prompt_tokens ?? 0,
         u.completion_tokens ?? 0,
         u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? 0,
-      ) * 1000
-    );
+      ) * 1000;
+    return currentRuntime().kind === 'sandbox' && !Number.isFinite(milli) ? null : milli;
   } catch {
     return null;
   }
@@ -151,6 +168,12 @@ export async function gatedFetch(
 ): Promise<GateResult> {
   const rt = currentRuntime();
   if (rt.cancel.aborted) throw new Error('tenant_closing');
+  // 沙箱必须给输出一个实际生效的上限，才能预占足额。宿主 payload 保持原样。
+  if (rt.kind === 'sandbox' && !url.endsWith('/embeddings') && typeof init.body === 'string') {
+    const body = JSON.parse(init.body) as Record<string, unknown>;
+    if (body.max_tokens === undefined && body.max_completion_tokens === undefined) body.max_tokens = 4096;
+    init = { ...init, body: JSON.stringify(body) };
+  }
   const signal = () => AbortSignal.any([rt.cancel, signalFactory()]);
   const work = () => fetchThroughGate(url, init, signal, opts);
   return rt.kind === 'sandbox' ? rt.inflight.track(work) : work();
@@ -189,15 +212,58 @@ async function fetchThroughGate(
       // 预占在拿到实例名额后、每次真正发请求前；拒绝不进入重试分支。
       assertSandboxRunning();
       if (rt.cancel.aborted) throw new Error('tenant_closing');
-      const reservation = rt.budget.reserve(usage.purpose, usage.estimateMilli);
+      const reservation =
+        rt.kind === 'sandbox' && opts.poolOnly
+          ? reserveSandboxIndex(usage.estimateMilli)
+          : rt.budget.reserve(usage.purpose, usage.estimateMilli);
       if (!reservation) throw new BudgetExhausted();
       let settled = false;
       let handedOff = false;
+      let pendingReport: (() => void) | undefined;
+      const reportUsage = (): void => {
+        const report = pendingReport;
+        pendingReport = undefined;
+        report?.();
+      };
       const settleUsage = (data: unknown): void => {
         if (settled) return;
-        reservation.settle(actualCost(data, usage.model));
         settled = true;
+        rt.cancel.removeEventListener('abort', onCancel);
+        const actual = actualCost(data, usage.model);
+        reservation.settle(actual);
+        if (rt.kind === 'sandbox' && !opts.poolOnly) {
+          const u =
+            actual === null
+              ? undefined
+              : (
+                  data as {
+                    usage: {
+                      prompt_tokens?: number;
+                      completion_tokens?: number;
+                      prompt_cache_hit_tokens?: number;
+                      prompt_tokens_details?: { cached_tokens?: number };
+                      completion_tokens_details?: { reasoning_tokens?: number };
+                    };
+                  }
+                ).usage;
+          const report = () =>
+            recordUsage(
+              usage.model,
+              u?.prompt_tokens ?? 0,
+              u?.completion_tokens ?? 0,
+              opts.sessionId,
+              u?.prompt_tokens_details?.cached_tokens ?? u?.prompt_cache_hit_tokens ?? 0,
+              u?.completion_tokens_details?.reasoning_tokens ?? 0,
+              usage.purpose,
+              actual ?? usage.estimateMilli,
+            );
+          if (opts.deferUsage && handedOff && data !== null) pendingReport = report;
+          else report();
+        }
       };
+      // 响应头已交出但正文未读完时，删除仍要同步结算；迟到的成功解析不会再记一次。
+      const onCancel = () => withTenantScope(rt, () => settleUsage(null));
+      if (rt.kind === 'sandbox') rt.cancel.addEventListener('abort', onCancel, { once: true });
       try {
         const res = await fetch(url, { ...init, signal });
         if (rt.cancel.aborted) {
@@ -206,7 +272,7 @@ async function fetchThroughGate(
         }
         if (res.ok) {
           handedOff = true;
-          return { res, attempts: attempt + 1, settleUsage };
+          return { res, attempts: attempt + 1, settleUsage, ...(rt.kind === 'sandbox' ? { reportUsage } : {}) };
         }
         settleUsage(null);
         if (!retriable(res.status)) return { res, attempts: attempt + 1, settleUsage };

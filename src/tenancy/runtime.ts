@@ -10,6 +10,7 @@ import { createTenantConfig, type TenantConfig } from '../config/state.js';
 import { profile, type DeployFlags } from '../profile.js';
 import type { TenantStore } from '../store.js';
 import { createStandardBudget, type TenantBudget } from './budget.js';
+import { createSandboxBudget } from './sandbox/budget.js';
 export type { TenantConfig, TenantStore, TenantBudget };
 export type TenantKind = 'standard' | 'sandbox';
 
@@ -136,7 +137,9 @@ export interface RuntimeOptions {
   flags?: Readonly<DeployFlags>;
 }
 class Runtime implements TenantRuntime {
-  constructor(public identity: RuntimeOptions) {}
+  constructor(public identity: RuntimeOptions) {
+    this.budget = this.kind === 'sandbox' ? createSandboxBudget() : createStandardBudget();
+  }
   get id(): string {
     return this.identity.id;
   }
@@ -168,7 +171,7 @@ class Runtime implements TenantRuntime {
   readonly inflight = new InflightRegistry();
   readonly config = createTenantConfig();
   pack!: PackBinding;
-  readonly budget = createStandardBudget();
+  readonly budget: TenantBudget;
   readonly events: ConsoleEventHub = {
     storeEvents: new EventEmitter().setMaxListeners(100),
     boot: randomBytes(6).toString('hex'),

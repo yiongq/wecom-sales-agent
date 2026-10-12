@@ -16,6 +16,8 @@ import { assertSandboxRunning } from './lifecycle.js';
 import { loadSandboxRuntime } from './load.js';
 import { sandboxSeeds } from './seeds.js';
 import { assertSandboxProvisionAllowed, recordSandboxProvision, sandboxWriteLimits, SandboxLimitError } from './limits.js';
+import { initializeSandboxPool, sandboxPoolAvailable, notifySandboxProvisionLimited } from './budget.js';
+import { todayIso } from '../../env.js';
 
 // 实例互斥链：包括判限额、读快照、提交与预载；失败不能毒化下一次开通。
 let provisioning: Promise<void> = Promise.resolve();
@@ -104,8 +106,10 @@ function reportFailure(stage: 'provision' | 'expire', error: unknown): void {
 async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
   try {
     assertSandboxRunning();
+    await initializeSandboxPool(o.deps.db, o.env);
     const [live, pool] = await Promise.all([sandboxStartupRows(o.deps.db), sandboxPoolHealth(o.deps.db)]);
     assertSandboxProvisionAllowed({ live: live.length, provisioned: pool.provisioned, day: pool.day, ip: o.ip }, o.env);
+    if (!sandboxPoolAvailable()) throw new SandboxProvisionError(503, 'sandbox_unavailable');
     await o.admit?.();
     const template = await readSandboxTemplate(o.deps.db, o.templateSlug);
     const limits = sandboxWriteLimits(o.env);
@@ -114,6 +118,7 @@ async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
     if (template.replies.length > limits.quickReplies) throw new Error('sandbox_template_quick_replies_limit');
     const slug = `sbx-${[...randomBytes(20)].map((n) => 'abcdefghijklmnopqrstuvwxyz234567'[n & 31]).join('')}`;
     const token = randomBytes(32).toString('base64url');
+    let provisionDay = todayIso();
     const created = await withNewSandboxTenant(
       o.deps.db,
       {
@@ -137,10 +142,17 @@ async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
         });
         return tenant;
       },
-      { epoch: o.epoch },
+      {
+        epoch: o.epoch,
+        beforeCreate: async (tx, day) => {
+          provisionDay = day;
+          const current = await sandboxPoolHealth(tx, day);
+          assertSandboxProvisionAllowed({ live: live.length, provisioned: current.provisioned, day, ip: o.ip }, o.env);
+          if (!sandboxPoolAvailable()) throw new SandboxProvisionError(503, 'sandbox_unavailable');
+        },
+      },
     );
-    // 到期时刻来自创建事务的 now() + 24 hours；与库内 UTC day 同源，跨午夜也不会记到准入日。
-    recordSandboxProvision(o.ip, new Date(created.expiresAt.getTime() - 24 * 60 * 60_000).toISOString().slice(0, 10));
+    recordSandboxProvision(o.ip, provisionDay);
     try {
       const rt = await loadSandboxRuntime(o.deps, { id: created.tenantId, slug, expiresAt: created.expiresAt }, o.host, o.acquireTenant);
       if (!rt) throw new Error('sandbox_tenant_lock_held');
@@ -160,7 +172,10 @@ async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
       user: { userId: created.userId, tenantId: created.tenantId, role: 'owner', displayName: '体验访客' },
     };
   } catch (error) {
-    if (error instanceof SandboxLimitError) throw new SandboxProvisionError(429, 'sandbox_limited', error.retryAfter);
+    if (error instanceof SandboxLimitError) {
+      if (error.global) notifySandboxProvisionLimited();
+      throw new SandboxProvisionError(429, 'sandbox_limited', error.retryAfter);
+    }
     if (error instanceof SandboxProvisionError) throw error;
     reportFailure('provision', error);
     throw new SandboxProvisionError(503, 'sandbox_unavailable', undefined, { cause: error });

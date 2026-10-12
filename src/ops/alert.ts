@@ -39,6 +39,7 @@ export type AlertKey =
   | 'jobs'
   | 'channel'
   | 'tenant_scope_missing'
+  | 'sandbox_pool'
   | 'sandbox_purge';
 
 export interface AlertOpts {
@@ -92,7 +93,7 @@ const tenants = new TenantLocal(
 );
 const tenantAlerts = () => tenants.get();
 function statesFor(key: AlertKey, instance = false): Map<string, KeyState> {
-  if (instance || key === 'model_errors' || key === 'tenant_scope_missing') return instanceStates;
+  if (instance || key === 'model_errors' || key === 'tenant_scope_missing' || key === 'sandbox_pool') return instanceStates;
   return tenantAlerts().states;
 }
 registerTenantState({ name: 'alert.states', ...tenants.registration((s) => s.states.size) });

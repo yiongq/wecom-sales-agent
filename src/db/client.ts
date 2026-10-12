@@ -1,5 +1,6 @@
 import { assertSandboxRunning } from '../tenancy/sandbox/lifecycle.js';
 import { runtimeOf, scopedRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { todayIso } from '../env.js';
 // 数据库连接、租户上下文与租户锁（docs/architecture/01-pg-config-console/spec.md「数据库 · withTenant」）。
 // 全仓只有 src/db/** 能 import pg / drizzle-orm / PGlite；租户 GUC 的名字也只出现在本文件和迁移 SQL 里（lint 守着）。
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -226,6 +227,8 @@ export function withSandboxEpoch<T>(db: Db, epoch: string, fn: (tx: Tx) => Promi
 const tenantStore = new AsyncLocalStorage<TenantCtx>();
 
 export interface WithTenantOpts {
+  /** 只用于沙箱开通、删除的日计数；保持与进程 todayIso 同源。 */
+  sandboxDay?: string;
   /** 运维锁丢失时中断事务。 */
   signal?: AbortSignal;
   /** R12 自己的 expire / usage flush / purge，不属于新业务事务。 */
@@ -252,12 +255,40 @@ export async function withTenant<T>(db: Db, ctx: TenantCtx, fn: (tx: Tx) => Prom
     tenantTransaction(
       db,
       async (tx) => {
+        if (opts.sandboxDay !== undefined) await tx.execute(sql`select set_config('app.sandbox_day', ${opts.sandboxDay}, true)`);
         await tx.execute(sql`select set_config('app.tenant_id', ${ctx.tenantId}, true)`);
         return tenantStore.run(ctx, () => fn(tx));
       },
       opts,
     );
   return rt?.kind === 'sandbox' ? rt.inflight.track(work, opts.sandboxMaintenance) : work();
+}
+
+/** R15：池与所有未删沙箱的用量在同一只读快照里读取；租户 GUC 仍只由本模块管理。 */
+export function readSandboxPoolBudget(db: Db, day: string): Promise<{ calls: number; costMilli: number }> {
+  return tenantTransaction(
+    db,
+    async (tx) => {
+      const tenants = rowsOf<{ id: string }>(await tx.execute(sql`select id from public.tenants where kind = 'sandbox'`));
+      const [pool] = rowsOf<{ calls: number; costMilli: number }>(
+        await tx.execute(sql`
+      select coalesce(sum(calls),0)::float8 as calls, coalesce(sum(cost_milli),0)::float8 as "costMilli"
+      from public.sandbox_pool_daily where day = ${day}::date`),
+      );
+      for (const tenant of tenants) {
+        await tx.execute(sql`select set_config('app.tenant_id', ${tenant.id}, true)`);
+        const [row] = rowsOf<{ calls: number; costMilli: number }>(
+          await tx.execute(sql`
+        select coalesce(sum(calls),0)::float8 as calls, coalesce(sum(cost_milli_cny),0)::float8 as "costMilli"
+        from public.usage_daily where day = ${day}::date`),
+        );
+        pool!.calls += row!.calls;
+        pool!.costMilli += row!.costMilli;
+      }
+      return pool!;
+    },
+    { readOnly: true, isolation: 'repeatable read' },
+  );
 }
 
 /** 开通与复制共用一个事务；创建函数返回后才建立新租户的 GUC 与异步上下文（05 R9）。 */
@@ -278,11 +309,15 @@ export async function withNewSandboxTenant<T>(
   db: Db,
   input: NewSandboxTenantInput,
   fn: (tx: Tx, created: NewSandboxTenant) => Promise<T>,
-  opts: { epoch?: string } = {},
+  opts: { epoch?: string; beforeCreate?: (tx: Tx, day: string) => Promise<void> } = {},
 ): Promise<T> {
   if (process.env.APP_ROLE === 'sandbox' && opts.epoch === undefined) throw new Error('sandbox_epoch_required');
   return tenantTransaction(db, async (tx) => {
     if (opts.epoch !== undefined) await fenceSandboxEpoch(tx, opts.epoch);
+    // 在取得连接、推进屏障之后捕获日期，准入计数和函数写入使用同一个日期。
+    const day = todayIso();
+    await tx.execute(sql`select set_config('app.sandbox_day', ${day}, true)`);
+    await opts.beforeCreate?.(tx, day);
     const [row] = rowsOf<{ o_tenant: string; o_user: string; o_expires_at: Date | string }>(
       await tx.execute(sql`
       select * from public.sandbox_tenant_create(${input.slug}, ${input.templateTenantId}::uuid,

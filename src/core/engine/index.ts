@@ -708,7 +708,9 @@ async function callModel(state: TurnState, turnContext: TurnContext, runTool: Re
   } catch (error) {
     if (currentRuntime().cancel.aborted || !sandbox || !(error instanceof BudgetExhausted)) throw error;
     degraded = true;
-    raw = await call();
+    // 已经执行写型工具的轮次不重跑 mock；保留 calls / 订单 / 接管结果交现有护栏收尾。
+    const wrote = state.calls.some((c) => runtime.tools.find((t) => t.def.function.name === c.name)?.blocksRetry);
+    raw = wrote ? runtime.engineHooks.fallbackReply(session.stage) : await call();
   }
   // 额度已在调用前占掉（tryReserveVisitorLLM），失败也不退还：token 是真花出去了
   const modelMs = Date.now() - modelStart;

@@ -22,6 +22,7 @@ export class SandboxLimitError extends Error {
   constructor(
     readonly reason: 'sandbox_limited' | 'sandbox_write_limited',
     readonly retryAfter = 60,
+    readonly global = false,
   ) {
     super(reason);
   }
@@ -99,10 +100,10 @@ export function assertSandboxProvisionAllowed(
   const hourly = provisioned.filter((p) => now - p.at < HOUR);
   const ip = sandboxIpKey(input.ip);
   const dailyIp = provisioned.filter((p) => p.day === input.day && p.ip === ip);
-  if (input.live >= limit(env, 'SANDBOX_MAX_LIVE', 20)) throw new SandboxLimitError('sandbox_limited');
-  if (input.provisioned >= limit(env, 'SANDBOX_PER_DAY', 50)) throw new SandboxLimitError('sandbox_limited', DAY / 1000);
+  if (input.live >= limit(env, 'SANDBOX_MAX_LIVE', 20)) throw new SandboxLimitError('sandbox_limited', 60, true);
+  if (input.provisioned >= limit(env, 'SANDBOX_PER_DAY', 50)) throw new SandboxLimitError('sandbox_limited', DAY / 1000, true);
   if (hourly.length >= limit(env, 'SANDBOX_PER_HOUR', 10))
-    throw new SandboxLimitError('sandbox_limited', Math.max(1, Math.ceil((hourly[0]!.at + HOUR - now) / 1000)));
+    throw new SandboxLimitError('sandbox_limited', Math.max(1, Math.ceil((hourly[0]!.at + HOUR - now) / 1000)), true);
   if (dailyIp.length >= limit(env, 'SANDBOX_PER_IP_DAY', 3)) throw new SandboxLimitError('sandbox_limited', DAY / 1000);
 }
 export function recordSandboxProvision(ip: string | null, day: string, now = Date.now()): void {

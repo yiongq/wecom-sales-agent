@@ -15,6 +15,7 @@ import { createHash } from 'node:crypto';
 import { llmCfg } from './llm/client.js';
 import { recordUsage } from '../usage.js';
 import { gatedFetch } from '../llm-gate.js';
+import { claimSandboxInitialIndex } from '../tenancy/sandbox/budget.js';
 import type { CatalogItem } from './pack-api.js';
 
 export const RETRIEVAL_TIMEOUT_MS = 20_000;
@@ -86,12 +87,12 @@ export function embedCfg(): { baseUrl: string; apiKey: string } {
   };
 }
 
-async function embed(texts: string[]): Promise<number[][] | null> {
+async function embed(texts: string[], poolOnly = false): Promise<number[][] | null> {
   const rt = currentRuntime();
-  const work = () => readEmbedding(texts);
+  const work = () => readEmbedding(texts, poolOnly);
   return rt.kind === 'sandbox' ? rt.inflight.track(work) : work();
 }
-async function readEmbedding(texts: string[]): Promise<number[][] | null> {
+async function readEmbedding(texts: string[], poolOnly: boolean): Promise<number[][] | null> {
   const { baseUrl, apiKey } = embedCfg();
   if (!apiKey || process.env.LLM_MOCK === '1') return null;
   try {
@@ -103,6 +104,7 @@ async function readEmbedding(texts: string[]): Promise<number[][] | null> {
         body: JSON.stringify({ model: EMBED_MODEL, input: texts }),
       },
       () => AbortSignal.any([currentRuntime().cancel, AbortSignal.timeout(RETRIEVAL_TIMEOUT_MS)]),
+      { purpose: 'embedding', poolOnly },
     );
     if (!res.ok) {
       console.error(`[retrieval] embedding 请求失败 ${res.status}，本次退回关键词匹配`);
@@ -117,7 +119,8 @@ async function readEmbedding(texts: string[]): Promise<number[][] | null> {
     };
     settleUsage(d);
     if (currentRuntime().cancel.aborted) throw new Error('tenant_closing');
-    recordUsage(EMBED_MODEL, d.usage?.prompt_tokens ?? 0, d.usage?.completion_tokens ?? 0, undefined, 0, 0, 'embedding');
+    if (currentRuntime().kind !== 'sandbox')
+      recordUsage(EMBED_MODEL, d.usage?.prompt_tokens ?? 0, d.usage?.completion_tokens ?? 0, undefined, 0, 0, 'embedding');
     return d.data?.map((x) => x.embedding) ?? null;
   } catch (e) {
     if (e instanceof TenantScopeMissing) throw e;
@@ -185,7 +188,10 @@ async function buildOnce(routes: CatalogItem[]): Promise<readonly Indexed[] | nu
       /* 无缓存或已失效，往下重建 */
     }
   }
-  const vecs = await embed(routes.map((item) => currentPack().runtime.retrievalText(item)));
+  const vecs = await embed(
+    routes.map((item) => currentPack().runtime.retrievalText(item)),
+    claimSandboxInitialIndex(),
+  );
   if (rt.cancel.aborted || !indexes.owns(rt, local) || !vecs || vecs.length !== routes.length) return null;
   const items = freezeIndex(routes.map((r, i) => ({ id: r.code, vec: vecs[i] })));
   cacheShared(key, items);
