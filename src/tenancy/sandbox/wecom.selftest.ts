@@ -1005,8 +1005,16 @@ if (process.env.PG_TEST_URL) {
 await hostSuite();
 check(() => assert.equal(forbiddenRequests, 0, '未绑定路径没有模型或真实网络请求'));
 verify('日志仅有接口名错误码计数', () => {
-  assert.ok(warnings.length);
-  assert.ok(warnings.every((line) => /^\[sandbox-wecom\] interface=[a-z_/]+ errcode=[\w.-]+ count=\d+$/.test(line)));
+  // 只核体验客服自己的诊断行：其他模块在 CI 时序下偶发的 warn 也会被收进来（PR #204 曾因此偶发失败）
+  const own = warnings.filter((line) => line.startsWith('[sandbox-wecom]'));
+  const events = ['binding_recovery_pending', 'duplicate_binding_older_ignored', 'sandbox_send_refused'];
+  const bad = own.filter(
+    (line) =>
+      !/^\[sandbox-wecom\] interface=[a-z_/]+ errcode=[\w.-]+ count=\d+$/.test(line) &&
+      !events.some((e) => line === `[sandbox-wecom] ${e}`),
+  );
+  assert.ok(own.length);
+  assert.deepEqual(bad, []);
   for (const secret of [
     env.SANDBOX_WECOM_CORP_ID,
     env.SANDBOX_WECOM_SECRET,
