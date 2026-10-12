@@ -3614,12 +3614,15 @@ await t.close();
   fake('timeout', ['[ "$1" = --kill-after=2s ] && [ "$2" = 8s ] || exit 99', 'shift 2', 'exec "$@"']);
   fake('docker', [
     // 模拟 compose exec 转发 stdin；run / inspect 也主动读，守住 bash -s 后续脚本的边界。
-    'case "$1" in exec|compose|run|inspect|image) cat >/dev/null ;; esac',
+    'case "$1" in exec|compose|run|inspect|image|container) cat >/dev/null ;; esac',
     // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
     // 只认 rollback-guard.sh 自己的两条渠道查询：backup.sh 的探测里也有 channel_accounts（'public.' || t 的写法），不能被截走
-    'case "$*" in *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
+    'case "$*" in *information_schema.columns*"column_name = \'kind\'"*) echo "docker05 $PWD|$*" >> "$FAKE_LOG" ;; *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
     'case "$*" in',
     '  *information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo f ;;',
+    // 这些旧版用例没有沙箱痕迹：目标镜像早于 05、容器列表为空、上面的 psql 返回没有 kind 列。
+    '  *tenancy/runtime.ts*) exit 1 ;;',
+    '  *"container ls"*) exit 0 ;;',
     '  *pack-api.ts*) exit 1 ;;',
     '  *sha256:running*registry.ts*) exit "${FAKE_RUNNING_REGISTRY:-1}" ;;',
     '  *registry.ts*) exit "${FAKE_REGISTRY:-1}" ;;',
@@ -3778,22 +3781,33 @@ await t.close();
   // 与第 3 步的检查、第 5 步的试读是同一种读法；应用镜像缺省取 <容器名>:current，手工命令不用带 APP_IMAGE
   const composeSrc = fs.readFileSync(path.join(repoRoot, 'deploy', 'compose.yml'), 'utf8');
   const envBlocks = [...composeSrc.matchAll(/^( +)env_file:(.*)\n((?:\1 +\S.*\n)*)/gm)];
+  const envPaths = ['../.env.db', '../.env.migrate', '../.env', '../.env.sandbox', '../.env.platform'];
+  const envEntries = envBlocks.map((m) =>
+    m[3]
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('#')),
+  );
   check(
-    'compose：四个服务的 env 文件都是长写法且每一项都 format: raw',
-    envBlocks.length === 4 &&
-      envBlocks.every(
-        (m) =>
-          m[2].trim() === '' &&
-          m[3].includes('- path: ') &&
-          (m[3].match(/- path: /g) ?? []).length === (m[3].match(/^ +format: raw$/gm) ?? []).length,
-      ),
+    'compose：五个服务的 env 文件都是长写法且每一项都 format: raw，只有 sandbox 可 required: false',
+    envBlocks.length === 5 &&
+      envBlocks.every((m) => m[2].trim() === '') &&
+      envPaths.every(
+        (envPath) =>
+          envEntries.filter(
+            (lines) =>
+              JSON.stringify(lines) ===
+              JSON.stringify([`- path: ${envPath}`, 'format: raw', ...(envPath === '../.env.sandbox' ? ['required: false'] : [])]),
+          ).length === 1,
+      ) &&
+      (composeSrc.match(/^ +required: false$/gm) ?? []).length === 1,
     envBlocks.map((m) => m[0]).join(' / '),
   );
   const appImages = composeSrc.match(/^ +image: .*APP_IMAGE.*$/gm) ?? [];
   const defaultImage = ['image: $', '{APP_IMAGE:-$', '{APP_CONTAINER:-wecom-sales-agent}:current}'].join('');
   check(
-    'compose：三个用应用镜像的服务缺省都取 <容器名>:current，不再要求 APP_IMAGE',
-    appImages.length === 3 && appImages.every((l) => l.trim() === defaultImage),
+    'compose：四个用应用镜像的服务缺省都取 <容器名>:current，不再要求 APP_IMAGE',
+    appImages.length === 4 && appImages.every((l) => l.trim() === defaultImage),
     appImages.join(' / '),
   );
   // :current 要一直是 app 容器在用的镜像：部署成功是新镜像，自动回滚后是 :prev（:latest 那时是没起来的坏镜像）
@@ -4037,11 +4051,18 @@ await t.close();
       channelDocker: calls()
         .split('\n')
         .filter((l) => l.startsWith('docker03 ')),
+      sandboxSql: calls()
+        .split('\n')
+        .filter((l) => l.startsWith('docker05 ')),
       curl: calls()
         .split('\n')
         .filter((l) => l.startsWith('curl ')),
     };
   };
+  const pre05Probes = (commands: string[]): boolean =>
+    commands.length === 2 &&
+    commands[0]!.includes('run --rm --entrypoint /bin/sh side1:prev -c test -e /app/src/tenancy/runtime.ts') &&
+    commands[1]!.includes('container ls -aq --filter name=^/side1-sandbox$');
   const dcOf = (project: string, port: string): string =>
     `APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f deploy/compose.yml`;
   /** 拒绝时打印的步骤。pre-02（部署旧 tag）：stop → export → 去掉 SESSION_STORE=db 再起、按端口确认 → 部署旧 tag */
@@ -4083,16 +4104,17 @@ await t.close();
   };
   const g1 = guard('side1:prev', false);
   check(
-    '回滚前检查：没有标记文件、.env 也不是 db 存储时照常回滚，不看镜像',
-    g1.code === 0 && g1.docker.length === 0,
+    '回滚前检查：没有标记文件、.env 也不是 db 存储时照常回滚，不看 02 镜像，补查 pre-05 镜像与容器',
+    g1.code === 0 && pre05Probes(g1.docker),
     `${g1.code} ${g1.out} ${g1.docker.join()}`,
   );
   const g2 = guard('side1:prev', true, 0);
   check(
-    '回滚前检查：有标记文件、目标镜像里有 pg-backend.ts（两个都是 02 之后的）时照常回滚',
+    '回滚前检查：有标记文件、目标镜像里有 pg-backend.ts（两个都是 02 之后的）时照常回滚，补查 pre-05 镜像与容器',
     g2.code === 0 &&
-      g2.docker.length === 1 &&
-      g2.docker[0]!.includes('run --rm --entrypoint /bin/sh side1:prev -c test -e /app/src/store/pg-backend.ts'),
+      g2.docker.length === 3 &&
+      g2.docker[0]!.includes('run --rm --entrypoint /bin/sh side1:prev -c test -e /app/src/store/pg-backend.ts') &&
+      pre05Probes(g2.docker.slice(1)),
     `${g2.code} ${g2.out} ${g2.docker.join()}`,
   );
   const g3 = guard('side1:prev', true, 1);
@@ -4143,8 +4165,12 @@ await t.close();
     out.includes('拒绝回滚') && out.includes(why) && out.includes('要回滚只能回到 02 之后的镜像') && !out.includes('export-sessions');
   const psqlCalls = (g: { docker: string[] }): string[] => g.docker.filter((l) => l.includes(' db psql -U postgres'));
   check(
-    '回滚前检查：问的是本机宿主端口上的 /healthz；/healthz 说了 false 就不问库',
-    g1.curl.length === 1 && g1.curl[0]!.includes('http://127.0.0.1:3999/healthz') && psqlCalls(g1).length === 0,
+    '回滚前检查：问的是本机宿主端口上的 /healthz；false 不问条目版本，另探测 pre-05 的 kind 列',
+    g1.curl.length === 1 &&
+      g1.curl[0]!.includes('http://127.0.0.1:3999/healthz') &&
+      psqlCalls(g1).length === 0 &&
+      g1.sandboxSql.length === 1 &&
+      g1.sandboxSql[0]!.includes("column_name = 'kind'"),
     g1.curl.join(' | '),
   );
   const g10 = guard('pre-02', false, undefined, null, versioned);
@@ -4413,8 +4439,13 @@ await t.close();
   );
   const stdinAllowed = guard('pre-02', false, undefined, null, null, { db: 'f', channels: 'f' });
   check(
-    '回滚 stdin：bash -s、无标记、无高版本、只有默认企微 exported → 0，四次查询都执行完',
-    stdinAllowed.code === 0 && psqlCalls(stdinAllowed).length === 2 && stdinAllowed.channelDocker.length === 2,
+    '回滚 stdin：bash -s、无标记、无高版本、只有默认企微 exported → 0，四次旧查询与 pre-05 探测都执行完',
+    stdinAllowed.code === 0 &&
+      psqlCalls(stdinAllowed).length === 2 &&
+      stdinAllowed.channelDocker.length === 2 &&
+      stdinAllowed.sandboxSql.length === 1 &&
+      stdinAllowed.sandboxSql[0]!.includes("column_name = 'kind'") &&
+      stdinAllowed.docker.some((line) => line.includes('container ls -aq --filter name=^/side1-sandbox$')),
     `${stdinAllowed.code} ${stdinAllowed.out} ${stdinAllowed.docker.join(' / ')} ${stdinAllowed.channelDocker.join(' / ')}`,
   );
 
@@ -4517,8 +4548,11 @@ await t.close();
   );
   const d8 = deployChannel('v04', true, 'down');
   check(
-    'deploy.sh：04 tag 有 pack-api.ts，不调用旧镜像检查，渠道标记与库故障不拦下部署',
-    d8.log.includes('rsync ') && !d8.log.includes(`bash -s -- ${dsrv} pre-`) && !d8.out.includes('拒绝回滚'),
+    'deploy.sh：04 tag 有 pack-api.ts，只补 pre-05 检查，渠道标记与旧渠道查询故障不拦下部署',
+    d8.log.includes('rsync ') &&
+      d8.log.includes(`bash -s -- ${dsrv} pre-05 side1 3999`) &&
+      !['pre-02', 'pre-03', 'pre-04'].some((target) => d8.log.includes(`bash -s -- ${dsrv} ${target} `)) &&
+      !d8.out.includes('拒绝回滚'),
     d8.out,
   );
   // 自动回滚：:prev 在服务器上之后、起 :prev 之前过同一道检查，过不了就停下（不起 :prev）
@@ -4530,7 +4564,7 @@ await t.close();
     rb > 0 &&
       rb < gp &&
       gp < up &&
-      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[3456*]\) echo "[^\n]*" >&2 ;;\n){5} {2}esac\n {2}exit 1\n\}\n/.test(
+      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[34567*]\) echo "[^\n]*" >&2 ;;\n){6} {2}esac\n {2}exit 1\n\}\n/.test(
         deploySrc,
       ),
   );
