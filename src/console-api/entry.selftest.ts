@@ -16,7 +16,10 @@ const { app } = await import('../server.js');
 const { __profileTest } = await import('../profile.js');
 const { initConfig, closeConfig, __configTest } = await import('../config/source.js');
 const { openTestDb, installSeededConfig } = await import('../db/testing.js');
-const { loginShowcase } = await import('./entry.js');
+const demoShowcase = {
+  src: '/login-showcase.png',
+  alt: '企业微信会话示例：客户问云南6日游，AI推荐线路并报价；另一位客户在等人接手',
+};
 const oldHost = process.env.SANDBOX_HOST;
 const cases = [
   { env: { DEPLOY_PROFILE: 'prod' }, host: '', enabled: false },
@@ -33,7 +36,11 @@ async function matrix(source: string): Promise<void> {
     const label = `${source} / ${env.DEPLOY_PROFILE} / host=${!!host}`;
     const entry = await app.request('/api/console/entry');
     assert.equal(entry.status, 200, label);
-    assert.deepEqual(await entry.json(), { tryUrl: enabled ? '/try' : null, showcase: loginShowcase() }, label);
+    assert.deepEqual(
+      await entry.json(),
+      { tryUrl: enabled ? '/try' : null, showcase: env.DEPLOY_PROFILE === 'demo' ? demoShowcase : null },
+      `${label}：entry 的 demo 产品图 src/alt 与 prod null 符合独立契约`,
+    );
     assert.equal(entry.headers.get('cache-control'), 'no-store', label);
     const attempt = await app.request('/try?start=1&x=2');
     assert.equal(attempt.status, enabled ? 302 : 404, label);
@@ -57,7 +64,7 @@ async function matrix(source: string): Promise<void> {
   ]) {
     process.env.SANDBOX_HOST = host;
     assert.equal((await app.request('/try')).status, 404, `${source}：无效 Host 不跳转`);
-    assert.deepEqual(await (await app.request('/api/console/entry')).json(), { tryUrl: null, showcase: loginShowcase() });
+    assert.deepEqual(await (await app.request('/api/console/entry')).json(), { tryUrl: null, showcase: demoShowcase });
   }
 }
 

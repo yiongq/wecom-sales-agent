@@ -118,6 +118,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<import('
   const hostRt = r.createTenantRuntime({ id: host!.id, slug: 'budget-template', isHost: true });
   const deps = testConfigDeps({ db }, { tenantSlug: hostRt.slug, usePackRuntime: true });
   assert.equal((await scope(hostRt, () => importConfig({ ...deps, dataDir: 'data' }))).code, 0);
+  const hostCostBefore = scope(hostRt, () => u.usageToday().totalCny);
   const env = { ...process.env, SANDBOX_PER_HOUR: '100', SANDBOX_PER_IP_DAY: '100' };
   const options = {
     deps,
@@ -735,6 +736,14 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<import('
   console.warn = warnBefore;
   check(() => assert.equal(poolAlerts, 1, '重复拒绝在同一天只告警一次'));
   check(() => assert.ok(b.sandboxBudgetPoolStatus().costMilli >= prior));
+  check(() => assert.ok(b.sandboxBudgetPoolStatus().costMilli > 0, '成本隔离场景确实产生非零沙箱花费'));
+  check(() =>
+    assert.equal(
+      scope(hostRt, () => u.usageToday().totalCny),
+      hostCostBefore,
+      '非零沙箱花费不改变宿主当日成本金额',
+    ),
+  );
   check(() =>
     assert.equal(
       scope(hostRt, () => u.usageToday().totalCalls),
