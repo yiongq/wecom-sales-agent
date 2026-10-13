@@ -587,11 +587,11 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
     }
     await expect(await request(`/pay/${order.id}`, token), 200);
     await expect(await request(`/api/orders/${order.id}`), 401, 'sandbox_required');
-    for (const url of ['/privacy', '/console/']) {
-      const response = await request(url, token);
-      await expect(response, 200);
-      localResources(await response.text(), url);
-    }
+    const privacy = await request('/privacy', token);
+    await expect(privacy, 200);
+    localResources(await privacy.text(), '/privacy');
+    // CI 分片没有 console 构建产物（/console/ 是 404）；检查源 index.html，产物里的资源由构建与 check-console-dist 管。
+    localResources(fs.readFileSync('console/index.html', 'utf8'), 'console/index.html');
     const beforeB = withTenantScope(b, () => JSON.stringify(listSessions()));
     const siblingId = withTenantScope(a, () => listSessions().find((s) => s.id !== sbxId)!.id);
     const beforeSibling = withTenantScope(a, () => JSON.stringify(getSession(siblingId)));
