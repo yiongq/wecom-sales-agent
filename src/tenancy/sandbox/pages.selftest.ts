@@ -21,6 +21,38 @@ function check(fn: () => void): void {
   checks++;
 }
 
+function localResources(source: string, name: string): void {
+  const origin = 'https://sandbox.example.invalid';
+  for (const tag of source.matchAll(/<(script|link)\b[^>]*>/gi)) {
+    const attr = new RegExp(
+      `\\b${tag[1]!.toLowerCase() === 'script' ? 'src' : 'href'}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`,
+      'i',
+    ).exec(tag[0]);
+    if (!attr) continue;
+    const value = attr[1] ?? attr[2] ?? attr[3]!;
+    check(() => assert.ok(value.startsWith('data:') || new URL(value, origin).origin === origin, `${name}：script/link 资源只来自同源`));
+  }
+  check(() => assert.doesNotMatch(source, /@import\s+(?:url\(\s*)?["']?\s*(?:https?:)?\/\//i, `${name}：没有外部 CSS @import`));
+  check(() => assert.doesNotMatch(source, /url\(\s*["']?\s*(?:https?:)?\/\//i, `${name}：没有外部 CSS url`));
+}
+
+// 覆盖页面源文件及 console 实际构建入口、CSS；动态 /try 状态共用同一份页面。
+for (const file of [
+  'public/try.html',
+  'public/chat.html',
+  'public/pay.html',
+  'public/proposal.html',
+  'console/index.html',
+  'console/dist/index.html',
+]) {
+  localResources(fs.readFileSync(file, 'utf8'), file);
+}
+for (const dir of ['console/dist/assets', 'public']) {
+  for (const file of fs.readdirSync(dir, { recursive: true })) {
+    if (String(file).endsWith('.css')) localResources(fs.readFileSync(path.join(dir, String(file)), 'utf8'), String(file));
+  }
+}
+
 class Element {
   hidden = false;
   disabled = false;
@@ -101,6 +133,7 @@ function boot(html: string, fetch: (url: string, init: RequestInit) => Promise<R
 }
 
 function cspMatches(response: Response, html: string): void {
+  localResources(html, '/try 各状态');
   const policy = response.headers.get('content-security-policy')!;
   check(() => assert.ok(policy));
   const scripts = /(?:^|; )script-src ([^;]*)/.exec(policy)![1]!.split(' ');

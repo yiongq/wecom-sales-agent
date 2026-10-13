@@ -126,10 +126,27 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
       check(() => assert.equal(body.error, error));
     }
   };
+  const localResources = (html: string, url: string) => {
+    for (const tag of html.matchAll(/<(script|link)\b[^>]*>/gi)) {
+      const attr = new RegExp(`\\b${tag[1]!.toLowerCase() === 'script' ? 'src' : 'href'}=["']([^"']*)["']`, 'i').exec(tag[0]);
+      if (!attr) continue;
+      const resource = attr[1]!;
+      check(() =>
+        assert.ok(
+          resource.startsWith('data:') || new URL(resource, 'https://sandbox.example.invalid').origin === 'https://sandbox.example.invalid',
+          `${url}：沙箱 script/link 只使用同源资源`,
+        ),
+      );
+    }
+    check(() =>
+      assert.doesNotMatch(html, /(?:@import\s+(?:url\(\s*)?|url\(\s*)["']?(?:https?:)?\/\//i, `${url}：沙箱页面没有外部 CSS import/url`),
+    );
+  };
   const page = async (url: string, token: string, status = 200): Promise<string> => {
     const response = await request(url, token);
     await expect(response, status);
     const html = await response.text();
+    localResources(html, url);
     const csp = response.headers.get('content-security-policy')!;
     const hashes = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(
       (match) => `'sha256-${createHash('sha256').update(match[1]!).digest('base64')}'`,
@@ -137,6 +154,34 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
     check(() => assert.deepEqual(/(?:^|; )script-src ([^;]*)/.exec(csp)![1]!.split(' '), ["'self'", ...hashes]));
     check(() => assert.equal((html.match(/<script src="\/sandbox-ui\.js"><\/script>/g) ?? []).length, 1));
     return html;
+  };
+  // 走真实 HTTP 与访客 cookie；持续读流，避免未读缓冲把串台藏起来。
+  const openStream = async (url: string, visitorToken: string) => {
+    const abort = new AbortController();
+    const response = await request(url, visitorToken, { signal: abort.signal });
+    await expect(response, 200);
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let received = decoder.decode((await reader.read()).value, { stream: true });
+    const pumping = (async () => {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        received += decoder.decode(chunk.value, { stream: true });
+      }
+    })();
+    return {
+      text: () => received,
+      async until(predicate: (text: string) => boolean, name: string, deadline = Date.now() + 1000) {
+        while (!predicate(received) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 5));
+        check(() => assert.ok(predicate(received) && Date.now() <= deadline, name));
+      },
+      async close() {
+        abort.abort();
+        await reader.cancel();
+        await pumping;
+      },
+    };
   };
   // 无 cookie、跨 cookie、未知 Host、禁止的宿主入口。
   await expect(await request('/try'), 200);
@@ -295,11 +340,20 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   await expect(await request(`/api/sessions/${bId}`), 401, 'sandbox_required');
   const simId = `sim-${randomBytes(12).toString('hex')}`;
   const sbxId = `sbx-${simId.slice(4)}`;
-  const send = await post('/api/chat', token, { sessionId: simId, text: '你好' });
-  await expect(send, 200);
-  const sent = (await send.json()) as { sessionId: string };
-  check(() => assert.equal(sent.sessionId, sbxId));
-  await withTenantScope(a, () => flushSession(sbxId, { timeoutMs: 5000 }));
+  const consoleStream = await openStream('/api/console/events', token);
+  try {
+    const send = await post('/api/chat', token, { sessionId: simId, text: '你好' });
+    await expect(send, 200);
+    const sent = (await send.json()) as { sessionId: string };
+    check(() => assert.equal(sent.sessionId, sbxId));
+    await withTenantScope(a, () => flushSession(sbxId, { timeoutMs: 5000 }));
+    await consoleStream.until(
+      (text) => text.split('\n\n').some((frame) => frame.includes('event: conversation\n') && frame.includes(`"id":"${sbxId}"`)),
+      '模拟器新会话提交后在 console HTTP 事件流出现对应会话事件',
+    );
+  } finally {
+    await consoleStream.close();
+  }
   const history = await request(`/api/sessions/${simId}`, token);
   await expect(history, 200);
   const restored = (await history.json()) as { id: string; messages: unknown[] };
@@ -480,7 +534,18 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
       clearTimeout(timer);
     }
     await expect(await post(`/api/console/conversations/${sbxId}/release`, token), 200);
+    const messageCount = withTenantScope(a, () => getSession(sbxId)!.messages.length);
     await expect(await post('/api/chat', token, { sessionId: sbxId, text: '想去云南' }), 200);
+    check(() =>
+      assert.ok(
+        withTenantScope(a, () =>
+          getSession(sbxId)!
+            .messages.slice(messageCount)
+            .some((m) => m.role === 'agent' && m.author !== 'human' && m.content.trim() && !m.content.startsWith('【顾问】')),
+        ),
+        '交还后模拟器客户消息新增非空 AI agent 回复',
+      ),
+    );
     const order = withTenantScope(a, () => listOrders().find((o) => o.status === 'pending_payment')!);
     assert.ok(order);
     const orderPushes: string[] = [];
@@ -488,14 +553,65 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
     try {
       await expect(await post(`/api/orders/${order.id}/pay`, token), 200);
       check(() => assert.ok(orderPushes.length));
+      const advisorOrder = withTenantScope(a, () =>
+        createOrder({
+          sessionId: order.sessionId,
+          routeId: order.routeId,
+          routeTitle: order.routeTitle,
+          travelers: order.travelers,
+          departDate: order.departDate,
+          totalPrice: order.totalPrice,
+        }),
+      );
+      await withTenantScope(a, () => flushSession(order.sessionId, { timeoutMs: 5000 }));
+      // 新建一条 HTTP 流，排除前一次模拟支付的确认充当「标已付」的推送。
+      const advisorPaymentStream = await openStream(`/api/stream/${order.sessionId}`, token);
+      try {
+        await expect(await post(`/api/console/orders/${advisorOrder.id}/mark-paid`, token), 200);
+        await advisorPaymentStream.until(
+          (text) => text.includes('已收到您的支付') && text.includes(advisorOrder.routeTitle),
+          '工作台标已付后模拟器 HTTP SSE 收到对应产品付款确认',
+        );
+        check(() =>
+          assert.equal(
+            withTenantScope(a, () => listOrders().find((o) => o.id === advisorOrder.id)!.status),
+            'paid',
+            '付款确认对应订单已付事实',
+          ),
+        );
+      } finally {
+        await advisorPaymentStream.close();
+      }
     } finally {
       offOrder();
     }
     await expect(await request(`/pay/${order.id}`, token), 200);
     await expect(await request(`/api/orders/${order.id}`), 401, 'sandbox_required');
-    await expect(await request('/privacy', token), 200);
+    const privacy = await request('/privacy', token);
+    await expect(privacy, 200);
+    localResources(await privacy.text(), '/privacy');
+    // CI 分片没有 console 构建产物（/console/ 是 404）；检查源 index.html，产物里的资源由构建与 check-console-dist 管。
+    localResources(fs.readFileSync('console/index.html', 'utf8'), 'console/index.html');
     const beforeB = withTenantScope(b, () => JSON.stringify(listSessions()));
+    const siblingId = withTenantScope(a, () => listSessions().find((s) => s.id !== sbxId)!.id);
+    const beforeSibling = withTenantScope(a, () => JSON.stringify(getSession(siblingId)));
     await expect(await post('/api/chat', token, { sessionId: sbxId, text: '重置' }), 200);
+    check(() => {
+      const reset = withTenantScope(a, () => getSession(sbxId)!);
+      assert.equal(reset.messages.length, 1, '重置目标会话只保留重置回复');
+      assert.equal(reset.messages[0]!.role, 'agent', '重置目标会话保留 agent 回复');
+      assert.ok(reset.messages[0]!.content.trim(), '重置目标会话回复非空');
+      assert.deepEqual(reset.profile, {}, '重置目标会话清空客户画像');
+      assert.deepEqual(reset.orderIds, [], '重置目标会话清空订单引用');
+      assert.equal(reset.handedOver, false, '重置目标会话解除转人工');
+    });
+    check(() =>
+      assert.equal(
+        withTenantScope(a, () => JSON.stringify(getSession(siblingId))),
+        beforeSibling,
+        '重置不改变同沙箱另一个会话',
+      ),
+    );
     check(() =>
       assert.equal(
         withTenantScope(b, () => JSON.stringify(listSessions())),
@@ -506,6 +622,21 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
     off();
     abort.abort();
     await reader.cancel();
+  }
+
+  const seedId = withTenantScope(a, () => listSessions().find((s) => s.createdAt < a.expiresAt! - 86_400_000)!.id);
+  const seedStream = await openStream(`/api/stream/${seedId}`, token);
+  try {
+    await expect(await post(`/api/console/conversations/${seedId}/takeover`, token), 200);
+    const seedDeadline = Date.now() + 1000;
+    await expect(await post(`/api/console/conversations/${seedId}/reply`, token, { text: '种子闭环回复', clientId: randomUUID() }), 200);
+    await seedStream.until(
+      (text) => text.split('\n').some((line) => line.startsWith('data: {') && JSON.parse(line.slice(6)).text === '【顾问】种子闭环回复'),
+      '种子会话接手回复后模拟器 HTTP SSE 一秒内收到顾问前缀推送',
+      seedDeadline,
+    );
+  } finally {
+    await seedStream.close();
   }
 
   // 改价和发布 SOP 只改 A：模板与 B 的已发布快照不变。
@@ -691,6 +822,34 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   }
   const afterTemplate = await templateSnapshot();
   check(() => assert.deepEqual(afterTemplate, originalTemplate, '沙箱改价与发布 SOP 不改宿主模板的库行'));
+
+  // 同进程两个沙箱故意使用相同模拟器 id，两条 HTTP SSE 均有正向推送对照。
+  const sharedSimId = `sim-${randomBytes(12).toString('hex')}`;
+  const sharedSbxId = `sbx-${sharedSimId.slice(4)}`;
+  for (const visitorToken of [token, bResult.token])
+    await expect(await post('/api/chat', visitorToken, { sessionId: sharedSimId, text: '你好' }), 200);
+  const aStream = await openStream(`/api/stream/${sharedSimId}`, token);
+  const bStream = await openStream(`/api/stream/${sharedSimId}`, bResult.token);
+  try {
+    for (const [visitorToken, marker] of [
+      [token, '仅沙箱A的消息'],
+      [bResult.token, '仅沙箱B的消息'],
+    ] as const) {
+      await expect(await post(`/api/console/conversations/${sharedSbxId}/takeover`, visitorToken), 200);
+      await expect(
+        await post(`/api/console/conversations/${sharedSbxId}/reply`, visitorToken, { text: marker, clientId: randomUUID() }),
+        200,
+      );
+    }
+    await aStream.until((text) => text.includes('仅沙箱A的消息'), '沙箱 A 的 HTTP 模拟器 SSE 收到 A 的推送');
+    await bStream.until((text) => text.includes('仅沙箱B的消息'), '沙箱 B 的 HTTP 模拟器 SSE 收到 B 的推送');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    check(() => assert.ok(!aStream.text().includes('仅沙箱B的消息'), '同进程沙箱 A 的 HTTP 模拟器 SSE 收不到 B 的推送'));
+    check(() => assert.ok(!bStream.text().includes('仅沙箱A的消息'), '同进程沙箱 B 的 HTTP 模拟器 SSE 收不到 A 的推送'));
+  } finally {
+    await aStream.close();
+    await bStream.close();
+  }
 
   // 13 小时空闲仍有效；受限函数只用数据库 now，更新 last_seen_at。
   const hash = createHash('sha256').update(token).digest();

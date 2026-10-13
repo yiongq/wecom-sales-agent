@@ -1393,6 +1393,19 @@ async function suite(db: Db, q: Query, appUrl?: string) {
           assert.equal(sandboxWechatIndex.forUser('wm15'), undefined);
           assert.equal(sandboxWechatIndex.forUser('wm16'), undefined);
         });
+        const expiredSendStart = sends.length;
+        await deliver(message('wm15', '绑定事务落定后再问一次'), message('wm16', '到期后再问一次'));
+        namedCheck('EXPIRED_BLOCKED_BINDING_SETTLED_ONLY_FIXED_REPLY', () => {
+          assert.deepEqual(
+            sends.slice(expiredSendStart).map((s) => [s.path, s.body.open_kfid, s.body.touser, s.body.text.content]),
+            ['wm15', 'wm16'].map((user) => [
+              'kf/send_msg',
+              env.SANDBOX_WECOM_OPEN_KFID,
+              user,
+              sandboxWechatIndex.fixedTexts(env.SANDBOX_HOST)[0],
+            ]),
+          );
+        });
         await reaper.tick();
         check(() => {
           assert.equal(runtimeOf(C.id), undefined);
@@ -1482,6 +1495,19 @@ async function suite(db: Db, q: Query, appUrl?: string) {
         check(() => {
           assert.equal(sandboxWechatIndex.forUser('wm12'), undefined);
           assert.equal(sandboxWechatIndex.forUser('wm6'), undefined);
+        });
+        const endedSendStart = sends.length;
+        await deliver(message('wm6', '结束的绑定事务落定后再问一次'), message('wm12', '结束后再问一次'));
+        namedCheck('ENDED_BLOCKED_BINDING_SETTLED_ONLY_FIXED_REPLY', () => {
+          assert.deepEqual(
+            sends.slice(endedSendStart).map((s) => [s.path, s.body.open_kfid, s.body.touser, s.body.text.content]),
+            ['wm6', 'wm12'].map((user) => [
+              'kf/send_msg',
+              env.SANDBOX_WECOM_OPEN_KFID,
+              user,
+              sandboxWechatIndex.fixedTexts(env.SANDBOX_HOST)[0],
+            ]),
+          );
         });
         await reaper.tick();
         check(() => {

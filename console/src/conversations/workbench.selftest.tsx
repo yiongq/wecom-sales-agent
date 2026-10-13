@@ -1412,6 +1412,41 @@ for (const [sandbox, id, shown] of [
   await m.unmount();
 }
 
+// 05 验收 11：产品标题必须在真实挂载的沙箱工作台里作为文本。
+{
+  const title = '<img src=x onerror=alert(1)>';
+  const id = 'sbx-xss';
+  server = {
+    cur: detail({
+      row: row({ id, channel: 'simulator' }),
+      quote: { routeId: 'r-xss', routeTitle: title, travelers: 2, perPerson: 100, total: 200, departDate: null },
+    }),
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  const visitor: Viewer = {
+    kind: 'member',
+    me: {
+      ...me('owner'),
+      sandbox: {
+        ownConversationId: id,
+        expiresAt: new Date(NOW + 3600_000).toISOString(),
+        wechat: 'off',
+        steps: [false, false, false, false],
+      },
+    },
+    pack: TRAVEL,
+  };
+  const m = await mount(visitor, id);
+  try {
+    check('沙箱工作台恶意产品标题按原文显示', m.box.textContent!.includes(title));
+    eq('沙箱工作台恶意产品标题不生成 img 元素', m.box.querySelectorAll('img').length, 0);
+    eq('沙箱工作台恶意产品标题不生成 onerror 属性', m.box.querySelectorAll('[onerror]').length, 0);
+  } finally {
+    await m.unmount();
+  }
+}
+
 // 05 第 28 步：沙箱微信沿用真实渠道的窗口、条数、送达与解绑历史投影。
 for (const remaining of [3, 0]) {
   const id = 'wecom:wmSandbox';

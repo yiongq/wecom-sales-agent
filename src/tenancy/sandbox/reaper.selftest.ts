@@ -4,6 +4,7 @@ import { realReaperFixture } from '../../db/testing-reaper.js';
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
+import { mock } from 'node:test';
 import { connectSuperQuery, openTestDb, fakeLock, testConfigDeps, type FakeLock } from '../../db/testing.js';
 import { holdTenantLocks, withNewSandboxTenant, withTenant, type Db, type TenantLock } from '../../db/client.js';
 import { expireBrokenSandbox, systemContext } from '../../db/sandbox-process.js';
@@ -21,7 +22,7 @@ import { getOrCreateSession, listSessions, saveSession } from '../../store.js';
 import { recordUsage } from '../../usage.js';
 import { gatedFetch, gateStatus } from '../../llm-gate.js';
 import { startUsageDaily, __usageDailyTest } from '../../trace/usage-daily.js';
-import { __alertTest } from '../../ops/alert.js';
+import { alert, __alertTest } from '../../ops/alert.js';
 import { onShutdown, runShutdownHooks, dropShutdownHooks } from '../../shutdown.js';
 import { addListener } from '../../console-api/events.js';
 import { subscribe } from '../../adapters/simulator.js';
@@ -190,6 +191,24 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   check((await resolveSandboxSession(db, a.token)).status === 'invalid', '删除后 cookie 为 invalid');
   await runShutdownHooks(30);
   check(shutdownCalls === 0, '删除后停机不调用旧后端闭包');
+
+  // 真实 start 注册分钟计时器；只推进 interval，不手动调用 tick。
+  const scheduled = await box();
+  mock.timers.enable({ apis: ['setInterval'] });
+  try {
+    await reaper.start();
+    await expire(scheduled);
+    mock.timers.tick(59_999);
+    await reaper.drain();
+    check(runtimeOf(scheduled.rt.id) === scheduled.rt && scheduled.rt.state === 'serving', '自动回收在一分钟周期前尚未触发');
+    mock.timers.tick(1);
+    await reaper.drain();
+    check(!runtimeOf(scheduled.rt.id), '自动分钟调度在一个周期内处理到期沙箱');
+    await zero(q, scheduled.rt.id, scheduled.slug);
+  } finally {
+    reaper.stop();
+    mock.timers.reset();
+  }
 
   // ② abort 后 promise 未落定仍留在登记；拒绝与提交均可落定。
   const blocked = await box();
@@ -864,12 +883,43 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   // overdue 与连续失败告警；健康接口真实 ok=false。
   const overdue = await box();
   await q("update tenants set expires_at=now()-interval '2 hours' where id=$1", [overdue.rt.id]);
-  check((await reaper.overdue()) === 1, '超过一小时 purgeOverdue');
+  const overdueGate = deferred<void>();
+  overdue.rt.inflight.track(overdueGate.promise).catch(() => {});
   const healthProcess = new SandboxProcess({});
   Reflect.set(healthProcess, 'deps', deps);
   Reflect.set(healthProcess, 'reaper', reaper);
-  const health = await healthProcess.health();
-  check(!health.ok && health.purgeOverdue === 1, 'healthz ok=false');
+  const healthApp = sandboxApp(
+    {
+      health: () => healthProcess.health(),
+      resolve: (token) => resolveSandboxSession(db, token),
+      provision: async () => {
+        throw new Error('unused');
+      },
+      end: (id) => reaper.end(id),
+    },
+    'sandbox.example.invalid',
+  );
+  const overdueAlerts: string[] = [];
+  const overdueWarn = console.warn;
+  __alertTest.reset();
+  console.warn = (...args) => overdueAlerts.push(args.map(String).join(' '));
+  try {
+    await reaper.tick();
+    // isActive 只读取租户状态；用同一个实例告警键探测去重，不能借租户作用域冒充实例状态。
+    alert('sandbox_purge', '自测同键重复告警', { instance: true });
+    check(!overdueAlerts.some((s) => s.includes('自测同键重复告警')), '超一小时未删触发 sandbox_purge 实例告警键');
+    check((await reaper.overdue()) === 1, '超过一小时 purgeOverdue');
+    const response = await healthApp.request('/healthz', { headers: { host: 'sandbox.example.invalid' } });
+    const health = await response.json();
+    check(!health.ok && health.purgeOverdue === 1, '超一小时未删时 HTTP healthz ok=false');
+    await reaper.tick();
+    await healthApp.request('/healthz', { headers: { host: 'sandbox.example.invalid' } });
+    await __alertTest.settle();
+    check(overdueAlerts.filter((s) => s.includes('超过一小时')).length === 1, '超一小时 purge 告警重复巡检与健康读取只发送一次');
+  } finally {
+    console.warn = overdueWarn;
+    overdueGate.resolve();
+  }
   await expire(overdue);
   await reaper.tick();
   await zero(q, overdue.rt.id, overdue.slug);
@@ -985,7 +1035,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   const app = sandboxApp(
     {
       resolve: (token) => resolveSandboxSession(db, token),
-      health: async () => health,
+      health: () => healthProcess.health(),
       provision: async () => {
         throw new Error('unused');
       },
