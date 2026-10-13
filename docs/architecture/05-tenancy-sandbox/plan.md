@@ -144,7 +144,7 @@
 - [x] 30. 本机部署与演练（2 工程日，Claude）
   - 做：隔离 compose 项目（`NAME`、`REMOTE_DIR`、`HOST_PORT` 三个都换）、一次性真实 PG、假企微、假 ssh，跑真的 `deploy.sh`：先部署 `demo-v5` 作上一版 → 放 `.env.sandbox`、部署 05 的候选 tag → 验收 15 ①–⑥ → 验收 13 ①–⑥ → `docker compose stop sandbox` 宿主不受影响、再起一个沙箱进程被拒、终止锁连接（验收 10 的容器部分）→ 浏览器走一遍（登录页的三种状态、免登录体验 → `/try` → 工作台、体验清单的模拟器版与假企微扫码版、XSS 那一句）→ 预演第 32 步的顺序：Secret 与 OPEN_KFID 放占位值时 echostr 校验能过、清单退回模拟器，换成有效值后能签码 → 真的沙箱进程空闲与 20 个沙箱时的 RSS、容器里的开通 p95 → 宿主的 04 验收 14 那一组。
   - 验：结果记进实施记录与验收记录（验收 4、8、10、12、13、15 的本机部分）；结束删除本次容器、卷、镜像、临时 tag 与浏览器，不碰线上与别的项目。依赖：1–29。
-- [ ] 31. 线上 · 宿主与沙箱上线，体验客服先不配（0.5 工程日，Claude；owner 执行或当次授权代办）
+- [x] 31. 线上 · 宿主与沙箱上线，体验客服先不配（0.5 工程日，Claude；owner 执行或当次授权代办）
   - 做：「上线清单」里第 31 步之前的各项齐了才开始。dev 上打本地 tag（如 `demo-v6-rc1`，不推）；每次部署前手动备份并复制到异地。同一个 tag 分两次部署：① 服务器上先不放 `.env.sandbox`，核对宿主 `revision`、`role: host`、四个哈希与第 1 步相同，`/` 跳 `/console/`、`/guide.html` 404，owner 用测试微信给 `kf-main` 发一句、一句一回；② 放 `.env.sandbox`（不带 `SANDBOX_WECOM_*`）、宿主 `.env` 加 `SANDBOX_HOST` 后再部署，沙箱 `/healthz` 的 `revision` 对、`role: sandbox`；从登录页「免登录体验」开一个沙箱，用模拟器走完体验清单（真实模型，约 0.5 元）；经真实反向代理核对两个站点收到的 Host 原样、`clientKey()` 取到访客的真实地址；`watch.sh` 拨得到沙箱。
   - 验：验收 3、12 的线上部分与验收 5 的线上冒烟；不敏感的证据记进验收记录，主机与路径另记。依赖：30、owner 的线上授权与花费确认。
 - [ ] 32. 线上 · 体验客服接入（0.5 工程日；企微后台由 owner 登录、协调者用 Playwright 操作，服务器操作要 owner 当次授权）
@@ -262,13 +262,13 @@
 - [x] 服务器内存放得下宿主加沙箱进程（第 1 步预估，第 21、30 步实测）。协调者核对、owner 定；第 31 步前。
 - [x] 沙箱 Host 的 DNS 与证书。owner；第 31 步前。
 - [x] 反向代理加沙箱站点块，指向沙箱的宿主端口（只绑 127.0.0.1）；两个站点块都原样转发 Host、不写 `header_up Host`，主站块别的不动。owner（协调者可代拟配置）；第 31 步前。
-- [ ] 外部拨测加沙箱 Host 的 `/healthz`（顺带盯证书续期）；原来拨 `/guide.html` 的改拨 `/healthz`。owner；第 31 步。
+- [x] 外部拨测加沙箱 Host 的 `/healthz`（顺带盯证书续期）；原来拨 `/guide.html` 的改拨 `/healthz`。owner；第 31 步。
 - [x] 花费点头：上线后沙箱每天至多 10 元（池上限，开放问题 8），验收约 1 元。owner；第 31 步前。
-- [ ] 服务器上写 `.env.sandbox`：`DEPLOY_PROFILE=demo`、`CONFIG_SOURCE=db`、`SESSION_STORE=db`、`agent_app` 的 `DATABASE_URL`、`SANDBOX_HOST`、`SANDBOX_TEMPLATE_SLUG`、模型与 embedding 的 key、`LLM_MAX_INFLIGHT=2`、`ALERT_WEBHOOK_URL`、`INSTANCE_LABEL`；不许有 `DEFAULT_TENANT_SLUG`、`WECOM_*`、`CHANNEL_SECRETS_KEY`、`NOTIFY_WEBHOOK_URL`、OTLP 端点、`LLM_HEDGE_MODEL`。宿主 `.env` 加 `SANDBOX_HOST`，不许有 `SANDBOX_WECOM_*`；`.env.ops` 加沙箱的拨测端口（变量名第 22 步定）。协调者（owner 授权）；第 31 步 ②。
-- [ ] 每次部署前手动备份并复制到异地。协调者（owner 授权）；第 31 步两次部署前、第 35 步发版部署前。
-- [ ] 企微后台：第 32 步 2–5（回调 URL、可信 IP、可调用接口的应用、企业内部开发表）。owner 登录、协调者用 Playwright；第 32 步。
-- [ ] `.env.sandbox` 加五个 `SANDBOX_WECOM_*`：Token、EncodingAESKey 在服务器上生成、不打印，Secret 从后台取，open_kfid 用 `kf/account/list` 查。协调者（owner 授权）；第 32 步。
-- [ ] 48007 实测、`kf-main` 不受影响、已用名额（spec 前置条件的两项）。协调者加 owner 的测试微信；第 32 步。
+- [x] 服务器上写 `.env.sandbox`：`DEPLOY_PROFILE=demo`、`CONFIG_SOURCE=db`、`SESSION_STORE=db`、`agent_app` 的 `DATABASE_URL`、`SANDBOX_HOST`、`SANDBOX_TEMPLATE_SLUG`、模型与 embedding 的 key、`LLM_MAX_INFLIGHT=2`、`ALERT_WEBHOOK_URL`、`INSTANCE_LABEL`；不许有 `DEFAULT_TENANT_SLUG`、`WECOM_*`、`CHANNEL_SECRETS_KEY`、`NOTIFY_WEBHOOK_URL`、OTLP 端点、`LLM_HEDGE_MODEL`。宿主 `.env` 加 `SANDBOX_HOST`，不许有 `SANDBOX_WECOM_*`；`.env.ops` 加沙箱的拨测端口（变量名第 22 步定）。协调者（owner 授权）；第 31 步 ②。
+- [x] 每次部署前手动备份并复制到异地。协调者（owner 授权）；第 31 步两次部署前、第 35 步发版部署前。
+- [x] 企微后台：第 32 步 2–5（回调 URL、可信 IP、可调用接口的应用、企业内部开发表）。owner 登录、协调者用 Playwright；第 32 步。
+- [x] `.env.sandbox` 加五个 `SANDBOX_WECOM_*`：Token、EncodingAESKey 在服务器上生成、不打印，Secret 从后台取，open_kfid 用 `kf/account/list` 查。协调者（owner 授权）；第 32 步。
+- [x] 48007 实测、`kf-main` 不受影响、已用名额（spec 前置条件的两项）。协调者加 owner 的测试微信；第 32 步。
 - [ ] 上线后第一份每晚备份恢复到临时集群抽查一次：新表与函数在、沙箱行随之恢复（03 的做法）。协调者；第 31 步之后，建议做。
 - [ ] 上线一周后按 `sandbox_pool_daily` 调开放问题 8 的数值，改 `.env.sandbox`。owner 定、协调者改。
 - [ ] 名额用完（`sandbox_wecom_full`）时：验证企业、或按开放问题 9 的 B 换企业之后跑 `sandbox wecom-reset-full`。owner；发生时。
@@ -1618,6 +1618,20 @@ C 已在 00、01、02、03、04、后台 UX spec 的文件头追加 05 的反向
 - 实测：20 次开通 p95 81 ms（POST＋console＋me 的 curl 总时长，不含渲染）；沙箱空闲 / 20 个无对话沙箱 RSS 约 111 / 119 MiB，启动峰值约 231 MiB；第 21 个开通 429 并告警，四个宿主哈希全程不变。
 - 演练发现：删除沙箱等容器留下空匿名卷，PR #206 改用带卷清理的 rm；另按风险原因补回滚 / 首次旧 tag 指引、平台 demo profile 说明与 end --all 到期数量输出，退出码与优先级不变。1200 px 布局与欢迎语不入工作台会话两条观察留给 owner，见最新交接。
 - 偏离与清理：p95 临时提高小时 / 日开通上限、每访客不同 XFF；假企微补 Host 与 Content-Length 后复测，浏览器用 route 模拟 TLS 终止；候选与两棵旧版树各用一次性真实 PG 跑四门禁全绿，同树后续部署只跳过全量 test。容器、卷、镜像、临时 tag、worktree 与浏览器已清，截图另存，没有碰线上或其他项目资源。
+
+### 第 31 步 · 线上宿主与沙箱上线（2026-10-12）
+
+- 上线清单：沙箱子域名的 DNS、证书与反向代理站点块由 owner 定、协调者代拟后应用，两个站点块都原样转发 Host；外部拨测新增沙箱 `/healthz`（原监控已拨主站 `/healthz`）。花费按池上限每天 10 元。
+- `demo-v6-rc1` 两次部署，每次前手动备份并复制到异地。① 没有 `.env.sandbox`：宿主 `revision`、`role: host`、四哈希与第 1 步相同，`/` 跳 `/console/`、`/guide.html` 404，`kf-main` 一句一回。② 放 `.env.sandbox`、宿主加 `SANDBOX_HOST` 后部署：沙箱 `revision`、`role: sandbox` 正确；登录页免登录体验进工作台，模拟器真实模型回复与报价、接手回复、改价、清单 4/4，结束体验约 10 秒删除，花费约 0.04 元；`auth_sessions.ip` 记到访客公网地址（Host 原样、`clientKey()` 取到真实地址）；`watch.sh` 拨得到沙箱。
+- 观察：`kf-main` 有一条回复被微信内容安全拦下（`msg_send_fail` fail_type 13，产品库措辞所致，与 05 无关，另行处理）；写好 `.env.sandbox` 到部署完成之间 `watch.sh` 推过一次沙箱健康误报，以后写 `.env.sandbox` 紧挨着部署。
+
+### 第 32 步 · 线上体验客服接入与真机走查（2026-10-12 至 10-13）
+
+- 接入按 1–7 顺序完成：Token、EncodingAESKey 在服务器上生成，Secret 由 owner 写上服务器、协调者不经手；回调保存时企微校验通过，可信 IP、可调用接口的应用、企业内部开发表配好，`kf-main` 那一行不变。`kf/account/list` 看得到两个客服账号；用体验客服凭据对 `kf-main` 调 `kf/sync_msg` 返回 48007、拉不到消息。企业未认证，累计可接待 100 位，按库里的微信会话估计已用约 4 位。
+- 真机走查发现与修复（每次部署前另存当天备份并手动备份到异地，本地 tag 不推）：事件里的 `open_kfid` 只在 `event` 内、扫码绑定被丢（#209）；回复框按渠道提示、清单当场刷新（#210）；登录页与体验页按设计稿重做、一次点击直达、种子减到 5 段并置顶访客自己的会话（#211）；微信内置浏览器带着另一个沙箱的会话 cookie 时支付链接打不开、换绑后无 `welcome_code` 时没有欢迎语（#212）；访客文案按事实改写（#213）；限额自测固定 UTC（#214）；欢迎语与模拟器开场句回到宿主原句（#215）；重新扫码绑定时交还仍在接手中的会话（#216）。依次部署 `demo-v6-rc2`–`rc5`，四哈希始终不变。
+- 真机已验：扫码绑定与欢迎语（含换绑后经 `send_msg`）、AI 回复与报价、接手回复、标已付、清单 4/4、微信里打开支付链接并模拟支付、闲置沙箱自动删除、换绑、`kf-main` 一句一回。
+- 10-13 轮换体验客服回调的 Token 与 EncodingAESKey（第 2 步填表后的页面快照带出了旧值）：新值在服务器生成，填表只回报长度，企微保存校验通过，真实消息收发正常；`kf-main` 不受影响。
+- 未完成：在微信里分享登录页的卡片截图，待 owner。
 
 ## 验收记录
 
