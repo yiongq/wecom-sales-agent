@@ -51,7 +51,8 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
     promisesContact,
   } = sources.helpers;
   const {
-    PURCHASE_INTENT,
+    netOrderIntent,
+    netQuoteFor,
     PURCHASE_INTENT_MAX_LEN,
     OTHER_ORDER,
     WANTS_PERSON,
@@ -82,12 +83,14 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         !orderedThisTurn &&
         !!session.lastQuote &&
         ctx.inputText.length <= PURCHASE_INTENT_MAX_LEN &&
-        PURCHASE_INTENT.test(ctx.inputText) &&
-        !haggling(session, ctx.inputText, ctx.text);
+        netOrderIntent(ctx.inputText) &&
+        !haggling(session, ctx.inputText, ctx.text) &&
+        // 最近报过两条以上线路、客户没点名也没给序号：不替他挑，留给模型问
+        !!netQuoteFor(session, ctx.inputText);
       // 给别人另订一份（「闺蜜她们也想去…帮她们报个价」→「行，那就订这个」）：和模型调 create_order 同一个判断（见 otherPartyPending）。
       // 此前安全网只看这一句，照 3 人的报价建了单，把客户本人那张 2 人的待付款单作废了
       ctx.turn.flags.friendsOwn = ctx.turn.flags.wantsOrder
-        ? otherPartyPending(session, session.lastQuote!.routeId, session.lastQuote!.travelers)
+        ? otherPartyPending(session, netQuoteFor(session, ctx.inputText)!.routeId, netQuoteFor(session, ctx.inputText)!.travelers)
         : undefined;
       if (ctx.turn.flags.friendsOwn) {
         console.warn(`[engine] 客户在说给别人另订，安全网不兜底建单（会话 ${convLabel(session.id)}）：${logQuote(ctx.inputText)}`);
@@ -113,9 +116,9 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         ctx.turn.flags.wantsOrder &&
         !ctx.turn.flags.friendsOwn &&
         !OTHER_ORDER.test(ctx.inputText) &&
-        (saidTravelers === undefined || saidTravelers === session.lastQuote!.travelers)
+        (saidTravelers === undefined || saidTravelers === netQuoteFor(session, ctx.inputText)?.travelers)
       ) {
-        const quote = session.lastQuote!;
+        const quote = netQuoteFor(session, ctx.inputText)!;
         // 已有完全同参（线路+人数+日期）的待支付订单才重发原链接，否则重新建单。
         // 只按线路匹配会让「改了出发日期再说就订」的客户拿回旧单的旧日期。客户最近说的是「国庆」这种
         // 下不了单的日子时（wantDate 为空），按最近那次报价的日期找：「10月5号」改成「国庆」后再说「就订这个」，

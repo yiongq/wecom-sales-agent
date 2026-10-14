@@ -80,6 +80,75 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
   // 安全网只认短促的下单指令，长段叙述交给模型自行判断，减少正则误伤
   const PURCHASE_INTENT_MAX_LEN = 40;
 
+  // 成单安全网的「下单意图」比 PURCHASE_INTENT 更严：它命中后引擎会整段换掉模型回复并发支付链接，
+  // 误判一次就是一张几万元的待付款单（实测 88 段里 3 次）。所以否定 / 推迟 / 只要报价 / 疑问一律不兜，留给模型自己回
+  // 否定：先不下单、暂时不订、不急着下单、别急着订
+  const ORDER_NEGATED =
+    /(?:不|别|没|未)(?:要|想|打算|准备|急着?|着急|用|必|太想|敢|能|会|先|马上|现在|立刻|立即|就|再)*(?:下单|订|定|买|购买|付款|成交|预订)|(?:先|暂时|暂且)不(?![错用])|还没(?:想好|考虑好|决定|定|商量好)|不确定|没决定/;
+  // 推迟 / 犹豫：考虑考虑、回去商量、回头再说、等等再定；「考虑好了」「商量好了」是已经定了，不算
+  const ORDER_DEFERRED =
+    /考虑(?!好|完|清楚|过了)|再(?:商量|想想|想一想|想一下|看看|比较|比一比|斟酌|等等|观望|研究)|(?:回头|回去|晚点|晚些|以后|之后|改天|下次|过两天|过几天|稍后|等等|等会)再?(?:说|定|订|想|看|商量|联系|下单|聊|决定)|商量(?!好|完|过|妥)|犹豫|拿不定|不好定|没想好|想想|想一想|想一下|看看再|再说吧/;
+  // 只要报价 / 方案（哪怕同句有「就它了」）：出报价、报个价、发方案、给我准确价格
+  const QUOTE_ONLY =
+    /(?:出|报|发|给|来|要|做|看|看看|给我|发我|发给我|帮我出|帮我报)(?:一?个|一下|下|一份|份|张|套)?(?:准确|详细|正式|最终|具体|完整|精确|确切)?(?:的)?(?:报价单?|方案书?|价格)|报个?价|算个?价|出个?价/;
+  // 疑问 / 问流程：可以下单吗、怎么下单、能不能订
+  const ORDER_QUESTION = /[？?]|吗|怎么|怎样|如何|咋|是否|能否|可否|能不能|可不可以|行不行|好不好|要不要|是不是|有没有|流程|呢$/;
+  /** 成单安全网认不认这句是「下单指令」。比 PURCHASE_INTENT 多排除：否定、推迟、只要报价、疑问 */
+  function netOrderIntent(text: string): boolean {
+    if (!PURCHASE_INTENT.test(text)) return false;
+    // 「不用再看看了，就订这个」「别家都比过了」这类夸价 / 说比过了的说法不是推迟：先去掉再判
+    const said = text.replace(PRICE_OK, '');
+    return !ORDER_NEGATED.test(said) && !ORDER_DEFERRED.test(said) && !QUOTE_ONLY.test(said) && !ORDER_QUESTION.test(said);
+  }
+  const CN_ORDINAL: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4 };
+  /** 客户说的序号：第一个、第2条、2号线、前者 / 后者、只回一个数字。认不出返回 undefined（-1 表示最后一个） */
+  function spokenOrdinal(text: string): number | undefined {
+    const m =
+      /第\s*([一二两三四1-4])\s*(?:个|条|款|种|线|号|套|项)?/.exec(text) ??
+      /(?<![\d月日.])([1-4])\s*(?:号线?|条|款|线)(?![\d出走去到月日])/.exec(text) ??
+      /^[\s选要订就定]*([1-4一二两三四])[\s吧啦了。！!]*$/.exec(text);
+    if (m) {
+      const n = CN_ORDINAL[m[1]] ?? Number(m[1]);
+      return n;
+    }
+    if (/前者|前面那|上面那|先报的|第一次报/.test(text)) return 1;
+    if (/后者|后面那|下面那|后报的|最后那/.test(text)) return -1;
+    return undefined;
+  }
+  /**
+   * 安全网该按哪次报价建单；认不出（有未决的多选一而客户没点名）返回 undefined，安全网不兜底。
+   * 最近几次报价里有两条及以上不同线路就是多选一：客户点了线路（名称 / 别名 / 天数）或给了序号才按他选的那条，
+   * 否则 lastQuote 只是「最后一次报的」，不是客户选的。只有一条线路时就是 lastQuote
+   */
+  function netQuoteFor(session: Session, text: string): NonNullable<Session['lastQuote']> | undefined {
+    const last = session.lastQuote;
+    if (!last) return undefined;
+    const recent = (session.quoteHistory ?? []).slice(-4);
+    const ids = [...new Set(recent.map((q) => q.routeId))];
+    if (ids.length < 2) return last;
+    const routes = loadRoutes();
+    const pool = ids.map((id) => routes.find((r) => r.id === id)).filter((r): r is Route => !!r);
+    if (pool.length < 2) return last;
+    let pick: Route | undefined;
+    const named = pool.filter((r) => routeMentioned(text, r, pool));
+    if (named.length === 1) pick = named[0];
+    else if (named.length === 0) {
+      const n = spokenOrdinal(text);
+      if (n !== undefined) pick = n < 0 ? pool[pool.length - 1] : pool[n - 1];
+    }
+    if (!pick) return undefined;
+    if (pick.id === last.routeId) return last;
+    const q = recent.toReversed().find((h) => h.routeId === pick!.id)!;
+    return {
+      routeId: pick.id,
+      routeTitle: pick.title,
+      travelers: q.travelers,
+      perPerson: q.perPerson,
+      total: q.total,
+      departDate: q.departDate,
+    };
+  }
+
   // 还价不是下单。B01 实测「给个实在价 1万5一个人，我今天就定」命中「就定」，模型原稿已经回了「1 万 5 这个价我真批不下来」、
   // 也没调 create_order，引擎却按原价兜底建了一张 43,560 的待付款单，回复被换成「好的，已为您锁定名额」——
   // 客户要的是降价，收到的是原价订单。客户这句在砍价、在提异议，或模型原文在拒绝，安全网都不兜，保留模型原话
@@ -1339,6 +1408,8 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     isMonthOnly: (args: object) => MONTH_ONLY_ARGS.has(args),
     PURCHASE_INTENT,
     PURCHASE_INTENT_MAX_LEN,
+    netOrderIntent,
+    netQuoteFor,
     OTHER_ORDER,
     REFUND_REQUEST,
     CHANGE_REQUEST,
