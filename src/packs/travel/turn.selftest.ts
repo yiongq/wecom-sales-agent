@@ -114,4 +114,80 @@ const pastCtx: TurnToolContext = { ...toolCtx, text: '2020年10月3号出发', n
 const rejected = hooks.beforeTool!('create_order', { departDate: '2099-10-03', travelers: 2 }, pastCtx);
 assert.ok('reject' in rejected);
 assert.match(rejected.reject, /这是过去的日期/);
-console.log('TRAVEL TURN SELFTEST PASS: context、预取实际参数/顺序/部分失败与工具核正/结果/画像边界');
+// 成单安全网的下单意图与选线（审查 F01：否定句、只要报价、并列报价未选线都被兜底建了单）
+{
+  const mk = (id: string, title: string, destination: string, days: number, aliases: string[]): Route => ({
+    ...routes[0],
+    id,
+    title,
+    destination,
+    days,
+    aliases,
+  });
+  const lijiang = mk('net-lijiang', '丽江大理·洱海古城 6 日', '云南', 6, ['丽江']);
+  const xgll = mk('net-xgll', '香格里拉·梅里雪山松赞环线 8 日', '云南', 8, ['香格里拉']);
+  const netHooks = createTravelTurnHooks({
+    loadRoutes: () => [lijiang, xgll],
+    getOrder: () => undefined,
+    searchRoutes: async () => [],
+    rememberShownRoutes: () => {},
+    mentionsPlace: (t, w) => t.includes(w),
+    isOriginMention: () => false,
+    offCatalogPlaces: () => [],
+    visitedDestinations: () => [],
+    paymentMode: () => 'online',
+    spokenMoney: (t) => spokenMoney(t, travelPriceThresholds),
+    liftsBudget: () => false,
+  });
+  const entry = (r: Route, total: number) => ({ routeId: r.id, travelers: 2, perPerson: total / 2, total, departDate: '2027-02-06' });
+  const quoteOf = (r: Route, total: number) => ({ ...entry(r, total), routeTitle: r.title });
+  const base = {
+    id: 'x',
+    channel: 'wecom',
+    stage: 'quote',
+    profile: {},
+    messages: [],
+    orderIds: [],
+    handedOver: false,
+    createdAt: 0,
+    updatedAt: 0,
+  };
+  const single = { ...base, lastQuote: quoteOf(lijiang, 33600), quoteHistory: [entry(lijiang, 33600)] } as Session;
+  const both = {
+    ...base,
+    lastQuote: quoteOf(xgll, 100760),
+    quoteHistory: [entry(lijiang, 33600), entry(xgll, 100760)],
+  } as Session;
+  const { netOrderIntent, netQuoteFor } = netHooks;
+
+  const no = (cases: string[], why: string) => {
+    for (const t of cases) assert.equal(netOrderIntent(t), false, `${why}：「${t}」不触发成单安全网`);
+  };
+  no(['行，说法我听到了，我回去考虑考虑，先不下单。', '先不下单', '暂时不下单', '不急着下单', '不下单，我再看看'], '否定');
+  no(['我回去考虑考虑，下单的事回头再说', '再商量一下，晚点再定吧，下单不急', '等等再定，到时候下单'], '推迟 / 犹豫');
+  no(['就它了，请帮我出报价', '确认下单前先出个报价', '就这个吧，发方案给我', '就它了，报个价'], '只要报价 / 方案');
+  no(['可以下单吗', '怎么下单', '下单要先付定金吗', '能不能先下单再付款'], '疑问 / 问流程');
+  for (const t of [
+    '好，就它了，下单吧',
+    '确认下单',
+    '帮我下单',
+    '好的，就订这个',
+    '没问题，就订吧',
+    '不用再看看了，就订这个',
+    '考虑好了，下单吧',
+  ]) {
+    assert.equal(netOrderIntent(t), true, `正例仍触发：「${t}」`);
+  }
+
+  assert.equal(netQuoteFor(single, '确认下单')?.routeId, lijiang.id, '单条报价：按 lastQuote 建单');
+  assert.equal(netQuoteFor(both, '确认下单'), undefined, '并列两条报价、没点名没序号：不触发');
+  assert.equal(netQuoteFor(both, '好，就订这个吧'), undefined, '并列两条报价、只说「这个」：不触发');
+  assert.equal(netQuoteFor(both, '第一条，下单')?.routeId, lijiang.id, '序号「第一条」：选 lijiang，不是 lastQuote');
+  assert.equal(netQuoteFor(both, '2')?.routeId, xgll.id, '只回数字 2：选第二条');
+  assert.equal(netQuoteFor(both, '就订第二个')?.routeId, xgll.id, '序号「第二个」：选 xgll');
+  assert.equal(netQuoteFor(both, '丽江那条，下单')?.total, 33600, '点名别名「丽江」：按丽江的报价（¥33,600），不是 lastQuote');
+  assert.equal(netQuoteFor(both, '8天的，确认下单')?.routeId, xgll.id, '点名天数「8天」：选 xgll');
+  assert.equal(netQuoteFor(both, '确认下单，2个人'), undefined, '「2个人」是人数不是序号：仍不触发');
+}
+
+console.log('TRAVEL TURN SELFTEST PASS: context、预取实际参数/顺序/部分失败与工具核正/结果/画像边界/成单安全网意图与选线');
