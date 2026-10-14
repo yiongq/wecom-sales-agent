@@ -109,6 +109,7 @@ const me = (role: Role, name = '老板'): Me => ({
   csrf: 'c1',
   tenantSlug: 'yuntu',
   tenantName: '云途定制旅行',
+  sandbox: null,
 });
 const member = (role: Role): ShellViewer => ({ kind: 'member', me: me(role) });
 const ANON: ShellViewer = { kind: 'anon' };
@@ -129,7 +130,7 @@ function boot(meO: Outcome, packO: Outcome, memberSession = false): string {
   try {
     const v: Viewer = resolveBoot(meO, packO, memberSession);
     if (v.kind === 'member') return `member:${v.me.displayName}:${v.pack.id}`;
-    if (v.kind === 'anon') return `anon:${v.pack.id}`;
+    if (v.kind === 'login' && v.demo) return `login:demo:${v.demo.pack.id}`;
     return v.kind;
   } catch (e) {
     return `error:${errorCopy(e).title}:${errorCopy(e).tone}`;
@@ -138,7 +139,7 @@ function boot(meO: Outcome, packO: Outcome, memberSession = false): string {
 
 const PACK_OK = ok(PACK);
 eq('启动：/me 200、/pack 200 → 成员外壳', boot(ok(me('owner')), PACK_OK), 'member:老板:fixture');
-eq('启动：/me 401、/pack 200 → demo 匿名外壳', boot(E401, PACK_OK), 'anon:fixture');
+eq('启动：/me 401、/pack 200 → demo 登录页带只读入口', boot(E401, PACK_OK), 'login:demo:fixture');
 eq('启动：/me 401、/pack 401 → prod 登录页', boot(E401, E401), 'login');
 eq('启动：/me 503 db_disabled → 整页中性说明', boot(DISABLED, E401), 'disabled');
 eq('启动：/pack 503 db_disabled → 整页中性说明', boot(ok(me('owner')), DISABLED), 'disabled');

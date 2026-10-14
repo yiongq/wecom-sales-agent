@@ -26,7 +26,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ChatMessage } from '../types.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest, expectTenantScopeMissingForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const CHILD = process.env.WECOM03_CHILD ?? '';
 const SELF = fileURLToPath(import.meta.url);
 
@@ -306,7 +309,7 @@ async function harness(m: string) {
   if (m === 'prod') {
     process.env.DEPLOY_PROFILE = 'prod';
     process.env.LOG_FORMAT = 'json';
-    const { installJsonConsole } = await import('../log.js');
+    const { installJsonConsole } = await withoutTenantScope(() => import('../log.js'));
     installJsonConsole();
   }
 
@@ -439,9 +442,9 @@ async function harness(m: string) {
   };
 
   // ---- 库、会话存储 ----
-  const store = await import('../store.js');
-  const { withTenant } = await import('../db/client.js');
-  const testing = await import('../db/testing.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const { withTenant } = await withoutTenantScope(() => import('../db/client.js'));
+  const testing = await withoutTenantScope(() => import('../db/testing.js'));
   let db: import('../db/client.js').Db;
   let tenantId: string;
   let su: <R = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<R[]>;
@@ -477,7 +480,7 @@ async function harness(m: string) {
   }
 
   // ---- 渠道账号：id 先在这边生成（AAD 要用），凭据用这一把密钥加密 ----
-  const { sealSecrets } = await import('../channels/secrets.js');
+  const { sealSecrets } = await withoutTenantScope(() => import('../channels/secrets.js'));
   const keyBytes = Buffer.alloc(32, 3);
   const keyRing = { current: { id: 'k03', key: keyBytes }, all: new Map([['k03', keyBytes]]) };
   const ids = new Map<string, string>();
@@ -511,14 +514,14 @@ async function harness(m: string) {
     for (const sql of inboxTestSql()) await su(sql);
   }
 
-  const reg = await import('../channels/registry.js');
-  const wecom = await import('./wecom.js');
-  const { computeSignature } = await import('../wecom-crypto.js');
+  const reg = await withoutTenantScope(() => import('../channels/registry.js'));
+  const wecom = await withoutTenantScope(() => import('./wecom.js'));
+  const { computeSignature } = await withoutTenantScope(() => import('../wecom-crypto.js'));
   const tokenErrors: [string, string][] = [];
   wecom.onTokenError((code, account) => void tokenErrors.push([code, account]));
   await reg.initChannels({ db, tenantId, tenantSlug: realPg ? 'wecom03' : 'demo', varDir, keyRing });
   reg.startChannels();
-  const { app } = await import('../server.js');
+  const { app } = await withoutTenantScope(() => import('../server.js'));
 
   const idle = (): Promise<boolean> => waitFor(() => wecom.__wecomTest.idle(), 20_000);
   const sentTo = (uid: string, key?: string): SendRec[] => fake.sends.filter((s) => s.to === uid && (!key || s.kfAcct === key));
@@ -666,6 +669,74 @@ async function mainSuite(h: Harness): Promise<void> {
     live.every((k) => h.fake.syncs.some((s) => s.kfAcct === k)) && h.fake.syncs.every((s) => s.tokenAcct === s.kfAcct),
     json(h.fake.syncs),
   );
+
+  // 05 第 25 步宿主回归：第三种运行时的生命周期不改变已装载的 03 账号。
+  const { SandboxWecom } = await withoutTenantScope(() => import('../tenancy/sandbox/wecom.js'));
+  const oldIds = h.wecom.__wecomTest.ids();
+  const oldStates = oldIds.map((id) => h.wecom.__wecomTest.inspect(id));
+  const trial = new SandboxWecom(
+    {
+      SANDBOX_HOST: 'sandbox.example.invalid',
+      SANDBOX_WECOM_CORP_ID: 'fake-trial-corp',
+      SANDBOX_WECOM_TOKEN: 'fake-trial-token',
+      SANDBOX_WECOM_AES_KEY: Buffer.alloc(32, 7).toString('base64').slice(0, -1),
+      SANDBOX_WECOM_SECRET: 'fake-trial-secret',
+      SANDBOX_WECOM_OPEN_KFID: 'fake-trial-kf',
+    }, // gitleaks:allow
+    {
+      read: async () => ({ cursor: null, fullSince: null }),
+      commit: async () => {},
+      request: async (url) =>
+        Response.json(
+          String(url).includes('/gettoken?')
+            ? { access_token: 'fake-trial-access' }
+            : String(url).includes('/kf/add_contact_way?')
+              ? { url: 'https://contact.example.invalid/fake-trial' }
+              : { next_cursor: 'fake-trial-cursor', has_more: 0, msg_list: [] },
+        ),
+    },
+  );
+  try {
+    await withoutTenantScope(() => trial.start());
+    await trial.drain();
+  } finally {
+    await trial.close();
+  }
+  check('体验客服生命周期不进入宿主账号注册表', json(h.wecom.__wecomTest.ids()) === json(oldIds));
+  check(
+    '体验客服生命周期不改 03 cursor、收件、恢复与停机状态',
+    json(oldIds.map((id) => h.wecom.__wecomTest.inspect(id))) === json(oldStates),
+  );
+  check('体验客服生命周期不启用宿主 env 账号', !h.wecom.isWecomEnabled());
+
+  // 05 第 6 步回归：停用 / 尚未启动的账号保留旧日志；存在账号丢了租户才推作用域告警。
+  const tenancy = await withoutTenantScope(() => import('../tenancy/runtime.js'));
+  const owner = tenancy.hostRuntime();
+  let missingAlerts = 0;
+  const offMissing = tenancy.onTenantScopeMissing(() => {
+    missingAlerts++;
+  });
+  const logStart = logBuf.length;
+  const syncStart = h.fake.syncs.length;
+  try {
+    await h.wecom.syncAccountFromCallback(h.ids.get('d1')!, 'disabled');
+    check(
+      '没有账号运行时：旧日志一行、不推作用域告警',
+      logsSince(logStart).filter((x) => x.includes('没有运行时')).length === 1 && missingAlerts === 0,
+    );
+    tenancy.unregisterRuntime(owner.id);
+    await expectTenantScopeMissingForTest('wecom-03-owner-missing', () =>
+      h.wecom.syncAccountFromCallback(h.ids.get('a1')!, 'owner-missing'),
+    );
+    check(
+      '账号存在但租户缺失：日志一行、作用域告警一条',
+      logsSince(logStart).filter((x) => x.includes('[tenancy] tenant_scope_missing')).length === 1 && missingAlerts === 1,
+    );
+    check('两种拒绝都不拉取账号', h.fake.syncs.length === syncStart);
+  } finally {
+    tenancy.registerRuntime(owner);
+    offMissing();
+  }
 
   // ---- 同一个 external_userid 在三个账号上交错各发 5 句 ----
   for (let i = 1; i <= 5; i++) {
@@ -1062,7 +1133,7 @@ async function prodSuite(h: Harness): Promise<void> {
   // 请求路径里的会话 id（编码形式）也照样不出现在日志里
   await h.app.request(`/api/console/conversations/${encodeURIComponent(sid)}`);
   await h.app.request(`/api/console/conversations/${encodeURIComponent(sid)}/messages`);
-  const alerts = await import('../ops/alert.js');
+  const alerts = await withoutTenantScope(() => import('../ops/alert.js'));
   process.env.ALERT_WEBHOOK_URL = 'https://alert03.selftest.invalid/hook';
   alerts.startAlerts();
   alerts.__alertTest.stopTimer();
@@ -1113,8 +1184,8 @@ async function realPgSuite(h: Harness): Promise<void> {
     h.tenantId,
     s2,
   ]);
-  const { readSessionBatch } = await import('../db/repo/conversations.js');
-  const { rebuildSessions } = await import('../store/project.js');
+  const { readSessionBatch } = await withoutTenantScope(() => import('../db/repo/conversations.js'));
+  const { rebuildSessions } = await withoutTenantScope(() => import('../store/project.js'));
   const rebuilt = await h.withTenant(
     h.db,
     { tenantId: h.tenantId, actor: { kind: 'system', userId: null, name: null, ip: null } },
@@ -1136,11 +1207,11 @@ async function realPgSuite(h: Harness): Promise<void> {
 // ======================================================================================
 
 async function outboundSuite(h: Harness): Promise<void> {
-  const ledger = await import('../quota/ledger.js');
-  const tk = await import('../handoff/takeover.js');
-  const engine = await import('../engine.js');
-  const { __privacyTest } = await import('../privacy/privacy.js');
-  const { CONSENT_DECLINED_REPLY } = await import('../handoff/consent.js');
+  const ledger = await withoutTenantScope(() => import('../quota/ledger.js'));
+  const tk = await withoutTenantScope(() => import('../handoff/takeover.js'));
+  const engine = await withoutTenantScope(() => import('../engine.js'));
+  const { __privacyTest } = await withoutTenantScope(() => import('../privacy/privacy.js'));
+  const { CONSENT_DECLINED_REPLY } = await withoutTenantScope(() => import('../handoff/consent.js'));
   const { getSession } = h.store;
   const seqOf = h.store.seqOf;
   ledger.__ledgerTest.setWaits({ commitMs: 700, markMs: 700 });
@@ -1420,7 +1491,7 @@ async function outboundSuite(h: Harness): Promise<void> {
   // ---- 跟进：pending 与记账、任务改 sending 同一次落库 ----
   {
     process.env.FOLLOWUP_ENABLED = '1';
-    const runner = await import('../jobs/runner.js');
+    const runner = await withoutTenantScope(() => import('../jobs/runner.js'));
     runner.__jobsTest.start((id, text, opts) => h.wecom.wecomAdapter.push(id, text, opts));
     await runner.runJobsOnce();
     const uid = 'wm08fu';
@@ -1522,7 +1593,7 @@ async function outboundSuite(h: Harness): Promise<void> {
   {
     // 跟进：执行体自己比过接手之后、markSending 期间有人接手 → 这一组 cancelled、零发送
     process.env.FOLLOWUP_ENABLED = '1';
-    const runner = await import('../jobs/runner.js');
+    const runner = await withoutTenantScope(() => import('../jobs/runner.js'));
     const uid = 'wm08tkf';
     const sid = sidOf('a1', uid);
     const H = 3_600_000;
@@ -1825,7 +1896,7 @@ async function outboundSuite(h: Harness): Promise<void> {
       EMBED_BASE_URL: 'https://llm.selftest.invalid/v1',
       EMBED_API_KEY: 'selftest-fake-key',
     });
-    const { llmCfg } = await import('../llm.js');
+    const { llmCfg } = await withoutTenantScope(() => import('../llm.js'));
     let calls = 0;
     h.fake.onLlm = () => {
       calls += 1;
@@ -1930,6 +2001,53 @@ async function outboundSuite(h: Harness): Promise<void> {
   }
 
   h.fake.beforeSend = null;
+  // 05：账本 dispose 取消 pending 等待是 deferred，不能按真正 timeout 的 R6 照发。
+  {
+    const uid = 'wm07cancel';
+    const sid = sidOf('a1', uid);
+    const s = h.store.getOrCreateSession(sid, 'wecom');
+    s.messages.push({ role: 'customer', content: '你好', at: Date.now(), sentAt: Date.now() });
+    h.store.saveSession(s);
+    await h.store.flushSession(sid);
+    let open!: () => void;
+    h.faults.gate = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    try {
+      const prepared = h.wecom.wecomAdapter.prepare!(sid, '等提交再发', { kind: 'notice' });
+      check('dispose 回归：准备好待提交的组', prepared !== null);
+      const pending = ledger.__ledgerTest.rows(sid);
+      const { tenantKeys } = await withoutTenantScope(() => import('../tenancy/state.js'));
+      const { currentRuntime } = await withoutTenantScope(() => import('../tenancy/runtime.js'));
+      const owner = currentRuntime();
+      const beforeTimers = tenantKeys(owner.id)['ledger.timers'] ?? 0;
+      const sending = h.wecom.wecomAdapter.push(sid, '等提交再发', { kind: 'notice', prepared });
+      check('dispose 回归：确实阻塞在 pending 提交', await waitFor(() => (tenantKeys(owner.id)['ledger.timers'] ?? 0) > beforeTimers));
+      ledger.__ledgerTest.reset();
+      check('dispose 回归：取消等待后推送返回 false', !(await sending));
+      check('dispose 回归：没有向企微发请求，也不计为不安全发送', h.sentTo(uid).length === 0 && ledger.unsafeSendsIn10m() === 0);
+      check(
+        'dispose 回归：已清理的 intent 返回 deferred',
+        (await ledger.commitOutbound(
+          pending.map((row) => ({
+            msgid: row.msgid,
+            accountId: idOf('a1'),
+            sessionId: sid,
+            hasSession: true,
+            inboxId: null,
+            kind: row.kind,
+            segment: row.segment,
+            message: row.message,
+            payload: row.payload!,
+          })),
+        )) === 'deferred',
+      );
+    } finally {
+      h.faults.gate = null;
+      open();
+      await settle();
+    }
+  }
   ledger.__ledgerTest.setWaits(null);
 }
 
@@ -2017,12 +2135,12 @@ function inboxTestSql(): string[] {
 }
 
 async function inboxSuite(h: Harness): Promise<void> {
-  const ledger = await import('../quota/ledger.js');
-  const tk = await import('../handoff/takeover.js');
-  const { __privacyTest } = await import('../privacy/privacy.js');
-  const { CONSENT_DECLINED_REPLY } = await import('../handoff/consent.js');
-  const { onInboxAbandoned } = await import('../channels/inbox.js');
-  const { startAlerts } = await import('../ops/alert.js');
+  const ledger = await withoutTenantScope(() => import('../quota/ledger.js'));
+  const tk = await withoutTenantScope(() => import('../handoff/takeover.js'));
+  const { __privacyTest } = await withoutTenantScope(() => import('../privacy/privacy.js'));
+  const { CONSENT_DECLINED_REPLY } = await withoutTenantScope(() => import('../handoff/consent.js'));
+  const { onInboxAbandoned } = await withoutTenantScope(() => import('../channels/inbox.js'));
+  const { startAlerts } = await withoutTenantScope(() => import('../ops/alert.js'));
   startAlerts(); // 告警没配地址时只写一行日志，从日志里看 channel 那一条
   ledger.__ledgerTest.setWaits({ commitMs: 700, markMs: 700 });
   const { getSession } = h.store;

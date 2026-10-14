@@ -15,7 +15,10 @@ import { editableChars, joinSop, sectionBody, withBody } from '../sop/sections.j
 import { BUDGET_RATIO, checkSopContract } from '../sop/contract.js';
 import { sha256 } from './hashes.js';
 import type { BrandProfile } from '../core/pack-api.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const md = fs.readFileSync('data/sop.md', 'utf8');
 const runtime = config.currentPack().runtime;
 const other = { ...shanhaiBrand, brandName: '远山旅行', identityLine: '我是远山旅行的 AI 旅行顾问' };

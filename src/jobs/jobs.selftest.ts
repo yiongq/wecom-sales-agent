@@ -23,7 +23,10 @@ import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 import type { JobRow } from '../db/repo/jobs.js';
 import type { Session } from '../types.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const CHILD = process.env.JOBS_CHILD ?? '';
 const SELF = fileURLToPath(import.meta.url);
 const CLOCK_MODULE = fileURLToPath(new URL('../store/parity-clock.ts', import.meta.url));
@@ -67,7 +70,7 @@ async function parentMain(): Promise<never> {
 
   // 纯函数：拒绝识别的向量表（plan「实施记录 · 第 1 步」第 8 类：锁定原话与反例都不算拒绝）
   {
-    const { followupOptOutOf } = await import('./optout.js');
+    const { followupOptOutOf } = await withoutTenantScope(() => import('./optout.js'));
     const yes = [
       '不用了',
       '不用了，谢谢',
@@ -410,8 +413,8 @@ function makePush() {
 }
 
 async function storeSetup(opts: { dataDir?: string; dbConfig: boolean }) {
-  const store = await import('../store.js');
-  const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock } = await import('../db/testing.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock } = await withoutTenantScope(() => import('../db/testing.js'));
   const t = await openTestDb(opts.dataDir ? { dataDir: opts.dataDir } : {});
   const lock = fakeLock();
   if (opts.dbConfig) await installSeededConfig(t, { deps: { lock: async () => lock } });
@@ -493,7 +496,7 @@ async function inboxRetentionSuite(
   tenantId: string,
   label: string,
 ): Promise<void> {
-  const { purgeOnce, runRetentionPurgeJob, retentionPurgeSpec } = await import('./purge.js');
+  const { purgeOnce, runRetentionPurgeJob, retentionPurgeSpec } = await withoutTenantScope(() => import('./purge.js'));
   const [account] = await su<{ id: string }>(
     "insert into channel_accounts (tenant_id,key,kind,name,id_prefix,corp_id,open_kfid,secrets_ct,secrets_key_id) values ($1,'purge-inbox','wecom_kf','入站清理','wecom:purge-inbox:','corp-purge','kf-purge',decode('01','hex'),'test') returning id",
     [tenantId],
@@ -547,15 +550,15 @@ async function inboxRetentionSuite(
 
 async function childMainSuite(script: Step[], releaseHung: (content?: string) => Promise<void>, calls: () => number): Promise<void> {
   const { store, fx, lock, su, jobsOf, jobsFor, flush, silent, retire } = await storeSetup({ dbConfig: true });
-  const runner = await import('./runner.js');
-  const followup = await import('../followup.js');
-  const { followupRunAt, followupJobs } = await import('./followup.js');
-  const { fakeDbError } = await import('../db/testing.js');
-  const { configHealth, __configTest } = await import('../config/source.js');
-  const { guardOutbound, handleMessage } = await import('../engine.js');
-  const { nextPurgeAt, purgeOnce, retentionPurgeSpec, runRetentionPurgeJob } = await import('./purge.js');
-  const { handoffNotifyOps, HANDOFF_UNCLAIMED_MS, WINDOW_NOTICE_MS } = await import('./notify.js');
-  const { sendWindow } = await import('../quota/ledger.js');
+  const runner = await withoutTenantScope(() => import('./runner.js'));
+  const followup = await withoutTenantScope(() => import('../followup.js'));
+  const { followupRunAt, followupJobs } = await withoutTenantScope(() => import('./followup.js'));
+  const { fakeDbError } = await withoutTenantScope(() => import('../db/testing.js'));
+  const { configHealth, __configTest } = await withoutTenantScope(() => import('../config/source.js'));
+  const { guardOutbound, handleMessage } = await withoutTenantScope(() => import('../engine.js'));
+  const { nextPurgeAt, purgeOnce, retentionPurgeSpec, runRetentionPurgeJob } = await withoutTenantScope(() => import('./purge.js'));
+  const { handoffNotifyOps, HANDOFF_UNCLAIMED_MS, WINDOW_NOTICE_MS } = await withoutTenantScope(() => import('./notify.js'));
+  const { sendWindow } = await withoutTenantScope(() => import('../quota/ledger.js'));
   const { push, pushes, behave } = makePush();
   await inboxRetentionSuite(su, fx.deps.tenantId, 'PGlite 入站保留期');
   runner.__jobsTest.start(push);
@@ -875,7 +878,7 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
 
   // ---- 审查第 6 条（concurrency[2]）：记账、等提交期间被接手，推送前再比一次代次，不推送、任务记 abandoned ----
   {
-    const tk = await import('../handoff/takeover.js');
+    const tk = await withoutTenantScope(() => import('../handoff/takeover.js'));
     const TK2 = 'wecom:wmJobsTakeover';
     silent(TK2, 'quote', 3 * H);
     await flush(TK2);
@@ -1466,9 +1469,9 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
 
   // ---- advisor 模式建单排一次「待确认的订单」提醒；确认价格之后到点不发（02 spec「收款流程」，第 15 步审查带出） ----
   {
-    const { executeTool, loadRoutes } = await import('../tools.js');
-    const { confirmOrder } = await import('../payment/orders.js');
-    const { __profileTest } = await import('../profile.js');
+    const { executeTool, loadRoutes } = await withoutTenantScope(() => import('../tools.js'));
+    const { confirmOrder } = await withoutTenantScope(() => import('../payment/orders.js'));
+    const { __profileTest } = await withoutTenantScope(() => import('../profile.js'));
     const route = loadRoutes().find((r) => r.itinerary?.length)!;
     const O = 'wecom:wmJobsOU1';
     const s = store.getOrCreateSession(O, 'wecom');
@@ -1504,9 +1507,9 @@ async function childMainSuite(script: Step[], releaseHung: (content?: string) =>
 
 async function childFile(): Promise<void> {
   process.env.LLM_MOCK = '1'; // mock 引擎按关键词驱动真实工具：报价、建单
-  const store = await import('../store.js');
-  const { handleMessage } = await import('../engine.js');
-  const followup = await import('../followup.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
+  const followup = await withoutTenantScope(() => import('../followup.js'));
   const ID = 'wecom:wmJobsFileClose';
   const d = new Date(Date.now() + 40 * 24 * 3_600_000);
   await handleMessage(ID, `想去四川，2个大人，${d.getMonth() + 1}月${d.getDate()}号出发，预算每人一万`, 'wecom');
@@ -1537,8 +1540,8 @@ async function childFile(): Promise<void> {
 
 async function childDisk(mode: string, script: Step[], res: ChildResult, save: () => void): Promise<void> {
   const { store, su, jobsFor, flush, silent } = await storeSetup({ dataDir: process.env.JOBS_DATA_DIR!, dbConfig: false });
-  const runner = await import('./runner.js');
-  const followup = await import('../followup.js');
+  const runner = await withoutTenantScope(() => import('./runner.js'));
+  const followup = await withoutTenantScope(() => import('../followup.js'));
   const { push, pushes, behave } = makePush();
   runner.__jobsTest.start(push);
   const H = 3_600_000;
@@ -1617,16 +1620,16 @@ async function childDisk(mode: string, script: Step[], res: ChildResult, save: (
 // ---------------- 真实 Postgres：两个认领者 ----------------
 
 async function childRealPg(script: Step[], releaseHung: (content?: string) => Promise<void>): Promise<void> {
-  const { createRealPgFixture } = await import('../db/testing.js');
-  const { openDb, withTenant } = await import('../db/client.js');
-  const { claimDueJobs } = await import('../db/repo/jobs.js');
+  const { createRealPgFixture } = await withoutTenantScope(() => import('../db/testing.js'));
+  const { openDb, withTenant } = await withoutTenantScope(() => import('../db/client.js'));
+  const { claimDueJobs } = await withoutTenantScope(() => import('../db/repo/jobs.js'));
   const fx = await createRealPgFixture(process.env.PG_TEST_URL!);
   const app = await openDb(fx.urls.app);
   const other = await openDb(fx.urls.app);
   try {
-    const store = await import('../store.js');
+    const store = await withoutTenantScope(() => import('../store.js'));
     await store.initSessionStore({ db: app.db, tenantId: fx.tenantId, tenantSlug: 'demo', varDir: process.env.VAR_DIR! });
-    const runner = await import('./runner.js');
+    const runner = await withoutTenantScope(() => import('./runner.js'));
     const { push, pushes } = makePush();
     await inboxRetentionSuite(fx.query, fx.tenantId, '真实 PG 入站保留期');
     runner.__jobsTest.start(push);

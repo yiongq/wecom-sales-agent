@@ -1,3 +1,4 @@
+import { currentRuntime, withTenantScope, withoutTenantScope, tenantCallback, type TenantRuntime } from '../tenancy/runtime.js';
 // PG 会话后端（docs/architecture/02-conversations-workbench/spec.md「identity map 与写入」，R2、R4、R7）：
 // 分批预载、每会话写队列与合并、一次落库的七步、进快照即冻结、失败两类与 poisoned、撞上另一写者即优雅停机、
 // drain 段排空、exit 时的 spill 与启动时的回放。
@@ -39,7 +40,7 @@ import { addUsage, type UsageDelta } from '../db/repo/usage.js';
 import { shortIdOf } from '../shared/conversation.js';
 import type { ChatMessage, Order, Session } from '../types.js';
 import { SessionStoreStartupError, StoreConflictError, StoreLaggingError, type StoreBackend, type StoreHealth } from './backend.js';
-import { deliverCommitted, deliverHandoffUnsaved, type DomainEvent } from './events.js';
+import { deliverCommitted, deliverHandoffUnsaved, type DomainEventInput as DomainEvent } from './events.js';
 import {
   conversationValuesFrom,
   isDemoClassId,
@@ -61,7 +62,11 @@ import { assignSeqs, lastSeqOf, linkTurn, seedSeqs, seqOf, turnIdOf, WindowCorru
 
 // 模块加载时取一个空的异步上下文：每次落库都在它里面启动。在 withTenant 回调或轮次上下文里调 saveSession，
 // 排出的落库也不继承那个上下文（withTenant 不能嵌套，轮次的 trace 也不该串进落库）
-const detached = AsyncLocalStorage.snapshot();
+const detachedSnapshot = withoutTenantScope(() => AsyncLocalStorage.snapshot());
+function detached<T>(fn: () => T): T {
+  const rt = currentRuntime();
+  return detachedSnapshot(() => withTenantScope(rt, fn));
+}
 
 /** 预载每批的会话数（R2）：每条语句都在 agent_app 的 5 秒语句超时之内 */
 const PRELOAD_BATCH = 500;
@@ -304,6 +309,7 @@ interface Entry {
 }
 
 export interface PgBackendDeps {
+  runtime?: TenantRuntime;
   db: Db;
   tenantId: string;
   varDir: string;
@@ -371,6 +377,8 @@ export interface PurgeHold {
 export interface PgBackend extends StoreBackend {
   /** 把预载的会话与订单放进 identity map（initSessionStore 在全部校验通过之后同步调） */
   install(): void;
+  /** 登记表重置：只允许在排空后清除队列、去重与统计，保留数据库接线。 */
+  reset(): void;
   /** saveSession 之前：map 里有同 id 的另一个对象就拒绝（日志一行、不落库），不变量 3 */
   accepts(s: Session): boolean;
   /** 收养了、还没随会话在库里提交过一次的孤儿订单：这段时间里仍归文件后端，orders.json 照写（崩溃不丢） */
@@ -890,6 +898,9 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
   let doc: SpillDoc | null = null;
   try {
     const parsed = JSON.parse(raw) as Partial<SpillDoc> | null;
+    // 未装载租户与别的版本也留给所属租户处理，不校验或改名它的文件。
+    if (parsed && typeof parsed.tenant === 'string' && parsed.tenant !== d.tenantId)
+      return { applied: 0, skipped: 0, failedFiles: 0, channelOnly: 0, channelWritten: 0 };
     if (parsed && typeof parsed === 'object' && parsed.version === 1 && Array.isArray(parsed.sessions)) doc = parsed as SpillDoc;
   } catch {
     doc = null;
@@ -901,7 +912,7 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
     );
     return { applied: 0, skipped: 0, failedFiles: 1, channelOnly: 0, channelWritten: 0 };
   }
-  if (doc.tenant !== d.tenantId) throw new SessionStoreStartupError('spill_conflict', `${name} 不是本租户的 spill`);
+  if (doc.tenant !== d.tenantId) return { applied: 0, skipped: 0, failedFiles: 0, channelOnly: 0, channelWritten: 0 };
   let applied = 0;
   let skipped = 0;
   let channelOnly = 0;
@@ -953,13 +964,21 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
  * 已经过时，同样再预载一遍，内存的投递状态与窗口计数才与库一致
  */
 export async function openPgBackend(d: PgBackendDeps): Promise<PgBackend> {
-  let pre = await detached(() => preload(d));
-  const replay = await replaySpills(d);
-  if (replay.applied || replay.channelWritten) pre = await detached(() => preload(d));
-  return createBackend(d, pre, replay);
+  const rt = d.runtime ?? currentRuntime();
+  return withTenantScope(rt, async () => {
+    let pre = await detached(() => preload(d));
+    const replay =
+      rt.kind === 'sandbox' ? { applied: 0, skipped: 0, failedFiles: 0, channelOnly: 0, channelWritten: 0 } : await replaySpills(d);
+    if (replay.applied || replay.channelWritten) pre = await detached(() => preload(d));
+    return createBackend(d, pre, replay);
+  });
 }
 
 function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBackend {
+  const rt = d.runtime ?? currentRuntime();
+  const detached = <T>(fn: () => T): T => detachedSnapshot(() => withTenantScope(rt, fn));
+  const scopedTimeout = (fn: () => void, ms: number): NodeJS.Timeout => withoutTenantScope(() => setTimeout(tenantCallback(rt, fn), ms));
+
   const ctx = systemCtx(d.tenantId);
   const entries = new Map<string, Entry>();
   /** refOf 先生成好、还没建写队列的新会话的 ref（建写队列时取走） */
@@ -1165,6 +1184,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
    * 正在等 1 秒后再试
    */
   function pumpPoisoned(e: Entry): void {
+    if (rt.kind === 'sandbox' && rt.cancel.aborted) return;
     if (!e.poisoned || e.pcRun || e.pcTimer || !hasChannelRows(e.pc)) return;
     if (closed || conflict) return;
     if (e.inflight && !e.inflight.dead) return;
@@ -1177,6 +1197,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
 
   async function runPoisoned(e: Entry, rows: ChannelRows): Promise<void> {
     const r = await nowTx((tx) => writeChannelRows(tx, rows));
+    if (rt.kind === 'sandbox' && rt.cancel.aborted) return;
     e.pcRun = null;
     if (r.ok) {
       if (e.pcFailing) {
@@ -1206,7 +1227,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       console.error(`[store] 会话 ${short(e.id)}（poisoned）的渠道行短事务没写进去（${why}），留在内存里每秒再试，停机时写进 spill`);
     }
     if (closed || conflict) return;
-    e.pcTimer = setTimeout(() => {
+    e.pcTimer = scopedTimeout(() => {
       e.pcTimer = null;
       pumpPoisoned(e);
     }, POISONED_CHANNEL_RETRY_MS);
@@ -1281,6 +1302,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
    * 租户锁在别的进程手里（held_by_other）时不起落库：改动留给 exit 时的 spill，免得把新的持锁进程也撞成 store_conflict
    */
   function kick(e: Entry): void {
+    if (rt.kind === 'sandbox' && rt.cancel.aborted) return;
     if (closed || conflict || e.poisoned || e.inflight || e.purgeHeld || !isDirty(e) || !d.writable()) return;
     detached(() => {
       let snap: Snap;
@@ -1347,6 +1369,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
   }
 
   async function runFlush(e: Entry, snap: Snap): Promise<void> {
+    if (rt.kind === 'sandbox' && rt.cancel.aborted) return;
     stats.attempts++;
     const t0 = Date.now();
     let error: unknown = null;
@@ -1357,6 +1380,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       if (err instanceof AlreadyCommitted) recognized = true;
       else error = err;
     }
+    if (rt.kind === 'sandbox' && rt.cancel.aborted) return;
     const ms = Date.now() - t0;
     if (ms > SLOW_TX_MS) {
       stats.slowTx++;
@@ -1438,7 +1462,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     const delay = RETRY_MS[Math.min(e.attempts - 1, RETRY_MS.length - 1)]!;
     stats.lastRetryDelayMs = delay;
     console.warn(`[store] 会话 ${short(e.id)} 落库失败（${label}），第 ${e.attempts} 次，${delay / 1000} 秒后重试`);
-    e.timer = setTimeout(() => {
+    e.timer = scopedTimeout(() => {
       e.timer = null;
       // 租户锁到点时已在别人手里：不再写库，这个快照留在「在途」位置给 spill
       if (!closed && !conflict && d.writable()) detached(() => void runFlush(e, snap));
@@ -1461,7 +1485,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
           resolve();
         },
       };
-      const timer = setTimeout(
+      const timer = scopedTimeout(
         () => {
           e.waiters.delete(w);
           resolve();
@@ -1479,7 +1503,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     return Promise.race([
       e.pcRun.done,
       new Promise<void>((resolve) => {
-        timer = setTimeout(resolve, Math.max(0, deadline - Date.now()));
+        timer = scopedTimeout(resolve, Math.max(0, deadline - Date.now()));
       }),
     ]).finally(() => {
       if (timer) clearTimeout(timer);
@@ -1735,7 +1759,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       );
       let timer: NodeJS.Timeout | null = null;
       const late = new Promise<MarkSendingResult>((resolve) => {
-        timer = setTimeout(() => {
+        timer = scopedTimeout(() => {
           gaveUp = true;
           resolve('db_unavailable');
         }, timeoutMs);
@@ -1765,7 +1789,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       if (closed) throw new UsageWriteError('closed');
       if (!d.writable()) throw new UsageWriteError('held_by_other');
       try {
-        await detached(() => withTenant(d.db, ctx, (tx) => addUsage(tx, deltas)));
+        await detached(() => withTenant(d.db, ctx, (tx) => addUsage(tx, deltas), { sandboxMaintenance: true }));
       } catch (err) {
         // drizzle 把驱动错误包一层，SQLSTATE 在 cause 里：在这一侧取好（src/trace 不 import src/db/**）
         throw new UsageWriteError(pgErrorOf(err).code ?? (err instanceof Error ? err.name : 'unknown'), { cause: err });
@@ -1838,12 +1862,35 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       const e = entries.get(sessionId);
       return !!e && (isDirty(e) || e.inflight !== null);
     },
+    reset: () => {
+      for (const e of entries.values()) {
+        if (e.inflight || e.pcRun || isDirty(e)) throw new Error('租户重置：PG 写队列未排空');
+      }
+      for (const e of entries.values()) {
+        if (e.timer) clearTimeout(e.timer);
+        if (e.pcTimer) clearTimeout(e.pcTimer);
+      }
+      entries.clear();
+      preRefs.clear();
+      adopted.clear();
+      voidedIds.clear();
+      conflict = false;
+      lastError = null;
+      for (const key of Object.keys(stats)) stats[key as keyof PgStoreStats] = 0;
+    },
     forget: (sessionId) => {
       const e = entries.get(sessionId);
       // 极窄的残留窗口（第 16 步审查第二轮，holdForPurge 的 stillClean 已经在提交之前核过一次干净）：清除事务已经提交、
       // forgetSession 这一刻之间真的又来一笔写（COMMIT 的网络往返那一瞬），这个 entry 会带着没提交的改动被摘掉——
       // spec 墓碑设计认可的结果（不静默吞到查不出来），记一行日志
       if (e && isDirty(e)) console.warn(`[store] 会话 ${short(sessionId)} 刚被保留期清理删除，一笔极窄窗口里赶上的改动一并丢弃`);
+      if (e?.timer) clearTimeout(e.timer);
+      if (e?.pcTimer) clearTimeout(e.pcTimer);
+      for (const order of d.orders.values())
+        if (order.sessionId === sessionId) {
+          adopted.delete(order.id);
+          voidedIds.delete(order.id);
+        }
       entries.delete(sessionId);
       preRefs.delete(sessionId);
     },
@@ -1886,7 +1933,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
             reject(err);
           },
         };
-        const timer = setTimeout(() => {
+        const timer = scopedTimeout(() => {
           e.waiters.delete(w);
           reject(new StoreLaggingError(sessionId));
         }, timeoutMs);
@@ -1919,6 +1966,11 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       return { undrained: [...entries.values()].filter(isDirty).map((e) => e.id) };
     },
     spillSync() {
+      if (rt.kind === 'sandbox') {
+        const count = [...entries.values()].filter((e) => isDirty(e) || hasChannelRows(e.pc) || e.pcRun !== null).length;
+        console.log(`[sandbox] 停机丢弃未落库会话 ${count}`);
+        return count;
+      }
       try {
         // poisoned 的会话总是脏的；渠道行还没写完的也一并写出（防御）
         const dirty = [...entries.values()].filter((e) => isDirty(e) || hasChannelRows(e.pc) || e.pcRun !== null);
@@ -1933,7 +1985,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
         }
         if (!out.length) return 0;
         const doc: SpillDoc = { version: 1, tenant: d.tenantId, at: Date.now(), sessions: out };
-        const file = path.join(d.varDir, `store-spill-${stamp()}.json`);
+        const file = path.join(d.varDir, `store-spill-${stamp()}-${d.tenantId}-${randomUUID()}.json`);
         fs.mkdirSync(d.varDir, { recursive: true });
         fs.writeFileSync(`${file}.tmp`, JSON.stringify(doc));
         fs.renameSync(`${file}.tmp`, file);

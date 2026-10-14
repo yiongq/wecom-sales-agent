@@ -389,7 +389,13 @@ function respond(method: string, url: URL): Response {
     const waiting = (r: ConversationRow): number => (q.get('order') === 'waiting_first' && conversationState(r, pack) === 'human' ? 1 : 0);
     const rows = all
       .filter((r) => (!st || conversationState(r, pack) === st) && (!sg || r.stage === sg))
-      .sort((a, b) => waiting(b) - waiting(a) || Date.parse(b.updatedAt) - Date.parse(a.updatedAt) || (a.id < b.id ? -1 : 1));
+      .sort(
+        (a, b) =>
+          Number(Boolean(b.sandboxOwner)) - Number(Boolean(a.sandboxOwner)) ||
+          waiting(b) - waiting(a) ||
+          Date.parse(b.updatedAt) - Date.parse(a.updatedAt) ||
+          (a.id < b.id ? -1 : 1),
+      );
     const limit = Number(q.get('limit') ?? 20);
     const offset = Number(q.get('offset') ?? 0);
     return json(200, { items: rows.slice(offset, offset + limit), total: rows.length });
@@ -411,7 +417,15 @@ let opened: unknown[][] = [];
   return null;
 };
 
-const me = (role: Role): Me => ({ userId: 'u1', displayName: '老板', role, csrf: 'c1', tenantSlug: 'yuntu', tenantName: '云途定制旅行' });
+const me = (role: Role): Me => ({
+  userId: 'u1',
+  displayName: '老板',
+  role,
+  csrf: 'c1',
+  tenantSlug: 'yuntu',
+  tenantName: '云途定制旅行',
+  sandbox: null,
+});
 const member = (role: Role, pack = TRAVEL): Viewer => ({ kind: 'member', me: me(role), pack });
 
 async function settle(qc: QueryClient): Promise<void> {
@@ -1203,6 +1217,22 @@ async function login(a: AdminWorld, password: string): Promise<void> {
   const raw = await openAdmin('#s=wecom:cust_A01', { anonSeed: true });
   eq('深链：没编码的 id 也认，hash 换成编码后的写法', [raw.selected(), raw.hash()], ['wecom:cust_A01', '#s=wecom%3Acust_A01']);
   await raw.close();
+}
+
+{
+  server = { conversations: [{ ...SCENE[0]!, sandboxOwner: 'wechat' }, { ...SCENE[1]!, sandboxOwner: 'simulator' }, SCENE[2]!] };
+  const m = await mount(member('owner'));
+  const tags = [...document.querySelectorAll('.cv-table .ant-tag')];
+  eq(
+    '会话表实际显示两个中性Tag',
+    tags.map((el) => el.textContent),
+    ['你的微信', '你的模拟器会话'],
+  );
+  check(
+    'Tag使用中性色',
+    tags.every((el) => !el.className.includes('ant-tag-blue') && !el.className.includes('ant-tag-green')),
+  );
+  await m.unmount();
 }
 
 if (fails.length) {

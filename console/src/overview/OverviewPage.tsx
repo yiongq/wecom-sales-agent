@@ -20,6 +20,7 @@ import { shortIdOf } from '../../../src/shared/conversation.js';
 import { dateWithWeekday, digits } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { api, catalogKind, HttpError, unwrap } from '../api.js';
+import { OwnConversationTag } from '../sandbox/Sandbox.js';
 import { CAN_HANDLE_ROLES } from '../conversations/workbench.js';
 import { errorLine } from '../parts/ErrorAlert.js';
 import { EmptyBlock, StateView } from '../parts/StateView.js';
@@ -155,7 +156,10 @@ function TodoBody({ row, action }: { row: TodoRow; action: ReactNode }) {
       </span>
       <span className="ov-todo-type">{'status' in row.type ? <Status kind={row.type.status} /> : row.type.text}</span>
       <span className="ov-todo-main">
-        <span className="ov-todo-title">{cjk(row.title)}</span>
+        <span className={`ov-todo-title${row.sandboxOwner ? ' has-owner' : ''}`}>
+          <span className="own-conversation-label">{cjk(row.title)}</span>
+          <OwnConversationTag owner={row.sandboxOwner} />
+        </span>
         {row.context.length > 0 && (
           <span className="ov-todo-context">
             <Segments segments={row.context} />
@@ -746,14 +750,16 @@ function StagesBlock({ pack }: { pack: IndustryPack }) {
 
 function TimelineLine({ row }: { row: TimelineRow }) {
   const { name, human } = row.actor;
+  const viewer = useViewer().data;
+  const avatarName = viewer?.kind === 'member' && viewer.me.sandbox && name === '体验访客' ? '访' : name;
   return (
     <li className="ov-tl-row">
       <time className="ov-tl-time" dateTime={row.at} title={row.fullTime}>
         {row.time}
       </time>
       {human ? (
-        <span className={`avatar avatar-${avatarIndex(name)}`} aria-hidden="true">
-          {firstChar(name)}
+        <span className={`avatar avatar-${avatarIndex(avatarName)}`} aria-hidden="true">
+          {firstChar(avatarName)}
         </span>
       ) : (
         <span className="ov-tl-bot" aria-hidden="true">
@@ -853,7 +859,7 @@ export function OverviewPage() {
   return (
     <>
       {/* 状态句包成一段：页头的状态行是 flex，Sep 拆成单独的项会多出 8 的间隔 */}
-      <PageHeader title="总览" status={<span>{cjk([viewer.me.tenantName, date])}</span>} />
+      <PageHeader title="总览" status={<span>{cjk([viewer.me.sandbox ? 'AI销售工作台' : viewer.me.tenantName, date])}</span>} />
       <TodoBlock pack={pack} editor={editor} canHandle={canHandle} now={now} onSettled={showBelow} />
       <MetricsBlock editor={editor} />
       <div className={below ? 'ov-below' : 'ov-below is-waiting'}>

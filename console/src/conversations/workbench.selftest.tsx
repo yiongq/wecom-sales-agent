@@ -29,7 +29,8 @@ import type {
 } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import type { Viewer } from '../shell/boot.js';
-import { VIEWER_KEY } from '../viewer.js';
+import { useViewer, VIEWER_KEY } from '../viewer.js';
+import { SandboxChecklist } from '../sandbox/Sandbox.js';
 import { WorkbenchPage } from './WorkbenchPage.js';
 import {
   CAN_HANDLE_ROLES,
@@ -322,11 +323,43 @@ eq(
 eq('订单状态中文', ORDER_STATUS_LABEL, { pending_payment: '待付款', paid: '已付款', cancelled: '已取消', superseded: '已失效' });
 eq('能处理会话的角色：owner/admin/supervisor/agent，不含 viewer', [...CAN_HANDLE_ROLES].sort(), ['admin', 'agent', 'owner', 'supervisor']);
 
+// 沙箱自己的会话在所有状态组前，状态计数不重复；没有标记的宿主分组照旧。
+{
+  const own = [
+    row({ id: 'wecom:wmOwn', stage: 'quote', handedOver: false, sandboxOwner: 'wechat' }),
+    row({ id: 'sbx-own', stage: 'paid', handedOver: false, sandboxOwner: 'simulator' }),
+  ];
+  const seed = row({ id: 'sbx-seed', handedOver: true, stage: 'handoff' });
+  const groups = wbGroups(
+    [seed, ...own],
+    { total: 3, byState: { human: 1, assigned: 0, ai: 1, paid: 1 }, aiByStage: {}, updatedToday: 0 },
+    TRAVEL,
+    NOW,
+    null,
+  );
+  eq(
+    '自己的会话组排在所有状态组前',
+    groups.flatMap((g) => g.rows.map((r) => r.id)),
+    ['wecom:wmOwn', 'sbx-own', 'sbx-seed'],
+  );
+  eq(
+    '自己的会话类型不丢失',
+    groups[0]?.rows.map((r) => r.sandboxOwner),
+    ['wechat', 'simulator'],
+  );
+  eq(
+    '分组计数不重复',
+    groups.map((g) => g.count),
+    [2, 1],
+  );
+}
+
 // ---------------- 2. 在 DOM 里挂载 ----------------
 const realNow = Date.now;
 Date.now = () => NOW;
 
 interface MockServer {
+  list?: ConversationRow[];
   cur: ConversationDetail | null;
   messagesBefore?: MessagesPage;
   turnDiff?: Record<string, TurnDiffView>;
@@ -348,7 +381,7 @@ const json = (status: number, b: unknown): Response =>
 function respond(method: string, url: URL, bodyText: string): Response {
   const p = url.pathname.replace(/^\/api\/console/, '');
   if (method === 'GET' && p === '/conversations')
-    return json(200, { items: server.cur ? [server.cur.row] : [], total: server.cur ? 1 : 0 });
+    return json(200, { items: server.list ?? (server.cur ? [server.cur.row] : []), total: server.list?.length ?? (server.cur ? 1 : 0) });
   if (method === 'GET' && p === '/conversations/counts') {
     const c: ConversationCounts = {
       total: server.cur ? 1 : 0,
@@ -453,7 +486,15 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
   return respond(method, url, typeof init?.body === 'string' ? init.body : '{}');
 }) as typeof fetch;
 
-const me = (role: Role): Me => ({ userId: 'u1', displayName: '老板', role, csrf: 'c1', tenantSlug: 'yuntu', tenantName: '云途定制旅行' });
+const me = (role: Role): Me => ({
+  userId: 'u1',
+  displayName: '老板',
+  role,
+  csrf: 'c1',
+  tenantSlug: 'yuntu',
+  tenantName: '云途定制旅行',
+  sandbox: null,
+});
 const member = (role: Role): Viewer => ({ kind: 'member', me: me(role), pack: TRAVEL });
 
 async function settle(qc: QueryClient): Promise<void> {
@@ -466,10 +507,24 @@ async function settle(qc: QueryClient): Promise<void> {
   }
 }
 
+function Progress() {
+  const v = useViewer().data;
+  return v?.kind === 'member' && v.me.sandbox ? (
+    <SandboxChecklist slug={v.me.tenantSlug} sandbox={v.me.sandbox} onRetry={() => {}} />
+  ) : null;
+}
+
 async function mount(viewer: Viewer, id = 'wecom:cust_F01') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   qc.setQueryData(VIEWER_KEY, viewer);
-  const root = createRootRoute({ component: Outlet });
+  const root = createRootRoute({
+    component: () => (
+      <>
+        <Progress />
+        <Outlet />
+      </>
+    ),
+  });
   const router = createRouter({
     routeTree: root.addChildren([
       createRoute({ getParentRoute: () => root, path: '/conversations', component: () => null }),
@@ -628,6 +683,90 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
       eq(`输入框禁用、占位提示（${label}）`, [box?.disabled, box?.placeholder], [true, '接管后在此回复，客户在企业微信中看到']);
     }
     await m.unmount();
+  }
+}
+
+// 渠道决定回复位置：同一个渠道换 id 仍然显示同样的说明；宿主企微照旧。
+for (const [id, channel, where] of [
+  ['sbx-a', 'simulator', '网页模拟器里'],
+  ['sim-a', 'simulator', '网页模拟器里'],
+  ['web:a', 'web', '网页模拟器里'],
+  ['sbx-a', 'wecom', '企业微信中'],
+] as const) {
+  server = { cur: detail({ row: row({ id, channel }) }), seenClientIds: [], extraMessages: [] };
+  const m = await mount(member('owner'), id);
+  eq(`回复占位按渠道（${id}/${channel}）`, (m.$('textarea')[0] as HTMLTextAreaElement)?.placeholder, `接管后在此回复，客户在${where}看到`);
+  await m.unmount();
+}
+
+// 标已付成功后在原工作台从 3/4 变 4/4；失败不点亮、不刷新，宿主不增加 /me 请求。
+for (const sandbox of [true, false]) {
+  const v = member('owner');
+  if (v.kind !== 'member') throw new Error('member fixture');
+  if (sandbox)
+    v.me.sandbox = {
+      ownConversationId: null,
+      expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+      wechat: 'off',
+      steps: [true, true, true, false],
+    };
+  server = {
+    cur: detail({
+      orders: [
+        {
+          id: 'o-progress',
+          routeTitle: '贵州',
+          travelers: 2,
+          departDate: '2026-11-01',
+          totalPrice: 2000,
+          status: 'pending_payment',
+          createdAt: new Date(NOW).toISOString(),
+          paidAt: null,
+          confirmed: { at: new Date(NOW).toISOString(), by: '老板' },
+          handoffBeforePaid: null,
+          conversation: null,
+        },
+      ],
+      can: { ...detail().can, markPaid: true },
+    }),
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  let paid = false;
+  let fail = true;
+  let meReads = 0;
+  const real = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    const path = String(input);
+    if (path.endsWith('/mark-paid')) {
+      if (fail) return json(503, { error: 'store_lagging' });
+      paid = true;
+      return json(200, { ok: true });
+    }
+    if (path.endsWith('/me')) {
+      meReads++;
+      return json(200, { ...v.me, sandbox: v.me.sandbox && { ...v.me.sandbox, steps: [true, true, true, paid] } });
+    }
+    if (path.endsWith('/pack')) return json(200, v.pack);
+    if (path.endsWith('/entry')) return json(200, { tryUrl: null });
+    return real(input, init);
+  };
+  const m = await mount(v);
+  try {
+    const url = m.router.state.location.href;
+    const button = () => m.$('button').find((b) => m.text(b) === '确认收款');
+    await m.click(button());
+    eq(`标已付失败不刷新（沙箱=${sandbox}）`, [meReads, sandbox && m.text(m.$('.sandbox-checklist h2')[0])], [0, sandbox && '体验清单3/4']);
+    fail = false;
+    await m.click(button());
+    eq(
+      `标已付后不换页刷新（沙箱=${sandbox}）`,
+      [meReads, m.router.state.location.href, sandbox && m.text(m.$('.sandbox-checklist h2')[0])],
+      [sandbox ? 1 : 0, url, sandbox && '体验清单4/4'],
+    );
+  } finally {
+    await m.unmount();
+    globalThis.fetch = real;
   }
 }
 
@@ -1249,7 +1388,157 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
   );
 }
 
+// 05：只有沙箱的 sbx 会话露出模拟器入口。
+for (const [sandbox, id, shown] of [
+  [true, 'sbx-probe', true],
+  [true, 'wecom:wmProbe', false],
+  [false, 'sbx-probe', false],
+] as const) {
+  server = { cur: detail({ row: row({ id, channel: 'simulator' }) }), seenClientIds: [], extraMessages: [] };
+  const visitor: Viewer = {
+    kind: 'member',
+    me: {
+      ...me('owner'),
+      sandbox: sandbox
+        ? { ownConversationId: null, expiresAt: new Date(NOW + 3600_000).toISOString(), wechat: 'off', steps: [false, false, false, false] }
+        : null,
+    },
+    pack: TRAVEL,
+  };
+  const m = await mount(visitor, id);
+  const link = m.$('a').find((a) => a.textContent?.includes('在模拟器里打开'));
+  check(`沙箱模拟器入口 ${id} / ${sandbox}`, !!link === shown);
+  if (link) eq('模拟器入口带 c 参数', link.getAttribute('href'), `/chat.html?c=${id}`);
+  await m.unmount();
+}
+
+// 05 验收 11：产品标题必须在真实挂载的沙箱工作台里作为文本。
+{
+  const title = '<img src=x onerror=alert(1)>';
+  const id = 'sbx-xss';
+  server = {
+    cur: detail({
+      row: row({ id, channel: 'simulator' }),
+      quote: { routeId: 'r-xss', routeTitle: title, travelers: 2, perPerson: 100, total: 200, departDate: null },
+    }),
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  const visitor: Viewer = {
+    kind: 'member',
+    me: {
+      ...me('owner'),
+      sandbox: {
+        ownConversationId: id,
+        expiresAt: new Date(NOW + 3600_000).toISOString(),
+        wechat: 'off',
+        steps: [false, false, false, false],
+      },
+    },
+    pack: TRAVEL,
+  };
+  const m = await mount(visitor, id);
+  try {
+    check('沙箱工作台恶意产品标题按原文显示', m.box.textContent!.includes(title));
+    eq('沙箱工作台恶意产品标题不生成 img 元素', m.box.querySelectorAll('img').length, 0);
+    eq('沙箱工作台恶意产品标题不生成 onerror 属性', m.box.querySelectorAll('[onerror]').length, 0);
+  } finally {
+    await m.unmount();
+  }
+}
+
+// 05 第 28 步：沙箱微信沿用真实渠道的窗口、条数、送达与解绑历史投影。
+for (const remaining of [3, 0]) {
+  const id = 'wecom:wmSandbox';
+  server = {
+    cur: detail({
+      row: row({ id, channel: 'wecom', handedOver: true, assignee: { userId: 'u1', name: '老板' } }),
+      can: { takeover: false, reply: true, release: true, reassign: false, confirmOrder: true, markPaid: false, traces: false },
+      sendWindow: { lastCustomerAt: NOW, closesAt: NOW + 3_600_000, used: 5 - remaining, remaining },
+      messages: [
+        {
+          seq: 1,
+          role: 'agent',
+          author: 'human',
+          authorName: '老板',
+          text: '顾问回复',
+          kind: 'message',
+          at: atIso('2026-09-26T14:00:00'),
+          turnId: null,
+          guarded: null,
+          delivery: { status: 'failed', failType: 4 },
+        },
+        {
+          seq: 2,
+          role: 'system',
+          author: 'system',
+          authorName: null,
+          text: '这个微信已不再连着这次体验',
+          kind: 'message',
+          at: atIso('2026-09-26T14:01:00'),
+          turnId: null,
+          guarded: null,
+          delivery: null,
+        },
+      ],
+    }),
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  const visitor: Viewer = {
+    kind: 'member',
+    me: {
+      ...me('owner'),
+      sandbox: {
+        ownConversationId: null,
+        expiresAt: new Date(NOW + 3600_000).toISOString(),
+        wechat: 'bound',
+        steps: [true, true, true, false],
+      },
+    },
+    pack: TRAVEL,
+  };
+  const m = await mount(visitor, id);
+  eq('沙箱微信剩余条数决定输入框是否禁用', (m.$('textarea')[0] as HTMLTextAreaElement)?.disabled, remaining === 0);
+  check(
+    '沙箱微信：窗口与剩余条数或不可发送说明',
+    remaining === 0
+      ? m.texts('.wb-send-reason').some((t) => t.includes('发满 5 条'))
+      : m.texts('.wb-replybox-hint').some((t) => t.includes('还能发3条') && t.includes('窗口到')),
+  );
+  check(
+    '沙箱微信：显示送达失败',
+    m.texts('.wb-delivery-note').some((t) => t.includes('这条发不出去了')),
+  );
+  check(
+    '沙箱微信：显示旧微信解绑说明',
+    m.texts('.wb-system').some((t) => t.includes('这个微信已不再连着这次体验')),
+  );
+  await m.unmount();
+}
+
 Date.now = realNow;
+
+{
+  const own = [
+    row({ id: 'wecom:wmOwn', stage: 'quote', handedOver: false, sandboxOwner: 'wechat' }),
+    row({ id: 'sbx-own', stage: 'paid', handedOver: false, sandboxOwner: 'simulator' }),
+  ];
+  server = {
+    cur: detail({ row: own[0]! }),
+    list: [row({ id: 'sbx-seed', handedOver: true, stage: 'handoff' }), ...own],
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  const m = await mount(member('owner'), 'wecom:wmOwn');
+  eq('实际工作台左栏自己的会话排第一', m.$('.wb-row-link')[0]?.getAttribute('href'), '/console/conversations/wecom%3AwmOwn');
+  eq(
+    '实际左栏显示两个中性Tag',
+    m.$('.wb-row-title .ant-tag').map((el) => el.textContent),
+    ['你的微信', '你的模拟器会话'],
+  );
+  await m.unmount();
+}
 
 if (fails.length) {
   console.error(`workbench: ${fails.length} 条断言失败（通过 ${pass} 条）`);

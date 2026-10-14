@@ -11,7 +11,10 @@ import { brandTexts, renderBrandPage, renderBrandTemplate } from '../core/brand.
 import { bindPack, partsOf, type BrandProfile } from '../core/pack-api.js';
 import { toolDefs } from '../tool-defs.js';
 import { renderSystemPrompt } from '../prompt/system.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'brand-outlets-'));
 process.env.VAR_DIR = dir;
 process.env.CONFIG_SOURCE = 'file';
@@ -22,17 +25,17 @@ process.env.WECOM_CORP_ID = 'selftest-corp';
 process.env.WECOM_APP_SECRET = 'selftest-secret';
 process.env.WECOM_KF_OPEN_KFID = 'selftest-kf';
 
-const config = await import('./source.js');
-const { handleMessage, promptPrefix } = await import('../core/engine/index.js');
-const store = await import('../store.js');
-const { openTestDb, installSeededConfig } = await import('../db/testing.js');
-const { withTenant } = await import('../db/client.js');
-const { readPublishedSop } = await import('../db/repo/sop.js');
-const sop = await import('./sop.js');
-const { runTenantBrand } = await import('../cli/tenant-brand.js');
-const { app } = await import('../server.js');
-const { __test: wecom, syncFromCallback } = await import('../adapters/wecom.js');
-const { installAccounts } = await import('../channels/accounts.js');
+const config = await withoutTenantScope(() => import('./source.js'));
+const { handleMessage, promptPrefix } = await withoutTenantScope(() => import('../core/engine/index.js'));
+const store = await withoutTenantScope(() => import('../store.js'));
+const { openTestDb, installSeededConfig } = await withoutTenantScope(() => import('../db/testing.js'));
+const { withTenant } = await withoutTenantScope(() => import('../db/client.js'));
+const { readPublishedSop } = await withoutTenantScope(() => import('../db/repo/sop.js'));
+const sop = await withoutTenantScope(() => import('./sop.js'));
+const { runTenantBrand } = await withoutTenantScope(() => import('../cli/tenant-brand.js'));
+const { app } = await withoutTenantScope(() => import('../server.js'));
+const { __test: wecom, syncFromCallback } = await withoutTenantScope(() => import('../adapters/wecom.js'));
+const { installAccounts } = await withoutTenantScope(() => import('../channels/accounts.js'));
 
 const runtime = config.currentPack().runtime;
 const baseline = promptPrefix();
@@ -80,21 +83,31 @@ try {
   const pages = {
     pay: '4bba75fa0132a1a726b593ff7386c2574b66b4ef3fefb782ebcfaeffbc4af7c6',
     proposal: '246366d7d5facb04e6892af8605a70304f7a7ec733ea0577f7ce6c34cf10fb7f',
-    chat: 'aba04f1d43216b8503067c6d81acae7899a5b9dfe391307402874a280220b8ec',
+    // 05 第 15 步评审修复：新会话删除 c 参数，更新已授权的页面基准。
+    chat: '39d1cc7d491928aa52cb09fc78f2c72bd471ffec6e583aaf2ab77a1a164714e7',
     web: '799e39e6ebfb08d8df905e1e3c60a55d5c9751ac9ed107c03434865dd9a44127',
   } as const;
   for (const [page, hash] of Object.entries(pages)) {
     const name = page as keyof typeof pages;
     const html = fs.readFileSync(`public/${name}.html`, 'utf8');
-    assert.equal(sha256(html), hash, `${page} 源文件必须与开工时逐字节相同`);
+    // owner 2026-10-13 只授权改 chat 页脚一句；替回旧句后仍按原哈希核对全部字节。
+    const footer = '演示：模拟企业微信里的客户对话。';
+    const baselineHtml =
+      page === 'chat' ? html.replace(footer, 'Demo：模拟企业微信会话。生产环境经企微回调接入，界面即企业微信本身。') : html;
+    if (page === 'chat') assert.ok(html.includes(footer));
+    assert.equal(sha256(baselineHtml), hash, `${page} 除授权页脚外必须与开工时逐字节相同`);
     assert.equal(renderBrandPage(html, name, runtime, null), html);
     const next = renderBrandPage(html, name, runtime, shanhaiBrand);
     // 检查全部客户文案（含 JS 中的动态文案）；技术注释不属于客户文案，支付产品名保留。
-    const customerText = next.replace(/\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->|^\s*\/\/.*$/gm, '').replaceAll('微信支付', '');
+    const customerText = next
+      .replace(/\/\*[\s\S]*?\*\/|<!--[\s\S]*?-->|^\s*\/\/.*$/gm, '')
+      .replaceAll('微信支付', '')
+      .replace(page === 'chat' ? footer : '', '');
     assert.doesNotMatch(customerText, /云途|微信/);
     if (page === 'pay') assert.equal((next.match(/class="merchant">山海旅行</g) ?? []).length, 2);
     if (page === 'proposal') assert.match(next, /山海旅行 · 行程方案书/);
     if (page === 'chat') {
+      assert.ok(next.includes(footer), '模板模式的宿主页脚同样使用 owner 定稿');
       const js = /<script>([\s\S]*?)<\/script>/.exec(next)![1]!;
       assert.ok(new vm.Script(js));
       assert.match(next, /pc-logo">山/);
@@ -366,6 +379,7 @@ try {
   // 欢迎语独立于拉取链，等实际发送任务排空。
   for (let n = 0; n < 100 && sent.length < 2; n++) await new Promise((resolve) => setTimeout(resolve, 10));
   assert.deepEqual(sent, [rendered.welcomeText, rendered.welcomeBackText]);
+  assert.match(sent[0]!, /需要真人服务时，回复「人工」即可转真人顾问。/);
   console.log(
     '品牌出口自测通过：旧版文本/页面字节、山海出口/渠道中立、逐页逐槽位 HTML/JS 转义与脚本执行、字素簇首字、发布快照、平台 set 不即时生效、轮次隔离、自定义欢迎优先',
   );

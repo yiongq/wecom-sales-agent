@@ -1,6 +1,8 @@
 # 02 · 会话入库 + 坐席工作台
 
 Status: implemented
+Superseded in part by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md) — 不变量 6、13 的到期沙箱整租户删除与不写 spill 例外（05 R6、R12）。
+Amended by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md)（R6 新增沙箱会话类，R22 公开路由新增沙箱进程一组，/healthz 加 role，见 05 R4、R8、R10、R19–R21）。
 Superseded in part by: [03 · 渠道层 v2](../03-channels-v2/spec.md) — R7「企微 cursor：留在 `var/wecom-cursor.json`（开放问题 5），同时做三条缓解……」那一句与「推迟」格的 `channel_inbox`（04）；「identity map 与写入 · 一次落库」第 6 步把账本行整体写在存档点之内；「企微：发送账本、回执与去重」里「账本行随会话的下一次落库写（存档点之内……）」一句与「去重与重放对齐」的五种情况；「identity map 与写入 · 停机」里 spill 文件「trace 与账本行不写」中的「账本行不写」。四处都只在企微状态「在库里」时（03 R1）被取代，文件存储、以及企微状态是「未导入」「已导出」的 db 存储下原文照旧。按 03 的 plan 落地，原因见 03 顶部 `Supersedes in part:`
 Amended by: [03 · 渠道层 v2](../03-channels-v2/spec.md)（只做新增或收紧，全文见该 spec 顶部 `Amends:`：「数据库」的新表 `channel_accounts`、`channel_inbox`，`outbound_sends` 的新列与三个新状态，`conversations.channel_account_id`，授权，清除与删除函数的删除范围加 `channel_inbox` 与新函数 `purge_channel_inbox`；「identity map 与写入 · 停机」spill 条目的渠道段；不变量 42 的表清单；R22 的公开路由；「两种会话存储与启动」的 `initChannels`、新的启动拒绝原因与 `/healthz` 的 `channels`；R24 与「可观测性与告警」的日志脱敏 id 形状、告警键 `channel` 与告警带账号 key）
 Phase: 2 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」

@@ -1,24 +1,50 @@
+import { scopedState } from '../tenancy/scoped-state.js';
+import { currentRuntime } from '../tenancy/runtime.js';
+import { registerTenantState } from '../tenancy/state.js';
 // 模拟器渠道：网页聊天经 SSE 收服务端推送。
 // server.ts 在 /api/stream/:sessionId 建立连接时调 subscribe 注册下发函数。
 import { withAdvisorPrefix } from '../shared/conversation.js';
 import type { ChannelAdapter, PushOpts } from '../types.js';
 
-type Send = (text: string) => void;
+const tenantState = scopedState(
+  () => ({
+    clients: new Map<string, Set<Send>>(),
+  }),
+  {
+    clients: (v) => {
+      for (const set of v.values()) {
+        for (const send of set) send.close?.();
+        set.clear();
+      }
+      v.clear();
+    },
+  },
+);
+const state = tenantState.get;
+registerTenantState({ name: 'simulator.clients', ...tenantState.registration('clients') });
+
+type Send = ((text: string) => void) & { close?: () => void };
+export function closeSimulatorStreams(): void {
+  const owner = tenantState.peek(currentRuntime());
+  if (owner) for (const set of owner.clients.values()) for (const send of set) send.close?.();
+}
 
 /** sessionId → 该会话所有在线 SSE 连接的下发函数（同一会话可开多个标签页） */
-const clients = new Map<string, Set<Send>>();
 
 /** 注册一条 SSE 连接，返回注销函数（连接断开时必须调用，防泄漏） */
-export function subscribe(sessionId: string, send: Send): () => void {
-  let set = clients.get(sessionId);
+export function subscribe(sessionId: string, send: Send, close?: () => void): () => void {
+  const own = state();
+  let set = own.clients.get(sessionId);
   if (!set) {
     set = new Set();
-    clients.set(sessionId, set);
+    own.clients.set(sessionId, set);
   }
-  set.add(send);
+  const ownerSend: Send = (text) => send(text);
+  ownerSend.close = close;
+  set.add(ownerSend);
   return () => {
-    set.delete(send);
-    if (set.size === 0) clients.delete(sessionId);
+    set.delete(ownerSend);
+    if (set.size === 0) own.clients.delete(sessionId);
   };
 }
 
@@ -26,7 +52,8 @@ export const simulatorAdapter: ChannelAdapter = {
   name: 'simulator',
   /** 不是企微，没有发送账本；人工回复（kind='human'）与企微一样在客户侧正文前加「【顾问】」（02 spec「接手、人工回复与交还」） */
   async push(sessionId: string, text: string, opts?: PushOpts): Promise<boolean> {
-    const set = clients.get(sessionId);
+    const own = state();
+    const set = own.clients.get(sessionId);
     if (!set) return true; // 客户不在线：消息已在 session.messages 里，刷新页面可见
     const body = opts?.kind === 'human' ? withAdvisorPrefix(text) : text;
     for (const send of set) {

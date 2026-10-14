@@ -1,3 +1,5 @@
+import { currentRuntime, tenantRuntimes, runtimeOf } from '../tenancy/runtime.js';
+import { registerTenantState } from '../tenancy/state.js';
 import { packPipelines } from './engine/pipelines.js';
 // 04 R2、R3：行业包取得核心能力的唯一出口；这里不装载行业包，也不引旧门面。
 import type { SectionSpec } from '../shared/sop-sections.js';
@@ -143,6 +145,8 @@ export interface ToolHints {
 export interface ToolContext {
   session: Session;
   hints: ToolHints;
+  /** R12 删除取消；正常停机排空不会触发。异步工具在落地前检查。 */
+  cancel?: AbortSignal;
 }
 
 export interface ToolHooks<Context = ToolContext> {
@@ -597,16 +601,14 @@ export interface PackBinding<T extends PackRuntimeTypes = PackRuntimeTypes> {
   brand: BrandProfile | null;
 }
 
-let binding: PackBinding | null = null;
-
 /** R2：由配置组合根注入；null 品牌保留旧版模式。 */
 export function bindPack<T extends PackRuntimeTypes>(runtime: PackRuntime<T>, brand: BrandProfile | null): void {
   const pipelines = packPipelines(runtime);
-  binding = { runtime, brand, pipelines };
+  currentRuntime().pack = { runtime, brand, pipelines };
 }
 
 export function boundPack(): PackBinding | null {
-  return binding;
+  return currentRuntime().pack ?? null;
 }
 
 /** 第 18 步：模型前安全网、重置与支付通知的行业能力，按旧调用位置注入。 */
@@ -678,3 +680,15 @@ export { stripMarkdown, trimDangling } from './guards/text.js';
 export { stripAdvisorPrefix } from '../shared/conversation.js';
 
 export { brandTexts, renderBrandTemplate, renderBrandPage } from './brand.js';
+
+registerTenantState({
+  name: 'pack.binding',
+  keyCount: (id) => (runtimeOf(id)?.pack ? 1 : 0),
+  drop: (id) => {
+    const rt = runtimeOf(id);
+    if (rt) Reflect.deleteProperty(rt, 'pack');
+  },
+  reset: () => {
+    for (const rt of tenantRuntimes()) Reflect.deleteProperty(rt, 'pack');
+  },
+});

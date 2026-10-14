@@ -1,3 +1,5 @@
+import { assertSandboxWriteCapacity } from '../../tenancy/sandbox/limits.js';
+import { scopedRuntime } from '../../tenancy/runtime.js';
 // SOP 版本的数据访问（spec「版本与发布」）。只收发领域类型；事务、租户与配置写锁由调用方负责
 import { and, asc, desc, eq, inArray, lt, sql } from 'drizzle-orm';
 import type { Tx } from '../client.js';
@@ -77,6 +79,7 @@ export interface NewPublishedSop {
 
 /** 直接写入一个已发布版本（导入、回滚、启动重渲染）。当前的已发布版本要先归档，否则撞部分唯一索引 */
 export async function insertPublishedSop(tx: Tx, v: NewPublishedSop): Promise<SopVersionRow> {
+  if (v.source === 'rollback') await checkSandboxSopPublishes(tx);
   const [row] = await tx
     .insert(sopVersions)
     .values({
@@ -199,6 +202,7 @@ export interface ReleaseFields {
 
 /** 草稿 → published：写入合并后的节、分配版本号与四个哈希。rev 对不上返回 null */
 export async function publishDraft(tx: Tx, id: string, rev: number, f: ReleaseFields): Promise<SopVersionRow | null> {
+  await checkSandboxSopPublishes(tx);
   const [row] = await tx
     .update(sopVersions)
     .set({ ...f, status: 'published', publishedAt: sql`now()` })
@@ -226,4 +230,14 @@ export async function listReleased(tx: Tx, limit: number, beforeVersionNo?: numb
     .where(beforeVersionNo === undefined ? released : and(released, lt(sopVersions.versionNo, beforeVersionNo)))
     .orderBy(desc(sopVersions.versionNo))
     .limit(limit);
+}
+
+/** 调用方已经持有租户配置写锁；只计访客发布 / 回滚，种子与启动重渲染不占写额度。 */
+async function checkSandboxSopPublishes(tx: Tx): Promise<void> {
+  if (scopedRuntime()?.kind !== 'sandbox') return;
+  const [row] = await tx
+    .select({ n: sql<number>`count(*)::int` })
+    .from(sopVersions)
+    .where(sql`${sopVersions.publishedAt} >= current_date and ${sopVersions.source} in ('console', 'rollback')`);
+  assertSandboxWriteCapacity('sopPublishesPerDay', row?.n ?? 0);
 }

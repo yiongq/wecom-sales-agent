@@ -222,6 +222,10 @@ function single(entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups
       return { parts: [plain('退出了登录')] };
     case 'config.import':
       return { parts: [plain('导入了初始配置')] };
+    case 'sandbox.create':
+      return { parts: [plain('开始了体验')] };
+    case 'sandbox.end':
+      return { parts: [plain('结束了体验')] };
     case 'tenant.brand_set':
       return { parts: [plain('设置了待生效企业信息配置')] };
     case 'tenant.brand_clear':

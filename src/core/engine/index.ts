@@ -1,3 +1,7 @@
+import { TenantObservers } from '../../tenancy/observers.js';
+import { TenantLocal } from '../../tenancy/local-state.js';
+import { registerTenantState } from '../../tenancy/state.js';
+import { currentRuntime, withoutTenantScope } from '../../tenancy/runtime.js';
 import { brandTexts } from '../brand.js';
 import './sources.js';
 // 通用对话引擎：并发、历史、入站、模型与出口；行业能力由组合根绑定。
@@ -27,6 +31,7 @@ import type {
 } from '../pack-api.js';
 import { answerIdentity as coreAnswerIdentity } from '../guards/text.js';
 import { tryReserveVisitorLLM } from '../../budget.js';
+import { BudgetExhausted } from '../../llm-gate.js';
 import { numEnv, todayIso } from '../../env.js';
 import { profile } from '../../profile.js';
 import { configMode, currentSop, pinCatalogForTurn, currentPack, fileSopPath, renderFileSop } from '../../config/source.js';
@@ -135,32 +140,44 @@ export interface ToolCallMeta {
   prefetch?: boolean;
 }
 type ToolObserver = (name: string, args: Record<string, unknown>, sessionId: string, meta?: ToolCallMeta) => void;
-const toolObservers = new Set<ToolObserver>();
+const toolObservers = new TenantObservers<ToolObserver>();
+registerTenantState({ name: 'index.toolObservers', ...toolObservers.registration() });
 export function onToolCall(fn: ToolObserver): () => void {
-  toolObservers.add(fn);
-  return () => toolObservers.delete(fn);
+  return toolObservers.subscribe(fn);
 }
 // 逐轮 trace 的订阅者（02 spec「逐轮 trace」）：调用记进当前这一轮，结果由 runTool 执行完补上（noteToolResult）
-onToolCall(traceToolCall);
+withoutTenantScope(() => onToolCall(traceToolCall));
 
 // 同会话串行：一个客户手快连发几条、或网络重发时，多个 handleMessage 会并发跑。
 // 它们共享同一个 session 对象，谁先 await 回来谁先 push——实测四条消息倒序入库，
 // 且每条回复都没看到其他几条的上下文（回「什么时候去合适」时还在问「您想去哪」）。
 // 企微侧本来就按客户分组串行，网页侧一直漏着。这里按会话排成一条链，跨会话仍并发。
-const sessionChain = new Map<string, Promise<unknown>>();
+const chains = new TenantLocal(
+  () => new Map<string, Promise<unknown>>(),
+  (m) => m.clear(),
+);
+registerTenantState({ name: 'engine.sessionChain', ...chains.registration((m) => m.size) });
 
 /** 把同一会话的处理排队；链上任何一环失败都不影响后续（catch 掉再续） */
 function serialize<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+  const rt = currentRuntime();
+  const sessionChain = chains.get(rt);
+  const run = (): Promise<T> => {
+    if (rt.cancel.aborted || !chains.owns(rt, sessionChain)) return Promise.reject(new Error('tenant_closing'));
+    return fn();
+  };
   const prev = sessionChain.get(sessionId) ?? Promise.resolve();
-  const next = prev.then(fn, fn);
+  const next = rt.inflight.track(prev.then(run, run));
   // 只保留链尾，且不让 rejected promise 挂在 Map 上产生 unhandled rejection
   const tail = next.catch(() => undefined);
   sessionChain.set(sessionId, tail);
   // 链尾跑完且没有新任务接上时删掉条目。此前比较的是 `=== undefined`，而刚 set 进去的
   // 是个 promise，条件恒为假 —— Map 只增不减，公开演示页每来一个访客就永久多一条。
-  void tail.finally(() => {
-    if (sessionChain.get(sessionId) === tail) sessionChain.delete(sessionId);
-  });
+  void tail
+    .finally(() => {
+      if (sessionChain.get(sessionId) === tail) sessionChain.delete(sessionId);
+    })
+    .catch(() => console.warn('[engine] 会话队列清理失败'));
   return next;
 }
 
@@ -188,6 +205,8 @@ export interface HandleOpts {
    * 与这条消息同一次落库提交。alreadyRecorded 时不排（这句上次已经记过）
    */
   inboxId?: string;
+  /** 沙箱微信入站的同步归属核对；宿主入口不传。失效时调用方记录去重系统说明。 */
+  stillCurrent?: () => boolean;
 }
 
 /** 这一轮写进会话的那条回复消息（02 第 12 步：渠道发送时交给发送账本，账本行据它取 seq）。不往 AgentReply 上加字段 */
@@ -211,7 +230,8 @@ const SENSITIVE_CATEGORIES: readonly SensitiveCategory[] = ['health', 'minor'];
  * （写进会话、经渠道发送，message_seq 为空）。没有发布隐私说明时 currentPrivacyNotice() 为 null，什么都不做（demo 恒为 null，
  * 不变量 40）。送达才记进会话——跟欢迎语同一个口径，没送达的话不该在后台显得「AI 已经问过」
  */
-async function maybeAskConsent(sessionId: string, text: string): Promise<void> {
+async function maybeAskConsent(sessionId: string, text: string, stillCurrent?: () => boolean): Promise<void> {
+  if (stillCurrent && !stillCurrent()) return;
   const notice = currentPrivacyNotice();
   if (!notice) return;
   const categories = createHandoffTriggers(currentPack().runtime.vocab.handoff).sensitiveCategoriesOf(text);
@@ -226,7 +246,7 @@ async function maybeAskConsent(sessionId: string, text: string): Promise<void> {
   for (const [i, category] of toAsk.entries()) {
     const content = consentMenuText(category);
     const ok = await pushToChannel(sessionId, content, { kind: 'menu', category, prepared: prepared[i] ?? null });
-    if (ok) {
+    if (ok && (!stillCurrent || stillCurrent())) {
       session.messages.push({ role: 'agent', content, at: Date.now() });
       saveSession(session);
     } else {
@@ -241,15 +261,22 @@ async function maybeAskConsent(sessionId: string, text: string): Promise<void> {
  * 同意菜单在同一段串行链里、这一轮的回复之后处理（R23）：失败只打日志，不影响这一轮已经算出的回复
  */
 export function handleMessage(sessionId: string, text: string, channel: string, opts: HandleOpts = {}): Promise<AgentReply> {
-  return serialize(sessionId, async () => {
-    const reply = await pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts)));
-    try {
-      await maybeAskConsent(sessionId, text);
-    } catch (e) {
-      console.error(`[engine] 同意菜单处理异常（会话 ${convLabel(sessionId)}）:`, e instanceof Error ? e.message : e);
-    }
-    return reply;
-  });
+  const rt = currentRuntime();
+  const work = () =>
+    serialize(sessionId, async () => {
+      rt.cancel.throwIfAborted();
+      if (opts.stillCurrent && !opts.stillCurrent())
+        return { text: '', stage: getSession(sessionId)?.stage ?? currentPack().runtime.stages[0]!.id, silent: true };
+      const reply = await pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts)));
+      if (currentRuntime().cancel.aborted) return reply;
+      try {
+        await maybeAskConsent(sessionId, text, opts.stillCurrent);
+      } catch (e) {
+        console.error(`[engine] 同意菜单处理异常（会话 ${convLabel(sessionId)}）:`, e instanceof Error ? e.message : e);
+      }
+      return reply;
+    });
+  return rt.kind === 'sandbox' ? rt.inflight.track(work) : work();
 }
 
 async function handleMessageInner(sessionId: string, text: string, channel: string, opts: HandleOpts): Promise<AgentReply> {
@@ -276,7 +303,14 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   }
   const ordersBefore = session.orderIds.length;
   const stageAtStart = session.stage;
-  const model = await callModel(state, turnContext, tools.runTool);
+  let model: Awaited<ReturnType<typeof callModel>>;
+  try {
+    model = await callModel(state, turnContext, tools.runTool);
+  } catch (error) {
+    if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent())) return state.unsentTakenOver();
+    throw error;
+  }
+  if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent())) return state.unsentTakenOver();
   return finishTurn(state, model, tools, stageAtStart, ordersBefore);
 }
 
@@ -313,8 +347,11 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
   // 接手代次（02 spec「接手、人工回复与交还」、不变量 28）：这一轮开始时记下，模型返回之后与 AI 回复 push 进会话之前各同步比一次，
   // 变了（这一轮里有人接手，含接手之后又交还）就不发，记一条「本轮未发送（顾问已接手）」
   const turnGen = takeoverGen(sessionId);
-  const takenOver = (): boolean => takeoverGen(sessionId) !== turnGen;
+  const takenOver = (): boolean =>
+    currentRuntime().cancel.aborted || takeoverGen(sessionId) !== turnGen || !!(opts.stillCurrent && !opts.stillCurrent());
   const unsentTakenOver = (): AgentReply => {
+    if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent()))
+      return { text: '', stage: session.stage, silent: true };
     session.messages.push({ role: 'system', content: TAKEN_OVER_NOTE, at: Date.now() });
     saveSession(session);
     return done('silent', { text: '', stage: session.stage, ...(session.handedOver ? { handoff: true } : {}), silent: true });
@@ -545,15 +582,22 @@ function turnTools(state: TurnState) {
         ...spec,
         // 完整结果在注册表记结果之前补上提醒，afterTool 只补会话状态。
         execute: async (args: unknown, ctx: TurnToolContext) => {
+          ctx.cancel?.throwIfAborted();
+          if (state.opts.stillCurrent && !state.opts.stillCurrent()) throw new Error('sandbox_binding_changed');
           ctx.hints = runtime.engineHooks.hintsFor(def.function.name, ctx);
-          return runtime.engineHooks.withNotes(await spec.execute(args, ctx), ctx.notes);
+          const result = await spec.execute(args, ctx);
+          ctx.cancel?.throwIfAborted();
+          if (state.opts.stillCurrent && !state.opts.stillCurrent()) throw new Error('sandbox_binding_changed');
+          return runtime.engineHooks.withNotes(result, ctx.notes);
         },
       };
     }),
     runtime,
   );
   const runTool = (name: string, modelArgs: Record<string, unknown>, meta?: ToolCallMeta): Promise<string> => {
-    const ctx: TurnToolContext = { session, text, hints: {}, args: modelArgs, notes: {}, handoffDeclined: false };
+    const cancel = currentRuntime().cancel;
+    if (cancel.aborted) return Promise.reject(cancel.reason);
+    const ctx: TurnToolContext = { session, text, hints: {}, args: modelArgs, notes: {}, handoffDeclined: false, cancel };
     let call: ToolCall | undefined;
     const running = toolRegistry.execute(name, modelArgs, ctx, {
       recordCall(toolName, actualArgs) {
@@ -614,12 +658,13 @@ async function callModel(state: TurnState, turnContext: TurnContext, runTool: Re
   const turn = turnPrefix();
   // 公开链接会被陌生人（和脚本）随便点，网页访客的真实 LLM 轮次有日预算上限。
   // 超额后降级到离线脚本回复——演示流程照样走得完，只是话术固定；
-  // 企微渠道是真实客户，永远不降级。
-  const visitor = channel === 'simulator';
+  // standard 的企微客户照旧不降级；沙箱所有渠道在尝试层预算拒绝后用同一个 forceMock。
+  const sandbox = currentRuntime().kind === 'sandbox';
+  const visitor = !sandbox && channel === 'simulator';
   // 「查额度」和「记一笔」必须是同一个同步动作：此前是 check-then-act，
   // 上千个并发请求会在第一个 chat() 返回前全部读到同一个未超限的计数，日预算整体失守。
   const reserved = visitor && tryReserveVisitorLLM(sessionId);
-  const degraded = visitor && !reserved;
+  let degraded = visitor && !reserved;
 
   // 会话状态在预取之前拼：预取的结果已经以工具消息的形式给了模型，不必在状态里再列一遍。
   // 三样齐全时附一句「这一轮报价」（见 quoteTimingNote）
@@ -643,25 +688,40 @@ async function callModel(state: TurnState, turnContext: TurnContext, runTool: Re
   const prefetchTimes = prefetched?.timings ?? [];
   const modelStart = Date.now();
   notePrefix(turn.sopVersion, turn.prefixHash());
-  const raw = await chat(
-    {
-      system: turn.system,
-      brand: state.binding.brand,
-      contextNote,
-      prefetch,
-      messages: history,
-      tools: runtime.tools.map((t) => t.def),
-      forceMock: degraded,
-      sessionId,
-      executeTool: (name, args) => runTool(name, args),
-      // 命中较早缓存后的展示状态重放由工具声明提供，门面适配旧回调签名。
-      onReuse: (name, _args, result) =>
-        runtime.tools
-          .find((t) => t.def.function.name === name)
-          ?.onReuse?.(result, { session, hints: {}, text, args: _args, notes: {}, handoffDeclined: false }),
-    },
-    { mock: runtime.mock, getToolSpec: (name) => runtime.tools.find((t) => t.def.function.name === name) },
-  );
+  const call = () => {
+    return chat(
+      {
+        system: turn.system,
+        brand: state.binding.brand,
+        contextNote,
+        prefetch,
+        messages: history,
+        tools: runtime.tools.map((t) => t.def),
+        forceMock: degraded,
+        sessionId,
+        executeTool: (name, args) => runTool(name, args),
+        // 命中较早缓存后的展示状态重放由工具声明提供，门面适配旧回调签名。
+        onReuse: (name, _args, result) => {
+          currentRuntime().cancel.throwIfAborted();
+          if (state.opts.stillCurrent && !state.opts.stillCurrent()) return;
+          return runtime.tools
+            .find((t) => t.def.function.name === name)
+            ?.onReuse?.(result, { session, hints: {}, text, args: _args, notes: {}, handoffDeclined: false });
+        },
+      },
+      { mock: runtime.mock, getToolSpec: (name) => runtime.tools.find((t) => t.def.function.name === name) },
+    );
+  };
+  let raw: string;
+  try {
+    raw = await call();
+  } catch (error) {
+    if (currentRuntime().cancel.aborted || !sandbox || !(error instanceof BudgetExhausted)) throw error;
+    degraded = true;
+    // 已经执行写型工具的轮次不重跑 mock；保留 calls / 订单 / 接管结果交现有护栏收尾。
+    const wrote = state.calls.some((c) => runtime.tools.find((t) => t.def.function.name === c.name)?.blocksRetry);
+    raw = wrote ? runtime.engineHooks.fallbackReply(session.stage) : await call();
+  }
   // 额度已在调用前占掉（tryReserveVisitorLLM），失败也不退还：token 是真花出去了
   const modelMs = Date.now() - modelStart;
   noteDraft(raw);
@@ -722,6 +782,7 @@ async function finishTurn(
     recordGuard: noteGuard,
     recordSignals: noteSignals,
     appendMessage(message) {
+      if (state.opts.stillCurrent && !state.opts.stillCurrent()) return;
       session.messages.push(message);
       if (message.role === 'agent') replyMsg = message;
     },
@@ -753,7 +814,7 @@ async function finishTurn(
   await binding.pipelines.reply.run(ctx, {
     onVerdict: noteGuardVerdict,
     onComplete(result) {
-      if (result.aborted) {
+      if (result.aborted || (state.opts.stillCurrent && !state.opts.stillCurrent())) {
         finishedReply = unsentTakenOver();
         return;
       }

@@ -1,6 +1,7 @@
 // 当前是谁在看：成员（带角色与 csrf）、demo 下的匿名只读、要登录、或服务端在文件模式（后台不可用）；
 // 成员与匿名都带着当前租户的行业包配置（/pack）。启动时并发取 /me 与 /pack，判定见 shell/boot.ts（spec「外壳 · 启动」）
-import { useQuery } from '@tanstack/react-query';
+import { type QueryClient, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { Showcase } from '../../src/shared/entry-ui.js';
 import type { Me } from '../../src/shared/console-api.js';
 import type { IndustryPack } from '../../src/shared/pack.js';
 import { api, HttpError, unwrap } from './api.js';
@@ -11,6 +12,12 @@ export type { AnonViewer, Viewer } from './shell/boot.js';
 
 export const VIEWER_KEY = ['viewer'] as const;
 
+/** 沙箱写入成功后重取服务端计算的体验进度，宿主不增加请求。 */
+export function refreshSandboxProgress(qc: QueryClient): void {
+  const viewer = qc.getQueryData<Viewer>(VIEWER_KEY);
+  if (viewer?.kind === 'member' && viewer.me.sandbox) void qc.invalidateQueries({ queryKey: VIEWER_KEY });
+}
+
 async function outcome(req: Promise<{ status: number; json(): Promise<unknown> }>): Promise<Outcome> {
   try {
     const res = await req;
@@ -20,10 +27,20 @@ async function outcome(req: Promise<{ status: number; json(): Promise<unknown> }
   }
 }
 
-async function loadViewer(): Promise<Viewer> {
-  const [me, pack] = await Promise.all([outcome(api.me.$get()), outcome(api.pack.$get())]);
+export async function loadViewer(previous: Viewer | undefined): Promise<Viewer> {
+  const [me, pack, entry] = await Promise.all([outcome(api.me.$get()), outcome(api.pack.$get()), outcome(api.entry.$get())]);
   const v = resolveBoot(me, pack, isMemberSession());
   if (v.kind === 'member') beginMemberSession(v.me);
+  if (v.kind === 'login' && v.demo) {
+    const tryUrl =
+      'status' in entry && entry.status === 200 && (entry.body as { tryUrl?: unknown } | null)?.tryUrl === '/try' ? '/try' : null;
+    const showcase = 'status' in entry && entry.status === 200 ? ((entry.body as { showcase?: Showcase | null }).showcase ?? null) : null;
+    const demo = { ...v.demo, tryUrl, showcase };
+    // 查询刷新保留用户已选的匿名视图；首次加载仍然先到登录页。
+    return previous?.kind === 'anon' || (!previous && new URLSearchParams(window.location.search).get('view') === 'demo')
+      ? demo
+      : { ...v, demo, tryUrl, showcase };
+  }
   return v;
 }
 
@@ -40,11 +57,19 @@ export function logout(): Promise<void> {
 }
 
 export function useViewer() {
-  return useQuery({ queryKey: VIEWER_KEY, queryFn: loadViewer, staleTime: 60_000 });
+  const qc = useQueryClient();
+  return useQuery({
+    queryKey: VIEWER_KEY,
+    queryFn: () => loadViewer(qc.getQueryData<Viewer>(VIEWER_KEY)),
+    staleTime: 60_000,
+    refetchInterval: (q) => (q.state.data?.kind === 'member' && q.state.data.me.sandbox ? 10_000 : false),
+    refetchIntervalInBackground: false,
+  });
 }
 
-/** 去登录页（侧栏、⌘K 的「登录」，横幅的「登录后编辑」）：从 demo 匿名来的带上原来的匿名视图，「返回演示」回到它 */
-export const toLogin = (prev: Viewer | undefined): Viewer => (prev?.kind === 'anon' ? { kind: 'login', demo: prev } : { kind: 'login' });
+/** 去登录页（侧栏、⌘K 的「登录」，横幅的「登录后编辑」），保留 demo 的入口配置 */
+export const toLogin = (prev: Viewer | undefined): Viewer =>
+  prev?.kind === 'anon' ? { kind: 'login', demo: prev, tryUrl: prev.tryUrl, showcase: prev.showcase, returning: true } : { kind: 'login' };
 
 /** 就地登录成功后的成员视图：行业包沿用之前拿到的那份（同一个部署、同一个租户） */
 export function memberViewer(prev: Viewer | undefined, me: Me): Viewer | undefined {

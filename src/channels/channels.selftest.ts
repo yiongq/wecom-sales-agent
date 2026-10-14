@@ -12,7 +12,10 @@ import { inspect } from 'node:util';
 import { __logTest } from '../log.js';
 import { ChannelKeyError, ChannelSecretError, Redacted, keyRingFromEnv, openSecrets, sealSecrets } from './secrets.js';
 import type { KeyRing, WecomSecrets } from './secrets.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 let pass = 0;
 function check(name: string, fn: () => void): void {
   fn();
@@ -296,15 +299,17 @@ const {
   channelKeyRing,
   ChannelStartupError,
   __channelsTest,
-} = await import('./registry.js');
+} = await withoutTenantScope(() => import('./registry.js'));
 const { accountByKey, accountForSession, checkWelcomeText, loadedAccounts, ENV_ACCOUNT_ID, WEB_CHANNEL_OFF_REASON } =
-  await import('./accounts.js');
-const { CHANNELS_IN_DB_MARKER, RESTORE_SENTINEL, WECOM_STATE_FILE, readChannelsMarker } = await import('./markers.js');
-const { createRealPgFixture, openTestDb } = await import('../db/testing.js');
-const { openDb } = await import('../db/client.js');
-const wecomMod = await import('../adapters/wecom.js');
-const { __profileTest } = await import('../profile.js');
-const { boot } = await import('../boot.js');
+  await withoutTenantScope(() => import('./accounts.js'));
+const { CHANNELS_IN_DB_MARKER, RESTORE_SENTINEL, WECOM_STATE_FILE, readChannelsMarker } = await withoutTenantScope(
+  () => import('./markers.js'),
+);
+const { createRealPgFixture, openTestDb } = await withoutTenantScope(() => import('../db/testing.js'));
+const { openDb } = await withoutTenantScope(() => import('../db/client.js'));
+const wecomMod = await withoutTenantScope(() => import('../adapters/wecom.js'));
+const { __profileTest } = await withoutTenantScope(() => import('../profile.js'));
+const { boot } = await withoutTenantScope(() => import('../boot.js'));
 type Db = import('../db/client.js').Db;
 type ChannelDeps = import('./registry.js').ChannelDeps;
 type StartupError = InstanceType<typeof ChannelStartupError>;
@@ -801,7 +806,7 @@ async function dbScenarios(h: Harness): Promise<void> {
     assert.match(r.out, /\[channels\] ⚠️ 账号 kf-main 的 welcomeText 不合格/);
     if (h.pglite) {
       // 告警（channel 键）：startAlerts 把装载时的几条合成一条；没配地址时只记一行 warn
-      const { startAlerts, __alertTest } = await import('../ops/alert.js');
+      const { startAlerts, __alertTest } = await withoutTenantScope(() => import('../ops/alert.js'));
       const from = captured.length;
       startAlerts();
       __alertTest.stopTimer();
@@ -819,7 +824,7 @@ async function dbScenarios(h: Harness): Promise<void> {
  */
 async function healthzAndCallback(): Promise<void> {
   process.env.SERVER_SELFTEST = '1';
-  const { app } = await import('../server.js');
+  const { app } = await withoutTenantScope(() => import('../server.js'));
   const res = await app.request('/healthz');
   const body = (await res.json()) as { ok: boolean; channels: Record<string, unknown> };
   assert.deepEqual(Object.keys(body.channels).toSorted(), ['accounts', 'failing', 'mode', 'stuck']);
@@ -940,10 +945,10 @@ check('凭据不出现在输出：整段 stdout、stderr 里没有凭据明文�
 
 // ---------------- 03 第 15 步：账号命令行（子进程、app 权限、事务与输出边界） ----------------
 {
-  const { spawnSync } = await import('node:child_process');
-  const { pathToFileURL } = await import('node:url');
-  const { holdTenantLock } = await import('../db/client.js');
-  const { AUDIT_ACTIONS } = await import('../shared/ui-labels.js');
+  const { spawnSync } = await withoutTenantScope(() => import('node:child_process'));
+  const { pathToFileURL } = await withoutTenantScope(() => import('node:url'));
+  const { holdTenantLock } = await withoutTenantScope(() => import('../db/client.js'));
+  const { AUDIT_ACTIONS } = await withoutTenantScope(() => import('../shared/ui-labels.js'));
   const repo = process.cwd();
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'channels-cli-'));
   const cli = path.join(repo, 'src', 'cli', 'channel-account.ts');
@@ -1058,7 +1063,9 @@ try {
     `
 import assert from 'node:assert/strict';
 const {pathToFileURL} = await import('node:url');
-const moduleOf = p => import(pathToFileURL(process.cwd() + '/src/' + p).href);
+const {hostRuntime,withTenantScope,withoutTenantScope} = await import(pathToFileURL(process.cwd() + '/src/tenancy/runtime.ts').href);
+await withTenantScope(hostRuntime(), async () => {
+const moduleOf = p => withoutTenantScope(() => import(pathToFileURL(process.cwd() + '/src/' + p).href));
 const testing = await moduleOf('db/testing.ts');
 const conn = process.env.CHANNEL_STARTUP_DISK
   ? await testing.openTestDb({dataDir:process.env.CHANNEL_STARTUP_DISK})
@@ -1100,6 +1107,7 @@ try {
   await store.drainStore(5000);
   await conn.close();
 }
+});
 `,
   );
   interface CliHarness {
@@ -1537,11 +1545,11 @@ try {
 
 // ---------------- 03 第 14 步：导入、导出与 resync（子进程，app 身份） ----------------
 {
-  const { holdTenantLock } = await import('../db/client.js');
-  const { AUDIT_ACTIONS } = await import('../shared/ui-labels.js');
-  const { hasChannelsMarker, writeChannelsMarker } = await import('./markers.js');
-  const { spawnSync } = await import('node:child_process');
-  const { pathToFileURL } = await import('node:url');
+  const { holdTenantLock } = await withoutTenantScope(() => import('../db/client.js'));
+  const { AUDIT_ACTIONS } = await withoutTenantScope(() => import('../shared/ui-labels.js'));
+  const { hasChannelsMarker, writeChannelsMarker } = await withoutTenantScope(() => import('./markers.js'));
+  const { spawnSync } = await withoutTenantScope(() => import('node:child_process'));
+  const { pathToFileURL } = await withoutTenantScope(() => import('node:url'));
   const repo14 = process.cwd();
   const temp14 = fs.mkdtempSync(path.join(os.tmpdir(), 'channel14-'));
   const bridge14 = path.join(temp14, 'bridge.mjs');

@@ -1,3 +1,4 @@
+import { withoutTenantScope } from './tenancy/runtime.js';
 // server.ts 与后台子应用（src/console-api/app.ts）共用的 HTTP 防护：跨站写保护、客户端地址、按 IP 的限流。
 // 从 server.ts 原样搬出，行为不变；查询限流是一个进程内的计数桶，两边挂的是同一个。
 import { getConnInfo } from '@hono/node-server/conninfo';
@@ -66,14 +67,16 @@ export function clientKey(c: Context): string {
 /** 独立命名的滑动窗口计数桶（聊天与查询各自一套，互不挤占） */
 export function makeLimiter(perMin: number): (key: string) => boolean {
   const hits = new Map<string, number[]>();
-  setInterval(() => {
-    const now = Date.now();
-    for (const [k, v] of hits) {
-      const recent = v.filter((t) => now - t < 60_000);
-      if (recent.length) hits.set(k, recent);
-      else hits.delete(k);
-    }
-  }, 5 * 60_000).unref();
+  withoutTenantScope(() =>
+    setInterval(() => {
+      const now = Date.now();
+      for (const [k, v] of hits) {
+        const recent = v.filter((t) => now - t < 60_000);
+        if (recent.length) hits.set(k, recent);
+        else hits.delete(k);
+      }
+    }, 5 * 60_000),
+  ).unref();
   return (key: string): boolean => {
     const now = Date.now();
     const k = hits.has(key) || hits.size < RATE_MAX_KEYS ? key : '__overflow__';

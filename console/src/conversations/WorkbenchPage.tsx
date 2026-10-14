@@ -35,7 +35,8 @@ import { IconButton } from '../shell/IconButton.js';
 import { conversationLabel, documentTitle } from '../shell/model.js';
 import { shellViewerOf } from '../shell/PageHeader.js';
 import { cjk } from '../typography.js';
-import { usePack, useViewer } from '../viewer.js';
+import { refreshSandboxProgress, usePack, useViewer } from '../viewer.js';
+import { OwnConversationTag, SimulatorLink } from '../sandbox/Sandbox.js';
 import { stageLabel } from './model.js';
 import { QuickRepliesCard } from './QuickReplies.js';
 import {
@@ -128,7 +129,10 @@ function WbListRow({ row }: { row: WbRow }) {
   return (
     <li className={row.selected ? 'wb-row is-selected' : 'wb-row'}>
       <Link to="/conversations/$id" params={{ id: row.id }} className="wb-row-link" aria-label={`${row.label.join(' ')}，${row.context}`}>
-        <span className="wb-row-title">{cjk(row.label)}</span>
+        <span className={`wb-row-title${row.sandboxOwner ? ' has-owner' : ''}`}>
+          <span className="own-conversation-label">{cjk(row.label)}</span>
+          <OwnConversationTag owner={row.sandboxOwner} />
+        </span>
         <span className="wb-row-sub">
           <Status kind={row.state} />
           <span className="wb-row-ctx" title={row.context}>
@@ -293,6 +297,8 @@ function ConversationHead({
   takeoverError: unknown;
   releaseError: unknown;
 }) {
+  const viewer = useViewer().data;
+  const sandbox = viewer?.kind === 'member' && !!viewer.me.sandbox;
   const { row } = cd;
   const state = conversationState(row, pack);
   const label = conversationLabel(row, pack);
@@ -315,6 +321,7 @@ function ConversationHead({
           ) : (
             row.assignee && <span className="wb-head-note">{`${row.assignee.name}处理中`}</span>
           )}
+          {sandbox && <SimulatorLink id={row.id} />}
           <MoreMenu
             canRelease={cd.can.release}
             canReassign={cd.can.reassign}
@@ -543,6 +550,7 @@ function HandoffCard({ handoffCard, pack }: { handoffCard: NonNullable<Conversat
 }
 
 function ReplyBox({
+  channel,
   canReply,
   sendWindow,
   text,
@@ -551,6 +559,7 @@ function ReplyBox({
   sending,
   replyError,
 }: {
+  channel: string;
   canReply: boolean;
   sendWindow: SendWindowView | null;
   text: string;
@@ -576,7 +585,13 @@ function ReplyBox({
         rows={3}
         maxLength={2000}
         showCount={{ formatter: ({ count }) => String(count) }}
-        placeholder={canReply ? undefined : '接管后在此回复，客户在企业微信中看到'}
+        placeholder={
+          canReply
+            ? undefined
+            : channel === 'simulator' || channel === 'web'
+              ? '接管后在此回复，客户在网页模拟器里看到'
+              : '接管后在此回复，客户在企业微信中看到'
+        }
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(e);
         }}
@@ -763,7 +778,10 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
   });
   const markPaid = useMutation({
     mutationFn: (orderId: string) => unwrap(api.orders[':id']['mark-paid'].$post({ param: { id: orderId } })),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate();
+      refreshSandboxProgress(qc);
+    },
   });
   const cancelOrder = useMutation({
     mutationFn: ({ orderId, reason }: { orderId: string; reason: string }) =>
@@ -863,6 +881,7 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
         />
         {detail.handoffCard && <HandoffCard handoffCard={detail.handoffCard} pack={pack} />}
         <ReplyBox
+          channel={detail.row.channel}
           canReply={canReply}
           sendWindow={sendWindowView(detail.sendWindow, now)}
           text={replyText}

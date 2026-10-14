@@ -1,3 +1,10 @@
+import { SandboxLimitError } from '../tenancy/sandbox/limits.js';
+import { sandboxWechatIndex } from '../tenancy/sandbox/outbound.js';
+import { BudgetExhausted } from '../llm-gate.js';
+import { publicHostMiddleware } from '../tenancy/hosts.js';
+import { sandboxSessionOf, resolveSandboxSession } from '../tenancy/sandbox/session.js';
+import { readSandboxSteps } from '../db/repo/sandbox-steps.js';
+import { currentRuntime, withoutTenantScope, tenantCallback, withTenantScope } from '../tenancy/runtime.js';
 import { brandTexts } from '../core/brand.js';
 // 后台接口子应用（docs/architecture/01-pg-config-console/spec.md「后台 API 与页面」）。
 // 必须链式注册，Hono RPC 才推得出类型（ADR-002）；console/src 只用 import type 引 ConsoleApp。
@@ -100,6 +107,7 @@ import { defaultQuickRepliesOf } from '../packs/registry.js';
 import { paymentMode } from '../payment/mode.js';
 import { cancelOrder, confirmOrder, markPaidByAdvisor, OrderNotFoundError, OrderStateError } from '../payment/orders.js';
 import { profile } from '../profile.js';
+import { loginShowcase, sandboxTryUrl } from './entry.js';
 import { indexHealth } from '../retrieval.js';
 import { csvLabelsOf } from '../shared/catalog-csv.js';
 import {
@@ -165,6 +173,8 @@ import { addListener, ensureEventHub, eventTiming, replayAfter, tailId, type Buf
 import { maskNumbers } from './mask.js';
 import {
   actorOf,
+  sandboxOwnConversationId,
+  sandboxOwnedFirst,
   byRecent,
   conversationCounts,
   conversationDetail,
@@ -196,6 +206,9 @@ let clock = (): number => Date.now();
  * server.ts 的 /api/admin/stream 也用它
  */
 export async function consoleSession(c: Context): Promise<{ user: AuthedUser; token: string } | null> {
+  const sandbox = sandboxSessionOf(c);
+  if (sandbox) return { user: sandbox.user, token: sandbox.token };
+  if (process.env.APP_ROLE === 'sandbox') return null;
   if (configMode() !== 'db') return null;
   const token = getCookie(c, SESSION_COOKIE);
   if (!token) return null;
@@ -336,6 +349,15 @@ const meOf = (u: AuthedUser): Me => ({
   csrf: u.csrf,
   tenantSlug: configRuntime().deps.tenantSlug,
   tenantName: currentTenant().name,
+  sandbox:
+    currentRuntime().kind === 'sandbox'
+      ? {
+          ownConversationId: sandboxOwnConversationId(),
+          expiresAt: new Date(currentRuntime().expiresAt!).toISOString(),
+          wechat: sandboxWechatIndex.wechatState(currentRuntime()),
+          steps: [false, false, false, false],
+        }
+      : null,
 });
 
 // 会话列表的投影、排序与计数在 ./workbench.ts（J 页与事件流共用）
@@ -345,10 +367,12 @@ const cookie = (value: string, maxAgeSec: number): string =>
 
 /** 命名错误 → 状态码与 { error, … }；不认识的返回 null，按 500 处理 */
 function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503; body: ApiError } | null {
+  if (e instanceof BudgetExhausted) return { status: 429, body: { error: 'llm_budget_exhausted' } };
   if (e instanceof HTTPException) return { status: 400, body: { error: 'bad_request', detail: e.message } };
   // 02「后台接口」的新错误码：角色不够 403，角色够但会话不归你 409（不变量 23 与权限表的分界）
   if (e instanceof ForbiddenError) return { status: 403, body: { error: 'forbidden', detail: e.message } };
   if (e instanceof ConversationNotFoundError) return { status: 404, body: { error: 'conversation_not_found', detail: e.message } };
+  if (e instanceof SandboxLimitError) return { status: 429, body: { error: e.reason } };
   if (e instanceof OrderNotFoundError) return { status: 404, body: { error: 'not_found', detail: e.message } };
   if (e instanceof AssignedToOtherError)
     return { status: 409, body: { error: 'assigned_to_other', detail: e.message, assigneeName: e.assigneeName } };
@@ -396,7 +420,9 @@ function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503
 export const consoleApi = new Hono<ConsoleEnv>()
   .basePath('/api/console')
   // requestLogContext：req 与 x-request-id（02 spec R24）；挂在 server.ts 下时沿用外层生成的那个
-  .use('*', requestLogContext, securityHeaders, requireDbMode, loadSession, guardWrites)
+  .use('*', requestLogContext, publicHostMiddleware, securityHeaders)
+  .get('/entry', (c) => c.json({ tryUrl: sandboxTryUrl() ? '/try' : null, showcase: loginShowcase() }))
+  .use('*', requireDbMode, loadSession, guardWrites)
 
   // ---------------- 登录 ----------------
   .post('/auth/login', zValidator('json', LoginBody, badRequest), async (c) => {
@@ -413,7 +439,16 @@ export const consoleApi = new Hono<ConsoleEnv>()
     c.header('Set-Cookie', cookie('', 0));
     return c.json({ ok: true as const }, 200);
   })
-  .get('/me', signedIn, (c) => c.json(meOf(c.var.user!), 200))
+  .get('/me', signedIn, async (c) => {
+    const me = meOf(c.var.user!);
+    if (me.sandbox) {
+      me.sandbox.steps = await readTx(c, (tx) => readSandboxSteps(tx, currentTenant().pack));
+      const bound = sandboxWechatIndex.boundUser(currentRuntime());
+      const id = bound ? `wecom:${bound}` : undefined;
+      if (id && getSession(id)) me.sandbox.conversationId = id;
+    }
+    return c.json(me, 200);
+  })
 
   // ---------------- 行业包 ----------------
   // 当前租户（tenants.pack_id）的界面配置，取自启动时装载的租户行、不查库。它是代码里的公开配置，不含租户名、成员、草稿，
@@ -432,9 +467,9 @@ export const consoleApi = new Hono<ConsoleEnv>()
     const sop = currentSop();
     const h = configHealth();
     const store = storeHealth();
-    await refreshChannelObservability();
+    if (currentRuntime().kind !== 'sandbox') await refreshChannelObservability();
     const body: Status = {
-      channels: channelStatuses(),
+      channels: currentRuntime().kind === 'sandbox' ? [] : channelStatuses(),
       mode: 'db',
       tenantSlug: configRuntime().deps.tenantSlug,
       sop: {
@@ -589,7 +624,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
           (!stage || s.stage === stage) &&
           (group !== 'paid_needs_human' || inPaidNeedsHuman(s, pack)),
       )
-      .toSorted(order === 'waiting_first' ? waitingFirst(pack) : byRecent);
+      .toSorted(sandboxOwnedFirst(order === 'waiting_first' ? waitingFirst(pack) : byRecent));
     const vocab = needVocabulary();
     const page: ConversationPage = {
       total: all.length,
@@ -850,6 +885,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
   // 成员才能连（viewer 也行），匿名 401。只带 id、状态、类型、seq 与时间。连上时先补 Last-Event-ID 之后的（接不上就 resync），
   // 没带 Last-Event-ID 的先收一条当前的 counts；之后每 20 秒一行注释心跳，每 50 秒复核登录（留查库余量，保证 60 秒内关闭），失效就发 auth 并关闭
   .get('/events', canSeeCustomers, (c) => {
+    const rt = currentRuntime();
     ensureEventHub(() => conversationCounts(clock()));
     const token = c.var.token!;
     const lastEventId = c.req.header('last-event-id');
@@ -860,27 +896,36 @@ export const consoleApi = new Hono<ConsoleEnv>()
       };
       // 补发、首条与订阅在同一段同步代码里排进写队列：中间不会漏掉也不会乱序
       const missed = lastEventId ? replayAfter(lastEventId) : [];
-      const off = addListener(write);
+      const off = addListener(write, () => {
+        open = false;
+        wake();
+        void stream.abort();
+      });
       // 等下一次心跳或复核：连接一断就醒（不留着计时器把进程拖住）
       let wake = (): void => {};
       const wait = (ms: number): Promise<void> =>
         new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, ms);
+          const timer = withoutTenantScope(() => setTimeout(resolve, ms));
           timer.unref();
           wake = () => {
             clearTimeout(timer);
             resolve();
           };
         });
-      stream.onAbort(() => {
-        open = false;
-        off();
-        wake();
-      });
+      withoutTenantScope(() =>
+        stream.onAbort(
+          tenantCallback(rt, () => {
+            open = false;
+            off();
+            wake();
+          }),
+        ),
+      );
       if (missed === null) void stream.writeSSE({ id: tailId(), event: 'resync', data: '{}' });
       else if (!lastEventId) void stream.writeSSE({ id: tailId(), event: 'counts', data: JSON.stringify(conversationCounts(clock())) });
       else for (const b of missed) write(b);
       const { heartbeatMs, recheckMs } = eventTiming();
+      const db = configRuntime().db;
       let nextBeat = Date.now() + heartbeatMs;
       let nextCheck = Date.now() + recheckMs;
       while (open && !stream.aborted) {
@@ -892,7 +937,10 @@ export const consoleApi = new Hono<ConsoleEnv>()
           let alive = true;
           try {
             // 01 的 auth_session_touch：开着的事件流算活动，7 天的绝对期限照旧；过期、被移出、停用都是 null
-            alive = (await resolveSession(token, clock())) !== null;
+            alive =
+              rt.kind === 'sandbox'
+                ? (await withoutTenantScope(() => resolveSandboxSession(db, token))).status === 'ok'
+                : (await withTenantScope(rt, () => resolveSession(token, clock()))) !== null;
           } catch (e) {
             // 库一时连不上：认不出失效，下一次再复核（不因库故障把所有人踢回登录页）
             console.error('[console-api] 事件流复核登录失败:', e instanceof Error ? e.name : e);

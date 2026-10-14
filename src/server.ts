@@ -4,6 +4,17 @@
 // demo 与 prod 的差别只经 profile().flags 的开关体现（00 spec「部署 profile 与开关」），每次用到时现读。
 import './env.js'; // 必须第一个 import：加载 .env（此前 .env 从未被读取，README 的跑法照做即挂）
 import './profile-boot.js'; // 紧接着解析部署 profile：配置错误时打一行原因退出，必须排在任何会 import store 的模块之前
+import { publicHostMiddleware, publicBase } from './tenancy/hosts.js';
+import {
+  hostRuntime,
+  tenantRuntimes,
+  tenantStoreIfLoaded,
+  withTenantScope,
+  withoutTenantScope,
+  tenantCallback,
+  currentRuntime,
+  TenantScopeMissing,
+} from './tenancy/runtime.js';
 import { currentPack } from './config/source.js';
 import { renderBrandPage } from './core/brand.js';
 import { serve } from '@hono/node-server';
@@ -47,7 +58,6 @@ import {
   queueAudit,
   saveSession,
   sessionStoreMode,
-  storeEvents,
   storeHealth,
   StoreLaggingError,
   varDir,
@@ -87,27 +97,38 @@ import {
   prefixSummary,
 } from './config/source.js';
 import { consoleApi, consoleSession } from './console-api/app.js';
+import { sandboxTryUrl } from './console-api/entry.js';
 import { convLabel, convLabelsIn, requestLogContext } from './log.js';
 import { startAlerts } from './ops/alert.js';
 import { consolePages } from './console-api/host.js';
+import { logRole } from './tenancy/sandbox/role.js';
+import { SandboxProcess, sandboxApp } from './tenancy/sandbox/process.js';
+import { claimSandboxStream, SandboxLimitError } from './tenancy/sandbox/limits.js';
+import { sandboxWecomAdapter } from './adapters/wecom.js';
+import { sandboxSessionOf, sandboxSimulatorId } from './tenancy/sandbox/session.js';
 import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
 const app = new Hono();
-// 每个请求一个 req（响应头 x-request-id），这个请求里的日志都带它（02 spec R24）。排在最前：413、411 这类拒绝也有
+const sandbox = process.env.APP_ROLE === 'sandbox' ? new SandboxProcess(process.env) : null;
+// 每个请求一个 req（响应头 x-request-id），两个角色都在任何路由分派之前建立日志上下文。
 app.use('/*', requestLogContext);
+app.use('/*', publicHostMiddleware);
 
 // channel 来自落盘的会话 JSON：数据改坏、或加了新渠道漏接这里，都会落到兜底。兜底此前是模拟器，
 // 没有 SSE 连接时它的 push 返回 true，后台显示「已回复」，实际什么也没发出去。现在兜底一律推送失败，
 // 调用方按「没送达」各自处理（人工回复与付款记备注、跟进退账）。不能 throw：付款路由在 markOrderPaid
 // 之后才调它，抛出会让一个已经付款成功的请求返回 500
 function adapterFor(channel: string): ChannelAdapter {
-  if (channel === 'wecom') return wecomAdapter;
+  const sandboxTenant = currentRuntime().kind === 'sandbox';
+  if (channel === 'wecom') return sandboxTenant ? sandboxWecomAdapter : wecomAdapter;
   if (channel === 'simulator') return simulatorAdapter;
-  if (channel === 'web') return webAdapter;
+  if (!sandboxTenant && channel === 'web') return webAdapter;
   return {
     name: 'unknown',
     push(sessionId) {
-      console.error(`[server] ⚠️ 会话 ${convLabel(sessionId)} 的渠道「${channel}」未知，消息未送达`);
+      console.error(
+        `[server] ⚠️ 会话 ${convLabel(sessionId)} 的渠道「${channel}」${sandboxTenant ? '不允许用于沙箱' : '未知'}，消息未送达`,
+      );
       return Promise.resolve(false);
     },
   };
@@ -196,6 +217,7 @@ const anonReadable: MiddlewareHandler = async (c, next) => (profile().flags.anon
  *  两类演示会话各归一个开关：sim- 直读是网页模拟器的一部分（chat.html 靠它恢复历史），只看 visitor_simulator，
  *  关掉时接口当作不存在，带不带凭据都是 404；种子直读属于后台免密读，anon_readonly_admin 关掉就和真实客户一样要登录。 */
 async function sessionReadAuth(c: Context, next: Next): Promise<Response | void> {
+  if (sandboxSessionOf(c)) return lookupLimit(c, next);
   const id = c.req.param('id') ?? '';
   if (id.startsWith('sim-')) return profile().flags.visitor_simulator ? lookupLimit(c, next) : c.notFound();
   if (SEED_SESSION_RE.test(id) && profile().flags.anon_readonly_admin) return lookupLimit(c, next);
@@ -269,8 +291,12 @@ const publicOrder = (o: Order): PublicOrder => ({
   supersededBy: o.supersededBy ?? null,
 });
 
-// 导览页只为网页模拟器和扫码体验而设；visitor_simulator 关掉（prod）时没有它，首页直接进后台
-app.get('/', (c) => c.redirect(profile().flags.visitor_simulator ? '/guide.html' : '/admin.html'));
+// 主站入口统一进工作台（05 spec R23），不受部署 profile、配置来源或模拟器开关影响。
+app.get('/', (c) => c.redirect('/console/'));
+app.get('/try', (c) => {
+  const url = sandboxTryUrl();
+  return url ? c.redirect(url + new URL(c.req.url).search) : c.notFound();
+});
 // 健康检查顺带暴露访客 LLM 预算用量，方便随时查「今天被刷了多少」；
 // llm 一栏看强制思考档位、1210 自愈次数、对冲触发/胜出次数——这几样出问题时不报错，只会变慢或变贵。
 // revision 是部署时的 git tag（deploy.sh 经 Dockerfile 的 APP_REVISION 写进镜像）：回滚到 :prev 后报的是上一版的 tag，
@@ -325,10 +351,25 @@ app.get('/healthz', (c) => {
     store.lagMs <= 120_000 &&
     config.lock !== 'lost' &&
     channels.failing === 0 &&
-    channels.stuck === 0;
+    channels.stuck === 0 &&
+    tenantRuntimes()
+      .filter((rt) => rt.kind === 'standard' && !rt.isHost)
+      .every((rt) =>
+        withTenantScope(rt, () => {
+          const otherStore = tenantStoreIfLoaded(rt)?.pgBackend?.health();
+          const otherChannels = channelsHealth();
+          return (
+            (!otherStore || (!otherStore.conflict && otherStore.poisoned.length === 0 && otherStore.lagMs <= 120_000)) &&
+            (configMode() !== 'db' || configHealth().lock !== 'lost') &&
+            otherChannels.failing === 0 &&
+            otherChannels.stuck === 0
+          );
+        }),
+      );
   return c.json({
     ok,
     revision: process.env.APP_REVISION || 'dev',
+    role: 'host',
     models: activeModels(),
     visitorLLM: budgetStatus(),
     llmGate: gateStatus(),
@@ -415,28 +456,70 @@ app.post('/api/chat', simulatorOnly, async (c) => {
   if (!text) return c.json({ error: 'text 不能为空' }, 400);
   if (text.length > 1000) return c.json({ error: '消息过长（≤1000 字）' }, 400);
   // 只接受模拟器自己的 sim- 会话 ID：不许网页端指定 wecom: 前缀混入真实客户会话
-  if (body?.sessionId && !SIM_SESSION_RE.test(body.sessionId)) {
+  const inSandbox = !!sandboxSessionOf(c);
+  if (
+    body?.sessionId &&
+    (typeof body.sessionId !== 'string' || (inSandbox ? !sandboxSimulatorId(body.sessionId) : !SIM_SESSION_RE.test(body.sessionId)))
+  ) {
     return c.json({ error: 'sessionId 非法' }, 400);
   }
   // 会话 ID 就是凭据（chat.html 靠它恢复历史，/api/sessions/:id 靠它放行读取），
   // 必须是完整熵。此前截成 8 个十六进制字符只有 32 bit，配合无限流的读接口可被穷举。
-  const sessionId = body?.sessionId || `sim-${randomBytes(12).toString('hex')}`;
+  const sessionId = inSandbox
+    ? sandboxSimulatorId(body?.sessionId || `sim-${randomBytes(12).toString('hex')}`)!
+    : body?.sessionId || `sim-${randomBytes(12).toString('hex')}`;
+  if (inSandbox && body?.sessionId?.startsWith('sbx-') && !getSession(sessionId)) return c.notFound();
   const reply = await handleMessage(sessionId, text, 'simulator');
   return c.json({ sessionId, reply });
 });
 
 // SSE 推送通道：服务端主动消息（支付跟进、人工回复）经此下发
 app.get('/api/stream/:sessionId', simulatorOnly, lookupLimit, (c) => {
-  const sessionId = c.req.param('sessionId');
+  const rawId = c.req.param('sessionId');
+  const sessionId = sandboxSessionOf(c) ? sandboxSimulatorId(rawId) : rawId;
+  if (!sessionId || (sandboxSessionOf(c) && !rawId.startsWith('sim-') && !getSession(sessionId))) return c.notFound();
+  const rt = currentRuntime();
+  let close = (): void => {};
+  const release = claimSandboxStream(() => close());
   return streamSSE(c, async (stream) => {
-    const unsubscribe = subscribe(sessionId, (text) => {
-      // 文本包 JSON，换行符才能安全穿过 SSE 分帧
-      void stream.writeSSE({ event: 'push', data: JSON.stringify({ text }) });
-    });
-    stream.onAbort(() => unsubscribe());
-    while (!stream.aborted) {
-      await stream.writeSSE({ event: 'ping', data: String(Date.now()) });
-      await stream.sleep(15000);
+    close = () => stream.abort();
+    let wake = (): void => {};
+    const unsubscribe = subscribe(
+      sessionId,
+      (text) => {
+        // 文本包 JSON，换行符才能安全穿过 SSE 分帧
+        void stream.writeSSE({ event: 'push', data: JSON.stringify({ text }) }).catch(() => undefined);
+      },
+      () => {
+        wake();
+        stream.abort();
+      },
+    );
+    withoutTenantScope(() =>
+      stream.onAbort(
+        tenantCallback(rt, () => {
+          unsubscribe();
+          release();
+          wake();
+        }),
+      ),
+    );
+    try {
+      while (!stream.aborted) {
+        await stream.writeSSE({ event: 'ping', data: String(Date.now()) });
+        if (stream.aborted) break;
+        await new Promise<void>((resolve) => {
+          const timer = withoutTenantScope(() => setTimeout(resolve, 15000));
+          timer.unref();
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+      }
+    } finally {
+      unsubscribe();
+      release();
     }
   });
 });
@@ -455,22 +538,39 @@ app.get('/api/admin/whoami', adminAuth, (c) => c.json({ ok: true, user: process.
 // admin.html 已有的 30 秒轮询兜底照常（01 spec「鉴权」）
 app.get('/api/admin/stream', async (c) => {
   if (!profile().flags.anon_readonly_admin && !(await consoleSession(c))) return c.json({ error: '需要登录后台' }, 401);
+  const rt = currentRuntime();
+  const events = rt.events.storeEvents;
   return streamSSE(c, async (stream) => {
-    let alive = true;
+    let wake = (): void => {};
     const onChange = () => {
-      void stream.writeSSE({ event: 'change', data: String(Date.now()) });
+      void stream.writeSSE({ event: 'change', data: String(Date.now()) }).catch(() => undefined);
     };
-    storeEvents.on('change', onChange);
-    stream.onAbort(() => {
-      alive = false;
-      storeEvents.off('change', onChange);
+    const close = tenantCallback(rt, () => {
+      events.off('change', onChange);
+      events.off('close', close);
+      wake();
+      stream.abort();
     });
-    await stream.writeSSE({ event: 'change', data: 'init' }); // 连上先触发一次首屏加载
-    // alive 由上面的 onAbort 回调置 false，不是死循环
-    // oxlint-disable-next-line no-unmodified-loop-condition
-    while (alive) {
-      await stream.writeSSE({ event: 'ping', data: String(Date.now()) });
-      await stream.sleep(20000);
+    events.on('change', onChange);
+    events.once('close', close);
+    withoutTenantScope(() => stream.onAbort(close));
+    try {
+      await stream.writeSSE({ event: 'change', data: 'init' });
+      while (!stream.aborted) {
+        await stream.writeSSE({ event: 'ping', data: String(Date.now()) });
+        if (stream.aborted) break;
+        await new Promise<void>((resolve) => {
+          const timer = withoutTenantScope(() => setTimeout(resolve, 20000));
+          timer.unref();
+          wake = () => {
+            clearTimeout(timer);
+            resolve();
+          };
+        });
+      }
+    } finally {
+      events.off('change', onChange);
+      events.off('close', close);
     }
   });
 });
@@ -479,7 +579,8 @@ app.get('/api/admin/stream', async (c) => {
 app.get('/api/insights', adminAuth, async (c) => {
   try {
     return c.json({ insights: await getInsights() });
-  } catch {
+  } catch (e) {
+    if (e instanceof TenantScopeMissing) throw e;
     return c.json({ insights: [] });
   }
 });
@@ -490,7 +591,8 @@ app.get('/api/sessions/:id/suggestion', adminAuth, async (c) => {
   if (!s) return c.json({ suggestion: '' }, 404);
   try {
     return c.json({ suggestion: await getSuggestion(s) });
-  } catch {
+  } catch (e) {
+    if (e instanceof TenantScopeMissing) throw e;
     return c.json({ suggestion: '' });
   }
 });
@@ -505,9 +607,11 @@ app.get('/api/sessions', anonReadable, (c) => {
 });
 
 app.get('/api/sessions/:id', sessionReadAuth, (c) => {
-  const s = getSession(c.req.param('id') ?? '');
+  const rawId = c.req.param('id') ?? '';
+  const id = sandboxSessionOf(c) ? sandboxSimulatorId(rawId) : rawId;
+  const s = id ? getSession(id) : undefined;
   if (!s) return c.json({ error: 'session not found' }, 404);
-  return c.json(isAdminReq(c) ? s : anonSession(s));
+  return c.json(sandboxSessionOf(c) || isAdminReq(c) ? s : anonSession(s));
 });
 
 app.post('/api/sessions/:id/handoff', legacyWrites, sameOriginOnly, adminAuth, (c) => {
@@ -560,7 +664,9 @@ app.post('/api/sessions/:id/resume', legacyWrites, sameOriginOnly, adminAuth, as
   // 交还已经在内存生效：admin.html 不许改（R11），它把非 2xx 一律显示成「交还失败、仍处于人工接管状态」，
   // 还不清 S.taken[id]——可改动其实已经生效，AI 已经恢复应答，页面却一直显示错的。等提交只是让库尽快跟上，
   // 超时、poisoned、冲突都不改这次交还本身是不是生效了，不能让这里的等待把 200 变成 503（审查第 9 条，compat[2]）
-  await flushSession(s.id, { timeoutMs: 5000 }).catch(() => {});
+  await flushSession(s.id, { timeoutMs: 5000 }).catch((e: unknown) => {
+    if (e instanceof TenantScopeMissing) throw e;
+  });
   return c.json(getSession(s.id) ?? s);
 });
 
@@ -571,7 +677,8 @@ app.get('/api/sessions/:id/draft', adminAuth, async (c) => {
   if (!s) return c.json({ draft: '' }, 404);
   try {
     return c.json({ draft: await getDraftReply(s) });
-  } catch {
+  } catch (e) {
+    if (e instanceof TenantScopeMissing) throw e;
     return c.json({ draft: '' });
   }
 });
@@ -783,7 +890,7 @@ function renderProposalHtml(html: string, route: Route | null, travelers: number
   // 微信自带的「发送给朋友」不读 og:image，它是在页面里自己挑一张图当缩略图——
   // 这里只改 head（meta）；那张给微信挑的真实封面图由 proposal.html 在客户端渲染进 body
   // （1px 不行，太小会被跳过）。
-  const base = (process.env.PUBLIC_BASE_URL ?? '').replace(/\/+$/, '');
+  const base = publicBase();
   const cover = base ? `${base}/share-cover.png` : '/share-cover.png';
   return withHead(
     html,
@@ -837,7 +944,7 @@ app.post('/wecom/callback/:key', async (c) => {
 });
 
 app.get('/wecom/callback', (c) => {
-  if (channelsMode() === 'db') {
+  if (!currentRuntime().isHost || channelsMode() === 'db') {
     const r = accountCallbackGet(null, c.req.query());
     return c.text(r.text, r.status);
   }
@@ -853,6 +960,7 @@ app.get('/wecom/callback', (c) => {
     if (!receiveIdOk(receiveId)) return c.text('receiveid mismatch', 403);
     return c.text(msg);
   } catch (err) {
+    if (err instanceof TenantScopeMissing) throw err;
     console.error('[wecom] echostr 解密失败:', err);
     return c.text('decrypt failed', 400);
   }
@@ -861,7 +969,7 @@ app.get('/wecom/callback', (c) => {
 // kf 事件回调：企微 POST 加密的 kf_msg_or_event 事件 → 解密取 Token → 用它拉消息。
 // 必须尽快回 success（拉取异步做），否则企微超时重推。
 app.post('/wecom/callback', async (c) => {
-  if (channelsMode() === 'db') {
+  if (!currentRuntime().isHost || channelsMode() === 'db') {
     accountCallbackPost(null, c.req.query(), extractTag(await c.req.text(), 'Encrypt'), extractTag);
     return c.text('success');
   }
@@ -896,6 +1004,7 @@ app.post('/wecom/callback', async (c) => {
     console.log(`[wecom] 收到回调事件${syncToken ? '（含 token，立即拉取）' : '（无 token）'}`);
     if (syncToken) void syncFromCallback(syncToken);
   } catch (err) {
+    if (err instanceof TenantScopeMissing) throw err;
     console.error('[wecom] 回调事件解析失败:', err);
   }
   return c.text('success');
@@ -903,7 +1012,7 @@ app.post('/wecom/callback', async (c) => {
 
 // 客服二维码从 var/ 读、不入库：它编码的是真实 open_kfid，等同凭据——扫到的人能直接
 // 消耗企微未认证主体那 100 个「不可回收」的接待名额，并烧掉真实 LLM 预算。
-// 没放图就 404，guide.html 据此自动退回网页模拟器入口（克隆下来零配置也能跑通）。
+// 没放图就 404。
 app.get('/kf-qr.png', async (c) => {
   const dir = process.env.VAR_DIR ?? path.join(process.cwd(), 'var');
   try {
@@ -932,21 +1041,31 @@ app.get('/privacy', (c) => {
 app.route('/', consoleApi);
 app.route('/', consolePages);
 
-// 静态资源兜底（admin.html / chat.html / pay.html / guide.html）。
+// 静态资源兜底（admin.html / chat.html / pay.html / proposal.html）。
 // admin.html 页面本身不再鉴权：它进来只会看到演示数据，页面内的登录框负责换取
 // 真实客户会话与写权限。页面是空壳，凭据永远由下面的 API 层判定。
-// 网页模拟器的两个页面在 visitor_simulator 关掉（prod）时当作不存在，其余页面照常。按文件名比、不分大小写：
+// 网页模拟器页面在 visitor_simulator 关掉（prod）时当作不存在，其余页面照常。按文件名比、不分大小写：
 // macOS 的文件系统不分大小写，/CHAT.html 也读得到 chat.html。c.req.path 已经解过码（/%63hat.html 在这里就是
-// /chat.html）；serveStatic 再解一次只会多出字面的 %xx，拼不回这两个文件名。
-const SIMULATOR_PAGE_RE = /\/(?:chat|guide)\.html$/i;
+// /chat.html）；serveStatic 再解一次只会多出字面的 %xx，拼不回这个文件名。
+const SIMULATOR_PAGE_RE = /\/chat\.html$/i;
 app.use('/*', async (c, next) => (profile().flags.visitor_simulator || !SIMULATOR_PAGE_RE.test(c.req.path) ? next() : c.notFound()));
 // 原始文件保持旧版字节；含品牌的静态入口也经过同一已发布快照。
 app.use('/*', async (c, next) => {
   const page = /^\/(pay|proposal|chat)\.html$/i.exec(c.req.path)?.[1]?.toLowerCase() as 'pay' | 'proposal' | 'chat' | undefined;
   if (!page || !['GET', 'HEAD'].includes(c.req.method)) return next();
   const binding = currentPack();
-  if (binding.brand === null) return next();
-  const html = await readFile(path.resolve(`public/${page}.html`), 'utf8');
+  if (binding.brand === null && !sandboxSessionOf(c)) return next();
+  let html = await readFile(path.resolve(`public/${page}.html`), 'utf8');
+  if (page === 'chat' && sandboxSessionOf(c)) {
+    // 体验页的历史、查询参数与 localStorage 都按本沙箱隔离；宿主文件原样输出。
+    html = html
+      .replace("const LS_KEY = 'ssj_session_id';", `const LS_KEY = 'ssj_session_id:${currentRuntime().slug}';`)
+      .replace(
+        'let sessionId = localStorage.getItem(LS_KEY);',
+        "let sessionId = new URLSearchParams(location.search).get('c') || localStorage.getItem(LS_KEY);",
+      )
+      .replace('const STRONG_ID_RE = /^sim-', 'const STRONG_ID_RE = /^(?:sim|sbx)-');
+  }
   return c.html(renderBrandPage(html, page, binding.runtime, binding.brand));
 });
 app.use('/*', serveStatic({ root: './public' }));
@@ -955,10 +1074,14 @@ app.use('/*', serveStatic({ root: './public' }));
 // 会直接冒成 500 纯文本——压测实测约 3% 的请求命中，而这正是公开演示链接被点的那条路径。
 // 企微渠道早有 catch（adapters/wecom.ts），网页端一直漏着。
 app.onError((err, c) => {
+  if (err instanceof SandboxLimitError) {
+    c.header('Retry-After', String(err.retryAfter));
+    return c.json({ error: err.reason, retryAfter: err.retryAfter }, 429);
+  }
   // 日志不打会话原 id（不变量 48）：convLabelsIn 把实际路径（含 external_userid）里形如会话原 id 的串换成短码
   console.error(`[server] 未捕获异常 ${c.req.method} ${convLabelsIn(c.req.path)}:`, err instanceof Error ? err.message : err);
   // 聊天接口返回可直接展示给客户的话术，前端拿到的始终是合法 JSON
-  if (c.req.path === '/api/chat') {
+  if (!(err instanceof TenantScopeMissing) && c.req.path === '/api/chat') {
     return c.json({ reply: { text: '抱歉，我这边卡了一下，麻烦您再发一次～', stage: 'discovery' } }, 200);
   }
   return c.json({ error: '服务暂时不可用，请稍后重试' }, 500);
@@ -966,7 +1089,8 @@ app.onError((err, c) => {
 
 // server.selftest.ts 直接 import app、走 app.request 测路由：自测不能占端口，更不能起企微轮询与
 // 自动跟进（本机 .env 若配了企微，自测进程会去拉真实客户消息、以 AI 身份回复）。
-export { app };
+const sandboxHttp = sandbox ? sandboxApp(sandbox, process.env.SANDBOX_HOST ?? '', app) : app;
+export { sandboxHttp as app };
 const SELFTEST = process.env.SERVER_SELFTEST === '1';
 
 const port = Number(process.env.PORT) || 3200;
@@ -974,6 +1098,7 @@ const port = Number(process.env.PORT) || 3200;
 /** 监听成功后先打的几行配置自检（与配置源无关，原样保留） */
 function logStartup(listeningPort: number): void {
   console.log(`[server] 已启动 http://localhost:${listeningPort}`);
+  logRole('host', profile().flags);
   // 02 新增的开关不进 profile-boot 那一行（那一行只列 00 的六个开关），生效值在这里另打一行
   console.log(`[profile] legacy_admin_writes=${profile().flags.legacy_admin_writes ? 'on' : 'off'}`);
   console.log(`[profile] web_channel=${profile().flags.web_channel ? 'on' : 'off'}`);
@@ -1026,41 +1151,82 @@ function pushFollowUp(sessionId: string, text: string, opts?: PushOpts): Promise
   return adapterFor(s?.channel ?? 'wecom').push(sessionId, text, opts);
 }
 
-if (!SELFTEST) {
+if (!SELFTEST && sandbox) {
+  try {
+    await sandbox.start();
+    onShutdown(() => {
+      for (const rt of tenantRuntimes()) {
+        rt.state = 'closing';
+        withTenantScope(rt, markConfigShuttingDown);
+      }
+    });
+    onShutdown(() => sandbox.close(), { phase: 'late' });
+    withoutTenantScope(() =>
+      serve({ fetch: sandboxHttp.fetch, port }, (info) => {
+        console.log(`[server] 沙箱已启动 http://localhost:${info.port}`);
+        logRole('sandbox', profile().flags);
+      }),
+    );
+  } catch (error) {
+    console.error('[sandbox] 启动失败：', error instanceof Error ? error.message : 'sandbox_startup_failed');
+    process.exit(1);
+  }
+}
+
+if (!SELFTEST && !sandbox) {
   // 配置源的停机：普通阶段起就忽略锁连接的事件，late 阶段（在途回复都结束后）才释放锁、关连接池
-  onShutdown(markConfigShuttingDown);
-  onShutdown(closeConfig, { phase: 'late' });
+  onShutdown(() => {
+    for (const rt of tenantRuntimes()) withTenantScope(rt, markConfigShuttingDown);
+  });
+  onShutdown(() => Promise.all(tenantRuntimes().map((rt) => withTenantScope(rt, closeConfig))), { phase: 'late' });
   await boot({
     initConfig: () => initConfigFromEnv(process.env, (code) => gracefulExit(code, '租户锁被另一个进程拿走')),
     // SESSION_STORE 的取值已由 initConfigFromEnv 校验；db 存储要求 DB 配置模式，库与租户取自装好的配置源
-    initSessionStore: () => {
-      if (process.env.SESSION_STORE !== 'db') return initSessionStore(null);
-      const { db, tenantId, deps } = configRuntime();
-      return initSessionStore({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir() });
+    initSessionStore: async () => {
+      if (process.env.SESSION_STORE !== 'db') return withTenantScope(hostRuntime(), () => initSessionStore(null));
+      for (const rt of tenantRuntimes())
+        await withTenantScope(rt, () => {
+          const { db, tenantId, deps } = configRuntime();
+          return initSessionStore({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir() });
+        });
     },
     // 03：渠道账号与企微状态（R1）。密钥环只在 db 存储下读，格式不对以 channel_key_invalid 拒绝（同步抛出，boot 一并接住）
-    initChannels: () => {
-      if (process.env.SESSION_STORE !== 'db') return initChannels(null);
-      const { db, tenantId, deps } = configRuntime();
-      return initChannels({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir(), keyRing: channelKeyRing(process.env) });
+    initChannels: async () => {
+      await Promise.all(
+        tenantRuntimes()
+          .filter((rt) => rt.kind === 'standard')
+          .map((rt) =>
+            withTenantScope(rt, () => {
+              if (process.env.SESSION_STORE !== 'db') return initChannels(null);
+              const { db, tenantId, deps } = configRuntime();
+              return initChannels({ db, tenantId, tenantSlug: deps.tenantSlug, varDir: varDir(), keyRing: channelKeyRing(process.env) });
+            }),
+          ),
+      );
     },
     serve: (onListening) =>
       void serve({ fetch: app.fetch, port }, (info) => {
-        logStartup(info.port);
+        withTenantScope(hostRuntime(), () => logStartup(info.port));
         onListening();
       }),
     // 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见
-    preflight: () => {
-      try {
-        loadRoutes();
-        loadHotels();
-      } catch (e) {
-        console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
-      }
-    },
+    preflight: () =>
+      withTenantScope(hostRuntime(), () => {
+        try {
+          loadRoutes();
+          loadHotels();
+        } catch (e) {
+          console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
+        }
+      }),
     // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配
-    buildIndex,
-    storeMode: sessionStoreMode,
+    buildIndex: () =>
+      Promise.all(
+        tenantRuntimes()
+          .filter((rt) => rt.kind === 'standard')
+          .map((rt) => withTenantScope(rt, buildIndex)),
+      ).then(() => undefined),
+    storeMode: () => withTenantScope(hostRuntime(), sessionStoreMode),
     // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）。文件存储是扫描器，db 存储由任务表驱动
     startFollowUpScheduler: () => startFollowUpScheduler(pushFollowUp),
     startJobs: () => startJobs(pushFollowUp),
@@ -1068,12 +1234,15 @@ if (!SELFTEST) {
     exit: (code) => process.exit(code),
     // 设了 OTEL_EXPORTER_OTLP_ENDPOINT 才由 boot() 调（动态 import 导出器）
     startOtel: startOtelExport,
-    // 告警（02 spec R24）：起渠道之后挂上各处的订阅，推送只在后台
+    // 告警（02 spec R24）：后台入口之前挂订阅，起渠道后补查启动告警；推送只在后台
     startAlerts,
     // 隐私说明（02 第 16 步）：读进内存、起 60 秒后台轮询；文件配置模式什么都不做
     startPrivacy: async () => {
-      await initPrivacy();
-      startPrivacyPoll();
+      for (const rt of tenantRuntimes().filter((rt) => rt.kind === 'standard'))
+        await withTenantScope(rt, async () => {
+          await initPrivacy();
+          startPrivacyPoll();
+        });
     },
   });
 }

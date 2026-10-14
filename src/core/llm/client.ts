@@ -1,10 +1,14 @@
+import { TenantLocal } from '../../tenancy/local-state.js';
+import { currentRuntime } from '../../tenancy/runtime.js';
+import { registerTenantState } from '../../tenancy/state.js';
+import { TenantObservers } from '../../tenancy/observers.js';
 // OpenAI 兼容 chat completions 封装（默认智谱），含多轮工具调用循环。
 // 离线脚本与工具缓存/重试声明由运行时注入，核心不装载行业包。
 import { inTenantTx } from '../../db/client.js';
 import type { ChatOptions, LlmRuntime } from './types.js';
 import type { LlmErrorKind } from '../../trace/recorder.js';
 import { recordUsage, type UsagePurpose } from '../../usage.js';
-import { gatedFetch, gateBusy } from '../../llm-gate.js';
+import { gatedFetch, gateBusy, BudgetExhausted } from '../../llm-gate.js';
 import { convLabel } from '../../log.js';
 import { numEnv } from '../../env.js';
 
@@ -31,6 +35,7 @@ function cachedTokens(u?: WireUsage): number {
 
 /** 记一次完成的调用。model 必须是**实际答出这次响应**的模型（对冲胜出时不是主模型）。purpose 缺省 chat（主对话） */
 function recordCompletion(model: string, u: WireUsage | undefined, sessionId?: string, purpose?: UsagePurpose): void {
+  if (currentRuntime().kind === 'sandbox') return; // 沙箱每次尝试已在闸口结算，宿主仍只记采用的响应。
   recordUsage(
     model,
     u?.prompt_tokens ?? 0,
@@ -47,13 +52,14 @@ export interface ObservedRequest {
   system: string;
   tools: string;
 }
-let requestObserver: ((req: ObservedRequest) => void) | null = null;
+const requestObserver = new TenantLocal(() => ({ fn: null as ((req: ObservedRequest) => void) | null }));
+registerTenantState({ name: 'llm.requestObserver', ...requestObserver.registration((value) => Number(value.fn !== null)) });
 /**
  * 只读的请求观察钩子，默认什么都不做。自测和 DB 模式的 eval 用它记录每个请求实际发出的 system 与 tools，
  * 核对它们与 /healthz 报的哈希一致（01 spec 验收 21）。传 null 卸下
  */
 export function observeRequests(cb: ((req: ObservedRequest) => void) | null): void {
-  requestObserver = cb;
+  requestObserver.get().fn = cb;
 }
 
 /** 引擎唯一入口：返回助手最终文本（末尾可能带 <state> 块，由引擎剥离） */
@@ -61,7 +67,7 @@ export async function chat(opts: ChatOptions, runtime: LlmRuntime): Promise<stri
   // 落库事务的回调里不调模型（02 不变量 9）：在 withTenant 里调到这里，说明有人把模型调用放进了事务，持锁跨过整次生成
   if (inTenantTx()) throw new Error('chat() 不能在 withTenant 的回调里调用：落库事务里只有 SQL，不调模型（02 不变量 9）');
   // 在 mock 与真实分支之前看：两条路发出去的前缀是同一份
-  requestObserver?.({ system: opts.system, tools: JSON.stringify(opts.tools) });
+  requestObserver.get().fn?.({ system: opts.system, tools: JSON.stringify(opts.tools) });
   return process.env.LLM_MOCK === '1' || opts.forceMock ? runtime.mock.chat(opts) : realChat(opts, runtime);
 }
 
@@ -235,6 +241,7 @@ interface Endpoint {
 interface Completion {
   choices?: { message?: WireMessage; finish_reason?: string }[];
   usage?: WireUsage;
+  reportUsage?: () => void;
 }
 
 /** 非 2xx 响应。消息里带状态码和模型：日志里要能直接看出是哪个模型、为什么被拒 */
@@ -251,10 +258,27 @@ class LlmHttpError extends Error {
 
 /**
  * 向一个模型发一次 chat/completions（排队/退避重试在 gatedFetch 里），含 1210 自愈。
- * 成功返回解析后的响应，失败抛 LlmHttpError 或网络/超时错误。不记 usage——
- * 对冲时只有胜出的那个该记，由调用方决定。
+ * 成功返回解析后的响应，失败抛 LlmHttpError 或网络/超时错误。
+ * standard 只记采用的响应，由调用方记；沙箱每次尝试在 gatedFetch 结算并记账。
  */
-async function requestModel(ep: Endpoint, model: string, payload: Record<string, unknown>, signal: () => AbortSignal): Promise<Completion> {
+async function requestModel(
+  ep: Endpoint,
+  model: string,
+  payload: Record<string, unknown>,
+  signal: () => AbortSignal,
+  usage?: { purpose: UsagePurpose; sessionId?: string },
+): Promise<Completion> {
+  const rt = currentRuntime();
+  const work = () => readModel(ep, model, payload, signal, usage);
+  return rt.kind === 'sandbox' ? rt.inflight.track(work) : work();
+}
+async function readModel(
+  ep: Endpoint,
+  model: string,
+  payload: Record<string, unknown>,
+  signal: () => AbortSignal,
+  usage?: { purpose: UsagePurpose; sessionId?: string },
+): Promise<Completion> {
   const send = (forceThink: boolean) =>
     gatedFetch(
       ep.baseUrl + '/chat/completions',
@@ -264,15 +288,16 @@ async function requestModel(ep: Endpoint, model: string, payload: Record<string,
         body: JSON.stringify({ model, ...payload, ...thinkingParams(ep.baseUrl, model, forceThink) }),
       },
       signal,
+      currentRuntime().kind === 'sandbox' ? { ...usage, deferUsage: (usage?.purpose ?? 'chat') === 'chat' } : usage,
     );
-  let { res, errorBody } = await send(false);
+  let { res, errorBody, settleUsage, reportUsage } = await send(false);
   if (!res.ok) {
     // 重试过的响应 body 已被 gatedFetch 读掉，再 res.text() 会抛「Body is unusable」，
     // 把 429 的真实原因（配额说明）整条吃掉——用它带出来的副本
     let detail = errorBody ?? (await res.text().catch(() => ''));
     if (isAlwaysThinkingError(res.status, detail) && !mustThink(ep.baseUrl, model)) {
       // 先按强制思考重发，**成功了才记住**：万一判断错了，不会把一个能关思考的模型永久切过去
-      ({ res, errorBody } = await send(true));
+      ({ res, errorBody, settleUsage, reportUsage } = await send(true));
       if (res.ok) {
         learnedThinking.add(model);
         stats.thinkingSelfHeal += 1;
@@ -285,7 +310,15 @@ async function requestModel(ep: Endpoint, model: string, payload: Record<string,
     }
     if (!res.ok) throw new LlmHttpError(res.status, model, detail);
   }
-  const data = (await res.json()) as Completion;
+  let data: Completion;
+  try {
+    data = (await res.json()) as Completion;
+  } catch (e) {
+    settleUsage(null);
+    throw e;
+  }
+  settleUsage(data);
+  if (currentRuntime().cancel.aborted) throw new Error('tenant_closing');
   // 发了 disabled 却照样思考：多半是正则没收录的强制思考模型，在按默认最高档想，延迟会翻几倍。
   // 只告警不自动切：自动给老模型加 reasoning_effort 可能换来 400，那比慢更糟
   const think = thinkingParams(ep.baseUrl, model) as { thinking?: { type?: string } };
@@ -300,7 +333,7 @@ async function requestModel(ep: Endpoint, model: string, payload: Record<string,
         '若确认如此，请在 src/core/llm/client.ts 的 mustThink 里收录它，以便发 enabled + 低档 reasoning_effort',
     );
   }
-  return data;
+  return currentRuntime().kind === 'sandbox' ? { ...data, reportUsage } : data;
 }
 
 // ---------- 对冲兜底（默认关闭，设 LLM_HEDGE_MODEL 开启） ----------
@@ -330,6 +363,7 @@ async function requestModel(ep: Endpoint, model: string, payload: Record<string,
 // /healthz 的 followupHedgeFired / followupHedgeWon 就是核对这笔账的；不划算就把它设成与 LLM_HEDGE_MS 相同。
 
 function hedgeModelFor(model: string): string | null {
+  if (currentRuntime().kind === 'sandbox') return null;
   const h = (process.env.LLM_HEDGE_MODEL || '').trim();
   return h && h !== model ? h : null;
 }
@@ -351,9 +385,10 @@ function requestHedged(
   payload: Record<string, unknown>,
   signal: () => AbortSignal,
   round = 0,
+  sessionId?: string,
 ): Promise<{ data: Completion; model: string }> {
   const hedge = hedgeModelFor(model);
-  if (!hedge) return requestModel(ep, model, payload, signal).then((data) => ({ data, model }));
+  if (!hedge) return requestModel(ep, model, payload, signal, { purpose: 'chat', sessionId }).then((data) => ({ data, model }));
   const followup = round > 0;
   const afterMs = followup ? hedgeFollowupMs() : hedgeMs();
   return new Promise((resolve, reject) => {
@@ -474,10 +509,13 @@ export async function completeText(system: string, user: string, opts?: { purpos
         temperature: 0.5,
       },
       llmTimeout,
+      opts,
     );
+    if (currentRuntime().kind === 'sandbox') data.reportUsage?.();
     recordCompletion(model, data.usage, opts?.sessionId, opts?.purpose);
     return stripLeaked(data.choices?.[0]?.message?.content ?? '');
   } catch (e) {
+    if (currentRuntime().kind === 'sandbox' && e instanceof BudgetExhausted) throw e;
     // 以前这里静默返回空串：模型被拒（参数错、模型名错）时后台洞察/跟进话术悄悄退回模板，
     // 日志里什么都没有。LlmHttpError 的消息里已带状态码和模型
     console.warn(`[llm] 后台补全失败（model=${model}），调用方回退规则版:`, e instanceof Error ? e.message : e);
@@ -624,10 +662,12 @@ async function realChat(opts: ChatOptions, runtime: LlmRuntime): Promise<string>
       const moved = lastKey.get(name) !== key;
       lastKey.set(name, key);
       if (hit && moved && opts.onReuse)
-        void hit.then(
-          (r) => opts.onReuse!(name, args, r),
-          () => {},
-        );
+        void hit
+          .then(
+            (r) => opts.onReuse!(name, args, r),
+            () => {},
+          )
+          .catch(() => console.warn('[llm] 工具缓存重放已取消或失败，跳过落地'));
       if (hit) {
         stats.toolReused += 1;
         trace.at(-1)?.reused.push(name);
@@ -637,9 +677,11 @@ async function realChat(opts: ChatOptions, runtime: LlmRuntime): Promise<string>
       const run = opts.executeTool(name, args);
       reusable.set(key, run);
       // 执行失败不缓存：同一个调用再来一次可能就成了（例如线路文件刚好在写）
-      run.catch(() => {
-        if (reusable.get(key) === run) reusable.delete(key);
-      });
+      void run
+        .catch(() => {
+          if (reusable.get(key) === run) reusable.delete(key);
+        })
+        .catch(() => console.warn('[llm] 工具缓存清理失败'));
       return run;
     },
   };
@@ -688,14 +730,14 @@ export interface CallTrace {
   error: LlmErrorKind;
 }
 
-const llmCallObservers = new Set<(c: CallTrace) => void>();
+const llmCallObservers = new TenantObservers<(c: CallTrace) => void>();
+registerTenantState({ name: 'client.llmCallObservers', ...llmCallObservers.registration() });
 /**
  * 主对话每次模型调用（含失败的那次）都通知订阅者，在这一轮的异步上下文里同步调用。传的是同一个对象：之后这次调用要的工具、
  * 工具耗时与复用还会记到它上面，订阅者在轮次结束时再读。用量随后经 usage.ts 的 onUsage 另行送达（先通知这里、再记用量）
  */
 export function onLlmCall(fn: (c: CallTrace) => void): () => void {
-  llmCallObservers.add(fn);
-  return () => llmCallObservers.delete(fn);
+  return llmCallObservers.subscribe(fn);
 }
 function notifyLlmCall(c: CallTrace): void {
   for (const fn of llmCallObservers) {
@@ -756,7 +798,7 @@ async function realChatOnce(opts: ChatOptions, trace: CallTrace[] = []): Promise
     const tCall = Date.now();
     let res: { data: Completion; model: string };
     try {
-      res = await requestHedged(ep, model, payload, signal, round);
+      res = await requestHedged(ep, model, payload, signal, round, opts.sessionId);
     } catch (e) {
       // 失败的那次也进 trace（AI 出错率，R24）：没有用量，模型记主模型
       notifyLlmCall({ model, hedged: false, ms: Date.now() - tCall, tools: [], toolMs: 0, reused: [], error: llmErrorKind(e) });
@@ -766,6 +808,7 @@ async function realChatOnce(opts: ChatOptions, trace: CallTrace[] = []): Promise
     const step: CallTrace = { model: used, hedged: used !== model, ms: Date.now() - tCall, tools: [], toolMs: 0, reused: [], error: null };
     trace.push(step);
     notifyLlmCall(step);
+    if (currentRuntime().kind === 'sandbox') data.reportUsage?.();
     // 一轮对话可能有多次 API 往返（工具调用），每次都要计入。
     // 同一轮里的第 2、3 次往返天然共享第 1 次的整个前缀，缓存命中率最高的就是这些。
     recordCompletion(used, data.usage, opts.sessionId);

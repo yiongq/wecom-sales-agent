@@ -12,7 +12,10 @@ import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
 import type { ConversationCounts, ConversationDetail, ConversationRow, OrderView, SopSectionText } from '../shared/console-api.js';
 import type { ChatMessage, Session } from '../types.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 // 先设临时 VAR_DIR 再动态 import：server 会连带加载 store.ts，它在加载时就读 VAR_DIR
 const varParent = process.env.VAR_DIR ?? os.tmpdir();
 fs.mkdirSync(varParent, { recursive: true });
@@ -24,11 +27,11 @@ process.env.SERVER_SELFTEST = '1'; // 不 listen、不起企微
 // 02 第 13 步：db 存储才有的后台接口在子进程里测（store 是进程级单例，本进程跑的是文件存储），见末尾的 dbStoreChild
 if (process.env.CONSOLE_SELFTEST_CHILD === 'db') await dbStoreChild();
 
-const { openTestDb, installSeededConfig, fakeLock, testConfigDeps } = await import('../db/testing.js');
-const { hashPassword, verifyPassword, fakeHash, __passwordTest } = await import('../auth/password.js');
-const session = await import('../auth/session.js');
-const accounts = await import('../auth/accounts.js');
-const { __profileTest } = await import('../profile.js');
+const { openTestDb, installSeededConfig, fakeLock, testConfigDeps } = await withoutTenantScope(() => import('../db/testing.js'));
+const { hashPassword, verifyPassword, fakeHash, __passwordTest } = await withoutTenantScope(() => import('../auth/password.js'));
+const session = await withoutTenantScope(() => import('../auth/session.js'));
+const accounts = await withoutTenantScope(() => import('../auth/accounts.js'));
+const { __profileTest } = await withoutTenantScope(() => import('../profile.js'));
 
 let pass = 0;
 const fails: string[] = [];
@@ -92,7 +95,9 @@ const hour = 3_600_000;
   check('口令：假哈希与真哈希同一套参数', (await fakeHash()).startsWith('scrypt$17$8$1$') && (await fakeHash()) === (await fakeHash()));
   // 假哈希不在请求路径上现算：口令队列排满时照样立刻拿得到，也不会把一次排队超时缓存下来（那样之后未知邮箱一律 429、
   // 已有邮箱 401，成了探测邮箱的办法）。用一份全新的模块实例：它的假哈希还没取过，队列也是它自己的，占满两个槽
-  const fresh = (await import(new URL('../auth/password.js?fresh', import.meta.url).href)) as typeof import('../auth/password.js');
+  const fresh = (await withoutTenantScope(
+    () => import(new URL('../auth/password.js?fresh', import.meta.url).href),
+  )) as typeof import('../auth/password.js');
   const held = [await fresh.__passwordTest.occupy(), await fresh.__passwordTest.occupy()];
   const during = await errName(Promise.resolve().then(() => fresh.fakeHash()));
   for (const giveBack of held) giveBack();
@@ -374,7 +379,7 @@ const loggedIn = await session.login({ ...base, ...OWNER });
   );
   // 改口令与登录并发：登录读完旧哈希、还在跑 scrypt 时 user-password 改了口令并吊销会话，这次登录不能在吊销之后再建出会话
   {
-    const repo = await import('../db/repo/auth.js');
+    const repo = await withoutTenantScope(() => import('../db/repo/auth.js'));
     const RACE = { email: 'race@example.com', password: 'race-password-1' };
     await asPlatform(() =>
       accounts.createUser(t.db, { tenantSlug: 'demo', email: RACE.email, name: '赛跑', role: 'viewer', password: pw(RACE.password) }),
@@ -398,8 +403,8 @@ const loggedIn = await session.login({ ...base, ...OWNER });
   }
   // 口令升级与登录并发：登录还在跑 scrypt 时，另一次成功的登录把同一个口令升级成当前参数，这次登录不能因为哈希变了就回 401
   {
-    const repo = await import('../db/repo/auth.js');
-    const { configRuntime } = await import('../config/source.js');
+    const repo = await withoutTenantScope(() => import('../db/repo/auth.js'));
+    const { configRuntime } = await withoutTenantScope(() => import('../config/source.js'));
     const REH = { email: 'rehash-race@example.com', password: 'rehash-password-1' };
     await asPlatform(() =>
       accounts.createUser(t.db, { tenantSlug: 'demo', email: REH.email, name: '升级', role: 'viewer', password: pw(REH.password) }),
@@ -508,7 +513,7 @@ const loggedIn = await session.login({ ...base, ...OWNER });
 // prod 下后台 SSE 要求有效的后台会话（demo 下照旧匿名可连）
 {
   session.__authTest.reset();
-  const { app } = await import('../server.js');
+  const { app } = await withoutTenantScope(() => import('../server.js'));
   const o = (await session.login({ ...base, now: Date.now(), ip: '198.51.100.210', ...OWNER }))!;
   const open = async (cookie?: string): Promise<number> => {
     const res = await app.request('/api/admin/stream', { headers: cookie ? { cookie } : {} });
@@ -527,14 +532,14 @@ const loggedIn = await session.login({ ...base, ...OWNER });
 }
 
 // ---------------- 后台接口（HTTP）：验收 5、6、9、15、16 的 HTTP 部分 ----------------
-const { app } = await import('../server.js');
-const { __consoleTest } = await import('./app.js');
-const { queryCount } = await import('../db/client.js');
-const cfg = await import('../config/source.js');
-const { observeRequests } = await import('../llm.js');
-const { numEnv } = await import('../env.js');
-const { sectionBody, TRAVEL_SOP_SECTIONS } = await import('../sop/sections.js');
-const { canonicalBody } = await import('../shared/sop-sections.js');
+const { app } = await withoutTenantScope(() => import('../server.js'));
+const { __consoleTest } = await withoutTenantScope(() => import('./app.js'));
+const { queryCount } = await withoutTenantScope(() => import('../db/client.js'));
+const cfg = await withoutTenantScope(() => import('../config/source.js'));
+const { observeRequests } = await withoutTenantScope(() => import('../llm.js'));
+const { numEnv } = await withoutTenantScope(() => import('../env.js'));
+const { sectionBody, TRAVEL_SOP_SECTIONS } = await withoutTenantScope(() => import('../sop/sections.js'));
+const { canonicalBody } = await withoutTenantScope(() => import('../shared/sop-sections.js'));
 
 const NL = String.fromCharCode(10);
 const ADMIN = { email: 'admin@example.com', password: 'admin-password-1', name: '后台管理员甲' };
@@ -1414,9 +1419,9 @@ check(
   // console 表单删掉可选数组的最后一项、清空 intensity 的各项：rjsf 留下 [] 和全是 undefined 的对象。
   // 要当成没填才过得了共用 schema，差异里进 unset，服务端照收；必填的数组（tags）为空时照旧留着
   {
-    const { z } = await import('zod');
-    const { RouteSchema } = await import('../shared/catalog.js');
-    const { formPayload, diffPayload } = await import('../../console/src/catalogForm.js');
+    const { z } = await withoutTenantScope(() => import('zod'));
+    const { RouteSchema } = await withoutTenantScope(() => import('../shared/catalog.js'));
+    const { formPayload, diffPayload } = await withoutTenantScope(() => import('../../console/src/catalogForm.js'));
     const required = z.toJSONSchema(RouteSchema, { io: 'input' }).required ?? [];
     const cur = await get('r-http-race');
     const raw = { ...structuredClone(cur.payload), aliases: [], inclusions: [], intensity: { level: undefined, hardest: undefined } };
@@ -1657,7 +1662,7 @@ check(
 
 // 会话只读列表（第 13 步）：成员都能看；按 (updatedAt desc, id) 排序、offset 分页；只投影几个字段；不列 sim- 会话
 {
-  const store = await import('../store.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
   const T = Date.parse('2030-01-01T00:00:00Z');
   const seed = (id: string, channel: string, at: number, extra: (s: ReturnType<typeof store.getOrCreateSession>) => void = () => {}) => {
     const sess = store.getOrCreateSession(id, channel);
@@ -1802,8 +1807,8 @@ check(
 // 判定按 spec 的规则在这里逐条写出来，不调 conversationState：paid 是停在行业包终态的会话（旅游包只有 paid 一个终态）；
 // human 是转人工且没成交；其余是 ai。块末尾把租户的包换成家装假包（终态 deposit），同样逐条核对，换回以后各数不变
 {
-  const store = await import('../store.js');
-  const { conversationState, shortIdOf } = await import('../shared/conversation.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const { conversationState, shortIdOf } = await withoutTenantScope(() => import('../shared/conversation.js'));
   type Row = Body & { id: string; stage: string; handedOver: boolean; updatedAt: string };
   const RULE: Record<string, (r: { stage: string; handedOver: boolean }) => boolean> = {
     ai: (r) => !r.handedOver && r.stage !== 'paid',
@@ -1998,8 +2003,8 @@ check(
   }
 
   // 已成交按租户行业包的终态判定（不变量 17）：家装假包的终态是「已付定金」deposit；旅游包的 paid 在它那里是包外的阶段
-  const { renovation } = await import('../shared/pack-fixtures/renovation.js');
-  const { packById } = await import('../packs/registry.js');
+  const { renovation } = await withoutTenantScope(() => import('../shared/pack-fixtures/renovation.js'));
+  const { packById } = await withoutTenantScope(() => import('../packs/registry.js'));
   const travelPack = packById('travel')!;
   const RENO: typeof RULE = {
     ai: (r) => !r.handedOver && r.stage !== 'deposit',
@@ -2028,7 +2033,7 @@ check(
   const prevPack = cfg.__configTest.swapPack(renovation);
   try {
     // 02 第 3 步：引擎与旧接口判「阶段是不是终态」在 DB 配置模式下取租户的行业包，不是注册表里的旅游包
-    const { isTerminalStage, terminalStageKey } = await import('../handoff/record.js');
+    const { isTerminalStage, terminalStageKey } = await withoutTenantScope(() => import('../handoff/record.js'));
     check(
       '终态判定：DB 配置模式下按租户的行业包（家装包的 deposit 是终态，旅游包的 paid 不是）',
       isTerminalStage('deposit') && !isTerminalStage('paid') && String(terminalStageKey()) === 'deposit',
@@ -2095,7 +2100,7 @@ check(
       conversationState({ stage: 'sign', handedOver: false }, renovation) === 'ai' &&
       conversationState({ stage: 'paid', handedOver: false }, { stages: travelPack.stages.map(({ terminal: _t, ...st }) => st) }) === 'ai',
   );
-  const vm = await import('node:vm');
+  const vm = await withoutTenantScope(() => import('node:vm'));
   const adminSrc = /const shortIdOf = (s => .+);\n/.exec(fs.readFileSync(new URL('../../public/admin.html', import.meta.url), 'utf8'))?.[1];
   const adminShortId = adminSrc ? (vm.runInNewContext(`(${adminSrc})`) as (s: { id: string }) => string) : null;
   const ids = [
@@ -2121,7 +2126,7 @@ check(
 
 // 后台 UX spec 验收 15 第 1、7 条：/me 带 tenantName；/pack 下发当前租户的行业包
 {
-  const { packById, PACK_IDS } = await import('../packs/registry.js');
+  const { packById, PACK_IDS } = await withoutTenantScope(() => import('../packs/registry.js'));
   const me = keep(await call('GET', '/me', O));
   check(
     '/me：带 tenantName，取启动时装载的 tenants.name',
@@ -2169,19 +2174,23 @@ check(
     PACK_IDS.join() === 'travel' && packById('renovation') === null && packById('toString') === null && packById('__proto__') === null,
   );
 
-  // 包不在注册表里时拒绝启动：用一份全新的配置源模块实例装载，不动本进程已装好的这份
+  // 包不在注册表里时拒绝启动：配置归运行时，另建启动作用域，不动本进程已装好的这份
   await asSuper(() => t.pg.query(`insert into tenants (slug, name, pack_id) values ('nopack', '没有包的租户', 'renovation')`));
-  const fresh = (await import(new URL('../config/source.js?pack-unknown', import.meta.url).href)) as typeof import('../config/source.js');
+  const { createTenantRuntime, withTenantScope, unregisterRuntime } = await withoutTenantScope(() => import('../tenancy/runtime.js'));
+  const fresh = createTenantRuntime({ id: 'pack-unknown', slug: 'nopack' });
+  const before = cfg.currentSop();
   let reason = 'ok';
   try {
-    await fresh.initConfig(testConfigDeps(t, { tenantSlug: 'nopack' }));
+    await withTenantScope(fresh, () => cfg.initConfig(testConfigDeps(t, { tenantSlug: 'nopack' })));
   } catch (e) {
     reason = e instanceof Error && 'reason' in e ? String(e.reason) : String(e);
   }
+  unregisterRuntime(fresh.id);
   check('启动：租户的行业包不在注册表里 → 以 pack_unknown 拒绝启动', reason === 'pack_unknown', reason);
+  check('启动失败不改已装载租户的配置', cfg.currentSop() === before);
 
   // tenant-create 的 --pack 读注册表：包名检查在连库之前，不设连接串也跑得到
-  const { spawnSync } = await import('node:child_process');
+  const { spawnSync } = await withoutTenantScope(() => import('node:child_process'));
   const cli = (pack: string) =>
     spawnSync(process.execPath, ['--import', 'tsx', 'src/cli/tenant-create.ts', '--slug', 'x', '--name', 'x', '--pack', pack], {
       cwd: fileURLToPath(new URL('../..', import.meta.url)),
@@ -2203,7 +2212,7 @@ check(
 
 // 产品库 CSV 导入（第 15 步）：只建 draft，只收平铺字段，数组用「、」分隔；整份全部合格才建
 {
-  const { parseCsv } = await import('../shared/csv.js');
+  const { parseCsv } = await withoutTenantScope(() => import('../shared/csv.js'));
   const CRLF = String.fromCharCode(13, 10);
   const BOM = String.fromCharCode(0xfeff);
   check(
@@ -2217,7 +2226,7 @@ check(
   );
   check('CSV 解析：引号没闭合就抛', (await errName(Promise.resolve().then(() => parseCsv('a,"b')))) === 'CsvSyntaxError');
   // console 读选中的文件：按 UTF-8 严格解码。GBK 的文件（中文 Windows 上 Excel 默认另存的 CSV）不能被静默换成替换符再建成乱码草稿
-  const { decodeCsvFile } = await import('../../console/src/csvFile.js');
+  const { decodeCsvFile } = await withoutTenantScope(() => import('../../console/src/csvFile.js'));
   const sanya = `id,name${NL}h-1,三亚海景酒店${NL}`;
   check('CSV 文件：UTF-8（带 BOM）照常解出，BOM 去掉', decodeCsvFile(Buffer.from(`${BOM}${sanya}`, 'utf8')) === sanya);
   const gbk = Uint8Array.from([...Buffer.from(`id,name${NL}h-1,`), 0xc8, 0xfd, 0xd1, 0xc7, 0x0a]); // 「三亚」的 GBK 编码
@@ -2477,7 +2486,7 @@ check(
   check('AuditQuery.actions：64 个正好收下（200、没有记录）', most.status === 200 && most.body.items.length === 0, most.text);
 
   // AUDIT_ACTIONS 就是系统写审计的全部动作：src/ 下 writeAudit、queueAudit 写的 action 字面量与它逐个相同，新加一种动作要同时给它中文
-  const { AUDIT_ACTIONS, auditActionsParam } = await import('../shared/ui-labels.js');
+  const { AUDIT_ACTIONS, auditActionsParam } = await withoutTenantScope(() => import('../shared/ui-labels.js'));
   const srcRoot = fileURLToPath(new URL('..', import.meta.url));
   const written = new Set<string>();
   const scan = (dir: string): void => {
@@ -2516,8 +2525,8 @@ check(
 
   // 这一整轮自测写进库的真实审计记录，用真实的旅游包写成句子：每种动作都认识；对象和版本号「v3」以外没有英文（动作编码、
   // 字段原名、命令名）；产品库改动的每个字段、发布改的每一节都叫得出中文名（不出现「另N项」「另N节」）
-  const { describeAudit } = await import('../shared/audit-text.js');
-  const { packById } = await import('../packs/registry.js');
+  const { describeAudit } = await withoutTenantScope(() => import('../shared/audit-text.js'));
+  const { packById } = await withoutTenantScope(() => import('../packs/registry.js'));
   const travel = packById('travel')!;
   const real = everything as unknown as import('../shared/console-api.js').AuditEntryView[];
   const odd: string[] = [];
@@ -2540,7 +2549,7 @@ check(
     `${[...kinds].join(',')} | ${odd.slice(0, 4).join(' | ')}`,
   );
   // 时间线（02 第 8 步）：后台改、上架在同一事务里接着记的 catalog.version 都并进了那次写入，不单独成句
-  const { auditRuns } = await import('../shared/audit-text.js');
+  const { auditRuns } = await withoutTenantScope(() => import('../shared/audit-text.js'));
   const loose = auditRuns(real)
     .flat()
     .filter((e) => e.action === 'catalog.version');
@@ -2909,7 +2918,7 @@ check(
       !boot.headers.has('content-encoding'),
     `${boot.status} ${boot.headers.get('cache-control')} ${boot.headers.get('content-encoding')}`,
   );
-  const { __hostTest } = await import('./host.js');
+  const { __hostTest } = await withoutTenantScope(() => import('./host.js'));
   fs.writeFileSync(path.join(path.dirname(dist), `${path.basename(dist)}-outside.txt`), 'outside');
   check(
     '托管：读文件那一层也拦住跑出构建目录的路径（路由层之外的兜底）',
@@ -2930,7 +2939,7 @@ check(
 
 // ---------------- 快捷回复正文的 markdown 检测（纯函数，第 22 步审查 minor 第 3 条）----------------
 {
-  const { hasMarkdown } = await import('../shared/console-api.js');
+  const { hasMarkdown } = await withoutTenantScope(() => import('../shared/console-api.js'));
   const bad: [string, string][] = [
     ['**加粗**不行', '**加粗**'],
     ['__加粗__不行', '__加粗__'],
@@ -2975,9 +2984,9 @@ let realPgRan = false;
 // 上面 workbenchSuite() 用的 t.db 只有一条连接（PGlite 或 openTestDb() 的 PG_TEST_URL 路径都一样），5 个「并发」请求
 // 其实全部串行过这一条连接，测不出真竞态；这里另开一个真实的临时库，5 条各自独立的物理连接（max:1）才测得出
 if (process.env.PG_TEST_URL) {
-  const { createRealPgFixture } = await import('../db/testing.js');
-  const { openDb, withTenant } = await import('../db/client.js');
-  const { createQuickReply, listQuickReplies } = await import('../db/repo/quick-replies.js');
+  const { createRealPgFixture } = await withoutTenantScope(() => import('../db/testing.js'));
+  const { openDb, withTenant } = await withoutTenantScope(() => import('../db/client.js'));
+  const { createQuickReply, listQuickReplies } = await withoutTenantScope(() => import('../db/repo/quick-replies.js'));
   const fx = await createRealPgFixture(process.env.PG_TEST_URL);
   try {
     const ctx = { tenantId: fx.tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
@@ -3121,14 +3130,14 @@ check('错误映射：不认识的错误 → null（按 500 处理）', __consol
  * 事件流、计数与排序、viewer 打码、匿名旧接口、订单与快捷回复、/status。db 存储才有的部分在 runDbStoreChild()
  */
 async function workbenchSuite(): Promise<void> {
-  const store = await import('../store.js');
-  const tk = await import('../handoff/takeover.js');
-  const { enterHandoff } = await import('../handoff/record.js');
-  const { subscribe } = await import('../adapters/simulator.js');
-  const { consoleApi } = await import('./app.js');
-  const { __eventsTest, eventTiming } = await import('./events.js');
-  const { maskNumbers } = await import('./mask.js');
-  const { conversationState, shortIdOf } = await import('../shared/conversation.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const tk = await withoutTenantScope(() => import('../handoff/takeover.js'));
+  const { enterHandoff } = await withoutTenantScope(() => import('../handoff/record.js'));
+  const { subscribe } = await withoutTenantScope(() => import('../adapters/simulator.js'));
+  const { consoleApi } = await withoutTenantScope(() => import('./app.js'));
+  const { __eventsTest, eventTiming } = await withoutTenantScope(() => import('./events.js'));
+  const { maskNumbers } = await withoutTenantScope(() => import('./mask.js'));
+  const { conversationState, shortIdOf } = await withoutTenantScope(() => import('../shared/conversation.js'));
   const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
   const pack = cfg.currentTenant().pack;
 
@@ -3137,7 +3146,7 @@ async function workbenchSuite(): Promise<void> {
   // 建别的租户登不进去——同「成员」一节 otherTenant 的注释），demo 的 quick_replies 这时还一行都没有，
   // 是它唯一能测「首次读」的机会：这段必须排在本函数最先、也排在模块顶层任何别的 /quick-replies 调用之前
   {
-    const { defaultQuickRepliesOf } = await import('../packs/registry.js');
+    const { defaultQuickRepliesOf } = await withoutTenantScope(() => import('../packs/registry.js'));
     const defaults = defaultQuickRepliesOf('travel');
     check('快捷回复：旅游包配了默认模板（4–6条）', defaults.length >= 4 && defaults.length <= 6, String(defaults.length));
     check('快捷回复：没登记的包没有默认模板', defaultQuickRepliesOf('no-such-pack-22').length === 0);
@@ -3298,14 +3307,15 @@ async function workbenchSuite(): Promise<void> {
       .filter((r) => r.method !== 'ALL' && !r.path.includes('*'))
       .map((r) => `${r.method} ${r.path.replace(/^\/api\/console/, '')}`),
   );
-  const known = new Set([...ROUTES_01, ...MATRIX.map((m) => m.route)]);
+  // 05 R23 新增的公开入口配置；其余路由仍必须登记在既有权限清单里。
+  const known = new Set([...ROUTES_01, 'GET /entry', ...MATRIX.map((m) => m.route)]);
   check(
-    '路由枚举：consoleApi 注册的每个路由都在 01 的清单或第 13 步的权限矩阵里（漏挂权限的新路由在这里现形）',
+    '路由枚举：consoleApi 的每个路由都在 01 清单、05 入口或第 13 步权限矩阵里（漏挂权限的新路由在这里现形）',
     [...registered].every((r) => known.has(r)),
     [...registered].filter((r) => !known.has(r)).join(','),
   );
   check(
-    '路由枚举：矩阵与 01 清单里的每个路由都注册了',
+    '路由枚举：矩阵、01 清单与 05 入口里的每个路由都注册了',
     [...known].every((r) => registered.has(r)),
     [...known].filter((r) => !registered.has(r)).join(','),
   );
@@ -3376,6 +3386,7 @@ async function workbenchSuite(): Promise<void> {
         /^GET \/privacy$/,
         /^GET \/console/,
         /^POST \/api\/console\/auth\/login$/,
+        /^GET \/api\/console\/entry$/, // 05 R23：prod 下也公开，只回 tryUrl: null
       ];
       const fill = (p: string): string =>
         p
@@ -3415,7 +3426,7 @@ async function workbenchSuite(): Promise<void> {
   // ---- GET /privacy：公开、匿名可读，没发布过 404，发布过显示纯文本正文、转义、no-store（02 第 16 步，不变量 40）----
   {
     // 不经 keep()：/privacy 不是 /api/console，不该被下面「安全头覆盖率」那条聚合断言要求带 CSP
-    const { __privacyTest } = await import('../privacy/privacy.js');
+    const { __privacyTest } = await withoutTenantScope(() => import('../privacy/privacy.js'));
     __privacyTest.reset();
     const r404 = await app.request('/privacy');
     const body404 = await r404.text();
@@ -4304,10 +4315,10 @@ async function dbStoreChild(): Promise<never> {
   const out: { checks: [string, boolean, string][]; fatal: string | null } = { checks: [], fatal: null };
   const ck = (name: string, ok: boolean, detail = ''): void => void out.checks.push([name, ok, ok ? '' : detail.slice(0, 600)]);
   try {
-    const { openTestDb, installSeededConfig, installPgSessionStore } = await import('../db/testing.js');
-    const accounts = await import('../auth/accounts.js');
-    const authSession = await import('../auth/session.js');
-    const { randomUUID } = await import('node:crypto');
+    const { openTestDb, installSeededConfig, installPgSessionStore } = await withoutTenantScope(() => import('../db/testing.js'));
+    const accounts = await withoutTenantScope(() => import('../auth/accounts.js'));
+    const authSession = await withoutTenantScope(() => import('../auth/session.js'));
+    const { randomUUID } = await withoutTenantScope(() => import('node:crypto'));
     const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
     const t = await openTestDb();
     await t.pg.query(`insert into tenants (slug, name, pack_id) values ('demo', 'demo', 'travel')`);
@@ -4338,10 +4349,10 @@ async function dbStoreChild(): Promise<never> {
       }
     }
     const fx = await installPgSessionStore(t, { varDir: process.env.VAR_DIR! });
-    const store = await import('../store.js');
+    const store = await withoutTenantScope(() => import('../store.js'));
     await store.initSessionStore(fx.deps);
-    const { app } = await import('../server.js');
-    const { subscribe } = await import('../adapters/simulator.js');
+    const { app } = await withoutTenantScope(() => import('../server.js'));
+    const { subscribe } = await withoutTenantScope(() => import('../adapters/simulator.js'));
     ck('装配：会话存储是 db', store.sessionStoreMode() === 'db');
     interface W {
       token: string;
@@ -4399,8 +4410,8 @@ async function dbStoreChild(): Promise<never> {
 
     // 03 验收 17：详情接口实际经过 workbench 的 wecom delivery 投影。
     {
-      const { installAccounts } = await import('../channels/accounts.js');
-      const ledger = await import('../quota/ledger.js');
+      const { installAccounts } = await withoutTenantScope(() => import('../channels/accounts.js'));
+      const ledger = await withoutTenantScope(() => import('../quota/ledger.js'));
       const accountId = randomUUID();
       await su(
         "insert into channel_accounts (tenant_id,id,key,kind,name,id_prefix,corp_id,open_kfid,secrets_ct,secrets_key_id) values ($1,$2,'delivery','wecom_kf','投递测试','wecom:delivery:','corp-delivery','kf-delivery',decode('01','hex'),'test')",
@@ -4564,7 +4575,7 @@ async function dbStoreChild(): Promise<never> {
     );
 
     // ---- 更早的消息：重置之后窗口以前的从库里读，按 seq 升序 ----
-    const { handleMessage } = await import('../engine.js');
+    const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
     const SE = 'wecom:wmDB13early';
     for (const text of ['第一句', '第二句', '第三句']) {
       const x = store.getOrCreateSession(SE, 'simulator');

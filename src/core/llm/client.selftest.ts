@@ -4,6 +4,9 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+import { createTenantRuntime, cancelTenantRuntime, withTenantScope } from '../../tenancy/runtime.js';
 import type { ChatOptions, LlmRuntime, ToolSpec } from '../pack-api.js';
 import { createToolRegistry } from '../tools/registry.js';
 
@@ -134,6 +137,82 @@ try {
   script = [calls('lookup_fixture', [{}]), calls('lookup_fixture', [{}]), text('恢复完成')];
   assert.equal(await chat({ ...opts, executeTool: (name, args) => failing.execute(name, args, ctx) }, runtime), '恢复完成');
   assert.equal(attempts, 2);
+
+  // A 已预取、B 在飞时取消，随后同一响应重用 A：回调抛错不能产生后台 rejection。
+  const cancelled = createTenantRuntime({ id: 'reuse-cancel', slug: 'reuse-cancel', kind: 'sandbox' });
+  // 本套只测缓存重放取消，不装数据库；预算用替身，真实预算与取消组合由 R15 自测覆盖。
+  Object.defineProperty(cancelled, 'budget', {
+    value: {
+      reserve: () => ({ settle: () => {} }),
+      status: () => ({ calls: 0, costMilli: 0, capCalls: null, capMilli: null }),
+    },
+  });
+  let entered!: () => void;
+  let release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const blocked = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const unhandled: unknown[] = [];
+  const onUnhandled = (error: unknown) => unhandled.push(error);
+  const warnings: string[] = [];
+  const warnBefore = console.warn;
+  const shownBefore = ctx.shown;
+  let reuseCalls = 0;
+  process.on('unhandledRejection', onUnhandled);
+  console.warn = (...args) => warnings.push(args.join(' '));
+  script = [calls('lookup_fixture', [{ item: 'B' }, { item: 'A' }])];
+  try {
+    const pending = withTenantScope(cancelled, () =>
+      chat(
+        {
+          ...opts,
+          prefetch: [{ name: 'lookup_fixture', args: { item: 'A' }, result: '缓存 A' }],
+          executeTool: async () => {
+            entered();
+            await blocked;
+            cancelled.cancel.throwIfAborted();
+            return '结果 B';
+          },
+          onReuse: (_name, _args, result) => {
+            reuseCalls++;
+            cancelled.cancel.throwIfAborted();
+            ctx.shown = result;
+          },
+        },
+        runtime,
+      ),
+    );
+    const rejected = assert.rejects(pending, /tenant_closing/);
+    await started;
+    cancelled.state = 'closing';
+    cancelTenantRuntime(cancelled);
+    release();
+    await rejected;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    assert.equal(reuseCalls, 1);
+    assert.equal(ctx.shown, shownBefore, '取消的缓存重放不得落地');
+    assert.deepEqual(unhandled, [], '取消异常必须被后台回调接住');
+    assert.deepEqual(warnings, ['[llm] 工具缓存重放已取消或失败，跳过落地']);
+  } finally {
+    release();
+    process.off('unhandledRejection', onUnhandled);
+    console.warn = warnBefore;
+  }
+  // 在独立 Node 进程再跑一遍，验证取消不会令进程提前退出。
+  if (process.env.LLM_REUSE_CANCEL_CHILD !== '1') {
+    const child = spawnSync(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url)], {
+      env: { ...process.env, LLM_REUSE_CANCEL_CHILD: '1' },
+      encoding: 'utf8',
+      timeout: 20_000,
+    });
+    assert.ifError(child.error);
+    assert.equal(child.signal, null);
+    assert.equal(child.status, 0, child.stderr);
+    assert.ok(child.stdout.includes('core llm selftest:'), '子进程完成后续测试并正常退出');
+  }
 
   // 核心直接接受注入的 mock，保留两条路径共同的请求观察，不装载旅游。
   requests = 0;

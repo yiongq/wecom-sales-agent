@@ -7,6 +7,7 @@ import { configMode, configRuntime, currentTenant } from '../config/source.js';
 import { llmCfg } from '../llm.js';
 import { conversationRef, getSession } from '../store.js';
 import { onTurnEnd } from '../trace/recorder.js';
+import { withoutTenantScope } from '../tenancy/runtime.js';
 
 /**
  * gen_ai.provider.name（semantic-conventions-genai 的已知值表：已知值适用时必须用它，否则可以用自定义值）：LLM_PROVIDER 写了
@@ -45,24 +46,29 @@ function anonRefMaker(): (conversationId: string) => string {
 export async function startOtelExport(): Promise<void> {
   const otel = await import('../otel/export.js');
   await otel.startOtel();
-  const db = configMode() === 'db';
-  const tenant = db ? configRuntime().deps.tenantSlug : '';
-  // 文件配置模式读 data/ 下的旅游 demo，没有租户行，行业包就是旅游包
-  const agent = db ? currentTenant().pack.id : 'travel';
   const provider = providerName();
   const requestModel = llmCfg().model;
   const anonRef = anonRefMaker();
-  onTurnEnd((f) => {
-    const id = f.turn.conversationId;
-    otel.exportTurn(f, {
-      tenant,
-      // db 存储的真实会话用会话行的 ref；文件存储与 demo 类会话没有 ref，用匿名引用：都不含会话原 id
-      conversationRef: conversationRef(id) ?? anonRef(id),
-      channel: getSession(id)?.channel ?? '',
-      agent,
-      provider,
-      requestModel,
-    });
-  });
+  withoutTenantScope(() =>
+    onTurnEnd((f) => {
+      // 实例初始化不读租户状态；同步订阅在这一轮所属的租户作用域执行。
+      const db = configMode() === 'db';
+      const tenant = db ? configRuntime().deps.tenantSlug : '';
+      // 文件配置模式读 data/ 下的旅游 demo，没有租户行，行业包就是旅游包
+      const agent = db ? currentTenant().pack.id : 'travel';
+      const id = f.turn.conversationId;
+      const meta = {
+        tenant,
+        // db 存储的真实会话用会话行的 ref；文件存储与 demo 类会话没有 ref，用匿名引用：都不含会话原 id
+        conversationRef: conversationRef(id) ?? anonRef(id),
+        channel: getSession(id)?.channel ?? '',
+        agent,
+        provider,
+        requestModel,
+      };
+      // 批处理定时器在首个 span 入队时才创建；导出器不能继承这轮的租户。
+      withoutTenantScope(() => otel.exportTurn(f, meta));
+    }),
+  );
   console.log(`[otel] 已启用 OpenTelemetry 导出（原文${process.env.OTEL_CAPTURE_CONTENT === '1' ? '照写' : '不导出'}）`);
 }

@@ -61,6 +61,13 @@ try {
   check('src/config/probe.ts', "import { x } from '../engine.js';", '配置层不能 import');
   check('console/src/probe.ts', "import { x } from '../../src/core/pack-api.js';", '在仓库里只能 import src/shared/');
   check('src/shared/probe.ts', "import type { X } from '../core/pack-api.js';", 'src/shared/ 只能 import');
+  check('src/probe.ts', "import { enterTenantScopeForTest } from './tenancy/testing.js';", '只能被 *.selftest.ts');
+  check('src/probe.ts', "const p = import('./tenancy/testing.js');", '只能被 *.selftest.ts');
+  check('src/probe.selftest.ts', "import { enterTenantScopeForTest } from './tenancy/testing.js';", null);
+  check('eval/run.ts', "import { enterTenantScopeForTest } from '../src/tenancy/testing.js';", null);
+  check('src/probe.ts', "import { __tenantTest as helper } from './tenancy/runtime.js';", '只给自测夹具');
+  check('src/probe.ts', "const { __tenantTest: helper } = await import('./tenancy/runtime.js');", '只给自测夹具');
+  check('src/probe.ts', "import * as r from './tenancy/runtime.js'; r.__tenantTest.enterScope(rt);", '只给自测夹具');
   console.log(`boundaries selftest: ${count} 项通过`);
 } finally {
   fs.rmSync(fixture, { recursive: true, force: true });

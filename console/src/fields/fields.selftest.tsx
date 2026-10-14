@@ -172,7 +172,8 @@ import { CsvEncodingError, decodeCsvFile, readCsvBytes } from '../csvFile.js';
 import { CatalogItemPage, CatalogNewPage } from '../pages/CatalogItemPage.js';
 import { CatalogPage } from '../pages/CatalogPage.js';
 import { entityIcon } from '../shell/icons.js';
-import { VIEWER_KEY, type Viewer } from '../viewer.js';
+import { useViewer, VIEWER_KEY, type Viewer } from '../viewer.js';
+import { SandboxChecklist } from '../sandbox/Sandbox.js';
 import { type FieldEnv, FieldEnvContext } from './env.js';
 import { FieldGrid, itemErrorsOf, type MemoProps, sameCell } from './FieldGrid.js';
 import { FormField, softMaxNote } from './FormField.js';
@@ -2373,7 +2374,7 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
 // 8.9 整页（pages/CatalogPage.tsx）：路由的 kind 按行业包取，身份决定页头的入口、列和页签。查询缓存里先放好身份和列表
 {
   const me = (role: 'owner' | 'agent') =>
-    ({ userId: 'u1', displayName: '小林', role, csrf: 'c', tenantSlug: 't', tenantName: '云途定制旅行' }) as const;
+    ({ userId: 'u1', displayName: '小林', role, csrf: 'c', tenantSlug: 't', tenantName: '云途定制旅行', sandbox: null }) as const;
   const owner = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('owner'), pack });
   const agent = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('agent'), pack });
   const anonOf = (pack: IndustryPack): Viewer => ({ kind: 'anon', pack });
@@ -2792,11 +2793,18 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
 
 // 9.4 与第 10 节共用：挂真的路由和查询缓存，身份、条目、列表先放进缓存
 const me = (role: 'owner' | 'agent') =>
-  ({ userId: 'u1', displayName: '小林', role, csrf: 'c', tenantSlug: 't', tenantName: '云途定制旅行' }) as const;
+  ({ userId: 'u1', displayName: '小林', role, csrf: 'c', tenantSlug: 't', tenantName: '云途定制旅行', sandbox: null }) as const;
 const owner = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('owner'), pack });
 const agent = (pack: IndustryPack): Viewer => ({ kind: 'member', me: me('agent'), pack });
 const anonOf = (pack: IndustryPack): Viewer => ({ kind: 'anon', pack });
 type Cache = { items?: Readonly<Record<string, unknown>>; lists?: Readonly<Record<string, readonly unknown[]>> };
+function Progress() {
+  const v = useViewer().data;
+  return v?.kind === 'member' && v.me.sandbox ? (
+    <SandboxChecklist slug={v.me.tenantSlug} sandbox={v.me.sandbox} onRetry={() => {}} />
+  ) : null;
+}
+
 async function mountDetail(path: string, viewer: Viewer, cache: Cache = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity, retry: false } } });
   qc.setQueryData(VIEWER_KEY, viewer);
@@ -2817,6 +2825,7 @@ async function mountDetail(path: string, viewer: Viewer, cache: Cache = {}) {
   await router.load();
   const m = await mount(
     <QueryClientProvider client={qc}>
+      <Progress />
       <RouterProvider router={router} />
     </QueryClientProvider>,
   );
@@ -3634,6 +3643,58 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
   const errorAt = (root: ParentNode, sel: string) => root.querySelector(`${sel} .field-error`)?.textContent ?? null;
   const hardestText = String(readValue(SICHUAN, 'intensity.hardest'));
   const hl = SICHUAN.highlights as string[];
+
+  // 改价：失败不刷新；成功在同一详情页立即点亮第四步；宿主不增加 /me 请求。
+  for (const sandbox of [true, false]) {
+    const v = owner(liveTravel);
+    if (v.kind !== 'member') throw new Error('member fixture');
+    if (sandbox)
+      v.me.sandbox = {
+        ownConversationId: null,
+        expiresAt: new Date(Date.now() + 86_400_000).toISOString(),
+        wechat: 'off',
+        steps: [true, true, true, false],
+      };
+    let saved = false;
+    let fail = true;
+    let meReads = 0;
+    const api = fakeApi((s) => {
+      if (s.url.endsWith('/me')) {
+        meReads++;
+        return json({ ...v.me, sandbox: v.me.sandbox && { ...v.me.sandbox, steps: [true, true, true, saved] } });
+      }
+      if (s.url.endsWith('/pack')) return json(v.pack);
+      if (s.url.endsWith('/entry')) return json({ tryUrl: null });
+      if (s.method !== 'PATCH') return undefined;
+      if (fail) return json({ error: 'internal' }, 500);
+      saved = true;
+      return json({ ...SICHUAN_ITEM, rev: 2, payload: { ...SICHUAN, ...(s.body as { set: Payload }).set } });
+    });
+    const e = await mountDetail('/catalog/route/r-sichuan-lux', v, { items: { 'route/r-sichuan-lux': SICHUAN_ITEM }, lists });
+    try {
+      const url = e.router.state.location.href;
+      await typeInto(e.box.querySelector('[data-field-key="priceFrom"] input'), String(Number(SICHUAN.priceFrom) + 100));
+      await click(primary(e.box));
+      await until(() => api.patches().length === 1 && !primary(e.box)?.classList.contains('ant-btn-loading'));
+      eq(
+        `改价失败不刷新（沙箱=${sandbox}）`,
+        [api.patches().length, meReads, sandbox && e.box.querySelector('.sandbox-checklist h2')?.textContent],
+        [1, 0, sandbox && '体验清单3/4'],
+      );
+      fail = false;
+      await cmdS();
+      await until(() => !bar(e.box) && e.qc.isFetching() === 0);
+      eq(
+        `改价成功不换页刷新（沙箱=${sandbox}）`,
+        [meReads, e.router.state.location.href, sandbox && e.box.querySelector('.sandbox-checklist h2')?.textContent],
+        [sandbox ? 1 : 0, url, sandbox && '体验清单4/4'],
+      );
+    } finally {
+      await e.unmount();
+      e.qc.clear();
+      api.restore();
+    }
+  }
 
   // 02 第 8 步：活的旅游包里，已上架线路的每人起价、费用包含能直接改；改了它们，保存条写明改价只影响之后的报价和方案书
   {

@@ -112,6 +112,9 @@ export function uiTexts(root = '.'): UiText[] {
   const rel = (p: string) => path.posix.relative(root, p) || p;
   const files = [
     path.posix.join(root, 'console/index.html'),
+    path.posix.join(root, 'public/try.html'),
+    path.posix.join(root, 'public/sandbox-ui.js'),
+    path.posix.join(root, 'src/console-api/entry.ts'),
     ...walk(path.posix.join(root, 'console/src')).filter((f) => !rel(f).startsWith('console/src/_specimen/')),
     ...walk(path.posix.join(root, 'src/shared')).filter((f) => !rel(f).startsWith('src/shared/pack-fixtures/')),
     ...walk(path.posix.join(root, 'src/packs')).filter((f) => /^src\/packs\/[^/]+\/console-pack\.ts$/.test(rel(f))),

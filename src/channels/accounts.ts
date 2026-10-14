@@ -1,3 +1,5 @@
+import { registerTenantState } from '../tenancy/state.js';
+import { currentRuntime, runtimeOf } from '../tenancy/runtime.js';
 // 渠道账号（docs/architecture/03-channels-v2/spec.md「接口与数据流 · 渠道账号与凭据」、R1、R8、R11、R15、R19）：
 // 账号的进程内形状、从库里读出与解密、env 账号的拼法、按 key 与按会话找账号、欢迎语的 AI 显式标识检查。
 // 启动装载（src/channels/registry.ts 的 initChannels）判完企微状态之后经 installAccounts 把这一份账号装上；命令行（第 14、15 步）
@@ -206,6 +208,19 @@ export function openAccountSecrets(ring: KeyRing, tenantId: string, row: Channel
 // 是 env 账号（配齐时）与库里的网页账号
 
 let installed: readonly ChannelAccount[] = [];
+function ownedBy(account: ChannelAccount, id: string): boolean {
+  return account.tenantId === id || (account.source === 'env' && account.tenantId === '' && runtimeOf(id)?.isHost === true);
+}
+registerTenantState({
+  name: 'channels.accounts',
+  keyCount: (id) => installed.filter((account) => ownedBy(account, id)).length,
+  drop: (id) => {
+    installed = Object.freeze(installed.filter((account) => !ownedBy(account, id)));
+  },
+  reset: () => {
+    installed = [];
+  },
+});
 
 /** 仅供 src/channels/registry.ts：装载成功之后整份换上；自测的 reset 传空数组 */
 export function installAccounts(list: readonly ChannelAccount[]): void {
@@ -218,8 +233,8 @@ export function loadedAccounts(): readonly ChannelAccount[] {
 }
 
 /** 按 key 找账号：只返回启用的、种类对得上的（R12：/wecom/callback/:key 只认 wecom_kf，网页的 key 当作不存在） */
-export function accountByKey(key: string, kind: ChannelKind): ChannelAccount | undefined {
-  return installed.find((a) => a.key === key && a.kind === kind && isEnabled(a));
+export function accountByKey(key: string, kind: ChannelKind, tenantId = currentRuntime().id): ChannelAccount | undefined {
+  return installed.find((a) => ownedBy(a, tenantId) && a.key === key && a.kind === kind && isEnabled(a));
 }
 
 /**
@@ -228,16 +243,18 @@ export function accountByKey(key: string, kind: ChannelKind): ChannelAccount | u
  * env 账号）；网页没有默认账号，返回 undefined。别的渠道（sim-）返回 undefined
  */
 export function accountForSession(sessionId: string, s?: Pick<Session, 'channelAccountId'>): ChannelAccount | undefined {
+  const rt = currentRuntime();
+  const accounts = installed.filter((a) => ownedBy(a, rt.id));
   if (sessionId.startsWith('web:')) {
     const id = s?.channelAccountId;
-    return id ? installed.find((a) => a.kind === 'web' && a.id === id) : undefined;
+    return id ? accounts.find((a) => a.kind === 'web' && a.id === id) : undefined;
   }
   if (!sessionId.startsWith(DEFAULT_WECOM_PREFIX)) return undefined;
   let best: ChannelAccount | undefined;
-  for (const a of installed) {
+  for (const a of accounts) {
     const prefix = a.wecom?.idPrefix;
     if (!prefix || !sessionId.startsWith(prefix) || sessionId.length === prefix.length) continue;
     if (!best || prefix.length > (best.wecom?.idPrefix.length ?? 0)) best = a;
   }
-  return best ?? installed.find((a) => a.wecom?.idPrefix === DEFAULT_WECOM_PREFIX);
+  return best ?? accounts.find((a) => a.wecom?.idPrefix === DEFAULT_WECOM_PREFIX);
 }

@@ -1,3 +1,4 @@
+import { currentRuntime } from '../tenancy/runtime.js';
 // 企微回调按账号路由（docs/architecture/03-channels-v2/spec.md R12、「会话 id、账号与回调」、不变量 20、验收 12）。
 // server.ts 只做 HTTP 那一层：企微状态在库里时 /wecom/callback 与 /wecom/callback/:key 都交到这里；文件存储与还没导入、已导出时
 // /wecom/callback 照 02 读 env 的回调凭据（server.ts 里原样），/wecom/callback/:key 也交到这里——那时没有库里的企微账号，一律当作不存在。
@@ -33,7 +34,8 @@ const routeLabel = (key: string | null): string =>
 const tagOf = (a: ChannelAccount): string => `[wecom acct=${a.key}]`;
 
 /** 库里的企微账号（任何状态） */
-const dbWecom = (): ChannelAccount[] => loadedAccounts().filter((a) => a.kind === 'wecom_kf' && a.source === 'db' && a.wecom);
+const dbWecom = (): ChannelAccount[] =>
+  loadedAccounts().filter((a) => a.tenantId === currentRuntime().id && a.kind === 'wecom_kf' && a.source === 'db' && a.wecom);
 
 type Route = { account: ChannelAccount; secrets: WecomSecrets } | { why: string };
 

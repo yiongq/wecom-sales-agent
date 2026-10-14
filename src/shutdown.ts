@@ -1,3 +1,5 @@
+import { scopedRuntime, withTenantScope, withoutTenantScope, backgroundEntry, type TenantRuntime } from './tenancy/runtime.js';
+import { registerTenantState } from './tenancy/state.js';
 // 优雅停机（docs/architecture/02-conversations-workbench/spec.md「两种会话存储与启动」）：信号接线与三段停机钩子。
 // 从 store.ts 搬来，store.ts 原样再导出 onShutdown、runShutdownHooks、gracefulExit；两种会话存储下都在导入期注册。
 //
@@ -14,30 +16,35 @@ const PHASES: readonly ShutdownPhase[] = ['normal', 'drain', 'late'];
 /** 钩子收到这一段的截止时刻（毫秒时间戳），要排空写队列的钩子按它算剩余预算 */
 export type ShutdownHook = (ctx: { deadline: number }) => unknown;
 
-const hooks: Record<ShutdownPhase, ShutdownHook[]> = { normal: [], drain: [], late: [] };
+const hooks: Record<ShutdownPhase, { fn: ShutdownHook; runtime: TenantRuntime | undefined }[]> = { normal: [], drain: [], late: [] };
 
 /** 注册停机收尾钩子，默认进 normal 段 */
 export function onShutdown(fn: ShutdownHook, opts: { phase?: ShutdownPhase } = {}): void {
-  hooks[opts.phase ?? 'normal'].push(fn);
+  const rt = scopedRuntime();
+  hooks[opts.phase ?? 'normal'].push({
+    runtime: rt,
+    fn: (ctx) => backgroundEntry(() => (rt ? withTenantScope(rt, () => fn(ctx)) : withoutTenantScope(() => fn(ctx)))),
+  });
 }
 
-// 必须小于 deploy.sh 的 `docker stop -t 10`：超过宽限期 docker 直接 SIGKILL，
-// 连 'exit' 阶段的同步落盘都跑不到。留约 2s 给落盘和进程退出。
-const SHUTDOWN_TIMEOUT_MS = 8000;
+// 宿主留 2 秒给同步 spill；沙箱不写文件，至多用满 10 秒宽限期排空，未落库只计数。
+// 沙箱的 normal 只同步停止入口，主要时间留给 drain，late 释放进程锁与连接。
+const SHUTDOWN_TIMEOUT_MS = process.env.APP_ROLE === 'sandbox' ? 10_000 : 8000;
 
 /** 各段占总上限的份额：normal 最多到第 6 秒，drain 最多 1.5 秒，late 最多 0.5 秒（总上限 8 秒时） */
-const SHARE: Record<ShutdownPhase, number> = { normal: 6 / 8, drain: 1.5 / 8, late: 0.5 / 8 };
+const SHARE: Record<ShutdownPhase, number> =
+  process.env.APP_ROLE === 'sandbox' ? { normal: 0, drain: 0.95, late: 0.05 } : { normal: 6 / 8, drain: 1.5 / 8, late: 0.5 / 8 };
 
 async function runPhase(phase: ShutdownPhase, deadline: number): Promise<boolean> {
   const list = [...hooks[phase]];
   if (!list.length) return true;
   let timer: NodeJS.Timeout | undefined;
-  const all = Promise.allSettled(list.map((fn) => Promise.resolve().then(() => fn({ deadline })))).then((rs) => {
+  const all = Promise.allSettled(list.map(({ fn }) => Promise.resolve().then(() => fn({ deadline })))).then((rs) => {
     for (const r of rs) if (r.status === 'rejected') console.error(`[shutdown] ${phase} 段的停机钩子异常:`, r.reason);
     return true;
   });
   const timeout = new Promise<boolean>((resolve) => {
-    timer = setTimeout(() => resolve(false), Math.max(0, deadline - Date.now()));
+    timer = withoutTenantScope(() => setTimeout(() => resolve(false), Math.max(0, deadline - Date.now())));
   });
   try {
     const ok = await Promise.race([all, timeout]);
@@ -82,5 +89,19 @@ export function gracefulExit(code: number, why = `退出码 ${code}`): void {
 }
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-  process.on(sig, () => gracefulExit(sig === 'SIGINT' ? 130 : 143, `收到 ${sig}`));
+  withoutTenantScope(() => process.on(sig, () => gracefulExit(sig === 'SIGINT' ? 130 : 143, `收到 ${sig}`)));
 }
+
+/** R12 删除租户时同时撤掉捕获它的停机闭包；实例钩子保留。 */
+export function dropShutdownHooks(rt: TenantRuntime): void {
+  for (const phase of PHASES) hooks[phase] = hooks[phase].filter((h) => h.runtime !== rt);
+}
+registerTenantState({
+  name: 'shutdown.hooks',
+  keyCount: (id) => PHASES.reduce((n, phase) => n + hooks[phase].filter((h) => h.runtime?.id === id).length, 0),
+  drop: (id) => {
+    for (const phase of PHASES) hooks[phase] = hooks[phase].filter((h) => h.runtime?.id !== id);
+  },
+  // 评测重置业务状态不能撤掉宿主的排空钩子；只在删除所属运行时时 drop。
+  reset: () => {},
+});

@@ -51,6 +51,44 @@ with patch("builtins.open", side_effect=isolated_open):
   assert.ifError(run.error);
   assert.equal(run.status, 0, run.stderr);
   const generated = JSON.parse(fs.readFileSync(path.join(dir, 'seed_sessions.json'), 'utf8')) as Session[];
+  assert.equal(generated.length, 13, '宿主默认种子仍为13段');
+  const hostOrders = JSON.parse(fs.readFileSync(path.join(dir, 'seed_orders.json'), 'utf8')) as Order[];
+  assert.equal(hostOrders.length, 3, '宿主默认订单仍为3个');
+  const fixtureRun = spawnSync(
+    'python3',
+    [path.join(import.meta.dirname, 'seed-demo.py'), '--fixture', '--now', '2026-10-09T14:30+08:00'],
+    { encoding: 'utf8', timeout: 10_000 },
+  );
+  assert.ifError(fixtureRun.error);
+  assert.equal(fixtureRun.status, 0, fixtureRun.stderr);
+  const sandbox = JSON.parse(fixtureRun.stdout) as { sessions: Session[]; orders: Order[] };
+  const ids = new Set(['wecom:cust_A01', 'wecom:cust_B01', 'wecom:cust_C01', 'wecom:cust_E01', 'wecom:cust_F01']);
+  const subset = generated.filter((s) => ids.has(s.id)).map((s) => ({ ...structuredClone(s), updatedAt: s.messages.at(-1)!.at }));
+  // 保留05已有的夹具修正：默认宿主B01还引用旧线路，沙箱必须引用当前目录。
+  const routes = JSON.parse(fs.readFileSync('data/routes.json', 'utf8')) as { id: string; title: string; priceFrom: number }[];
+  const bali = routes.find((r) => r.id === 'r-bali')!;
+  const baliOrder = hostOrders.find((o) => o.sessionId === 'wecom:cust_B01')!;
+  baliOrder.routeId = bali.id;
+  baliOrder.routeTitle = bali.title;
+  baliOrder.totalPrice = bali.priceFrom * baliOrder.travelers;
+  const baliSession = subset.find((s) => s.id === baliOrder.sessionId)!;
+  baliSession.messages[1]!.content = `${bali.title}了解一下？私人泳池俯瞰雨林～`;
+  baliSession.messages[3]!.content = `已为您生成订单，${bali.title}，${baliOrder.travelers} 人共 ${baliOrder.totalPrice.toLocaleString('en-US')} 元，请点链接支付～`;
+  const latest = Math.max(...subset.flatMap((s) => s.messages.map((m) => m.at)));
+  function relative(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(relative);
+    if (value && typeof value === 'object')
+      return Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [
+          key,
+          ['at', 'createdAt', 'updatedAt', 'paidAt'].includes(key) && typeof item === 'number' ? item - latest : relative(item),
+        ]),
+      );
+    return value;
+  }
+  assert.deepEqual(sandbox.sessions, relative(subset), '沙箱是宿主默认种子的5段子集，正文与画像不改');
+  assert.deepEqual(sandbox.orders, relative(hostOrders.filter((o) => ids.has(o.sessionId))), '仅保留这5段对应的2个订单，字段不改');
+  assert.deepEqual(sandbox, JSON.parse(fs.readFileSync('data/sandbox-seeds.json', 'utf8')), '已提交的沙箱夹具与生成器一致');
   const handoffs = generated.filter((s) => s.handedOver || s.stage === 'handoff');
   assert.ok(handoffs.length > 0, '默认场景必须含转人工会话');
   for (const s of handoffs) {

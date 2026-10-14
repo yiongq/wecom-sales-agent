@@ -1,3 +1,4 @@
+import { currentRuntime, withoutTenantScope, tenantCallback, type TenantRuntime } from '../tenancy/runtime.js';
 // 文件后端：var/sessions.json、var/orders.json 的整文件重写，写入去抖 200ms + 原子写（tmp+rename），进程退出时同步写出。
 // 从 src/store.ts 抽出来，落盘的内容与时机和开工时相同（docs/architecture/02-conversations-workbench/spec.md R3）。
 // db 存储下它只管 demo 类会话及其订单（R6），由 owns / ownsOrder 过滤。
@@ -6,11 +7,12 @@ import path from 'node:path';
 import { logError } from '../log.js';
 import type { Order, Session } from '../types.js';
 import { StoreLaggingError, type StoreBackend, type StoreHealth } from './backend.js';
-import { deliverCommitted, type DomainEvent } from './events.js';
+import { deliverCommitted, type DomainEventInput as DomainEvent } from './events.js';
 import { ORDERS_JSON, SESSIONS_JSON } from './project.js';
 import { assignSeqs, seedSeqs } from './seq.js';
 
 export interface FileBackendDeps {
+  runtime?: TenantRuntime;
   varDir: string;
   sessions: Map<string, Session>;
   orders: Map<string, Order>;
@@ -24,6 +26,8 @@ export interface FileBackendDeps {
 }
 
 export interface FileBackend extends StoreBackend {
+  reset(): void;
+  keyCount(): number;
   /** 启动时恢复上次落盘的数据，并给每个会话的消息按顺序记上 seq（只在本进程有效） */
   load(): void;
   /** 启动即探测数据目录可写 */
@@ -37,6 +41,11 @@ export interface FileBackend extends StoreBackend {
 const DEFAULT_FLUSH_TIMEOUT_MS = 5000;
 
 export function createFileBackend(d: FileBackendDeps): FileBackend {
+  const rt = d.runtime ?? currentRuntime();
+  const scopedTimeout = (fn: () => void, ms: number): NodeJS.Timeout => withoutTenantScope(() => setTimeout(tenantCallback(rt, fn), ms));
+  const assertHost = (): void => {
+    if (!rt.isHost) throw new Error('只有宿主运行时允许文件存储');
+  };
   const SESSIONS_FILE = path.join(d.varDir, SESSIONS_JSON);
   const ORDERS_FILE = path.join(d.varDir, ORDERS_JSON);
 
@@ -83,6 +92,7 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
 
   /** 同步写出两个文件。成功之后清脏、交出排着的事件、放行在等的 flushSession；失败时这些都留到下一次成功 */
   function persistNow(): boolean {
+    if (!rt.isHost) throw new Error('只有宿主运行时能写文件存储');
     try {
       fs.mkdirSync(d.varDir, { recursive: true });
       writeAtomic(
@@ -111,13 +121,14 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
     pendingEvents = [];
     for (const w of waiters) w.resolve();
     waiters.clear();
-    deliverCommitted(events);
+    // 文件后端闭包一直属于宿主对象；启动补 uuid 后，排队事件使用该对象的新身份。
+    deliverCommitted(events.map((ev) => ({ ...ev, tenantId: rt.id })));
     return true;
   }
 
   function schedulePersist(): void {
     if (saveTimer) return;
-    saveTimer = setTimeout(() => {
+    saveTimer = scopedTimeout(() => {
       saveTimer = null;
       if (persistNow()) d.afterPersist(); // 每次落盘成功（约 200ms 去抖后）通知一次；失败不通知，留到下一次成功
     }, 200);
@@ -132,6 +143,15 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
 
   return {
     mode: 'file',
+    keyCount: () => dirty.size + pendingEvents.length + waiters.size + Number(saveTimer !== null) + Number(lastError !== null),
+    reset() {
+      cancelTimer();
+      dirty.clear();
+      pendingEvents = [];
+      for (const w of waiters) w.resolve();
+      waiters.clear();
+      lastError = null;
+    },
     load() {
       loadFile<Session>(SESSIONS_FILE, d.sessions);
       loadFile<Order>(ORDERS_FILE, d.orders);
@@ -154,20 +174,24 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
       }
     },
     schedule(s) {
+      assertHost();
       assignSeqs(s, 'lenient');
       markDirty(s.id);
       schedulePersist();
     },
     scheduleOrder(orderId) {
+      assertHost();
       const o = d.orders.get(orderId);
       if (o) markDirty(o.sessionId);
       schedulePersist();
     },
     markChanged(ids) {
+      assertHost();
       for (const id of ids) markDirty(id);
       schedulePersist();
     },
     emitAfterCommit(sessionId, ev) {
+      assertHost();
       pendingEvents.push(ev);
       markDirty(sessionId);
       schedulePersist();
@@ -184,7 +208,7 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
             resolve();
           },
         };
-        const timer = setTimeout(() => {
+        const timer = scopedTimeout(() => {
           waiters.delete(w);
           reject(new StoreLaggingError(sessionId));
         }, timeoutMs);
@@ -202,6 +226,7 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
       return 0;
     },
     flushNow() {
+      assertHost();
       cancelTimer();
       if (persistNow()) d.afterPersist();
     },

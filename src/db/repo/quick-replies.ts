@@ -1,3 +1,5 @@
+import { assertSandboxWriteCapacity } from '../../tenancy/sandbox/limits.js';
+import { scopedRuntime } from '../../tenancy/runtime.js';
 // 快捷回复（02 spec「后台接口」、plan 第 22 步）：增改、归档、上下移；不删，归档后不再列出
 import { and, asc, eq, isNull, sql } from 'drizzle-orm';
 import type { QuickReplyDefault } from '../../shared/quick-reply-defaults.js';
@@ -30,6 +32,13 @@ export async function listQuickReplies(tx: Tx): Promise<QuickReplyRow[]> {
   return tx.select(columns).from(quickReplies).where(live).orderBy(asc(quickReplies.ord), asc(quickReplies.id));
 }
 
+/** 模板开通只复制内容与顺序，不带宿主的 id、成员与变更归属。 */
+export async function copyQuickReplies(tx: Tx, rows: readonly Pick<QuickReplyRow, 'ord' | 'title' | 'body'>[]): Promise<void> {
+  if (!rows.length) return;
+  const { tenantId } = currentTenantCtx();
+  await tx.insert(quickReplies).values(rows.map(({ ord, title, body }) => ({ tenantId, ord, title, body })));
+}
+
 /** 这个租户是不是一条快捷回复都没有过（含归档的，不止没归档的）：判断「空表」用（RLS 已经按租户过滤） */
 export async function anyQuickReplyRow(tx: Tx): Promise<boolean> {
   const [row] = await tx
@@ -59,6 +68,7 @@ export async function ensureDefaultQuickReplies(tx: Tx, defaults: readonly Quick
   const { tenantId } = currentTenantCtx();
   await lockQuickRepliesForWrite(tx);
   if (await anyQuickReplyRow(tx)) return;
+  await checkSandboxQuickReplySize(tx, defaults.length);
   await tx.insert(quickReplies).values(defaults.map((d, i) => ({ tenantId, ord: i, title: d.title, body: d.body, updatedByName: null })));
 }
 
@@ -66,6 +76,7 @@ export async function ensureDefaultQuickReplies(tx: Tx, defaults: readonly Quick
 export async function createQuickReply(tx: Tx, q: { title: string; body: string; byName: string | null }): Promise<QuickReplyRow> {
   const { tenantId } = currentTenantCtx();
   await lockQuickRepliesForWrite(tx);
+  await checkSandboxQuickReplySize(tx, 1);
   const [max] = await tx.select({ n: sql<number>`coalesce(max(${quickReplies.ord}), -1)::int` }).from(quickReplies);
   const [row] = await tx
     .insert(quickReplies)
@@ -121,4 +132,10 @@ export async function moveQuickReply(tx: Tx, id: string, dir: 'up' | 'down', byN
       .where(eq(quickReplies.id, r.id));
   }
   return true;
+}
+
+async function checkSandboxQuickReplySize(tx: Tx, add: number): Promise<void> {
+  if (scopedRuntime()?.kind !== 'sandbox') return;
+  const [row] = await tx.select({ n: sql<number>`count(*)::int` }).from(quickReplies);
+  assertSandboxWriteCapacity('quickReplies', row?.n ?? 0, add);
 }

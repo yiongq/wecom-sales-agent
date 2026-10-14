@@ -21,7 +21,11 @@ import os from 'node:os';
 import path from 'node:path';
 import { gunzipSync } from 'node:zlib';
 import type { AddressInfo } from 'node:net';
+import { CHANNEL_KEY_ENV } from '../channels/secrets.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 // 03 R22：手写 id，不依赖后续步骤的渠道产生方；带 key 的 id 穷举两处冒号的原文、大小写编码与混合编码。
 const channelIds = [
   { id: 'wecom:wmKeyed0001', code: '0001' },
@@ -88,7 +92,7 @@ if (CHILD === 'channel-observation') {
 
 // ================ 子进程：没设端点时什么都不加载、不连接（不变量 49） ================
 if (CHILD === 'no-otel') {
-  const { registerHooks, createRequire } = await import('node:module');
+  const { registerHooks, createRequire } = await withoutTenantScope(() => import('node:module'));
   const resolved = new Set<string>();
   // 进程内的同步加载钩子：import 与 require 都经过它（含 tsx 之后的解析），解析到 @opentelemetry/* 就记下是哪个包
   registerHooks({
@@ -99,7 +103,7 @@ if (CHILD === 'no-otel') {
       return r;
     },
   });
-  const net = await import('node:net');
+  const net = await withoutTenantScope(() => import('node:net'));
   let connects = 0;
   const origConnect = net.Socket.prototype.connect;
   net.Socket.prototype.connect = function (this: import('node:net').Socket, ...a: unknown[]) {
@@ -119,9 +123,9 @@ if (CHILD === 'no-otel') {
   process.env.LLM_MOCK = '1';
   process.env.CONFIG_SOURCE = 'file';
   // 服务器的整张静态 import 图（含 src/ops/otel.ts、boot.ts）
-  await import('../server.js');
-  const { boot } = await import('../boot.js');
-  const { startOtelExport } = await import('./otel.js');
+  await withoutTenantScope(() => import('../server.js'));
+  const { boot } = await withoutTenantScope(() => import('../boot.js'));
+  const { startOtelExport } = await withoutTenantScope(() => import('./otel.js'));
   let called = false;
   const calls: string[] = [];
   await boot({
@@ -145,7 +149,7 @@ if (CHILD === 'no-otel') {
       await startOtelExport();
     },
   });
-  const { handleMessage } = await import('../engine.js');
+  const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
   const r = await handleMessage('sim-ops-no-otel', '你好，想去云南玩', 'simulator');
   const out = {
     calls: calls.join(','),
@@ -157,7 +161,7 @@ if (CHILD === 'no-otel') {
     // 对照：钩子与连接计数确实看得见（动态加载导出器、连一次接收端）
     control: { resolved: 0, cache: 0, connects: 0 },
   };
-  await import('../otel/export.js');
+  await withoutTenantScope(() => import('../otel/export.js'));
   out.control.resolved = resolved.size;
   out.control.cache = otelInCache().length;
   await fetch(`${process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT}/control`).catch(() => undefined);
@@ -227,12 +231,12 @@ if (CHILD === 'json-logs') {
     LLM_MAX_RETRY: '0',
   });
   // 导入 server.ts：profile-boot 在导入期就把 console.* 接到 pino（[profile] 那一行也是 JSON）
-  const { app } = await import('../server.js');
-  const { log, withLogContext } = await import('../log.js');
-  const store = await import('../store.js');
-  const recorder = await import('../trace/recorder.js');
-  const testing = await import('../db/testing.js');
-  const { handleMessage } = await import('../engine.js');
+  const { app } = await withoutTenantScope(() => import('../server.js'));
+  const { log, withLogContext } = await withoutTenantScope(() => import('../log.js'));
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const recorder = await withoutTenantScope(() => import('../trace/recorder.js'));
+  const testing = await withoutTenantScope(() => import('../db/testing.js'));
+  const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
   const t = await testing.openTestDb();
   await testing.installSeededConfig(t);
   const fx = await testing.installPgSessionStore(t, { varDir: VAR_DIR });
@@ -258,7 +262,7 @@ if (CHILD === 'json-logs') {
   });
   // 兜底：形如会话原 id 的串、请求路径里编码过的、带凭据的地址与 Bearer
   console.log('兜底：wecom:wmFallbackRaw01 sim-0123456789abcdef01234567 /api/sessions/wecom%3AwmFallbackRaw02/reply');
-  const { setConvRefResolver } = await import('../log.js');
+  const { setConvRefResolver } = await withoutTenantScope(() => import('../log.js'));
   setConvRefResolver((id) => channelRefs.get(id) ?? store.conversationRef(id));
   try {
     for (const [i, { raw }] of channelIdCases.entries()) {
@@ -732,20 +736,20 @@ process.env.EMBED_API_KEY = 'selftest-fake-key';
 process.env.LLM_HEDGE_MODEL = '';
 process.env.LLM_MAX_RETRY = '0';
 
-const store = await import('../store.js');
-const recorder = await import('../trace/recorder.js');
-const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock } = await import('../db/testing.js');
-const { withTenant, queryCount } = await import('../db/client.js');
-const { readMetrics, readTraceRetentionDays } = await import('../db/repo/metrics.js');
-const { shortIdOf } = await import('../shared/conversation.js');
-const accounts = await import('../auth/accounts.js');
-const { SESSION_COOKIE } = await import('../auth/session.js');
-const { consoleApi, __consoleTest } = await import('../console-api/app.js');
-const { metricsWindow, __metricsTest } = await import('./metrics.js');
-const { boot } = await import('../boot.js');
-const { startOtelExport, providerName } = await import('./otel.js');
-const { handleMessage } = await import('../engine.js');
-const { createRequire } = await import('node:module');
+const store = await withoutTenantScope(() => import('../store.js'));
+const recorder = await withoutTenantScope(() => import('../trace/recorder.js'));
+const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock } = await withoutTenantScope(() => import('../db/testing.js'));
+const { withTenant, queryCount } = await withoutTenantScope(() => import('../db/client.js'));
+const { readMetrics, readTraceRetentionDays } = await withoutTenantScope(() => import('../db/repo/metrics.js'));
+const { shortIdOf } = await withoutTenantScope(() => import('../shared/conversation.js'));
+const accounts = await withoutTenantScope(() => import('../auth/accounts.js'));
+const { SESSION_COOKIE } = await withoutTenantScope(() => import('../auth/session.js'));
+const { consoleApi, __consoleTest } = await withoutTenantScope(() => import('../console-api/app.js'));
+const { metricsWindow, __metricsTest } = await withoutTenantScope(() => import('./metrics.js'));
+const { boot } = await withoutTenantScope(() => import('../boot.js'));
+const { startOtelExport, providerName } = await withoutTenantScope(() => import('./otel.js'));
+const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
+const { createRequire } = await withoutTenantScope(() => import('node:module'));
 const otelLoaded = (): number =>
   Object.keys(createRequire(import.meta.url).cache).filter((k) => /[/\\]@opentelemetry[/+\\]/.test(k)).length;
 
@@ -1077,8 +1081,8 @@ __metricsTest.reset();
     if (process.env.CI === 'true') fails.push('CI 下必须设 PG_TEST_URL：运行数字的 SQL 要在真实 Postgres 上跑一遍，不能静默跳过');
     else console.log('OPS SELFTEST：没有 PG_TEST_URL，跳过真实 Postgres 部分（运行数字的 SQL 经 agent_app 与 RLS）');
   } else {
-    const { createRealPgFixture } = await import('../db/testing.js');
-    const { openDb } = await import('../db/client.js');
+    const { createRealPgFixture } = await withoutTenantScope(() => import('../db/testing.js'));
+    const { openDb } = await withoutTenantScope(() => import('../db/client.js'));
     const fxr = await createRealPgFixture(PG_TEST_URL);
     try {
       const [o] = await fxr.query<{ id: string }>(
@@ -1244,7 +1248,7 @@ const bootWith = async (endpoint: string, startOtel: () => Promise<void>): Promi
   check('boot：设了端点，真的 startOtelExport 起来了', json(ok) === json(['config', 'store', 'otel', 'serve', 'wecom']), json(ok));
   check('设了端点之后才加载 @opentelemetry/*', otelLoaded() > 0);
 }
-const otel = await import('../otel/export.js');
+const otel = await withoutTenantScope(() => import('../otel/export.js'));
 const flush = async (): Promise<Got[]> => {
   await otel.flushOtel();
   return spansReceived();
@@ -1679,7 +1683,7 @@ const RAW = `云南这边有丽江大理·洱海古城 6 日，每人 16,800 元
 }
 
 // ================ 日志：JSON 兜底的字段级 redact 与连接串/Cookie（scrubLine，审查第 2–4 条） ================
-const logMod = await import('../log.js');
+const logMod = await withoutTenantScope(() => import('../log.js'));
 {
   const { scrubLine } = logMod.__logTest;
   for (const [depth, obj] of [
@@ -1729,8 +1733,8 @@ const logMod = await import('../log.js');
   );
 }
 
-const { __profileTest } = await import('../profile.js');
-const { app: serverApp } = await import('../server.js');
+const { __profileTest } = await withoutTenantScope(() => import('../profile.js'));
+const { app: serverApp } = await withoutTenantScope(() => import('../server.js'));
 {
   check(
     '03 R22 demo：所有新旧 id 与编码组合的请求路径原样保留',
@@ -1909,12 +1913,12 @@ const { app: serverApp } = await import('../server.js');
 }
 
 // ================ 告警：app 侧五个键（本机假 webhook） ================
-const alertMod = await import('./alert.js');
-const wecom = await import('../adapters/wecom.js');
-const ledger = await import('../quota/ledger.js');
-const runner = await import('../jobs/runner.js');
-const { __configTest, configHealth } = await import('../config/source.js');
-const { enqueueJob } = await import('../db/repo/jobs.js');
+const alertMod = await withoutTenantScope(() => import('./alert.js'));
+const wecom = await withoutTenantScope(() => import('../adapters/wecom.js'));
+const ledger = await withoutTenantScope(() => import('../quota/ledger.js'));
+const runner = await withoutTenantScope(() => import('../jobs/runner.js'));
+const { __configTest, configHealth } = await withoutTenantScope(() => import('../config/source.js'));
+const { enqueueJob } = await withoutTenantScope(() => import('../db/repo/jobs.js'));
 // 假 webhook：ok 照收；hang 收下不回；s500 回 500；errcode 回企微的错误码；收到的都记下（含失败的那几次）
 const hook = { bodies: [] as string[], hits: 0, mode: 'ok' as 'ok' | 'hang' | 's500' | 'errcode', urls: [] as string[] };
 const hookSrv = http.createServer((req, res) => {
@@ -1995,6 +1999,22 @@ await captureAlertLogs(async () => {
     A.reset();
   }
   process.env.ALERT_WEBHOOK_URL = hookUrl;
+
+  // 05：事件租户不匹配只丢该事件，实际告警接线仍发一条并按事故键去重。
+  {
+    const events = await withoutTenantScope(() => import('../store/events.js'));
+    const n0 = hook.bodies.length;
+    events.deliverCommitted([{ type: 'conversation.changed', id: 'sim-mismatch', tenantId: 'foreign' }]);
+    events.deliverCommitted([{ type: 'conversation.changed', id: 'sim-mismatch', tenantId: 'foreign' }]);
+    await A.settle();
+    check(
+      '领域事件租户不匹配：告警接线发送一次，同类事件去重',
+      hook.bodies.length === n0 + 1 && contents()[n0]!.includes('领域事件租户不匹配，已跳过该事件'),
+      json(contents().slice(n0)),
+    );
+    hook.bodies.length = n0;
+    A.reset();
+  }
 
   // ---------------- model_errors：连续 5 次失败、30 分钟去重、持续 30 分钟再发、连续 10 次成功恢复 ----------------
   {
@@ -2524,6 +2544,8 @@ await captureAlertLogs(async () => {
   }
 });
 
+sandboxDeploySelftest();
+
 // ================ 部署脚本：deploy/watch.sh 与 backup.sh 的告警（PATH 里的假 docker、curl、df、age） ================
 const wtmp = fs.mkdtempSync(path.join(VAR_DIR, 'watch-'));
 const wbin = path.join(wtmp, 'bin');
@@ -2546,6 +2568,7 @@ const fakeCmd = (name: string, lines: string[]): void =>
   fs.writeFileSync(path.join(wbin, name), ['#!/usr/bin/env bash', ...lines, ''].join('\n'), { mode: 0o755 });
 fakeCmd('docker', [
   'case "$*" in',
+  '  *RestartCount*-sandbox*) cat "$FAKE_DIR/sandbox-restart" 2>/dev/null || exit 1 ;;',
   '  *RestartCount*) cat "$FAKE_DIR/restart" 2>/dev/null || exit 1 ;;',
   '  *"volume inspect"*) echo "$FAKE_DIR/volume" ;;',
   '  *pg_dumpall*) echo "-- globals" ;;',
@@ -2560,7 +2583,7 @@ fakeCmd('docker', [
 fakeCmd('curl', [
   'for a in "$@"; do',
   '  case "$a" in',
-  '    */healthz) h="$(cat "$FAKE_DIR/health")"; if [ "$h" = down ]; then exit 7; fi; printf "%s" "$h"; exit 0 ;;',
+  '    */healthz) echo "$a" >> "$FAKE_DIR/health-probes"; case "$a" in *:3211/*|*:3998/*) file=sandbox-health ;; *) file=health ;; esac; h="$(cat "$FAKE_DIR/$file")"; if [ "$h" = down ]; then exit 7; fi; printf "%s" "$h"; exit 0 ;;',
   '  esac',
   'done',
   'exec "$REAL_CURL" "$@"',
@@ -2617,7 +2640,7 @@ const scriptEnv = Object.fromEntries(
   Object.entries(process.env).filter(
     (e): e is [string, string] =>
       e[1] !== undefined &&
-      !/^(ALERT_WEBHOOK_URL|INSTANCE_LABEL|COMPOSE_PROJECT|BACKUP_.*|WATCH_.*|APP_CONTAINER|HOST_PORT|DISK_PATHS)$/.test(e[0]),
+      !/^(ALERT_WEBHOOK_URL|INSTANCE_LABEL|COMPOSE_PROJECT|BACKUP_.*|WATCH_.*|APP_CONTAINER|HOST_PORT|SANDBOX_PORT|DISK_PATHS)$/.test(e[0]),
   ),
 );
 Object.assign(scriptEnv, { PATH: `${wbin}${path.delimiter}${process.env.PATH ?? ''}`, FAKE_DIR: wfake, REAL_CURL: realCurl ?? 'curl' });
@@ -2862,8 +2885,8 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
   // 03 第 12 步（spec R7、R19、验收 21 的 backup.sh 部分；「测试与 CI」允许改的 backup.sh 步骤顺序）：先打包 var/、再 pg_dump，
   // 归档里有恢复哨兵、线上 var/ 里没有。pg_dump 时往线上 var/ 写一个文件：先打包的话归档里没有它
   {
-    const { RESTORE_SENTINEL } = await import('../channels/markers.js');
-    const { CHANNEL_KEY_ENV } = await import('../channels/secrets.js');
+    const { RESTORE_SENTINEL } = await withoutTenantScope(() => import('../channels/markers.js'));
+    const { CHANNEL_KEY_ENV } = await withoutTenantScope(() => import('../channels/secrets.js'));
     const callsFile = path.join(wtmp, 'backup-calls.log');
     const touched = path.join(srv, 'var', 'written-during-dump.json');
     fs.rmSync(callsFile, { force: true });
@@ -3002,6 +3025,58 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
       .some((m) => m.includes('已恢复：磁盘使用率回到 80% 以下')),
     json(fresh().slice(recoverBefore)),
   );
+
+  // 05：只增加启用沙箱时的探测；宿主、备份和去重状态继续由上面的回归断言覆盖。
+  fs.rmSync(path.join(wtmp, 'state', 'watch.state'), { force: true });
+  writeOps([`ALERT_WEBHOOK_URL=${watchHook}`, 'WATCH_BACKUP=0']);
+  setFake('restart', '0');
+  setFake('health', '{"ok":true}');
+  setFake('sandbox-restart', '0');
+  setFake('sandbox-health', 'down');
+  setFake('health-probes', '');
+  const beforeSandbox = contents().length;
+  await runWatch(100_000);
+  check(
+    '05 watch 无环境文件：只拨 host，宿主状态/备份行为照旧',
+    fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').trim().endsWith(':3999/healthz') &&
+      fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').trim().split('\n').length === 1 &&
+      contents().length === beforeSandbox,
+  );
+  fs.writeFileSync(path.join(srv, '.env.sandbox'), 'placeholder');
+  for (let i = 0; i < 4; i++) await runWatch(100_060 + i * 60);
+  check(
+    '05 watch 沙箱不可达连续三拍告警、第四拍去重；宿主成功不冲掉沙箱失败',
+    contents().length === beforeSandbox + 1 &&
+      contents().at(-1)!.includes('沙箱健康检查连续 3 分钟失败') &&
+      fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').includes(':3211/healthz'),
+  );
+  setFake('sandbox-health', '{"ok":false,"purgeOverdue":1}');
+  await runWatch(100_300);
+  check('05 watch purgeOverdue/ok false 延续沙箱失败状态、不误恢复', contents().length === beforeSandbox + 1);
+  setFake('sandbox-health', '{"ok":true}');
+  for (let i = 0; i < 3; i++) await runWatch(100_360 + i * 60, { SANDBOX_PORT: '3998' });
+  check(
+    '05 watch 沙箱独立端口：三拍恢复、宿主状态不变',
+    contents().length === beforeSandbox + 2 &&
+      contents().at(-1)!.includes('已恢复：沙箱健康检查') &&
+      fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').includes(':3998/healthz'),
+  );
+  setFake('sandbox-restart', '2');
+  await runWatch(100_540);
+  await runWatch(100_600);
+  check(
+    '05 watch 沙箱反复重启独立告警、三十分钟去重',
+    contents().length === beforeSandbox + 3 && contents().at(-1)!.includes('sandbox 容器 10 分钟内重启了 2 次'),
+  );
+  await runWatch(102_340);
+  check(
+    '05 watch 沙箱三十分钟不再重启独立恢复',
+    contents().length === beforeSandbox + 4 && contents().at(-1)!.includes('已恢复：sandbox 容器'),
+  );
+  fs.rmSync(path.join(srv, '.env.sandbox'));
+  setFake('health-probes', '');
+  await runWatch(102_400);
+  check('05 watch 停用后不拨沙箱，宿主照常', !fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').includes(':3211/healthz'));
 
   check(
     'watch.sh 与 backup.sh 的输出里一次都没有 webhook 的 key 与地址',
@@ -3186,22 +3261,22 @@ process.exit(0);
 
 /** 03 第 13 步：独立进程保证账号、运行时、profile 与可控时钟不影响 02 的断言。 */
 async function channelObservationSelftest(): Promise<void> {
-  const assert: typeof import('node:assert/strict') = (await import('node:assert/strict')).default;
-  const { randomUUID } = await import('node:crypto');
-  const testing = await import('../db/testing.js');
-  const store = await import('../store.js');
-  const registry = await import('../channels/registry.js');
-  const wecom = await import('../adapters/wecom.js');
-  const { AccountInbox } = await import('../channels/inbox.js');
-  const { sealSecrets } = await import('../channels/secrets.js');
-  const { __profileTest } = await import('../profile.js');
-  const { withTenant } = await import('../db/client.js');
-  const { readInboxStats } = await import('../db/repo/channel-inbox.js');
-  const { readOutboundStats } = await import('../db/repo/outbound.js');
-  const alert = await import('./alert.js');
-  const { consoleApi, __consoleTest } = await import('../console-api/app.js');
-  const { SESSION_COOKIE } = await import('../auth/session.js');
-  const log = await import('../log.js');
+  const assert: typeof import('node:assert/strict') = (await withoutTenantScope(() => import('node:assert/strict'))).default;
+  const { randomUUID } = await withoutTenantScope(() => import('node:crypto'));
+  const testing = await withoutTenantScope(() => import('../db/testing.js'));
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const registry = await withoutTenantScope(() => import('../channels/registry.js'));
+  const wecom = await withoutTenantScope(() => import('../adapters/wecom.js'));
+  const { AccountInbox } = await withoutTenantScope(() => import('../channels/inbox.js'));
+  const { sealSecrets } = await withoutTenantScope(() => import('../channels/secrets.js'));
+  const { __profileTest } = await withoutTenantScope(() => import('../profile.js'));
+  const { withTenant } = await withoutTenantScope(() => import('../db/client.js'));
+  const { readInboxStats } = await withoutTenantScope(() => import('../db/repo/channel-inbox.js'));
+  const { readOutboundStats } = await withoutTenantScope(() => import('../db/repo/outbound.js'));
+  const alert = await withoutTenantScope(() => import('./alert.js'));
+  const { consoleApi, __consoleTest } = await withoutTenantScope(() => import('../console-api/app.js'));
+  const { SESSION_COOKIE } = await withoutTenantScope(() => import('../auth/session.js'));
+  const log = await withoutTenantScope(() => import('../log.js'));
   const t = await testing.openTestDb();
   await testing.installSeededConfig(t);
   const fx = await testing.installPgSessionStore(t, { varDir: VAR_DIR });
@@ -3379,7 +3454,7 @@ async function channelObservationSelftest(): Promise<void> {
     await alert.__alertTest.settle();
     assert.equal(channelAlerts('重启时 1 段 sending 转 unknown').length, 1, '重启告警独立去重');
     assert.equal(channelAlerts('网页账号 website 没有启用').length, 1, 'prod 开关告警去重');
-    const { app } = await import('../server.js');
+    const { app } = await withoutTenantScope(() => import('../server.js'));
     const health = async () =>
       (await (await app.request('/healthz')).json()) as { ok: boolean; channels: { failing: number; stuck: number } };
     page = [
@@ -3527,7 +3602,7 @@ async function channelObservationSelftest(): Promise<void> {
     assert.equal(inboxStats.find((s) => s.accountId === ids.get('good'))!.openInbox, 1);
     assert.equal(inboxStats.find((s) => s.accountId === ids.get('good'))!.oldestAt!.getTime(), base);
     await su('update channel_accounts set cursor_at=$1 where tenant_id=$2 and id=$3', [new Date(base - 60_000), tenantId, ids.get('good')]);
-    const auth = await import('../auth/accounts.js');
+    const auth = await withoutTenantScope(() => import('../auth/accounts.js'));
     await t.pg.exec('SET ROLE agent_platform');
     const tokens: string[] = [];
     for (const role of ['owner', 'admin', 'supervisor', 'agent', 'viewer'] as const) {
@@ -3618,7 +3693,7 @@ async function channelObservationSelftest(): Promise<void> {
     assert.equal(h.ok, false);
     assert.equal(channelAlerts('已恢复：渠道账号 blocked 入站与启动恢复已恢复').length, 1);
     // 各账号 wecom_send 的三个分段独立累计；已有 token 告警的 bad 不压掉 good。
-    const ledger = await import('../quota/ledger.js');
+    const ledger = await withoutTenantScope(() => import('../quota/ledger.js'));
     alert.__alertTest.reset();
     const n0 = messages.length;
     for (let i = 0; i < 3; i++) {
@@ -3664,7 +3739,7 @@ async function channelObservationSelftest(): Promise<void> {
     assert.deepEqual(Object.keys(h.channels).sort(), ['mode', 'accounts', 'failing', 'stuck'].sort());
     if (process.env.PG_TEST_URL) {
       const rpg = await testing.createRealPgFixture(process.env.PG_TEST_URL);
-      const { openDb } = await import('../db/client.js');
+      const { openDb } = await withoutTenantScope(() => import('../db/client.js'));
       const db = await openDb(rpg.urls.app, { max: 1 });
       try {
         const id = randomUUID();
@@ -3701,7 +3776,7 @@ async function channelObservationSelftest(): Promise<void> {
     registry.__channelsTest.reset();
     assert.equal(registry.__channelsTest.stats().running, false, '清理渠道时统计定时器停止');
     await su("update channel_accounts set status='exported' where tenant_id=$1 and kind='wecom_kf'", [tenantId]);
-    const { removeChannelsMarker } = await import('../channels/markers.js');
+    const { removeChannelsMarker } = await withoutTenantScope(() => import('../channels/markers.js'));
     removeChannelsMarker(VAR_DIR);
     process.env.WECOM_CORP_ID = 'corp-env-private';
     process.env.WECOM_APP_SECRET = 'OBS_ENV_SECRET';
@@ -3732,5 +3807,473 @@ async function channelObservationSelftest(): Promise<void> {
     registry.__channelsTest.setObservationClock(null);
     wecom.__wecomTest.setObservationClock(null);
     await t.close();
+  }
+}
+
+/** 05 R18/R20：执行真实 deploy.sh 与 ssh bash -s，docker/psql/rsync 全部用隔离替身。 */
+function sandboxDeploySelftest(): void {
+  const dir = fs.mkdtempSync(path.join(VAR_DIR, 'deploy-05-'));
+  const bin = path.join(dir, 'bin');
+  const repo = path.join(dir, 'repo');
+  const remote = path.join(dir, 'remote');
+  const calls = path.join(dir, 'calls');
+  const flags = path.join(dir, 'flags');
+  for (const folder of [bin, repo, remote, flags, path.join(repo, 'deploy'), path.join(repo, 'src/db')])
+    fs.mkdirSync(folder, { recursive: true });
+  const sourceRoot = path.join(import.meta.dirname, '../..');
+  for (const file of ['deploy.sh', 'deploy/rollback-guard.sh']) fs.copyFileSync(path.join(sourceRoot, file), path.join(repo, file));
+  for (const file of ['package.json', 'Dockerfile', 'deploy/compose.yml', 'src/db/migrate.ts'])
+    fs.writeFileSync(path.join(repo, file), '{}');
+  const baseline = [
+    'DEPLOY_PROFILE=demo',
+    'CONFIG_SOURCE=db',
+    'SESSION_STORE=db',
+    'SANDBOX_HOST=sandbox-placeholder',
+    'SANDBOX_TEMPLATE_SLUG=demo',
+    '',
+  ];
+  fs.writeFileSync(path.join(remote, '.env'), 'DEPLOY_PROFILE=demo\nDEFAULT_TENANT_SLUG=demo\n');
+  fs.writeFileSync(
+    path.join(remote, '.env.db'),
+    ['POSTGRES_PASSWORD=x', 'AGENT_OWNER_PASSWORD=x', 'AGENT_APP_PASSWORD=x', 'AGENT_PLATFORM_PASSWORD=x', ''].join('\n'),
+  );
+  fs.writeFileSync(path.join(remote, '.env.migrate'), '');
+  const shell = (name: string, body: string): void =>
+    fs.writeFileSync(path.join(bin, name), `#!/usr/bin/env bash\n${body}\n`, { mode: 0o755 });
+  shell(
+    'git',
+    `case "$1" in
+    show-ref) exit 0 ;;
+    cat-file) case "$3" in *runtime.ts) [ "\${NEW_PHASE:-5}" = 5 ] ;; *) exit 0 ;; esac ;;
+    archive) tar -cf - package.json Dockerfile deploy src ;;
+    *) exit 98 ;;
+  esac`,
+  );
+  shell(
+    'ssh',
+    `shift
+    if [ "$1" = bash ]; then exec "$@"; fi
+    case "$1" in *"docker logs"*"-sandbox"*)
+      if [ "\${SSH_HANG_LOGS:-0}" = 1 ]; then
+        echo 1 > "$FLAGS/ssh-log-hang"
+        exec node -e 'Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0)'
+      fi ;;
+    esac
+    exec bash -c "$1"`,
+  );
+  shell('pnpm', 'exit 0');
+  shell('rsync', 'echo "rsync" >> "$CALLS"');
+  shell('sleep', 'echo "sleep $*" >> "$CALLS"');
+  shell(
+    'perl',
+    `if [ "$1" = -e ] && [ "$2" = 'alarm 12; exec @ARGV' ] && [ "\${FAST_SSH_TIMEOUT:-0}" = 1 ]; then
+    shift 2; exec /usr/bin/perl -e 'alarm 1; exec @ARGV' "$@"
+  fi
+  exec /usr/bin/perl "$@"`,
+  );
+  // 真正监督子进程并终止挂住的假 docker；仅日志/删除的故障测试缩短时限。
+  fs.writeFileSync(
+    path.join(bin, 'timeout'),
+    `#!/usr/bin/env node
+${String.raw`
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const [kill, limit, command, ...args] = process.argv.slice(2);
+if (kill !== '--kill-after=2s' || !/^[0-9]+s$/.test(limit)) process.exit(99);
+fs.appendFileSync(process.env.CALLS, 'timeout ' + process.argv.slice(2).join(' ') + '\n');
+const short = process.env.FAST_REMOTE_TIMEOUT === '1' && (args[0] === 'logs' || args.includes('rm'));
+const r = spawnSync(command, args, { stdio: ['inherit', 'pipe', 'pipe'], encoding: 'utf8',
+  timeout: short ? 300 : parseInt(limit, 10) * 1000, killSignal: 'SIGKILL' });
+process.stdout.write(r.stdout || ''); process.stderr.write(r.stderr || '');
+process.exit(r.error?.code === 'ETIMEDOUT' ? 124 : (r.status ?? 1));
+`}`,
+    { mode: 0o755 },
+  );
+  for (const name of ['chown', 'install']) shell(name, `echo "${name} $*" >> "$CALLS"`);
+  // deploy.sh 安装 cron 脚本的目录在部署目录外；替身只让隔离目录的 mkdir 真正执行。
+  shell('mkdir', 'case "$*" in */usr/local/lib/*) exit 0 ;; esac; exec /bin/mkdir "$@"');
+  fs.writeFileSync(
+    path.join(bin, 'docker'),
+    `#!/usr/bin/env node
+${String.raw`
+const fs = require('node:fs');
+const { spawnSync } = require('node:child_process');
+const a = process.argv.slice(2), text = a.join(' '), f = process.env.FLAGS;
+fs.readFileSync(0);
+fs.appendFileSync(process.env.CALLS, 'docker ' + text + ' image=' + (process.env.APP_IMAGE || '') + '\n');
+const mark = (key) => fs.writeFileSync(f + '/' + key, '1');
+const marked = (key) => fs.existsSync(f + '/' + key);
+if (text.includes('src/tenancy/runtime.ts') && !text.includes('resolveRole')) {
+  process.exit(process.env.PREV_PHASE === 'error' ? 125 : Number(process.env.PREV_PHASE || 5) >= 5 ? 0 : 1);
+}
+if (text.includes('psql')) { console.log(text.includes("column_name = 'kind'") ? 't' : text.includes("kind = 'standard'") ? 'f|f' : 'f'); process.exit(0); }
+if (text.includes('container ls')) { if (marked('sandbox')) console.log('placeholder'); process.exit(0); }
+if (text.includes('container inspect') && text.includes('-sandbox')) process.exit(marked('sandbox') ? 0 : 1);
+if (text.includes('inspect')) {
+  console.log(text.includes('com.docker.compose.project') ? 'fixture' : text.includes('.Config.Env') ? 'APP_REVISION=previous' : 'sha256:previous');
+  process.exit(0);
+}
+if (text.includes('.env.sandbox')) {
+  const lines = fs.readFileSync(a[a.indexOf('--env-file') + 1], 'utf8').split('\n');
+  const invalid = lines.find((line) => line.trimStart().startsWith('='));
+  if (process.env.BAD_ENV_PARSE === '1' || invalid !== undefined) {
+    const line = invalid ?? '=SECRET_VALUE';
+    fs.writeFileSync(f + '/parser-stderr', line);
+    process.stderr.write('docker: invalid env line ' + JSON.stringify(line) + '\n');
+    process.exit(1);
+  }
+  const env = { PATH: process.env.PATH, APP_ROLE: 'sandbox' };
+  for (let line of lines) {
+    line = line.replace(/^[ \t]+/, '').replace(/\r$/, '');
+    const eq = line.indexOf('='); if (eq > 0 && !line.startsWith('#')) env[line.slice(0, eq)] = line.slice(eq + 1);
+  }
+  env.APP_ROLE = 'sandbox';
+  const code = a[a.indexOf('-e', a.indexOf('--entrypoint')) + 1].replace('./src/tenancy/sandbox/role.ts', process.env.ROLE_ROOT + '/src/tenancy/sandbox/role.ts');
+  const r = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '-e', code], { cwd: process.env.ROLE_ROOT, env, encoding: 'utf8', timeout: 5000 });
+  process.stdout.write(r.stdout || ''); process.stderr.write(r.stderr || ''); process.exit(r.status ?? 1);
+}
+if (text.includes('run --rm migrate')) process.exit(process.env.FAIL_MIGRATE === '1' ? 1 : 0);
+if (text.includes('up -d --no-deps sandbox')) { mark('sandbox'); process.exit(process.env.FAIL_SANDBOX === 'up' ? 1 : 0); }
+if (text.startsWith('logs') && text.includes('-sandbox')) {
+  mark('logs-started');
+  if (process.env.FAIL_SANDBOX_LOGS === 'hang') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  process.exit(process.env.FAIL_SANDBOX_LOGS === 'fail' ? 1 : 0);
+}
+if (text.includes('rm -sfv sandbox') || text.startsWith('rm -fv ')) {
+  mark('remove-attempted');
+  if (process.env.FAIL_SANDBOX_REMOVE === 'hang') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
+  if (process.env.FAIL_SANDBOX_REMOVE === 'fail') process.exit(1);
+  fs.rmSync(f + '/sandbox', { force: true }); mark('removed'); process.exit(0);
+}
+if (text.includes('up -d --no-deps app')) { mark('rollback'); process.exit(0); }
+if (text.includes('up -d app')) { mark('host'); process.exit(process.env.FAIL_HOST === 'up' ? 1 : 0); }
+process.exit(0);
+`}`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(bin, 'curl'),
+    `#!/usr/bin/env node
+${String.raw`
+const fs = require('node:fs');
+const text = process.argv.slice(2).join(' '), f = process.env.FLAGS;
+const sandbox = text.includes(':' + process.env.SANDBOX_PORT + '/');
+const key = sandbox ? 'sandbox-health' : 'host-health', file = f + '/' + key;
+const n = Number(fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : 0) + 1;
+fs.writeFileSync(file, String(n)); fs.appendFileSync(process.env.CALLS, 'health ' + (sandbox ? 'sandbox' : 'host') + '\n');
+const rollback = fs.existsSync(f + '/rollback');
+const failure = process.env[sandbox ? 'FAIL_SANDBOX' : 'FAIL_HOST'];
+if (!rollback && failure === 'health') process.exit(7);
+if (sandbox && n <= Number(process.env.LOCK_POLLS || 0)) process.exit(7);
+const old = rollback ? process.env.PREV_PHASE === '4' : process.env.NEW_PHASE === '4';
+const result = { ok: !(sandbox && process.env.SANDBOX_OK_FALSE === '1'), revision: rollback ? 'previous' : process.env.BAD_REVISION === (sandbox ? 'sandbox' : 'host') ? 'wrong' : 'candidate' };
+if (!old) result.role = rollback && process.env.BAD_PREV_ROLE === '1' ? 'wrong' : !rollback && failure === 'role' ? 'wrong' : sandbox ? 'sandbox' : 'host';
+if (rollback && process.env.BAD_PREV_REVISION === '1') result.revision = 'wrong';
+console.log(JSON.stringify(result));
+`}`,
+    { mode: 0o755 },
+  );
+  const run = (options: Record<string, string> = {}, enabled = true, extra = '') => {
+    fs.writeFileSync(calls, '');
+    for (const name of fs.readdirSync(flags)) fs.rmSync(path.join(flags, name));
+    for (const name of ['.env.sandbox', '.env.sandbox.off']) fs.rmSync(path.join(remote, name), { force: true });
+    if (enabled) {
+      fs.writeFileSync(path.join(remote, '.env.sandbox'), baseline.join('\n') + extra);
+      fs.writeFileSync(path.join(flags, 'sandbox'), 'old');
+    }
+    const started = performance.now();
+    const result = spawnSync('bash', ['deploy.sh', 'candidate'], {
+      cwd: repo,
+      encoding: 'utf8',
+      timeout: 20_000,
+      env: {
+        PATH: `${bin}:${process.env.PATH}`,
+        TMPDIR: dir,
+        SERVER: 'placeholder',
+        REMOTE_DIR: remote,
+        NAME: 'side05',
+        HOST_PORT: '3999',
+        SANDBOX_PORT: '3998',
+        CALLS: calls,
+        FLAGS: flags,
+        ROLE_ROOT: sourceRoot,
+        ...options,
+      },
+    });
+    if (result.error) throw result.error;
+    return {
+      code: result.status,
+      out: result.stdout + result.stderr,
+      log: fs.readFileSync(calls, 'utf8'),
+      elapsed: performance.now() - started,
+    };
+  };
+  try {
+    let r = run();
+    check(
+      '05-15① 先换 host 并核对 revision/role，再换 sandbox，两者健康才成功',
+      r.code === 0 &&
+        r.out.includes('"role":"host"') &&
+        r.out.includes('"role":"sandbox"') &&
+        r.out.includes('部署成功') &&
+        r.log.indexOf('up -d app') < r.log.indexOf('health host') &&
+        r.log.indexOf('health host') < r.log.indexOf('up -d --no-deps sandbox') &&
+        r.log.includes('--profile sandbox up -d --no-deps sandbox'),
+      r.out + r.log,
+    );
+    r = run({ SANDBOX_OK_FALSE: '1' });
+    check(
+      '05 评审3 按 R20 只核对 revision/role，ok false 仍部署成功，由巡检告警',
+      r.code === 0 && r.out.includes('"ok":false') && r.out.includes('"role":"sandbox"') && r.out.includes('部署成功'),
+      r.out,
+    );
+    for (const fail of ['up', 'health', 'role']) {
+      r = run({ FAIL_HOST: fail });
+      check(
+        `05-15② host ${fail} 失败：回到 prev、sandbox 上一版容器没动，退出 1`,
+        r.code === 1 &&
+          r.out.includes('服务恢复') &&
+          r.log.includes('image=side05:prev') &&
+          !r.log.includes('up -d --no-deps sandbox') &&
+          !r.log.includes('rm -sfv sandbox') &&
+          fs.readFileSync(path.join(flags, 'sandbox'), 'utf8') === 'old',
+        r.out + r.log,
+      );
+    }
+    for (const fail of ['up', 'health', 'role', 'revision']) {
+      r = run(fail === 'revision' ? { BAD_REVISION: 'sandbox' } : { FAIL_SANDBOX: fail });
+      check(
+        `05-15③ sandbox ${fail} 失败：删容器、host 新版保留、退出 1`,
+        r.code === 1 &&
+          r.out.includes('宿主已上线、沙箱已停') &&
+          !r.out.includes('部署成功') &&
+          !r.log.includes('up -d --no-deps app') &&
+          r.log.includes('--profile sandbox rm -sfv sandbox') &&
+          !r.log.includes('down -v') &&
+          !r.log.includes('volume rm') &&
+          !r.log.includes('rm -sfv app') &&
+          !r.log.includes('rm -sfv db') &&
+          !fs.existsSync(path.join(flags, 'sandbox')),
+        r.out + r.log,
+      );
+    }
+    for (const mode of ['hang', 'fail']) {
+      r = run({ FAIL_SANDBOX: 'up', FAIL_SANDBOX_LOGS: mode, FAST_REMOTE_TIMEOUT: '1' });
+      check(
+        `05 评审4 取日志 ${mode}：限时返回后仍删沙箱，宿主保留、总耗时有界`,
+        r.code === 1 &&
+          r.elapsed < 6000 &&
+          fs.existsSync(path.join(flags, 'logs-started')) &&
+          fs.existsSync(path.join(flags, 'removed')) &&
+          !fs.existsSync(path.join(flags, 'sandbox')) &&
+          r.log.includes('timeout --kill-after=2s 8s docker logs') &&
+          r.log.includes('timeout --kill-after=2s 8s docker compose') &&
+          !r.log.includes('up -d --no-deps app'),
+        r.out + r.log,
+      );
+    }
+    r = run({ FAIL_SANDBOX: 'up', SSH_HANG_LOGS: '1', FAST_SSH_TIMEOUT: '1' });
+    check(
+      '05 评审4 取日志 ssh 挂住：本地封顶后仍执行删容器、总耗时有界',
+      r.code === 1 &&
+        r.elapsed < 6000 &&
+        fs.existsSync(path.join(flags, 'ssh-log-hang')) &&
+        fs.existsSync(path.join(flags, 'removed')) &&
+        !fs.existsSync(path.join(flags, 'sandbox')) &&
+        !r.log.includes('up -d --no-deps app'),
+      r.out + r.log,
+    );
+    for (const mode of ['hang', 'fail']) {
+      r = run({ FAIL_SANDBOX: 'up', FAIL_SANDBOX_REMOVE: mode, FAST_REMOTE_TIMEOUT: '1' });
+      check(
+        `05 评审4 删容器 ${mode}：限时退出 1、报告需立即人工处理、宿主不回滚`,
+        r.code === 1 &&
+          r.elapsed < 6000 &&
+          r.out.includes('删除沙箱容器失败，需立即人工处理') &&
+          fs.existsSync(path.join(flags, 'remove-attempted')) &&
+          fs.existsSync(path.join(flags, 'sandbox')) &&
+          !r.log.includes('up -d --no-deps app'),
+        r.out + r.log,
+      );
+    }
+    for (const field of ['BAD_PREV_ROLE', 'BAD_PREV_REVISION']) {
+      r = run({ FAIL_HOST: 'up', [field]: '1' });
+      check(
+        `05-15② 自动回滚 05 仍核对 ${field}，不误报恢复`,
+        r.code === 1 && r.out.includes('回滚后健康检查仍失败') && !r.out.includes('服务恢复') && !r.log.includes('up -d --no-deps sandbox'),
+        r.out,
+      );
+    }
+    r = run({ FAIL_HOST: 'up', PREV_PHASE: 'error' });
+    check(
+      '05 回滚镜像探测出错：不误删上一版 sandbox、不改环境文件',
+      r.code === 1 &&
+        r.out.includes('无法确认上一版是否为 pre-05') &&
+        !r.log.includes('docker rm') &&
+        fs.existsSync(path.join(remote, '.env.sandbox')) &&
+        fs.readFileSync(path.join(flags, 'sandbox'), 'utf8') === 'old',
+      r.out,
+    );
+    r = run({ LOCK_POLLS: '15' });
+    check(
+      '05-15③ 等旧进程锁 30 秒仍能上线，sandbox 第 16 拍成功（host 仍只有 10 拍）',
+      r.code === 0 &&
+        Number(fs.readFileSync(path.join(flags, 'sandbox-health'))) === 16 &&
+        r.log.split('\n').filter((line) => line === 'sleep 2').length === 15,
+      r.out + r.log,
+    );
+    for (const name of [
+      'DEFAULT_TENANT_SLUG',
+      'WECOM_FAKE',
+      CHANNEL_KEY_ENV,
+      'NOTIFY_WEBHOOK_URL',
+      'OTEL_EXPORTER_OTLP_ENDPOINT',
+      'LLM_HEDGE_MODEL',
+    ]) {
+      r = run({}, true, `${name}=\n`);
+      check(
+        `05-15④ ${name} 即使空值也在第 5 步拒绝，没迁移、没换容器`,
+        r.code === 1 &&
+          r.out.includes('sandbox_env_forbidden') &&
+          !r.log.includes('run --rm migrate') &&
+          !r.log.includes('up -d app') &&
+          fs.readFileSync(path.join(flags, 'sandbox'), 'utf8') === 'old',
+        r.out,
+      );
+    }
+    r = run({}, true, 'SANDBOX_WECOM_SECRET=placeholder\n');
+    check(
+      '05 R16 体验客服缺部分：第 5 步拒绝 sandbox_wecom_partial',
+      r.code === 1 && r.out.includes('sandbox_wecom_partial') && !r.log.includes('run --rm migrate'),
+      r.out,
+    );
+    r = run({}, true, ['CORP_ID', 'SECRET', 'TOKEN', 'AES_KEY', 'OPEN_KFID'].map((key) => `SANDBOX_WECOM_${key}=placeholder\n`).join(''));
+    check('05 R16 五项体验客服占位变量齐全通过环境试读', r.code === 0, r.out);
+    for (const line of ['DEFAULT_TENANT_SLUG', '=SECRET_VALUE', '1BAD=SECRET_VALUE', 'BAD NAME=SECRET_VALUE']) {
+      r = run({}, true, `${line}\n`);
+      check(
+        `05 评审1/2 非赋值或非法名字 ${line.split('=')[0] || '空名字'}：只报行号、退出 1、容器未动`,
+        r.code === 1 &&
+          r.out.includes('sandbox_env_format line=6') &&
+          !r.out.includes('SECRET_VALUE') &&
+          !r.out.includes(line) &&
+          !r.log.includes('docker ') &&
+          !fs.existsSync(path.join(flags, 'host')) &&
+          fs.readFileSync(path.join(flags, 'sandbox'), 'utf8') === 'old',
+        r.out + r.log,
+      );
+    }
+    // 对照证明替身实际把整行写到 stderr；部署路径必须先挡格式错误，并遮住 Docker 其他解析错误。
+    fs.writeFileSync(path.join(remote, '.env.sandbox'), '=SECRET_VALUE\n');
+    const parserControl = spawnSync(path.join(bin, 'docker'), ['run', '--env-file', path.join(remote, '.env.sandbox')], {
+      encoding: 'utf8',
+      timeout: 5000,
+      env: { PATH: `${bin}:${process.env.PATH}`, FLAGS: flags, CALLS: calls },
+    });
+    if (parserControl.error) throw parserControl.error;
+    check(
+      '05 评审1 Docker 替身对照：格式错误真的将整行输出到 stderr',
+      parserControl.status === 1 && parserControl.stderr.includes('=SECRET_VALUE'),
+      parserControl.stderr,
+    );
+    r = run({ BAD_ENV_PARSE: '1' });
+    check(
+      '05 评审1 Docker 原文 stderr 被丢弃：退出 1、输出无 SECRET_VALUE、旧容器不动',
+      r.code === 1 &&
+        !r.out.includes('SECRET_VALUE') &&
+        fs.readFileSync(path.join(flags, 'parser-stderr'), 'utf8') === '=SECRET_VALUE' &&
+        !r.log.includes('up -d app') &&
+        !r.log.includes('run --rm migrate') &&
+        fs.readFileSync(path.join(flags, 'sandbox'), 'utf8') === 'old',
+      r.out,
+    );
+    r = run({}, true, ' \t# comment\n\nA_1=placeholder\n');
+    check('05 评审1/2 空行、注释及合法变量名字正常部署', r.code === 0, r.out);
+    r = run({ PREV_PHASE: '4', FAIL_HOST: 'health' });
+    check(
+      '05-15⑤ 首次 05 host 失败：先删 sandbox、改名环境，再 guard、恢复 pre-05（不要求 role）',
+      r.code === 1 &&
+        r.out.includes('服务恢复') &&
+        fs.existsSync(path.join(remote, '.env.sandbox.off')) &&
+        !fs.existsSync(path.join(remote, '.env.sandbox')) &&
+        r.log.includes('rm -fv side05-sandbox') &&
+        !r.log.includes('down -v') &&
+        !r.log.includes('volume rm') &&
+        !r.log.includes('rm -fv side05-db') &&
+        r.log.indexOf('rm -fv side05-sandbox') < r.log.indexOf("column_name = 'kind'") &&
+        !r.log.includes('up -d --no-deps sandbox') &&
+        !fs.existsSync(path.join(flags, 'sandbox')),
+      r.out + r.log,
+    );
+    r = run({ PREV_PHASE: '4', FAIL_HOST: 'up', BAD_PREV_REVISION: '1' });
+    check(
+      '05-15⑤ pre-05 回滚也核对上一版 revision，不要求 role、错误版本不误报恢复',
+      r.code === 1 &&
+        r.out.includes('回滚后健康检查仍失败') &&
+        !r.out.includes('服务恢复') &&
+        fs.existsSync(path.join(remote, '.env.sandbox.off')) &&
+        !r.log.includes('up -d --no-deps sandbox'),
+      r.out,
+    );
+    r = run({}, false);
+    check(
+      '05-15⑥ 无 .env.sandbox：只换 host，不启 profile；备份安装、prev/current 与迁移路径不变',
+      r.code === 0 &&
+        !r.log.includes('--profile sandbox') &&
+        !r.log.includes('docker rm') &&
+        r.log.includes('run --rm migrate') &&
+        r.log.includes('backup.sh /usr/local/lib/side05/backup.sh') &&
+        r.log.includes('tag sha256:previous side05:prev') &&
+        r.log.includes('tag side05:latest side05:current'),
+      r.out + r.log,
+    );
+    r = run({ NEW_PHASE: '4', PREV_PHASE: '4' }, false);
+    check('05-15⑥ 无沙箱部署 pre-05：不要求 health.role，旧部署成功', r.code === 0 && !r.out.includes('"role"'), r.out);
+    r = run({ NEW_PHASE: '4', PREV_PHASE: '4', FAIL_HOST: 'health' }, false);
+    check(
+      '05-15⑥ 无沙箱 pre-05 health 失败：10 拍后回滚、无迁移回滚、旧 health 无 role 仍恢复',
+      r.code === 1 &&
+        r.out.includes('服务恢复') &&
+        r.log.split('\n').filter((line) => line === 'sleep 2').length === 10 &&
+        r.log.includes('up -d --no-deps app') &&
+        !r.log.includes('docker rm') &&
+        r.log.split('\n').filter((line) => line.includes('run --rm migrate')).length === 1,
+      r.out + r.log,
+    );
+    r = run({ FAIL_MIGRATE: '1' }, false);
+    check(
+      '05-15⑥ 无沙箱迁移失败：宿主与 rollback 路径不动',
+      r.code === 1 && !r.log.includes('up -d app') && !r.log.includes('up -d --no-deps app'),
+      r.out,
+    );
+    r = run({ BAD_REVISION: 'host' }, false);
+    check('05-15① host revision 不匹配：拒绝上线并恢复 prev', r.code === 1 && r.out.includes('服务恢复'), r.out);
+    const compose = fs.readFileSync(path.join(sourceRoot, 'deploy/compose.yml'), 'utf8');
+    const sandbox = compose.split('  sandbox:\n')[1]!.split('  platform:')[0]!;
+    check(
+      '演练一/二·4 compose 手工步骤带匿名卷清理、platform demo profile、保留 db 命名卷与 var 挂载',
+      compose.includes('--profile sandbox rm -sfv sandbox') &&
+        /# +\.env.platform[^\n]*DEPLOY_PROFILE=demo/.test(compose) &&
+        !compose.includes('down -v') &&
+        !compose.includes('volume rm') &&
+        compose.includes('- db-data:/var/lib/postgresql/data') &&
+        compose.includes('- ../var:/app/var'),
+      compose,
+    );
+
+    check(
+      '05 compose sandbox：同镜像、独立 profile/env/角色/回环端口、10s、无 var 卷、无文件仍可解析',
+      sandbox.includes('image: ${APP_IMAGE:-${APP_CONTAINER:-wecom-sales-agent}:current}') &&
+        sandbox.includes('profiles: [sandbox]') &&
+        sandbox.includes('../.env.sandbox') &&
+        sandbox.includes('required: false') &&
+        sandbox.includes('APP_ROLE: sandbox') &&
+        sandbox.includes('${SANDBOX_PORT:-3211}:3200') &&
+        sandbox.includes('stop_grace_period: 10s') &&
+        !sandbox.includes('volumes:'),
+      sandbox,
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
   }
 }

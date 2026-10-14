@@ -1,3 +1,19 @@
+import { installPublicHost, validatePublicHosts } from '../tenancy/hosts.js';
+import {
+  currentRuntime,
+  scopedRuntime,
+  hostRuntime,
+  identifyRuntime,
+  withTenantScope,
+  withoutTenantScope,
+  tenantCallback,
+  tenantRuntimes,
+  configureTenancy,
+  createTenantRuntime,
+  registerRuntime,
+} from '../tenancy/runtime.js';
+import { registerTenantState } from '../tenancy/state.js';
+import { createTenantConfig, type Loaded, type TenantConfig } from './state.js';
 // 配置源（docs/architecture/01-pg-config-console/spec.md「两种模式与启动装载」）。
 // 文件模式（CONFIG_SOURCE 未设、空串或 file）读有效 SOP_PATH 同目录品牌，引擎和工具照旧读文件。
 // DB 模式在启动时一次装载已发布的 SOP 与 active 条目，放进进程内缓存；每轮对话只读缓存、不查库。
@@ -10,6 +26,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   holdTenantLock,
+  holdTenantLocks,
   lockTenantConfig,
   openDb,
   redactUrl,
@@ -24,7 +41,7 @@ import { appliedMigrationHashes, imageMigrationHashes } from '../db/migrate.js';
 import { readActiveCatalog, type CatalogRow } from '../db/repo/catalog.js';
 import { insertCatalogVersion, readCatalogVersions, type CatalogVersionRow } from '../db/repo/catalog-versions.js';
 import { archivePublished, insertPublishedSop, maxVersionNo, readPublishedSop, type SopVersionRow } from '../db/repo/sop.js';
-import { findTenantBySlug, readBrand } from '../db/repo/tenants.js';
+import { findTenantBySlug, readBrand, standardTenants } from '../db/repo/tenants.js';
 import type { RenderInputs } from '../db/schema.js';
 import { setLogTenant } from '../log.js';
 import { packById, runtimeById, legacyTravelRuntime as travelRuntime } from '../packs/registry.js';
@@ -128,6 +145,7 @@ export type ConfigStartupReason =
   | 'db_unreachable'
   | 'db_encoding'
   | 'schema_behind'
+  | 'tenant_host_missing'
   | 'tenant_not_found'
   | 'tenant_suspended'
   | 'pack_unknown'
@@ -161,23 +179,6 @@ async function dbStep<T>(what: string, fn: () => Promise<T>): Promise<T> {
 
 // ---------------- 状态 ----------------
 
-interface Loaded {
-  deps: ConfigDeps;
-  tenantId: string;
-  /** 启动时装载的租户行里的名称与行业包：/me 的 tenantName、/pack 用，不查库 */
-  tenantName: string;
-  pack: IndustryPack;
-  lock: TenantLock;
-  imageSections: readonly SopSection[];
-  /** 保留旧版镜像，供预算还原首次导入品牌的默认前言；不能用当前租户镜像替代。 */
-  legacyImageSop: string;
-  sop: PublishedSop;
-  catalog: CatalogSnapshot;
-  /** 快照数组本身不带 ord：另存一份 code → ord，applyCatalogRow 按它插到正确位置 */
-  ords: Record<CatalogRow['kind'], Map<string, number>>;
-  /** 全部条目的全部版本（catalogVersionKey → 版本号 → deep-frozen 的 payload）：方案书按 ?v= 渲染时只读这里，不查库 */
-  history: VersionHistory;
-}
 type VersionHistory = Map<string, Map<number, unknown>>;
 
 /** 版本行建成内存里的历史：只追加，同一个版本号只认第一次见到的那份 */
@@ -205,33 +206,27 @@ const ordsOf = (rows: readonly CatalogRow[]): Loaded['ords'] => ({
   hotel: new Map(rows.filter((r) => r.kind === 'hotel').map((r) => [r.code, r.ord])),
 });
 
-/** initConfig 收到非空 deps 之后就是 DB 模式，装载失败时撤回 */
-let dbInstalled = false;
-let loaded: Loaded | null = null;
-let lockState: 'held' | 'lost' = 'held';
-/** 重取时发现锁已在另一个进程手里（held_by_other）：此后本进程不该再写会话（02 spec「identity map 与写入 · 停机」） */
-let lockTaken = false;
-let sopStale = false;
-let catalogStale = false;
-let shuttingDown = false;
-let reacquireMs = 5_000;
-let reacquireTimer: NodeJS.Timeout | null = null;
-const catalogListeners: ((snap: CatalogSnapshot) => void)[] = [];
-
+function configState(): TenantConfig {
+  return currentRuntime().config;
+}
+const catalogSubscriptions: ((snap: CatalogSnapshot) => void)[] = [];
 /** 装过 DB 配置源（initConfig 收到非空 deps），或 CONFIG_SOURCE === 'db'，就是 'db'；否则 'file' */
 export function configMode(): ConfigMode {
-  return dbInstalled || process.env.CONFIG_SOURCE === 'db' ? 'db' : 'file';
+  const state = configState();
+  return state.dbInstalled || process.env.CONFIG_SOURCE === 'db' ? 'db' : 'file';
 }
 
 /** db 模式且装载完成后才能调用，否则抛 ConfigNotReadyError */
 export function currentSop(): PublishedSop {
-  if (!loaded) throw new ConfigNotReadyError();
-  return loaded.sop;
+  const state = configState();
+  if (!state.loaded) throw new ConfigNotReadyError();
+  return state.loaded.sop;
 }
 export function currentCatalog(): CatalogSnapshot {
-  if (!loaded) throw new ConfigNotReadyError();
+  const state = configState();
+  if (!state.loaded) throw new ConfigNotReadyError();
   const pinned = turnPin.getStore();
-  return pinned && pinned.tenantId === loaded.tenantId ? pinned : loaded.catalog;
+  return pinned && pinned.tenantId === state.loaded.tenantId ? pinned : state.loaded.catalog;
 }
 
 /** 一轮之内固定的产品库快照（01 裁决 R6 推迟到 02 的那条、02 R14）。只经 pinCatalogForTurn 设置 */
@@ -242,8 +237,9 @@ const turnPin = new AsyncLocalStorage<CatalogSnapshot>();
  * 看到的是同一代快照，中途有人改价也不混用（不变量 36）。文件模式（或还没装载完）什么都不做
  */
 export function pinCatalogForTurn<T>(fn: () => Promise<T>): Promise<T> {
-  if (!loaded) return fn();
-  return turnPin.run(loaded.catalog, fn);
+  const state = configState();
+  if (!state.loaded) return fn();
+  return turnPin.run(state.loaded.catalog, fn);
 }
 
 /**
@@ -251,18 +247,21 @@ export function pinCatalogForTurn<T>(fn: () => Promise<T>): Promise<T> {
  * 所以不看本轮固定的快照。文件模式、没有这条或没有这个版本时返回 null
  */
 export function catalogItemAt(kind: CatalogRow['kind'], code: string, version: number): unknown {
-  return loaded?.history.get(catalogVersionKey(kind, code))?.get(version) ?? null;
+  const state = configState();
+  return state.loaded?.history.get(catalogVersionKey(kind, code))?.get(version) ?? null;
 }
 
 /** 有条目版本大于 1（改过 active 条目的内容）：/healthz 的 config.catalogVersioned，回滚到 02 之前的镜像据此拒绝。文件模式恒为 false */
 export function catalogVersioned(): boolean {
-  if (!loaded) return false;
-  return Object.values(loaded.catalog.versions).some((v) => v > 1);
+  const state = configState();
+  if (!state.loaded) return false;
+  return Object.values(state.loaded.catalog.versions).some((v) => v > 1);
 }
 
 /** 产品库快照变化后回调；retrieval.ts 在加载时注册，用来失效并重建索引 */
 export function onCatalogChanged(cb: (snap: CatalogSnapshot) => void): void {
-  catalogListeners.push(cb);
+  if (scopedRuntime()) configState().catalogListeners.push(cb);
+  else catalogSubscriptions.push(cb);
 }
 
 /**
@@ -270,13 +269,16 @@ export function onCatalogChanged(cb: (snap: CatalogSnapshot) => void): void {
  * taken 重取时发现已在别的进程手里、本进程开始停机
  */
 export type LockEvent = 'lost' | 'held' | 'taken';
-const lockListeners = new Set<(ev: LockEvent) => void>();
+const lockSubscriptions = new Set<(ev: LockEvent) => void>();
 export function onLockEvent(cb: (ev: LockEvent) => void): () => void {
-  lockListeners.add(cb);
-  return () => lockListeners.delete(cb);
+  const listeners = scopedRuntime() ? configState().lockListeners : lockSubscriptions;
+  listeners.add(cb);
+  return () => {
+    listeners.delete(cb);
+  };
 }
 function lockEvent(ev: LockEvent): void {
-  for (const cb of lockListeners) {
+  for (const cb of [...lockSubscriptions, ...configState().lockListeners]) {
     try {
       cb(ev);
     } catch {
@@ -287,28 +289,33 @@ function lockEvent(ev: LockEvent): void {
 
 /** 租户锁已被另一个进程拿走（重取得到 held_by_other）。PG 会话存储的 drain 段据此不写库、直接 spill */
 export function tenantLockTaken(): boolean {
-  return lockTaken;
+  const state = configState();
+  return state.lockTaken;
 }
 
 export function configHealth(): ConfigHealth {
-  return { lock: lockState, sopStale, catalogStale };
+  const state = configState();
+  return { lock: state.lockState, sopStale: state.sopStale, catalogStale: state.catalogStale };
 }
 
 /** 当前缓存与镜像 data/ 的差异，给后台 /status：每次现算，发布和上架之后跟着变 */
 export function configDrift(): ConfigDrift {
-  if (!loaded) throw new ConfigNotReadyError();
-  const { catalog } = loaded;
+  const state = configState();
+  if (!state.loaded) throw new ConfigNotReadyError();
+  const { catalog } = state.loaded;
   const active = [
     ...catalog.routes.map((p) => ({ kind: 'route' as const, code: p.id, payload: p })),
     ...catalog.hotels.map((p) => ({ kind: 'hotel' as const, code: p.id, payload: p })),
   ];
-  return driftOf(imageDirOf(loaded.deps), loaded.sop.sections, loaded.imageSections, active);
+  return driftOf(imageDirOf(state.loaded.deps), state.loaded.sop.sections, state.loaded.imageSections, active);
 }
 
 /** 配置写入前调：锁连接断开期间一律拒绝（第 7、8 步的写函数用） */
 export function assertConfigWritable(): void {
-  if (!loaded) throw new ConfigNotReadyError();
-  if (lockState !== 'held') throw new ConfigLockLostError();
+  if (currentRuntime().state !== 'serving') throw new Error('tenant_closing');
+  const state = configState();
+  if (!state.loaded) throw new ConfigNotReadyError();
+  if (state.lockState !== 'held') throw new ConfigLockLostError();
 }
 
 // ---------------- 生产依赖 ----------------
@@ -319,7 +326,11 @@ const PRIVILEGED = ['DATABASE_OWNER_URL', 'DATABASE_PLATFORM_URL', 'POSTGRES_PAS
  * 从环境变量构造生产依赖。CONFIG_SOURCE 由 initConfigFromEnv 先查；这里要求 DATABASE_URL 是 postgres:// 或 postgresql://，
  * DEFAULT_TENANT_SLUG 与 DEPLOY_PROFILE 显式设置；环境里不能有 owner / platform / 超级用户的凭据。连接串一律脱敏
  */
-export async function productionConfigDeps(env: NodeJS.ProcessEnv, gracefulExit: (code: number) => void): Promise<ConfigDeps> {
+export async function productionConfigDeps(
+  env: NodeJS.ProcessEnv,
+  gracefulExit: (code: number) => void,
+  opts: { tenantSlug?: string } = {},
+): Promise<ConfigDeps> {
   const privileged = [...PRIVILEGED, ...Object.keys(env).filter((k) => /^AGENT_[A-Z0-9_]+_PASSWORD$/.test(k))].filter((k) => env[k]);
   if (privileged.length) {
     throw startup(
@@ -329,7 +340,7 @@ export async function productionConfigDeps(env: NodeJS.ProcessEnv, gracefulExit:
   }
   const url = env.DATABASE_URL ?? '';
   if (!/^postgres(ql)?:\/\//.test(url)) throw startup('env_invalid', 'DB 模式要设 DATABASE_URL，只接受 postgres:// 或 postgresql://');
-  const tenantSlug = env.DEFAULT_TENANT_SLUG ?? '';
+  const tenantSlug = opts.tenantSlug ?? env.DEFAULT_TENANT_SLUG ?? '';
   if (!tenantSlug) throw startup('env_invalid', 'DB 模式要设 DEFAULT_TENANT_SLUG');
   if (!env.DEPLOY_PROFILE) throw startup('env_invalid', 'DB 模式要显式设置 DEPLOY_PROFILE，不接受缺省的 demo');
   for (const k of ['SOP_PATH', 'ROUTES_PATH', 'HOTELS_PATH']) {
@@ -363,6 +374,11 @@ export async function productionConfigDeps(env: NodeJS.ProcessEnv, gracefulExit:
   };
 }
 
+async function loadStandardTenants(deps: ConfigDeps) {
+  await checkConfigDatabase(deps);
+  return dbStep('读 standard 租户清单', () => standardTenants(deps.db));
+}
+
 /** 只回显看起来像个取值的短词：配错位置的整行环境变量里可能带着连接串口令 */
 const shownValue = (name: string, v: string): string => (/^[a-z]{1,16}$/i.test(v) ? `${name}=${v}` : `${name} 的值`);
 
@@ -371,6 +387,9 @@ const shownValue = (name: string, v: string): string => (/^[a-z]{1,16}$/i.test(v
  * SESSION_STORE（02 spec R1）：未设、空串、file 是文件存储，db 是 PG 会话存储且要求 CONFIG_SOURCE=db，绝不回落
  */
 export async function initConfigFromEnv(env: NodeJS.ProcessEnv, gracefulExit: (code: number) => void): Promise<void> {
+  return withTenantScope(hostRuntime(), () => loadConfigFromEnv(env, gracefulExit));
+}
+async function loadConfigFromEnv(env: NodeJS.ProcessEnv, gracefulExit: (code: number) => void): Promise<void> {
   const mode = env.CONFIG_SOURCE ?? '';
   if (mode !== '' && mode !== 'file' && mode !== 'db') {
     throw startup('env_invalid', `${shownValue('CONFIG_SOURCE', mode)} 不合法，只能是 file 或 db`);
@@ -382,8 +401,66 @@ export async function initConfigFromEnv(env: NodeJS.ProcessEnv, gracefulExit: (c
   if (store === 'db' && mode !== 'db') {
     throw startup('env_invalid', 'SESSION_STORE=db 要求 CONFIG_SOURCE=db（会话存储不会回落到文件）');
   }
-  if (mode !== 'db') return initConfig(null);
-  return initConfig(await productionConfigDeps(env, gracefulExit));
+  if (mode !== 'db') {
+    configureTenancy({ role: 'host', standardCount: 1, strict: env.TENANCY_STRICT === '1' });
+    return initConfig(null);
+  }
+  const deps = await productionConfigDeps(env, gracefulExit);
+  let hostLocks: TenantLock | null = null;
+  try {
+    const standards = await loadStandardTenants(deps);
+    const host = standards.find((t) => t.slug === deps.tenantSlug);
+    if (!host) throw startup('tenant_not_found', '宿主必须是 standard 租户');
+    const selected = standards.filter((t) => t.id === host.id || t.publicHost);
+    for (const t of standards) if (!selected.includes(t)) console.log(`[config] 跳过未设置 public_host 的租户 ${t.slug}`);
+    if (selected.length > 1 && selected.some((t) => !t.publicHost))
+      throw startup('tenant_host_missing', '多个 standard 租户都必须设置 public_host');
+    validatePublicHosts(
+      selected.map((t) => ({ publicHost: t.publicHost, isHost: t.id === host.id })),
+      env.PUBLIC_BASE_URL ?? '',
+    );
+    configureTenancy({ role: 'host', standardCount: selected.length, strict: env.TENANCY_STRICT === '1' });
+    const held = await dbStep('取宿主进程租户锁', () =>
+      holdTenantLocks(
+        env.DATABASE_URL!,
+        selected.map((t) => t.id),
+      ),
+    );
+    hostLocks = held;
+    if (!held) throw startup('lock_held', '装载的 standard 租户中有锁被另一个进程持有');
+    // 共享连接只在所有运行时完成 late 收尾后释放；每个配置保留自己的锁视图。
+    let remaining = selected.length;
+    const locks = new Map(
+      selected.map((t) => {
+        let released = false;
+        const lock: TenantLock = {
+          onLost: (cb) => held.onLost(cb),
+          reacquire: () => held.reacquire(),
+          release: async () => {
+            if (!released) {
+              released = true;
+              if (--remaining === 0) {
+                await held.release();
+                await deps.closeDb?.();
+              }
+            }
+          },
+        };
+        return [t.id, lock] as const;
+      }),
+    );
+    for (const t of selected) {
+      const rt = t.id === host.id ? hostRuntime() : createTenantRuntime({ id: t.id, slug: t.slug, publicBase: `https://${t.publicHost}` });
+      installPublicHost(rt, t.publicHost);
+      if (!rt.isHost) registerRuntime(rt);
+      await withTenantScope(rt, () => initConfig({ ...deps, tenantSlug: t.slug, lock: async () => locks.get(t.id)!, closeDb: undefined }));
+    }
+  } catch (e) {
+    for (const rt of tenantRuntimes()) await withTenantScope(rt, closeConfig);
+    await hostLocks?.release().catch(() => {});
+    await deps.closeDb?.().catch(() => {});
+    throw e;
+  }
 }
 
 // ---------------- 装载 ----------------
@@ -587,38 +664,55 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
  * 任何一步失败都以 ConfigStartupError reject，释放锁、关闭连接池，不留半装载状态
  */
 export async function initConfig(deps: ConfigDeps | null): Promise<void> {
+  const rt = scopedRuntime() ?? hostRuntime();
+  return withTenantScope(rt, () => loadConfig(deps));
+}
+/** 启动清单与单租户装载都必须先核对编码和迁移，保持原有错误归类。 */
+export async function checkConfigDatabase(d: ConfigDeps): Promise<void> {
+  // 1
+  let encoding: string;
+  try {
+    encoding = await serverEncoding(d.db);
+  } catch (e) {
+    throw startup('db_unreachable', message(e));
+  }
+  if (encoding !== 'UTF8') throw startup('db_encoding', `server_encoding 是 ${encoding}，要求 UTF8`);
+  // 2 镜像里的每条迁移都要在库里；库里多出来的（来自更新的镜像，回滚到 :prev 时就是这样）只警告
+  let applied: string[];
+  try {
+    applied = await appliedMigrationHashes(d.db);
+  } catch (e) {
+    throw startup('schema_behind', `读不到迁移记录（从没跑过迁移？）：${message(e)}`);
+  }
+  const image = imageMigrationHashes();
+  const missing = image.filter((h) => !applied.includes(h));
+  if (missing.length) throw startup('schema_behind', `镜像里有 ${missing.length} 条迁移没在库里，先跑 migrate`);
+  const extra = applied.filter((h) => !image.includes(h));
+  if (extra.length) console.warn(`[config] 库里多出 ${extra.length} 条镜像里没有的迁移（库比镜像新），照常启动`);
+}
+
+async function loadConfig(deps: ConfigDeps | null): Promise<void> {
+  const state = configState();
   if (!deps) {
     installPack('travel', readFileBrand());
     return;
   }
   let d = deps;
-  if (loaded) throw new Error('配置源已经装载过');
-  dbInstalled = true;
+  if (state.loaded) throw new Error('配置源已经装载过');
+  state.dbInstalled = true;
   let lock: TenantLock | null = null;
   try {
-    // 1
-    let encoding: string;
-    try {
-      encoding = await serverEncoding(d.db);
-    } catch (e) {
-      throw startup('db_unreachable', message(e));
-    }
-    if (encoding !== 'UTF8') throw startup('db_encoding', `server_encoding 是 ${encoding}，要求 UTF8`);
-    // 2 镜像里的每条迁移都要在库里；库里多出来的（来自更新的镜像，回滚到 :prev 时就是这样）只警告
-    let applied: string[];
-    try {
-      applied = await appliedMigrationHashes(d.db);
-    } catch (e) {
-      throw startup('schema_behind', `读不到迁移记录（从没跑过迁移？）：${message(e)}`);
-    }
-    const image = imageMigrationHashes();
-    const missing = image.filter((h) => !applied.includes(h));
-    if (missing.length) throw startup('schema_behind', `镜像里有 ${missing.length} 条迁移没在库里，先跑 migrate`);
-    const extra = applied.filter((h) => !image.includes(h));
-    if (extra.length) console.warn(`[config] 库里多出 ${extra.length} 条镜像里没有的迁移（库比镜像新），照常启动`);
+    await checkConfigDatabase(d);
     // 3
     const tenant = await dbStep('解析租户', () => findTenantBySlug(d.db, d.tenantSlug));
     if (!tenant) throw startup('tenant_not_found', `没有 slug 为「${d.tenantSlug}」的租户`);
+    identifyRuntime(currentRuntime(), {
+      id: tenant.id,
+      slug: tenant.slug,
+      kind: currentRuntime().kind,
+      isHost: currentRuntime().isHost,
+      publicBase: currentRuntime().publicBase,
+    });
     if (tenant.status === 'suspended') throw startup('tenant_suspended', `租户「${d.tenantSlug}」已停用`);
     // 后台 UX spec「接口改动 · /pack」：包不在注册表里时拒绝启动（tenant-create 已按注册表校验，这里防手改库）
     const pack = packById(tenant.packId);
@@ -645,10 +739,12 @@ export async function initConfig(deps: ConfigDeps | null): Promise<void> {
     if (!held) throw startup('lock_held', `租户「${d.tenantSlug}」的锁在另一个进程手里：同一个库只能跑一个应用副本`);
     // 取到锁就订阅断开：锁连接在装载途中断了，装上缓存时直接进入 lost 并开始重取，而不是一直以为持着锁
     let lostWhileLoading = false;
-    held.onLost(() => {
-      if (!loaded) lostWhileLoading = true;
-      else if (loaded.lock === held) onLockLost();
-    });
+    held.onLost(
+      tenantCallback(currentRuntime(), () => {
+        if (!state.loaded) lostWhileLoading = true;
+        else if (state.loaded.lock === held) onLockLost();
+      }),
+    );
     // 5
     let imageSections: SopSection[];
     try {
@@ -682,7 +778,7 @@ export async function initConfig(deps: ConfigDeps | null): Promise<void> {
     if (backfill.length) await dbStep('补写条目版本', () => writeBackfill(d, tenant.id, backfill));
     const history = historyOf([...versions, ...backfill]);
     // 10
-    loaded = {
+    state.loaded = {
       deps: d,
       tenantId: tenant.id,
       tenantName: tenant.name,
@@ -695,20 +791,20 @@ export async function initConfig(deps: ConfigDeps | null): Promise<void> {
       ords: ordsOf(items),
       history,
     };
-    bindPack(runtime, loaded.sop.brand);
-    lockState = 'held';
-    sopStale = false;
-    catalogStale = false;
+    bindPack(runtime, state.loaded.sop.brand);
+    state.lockState = 'held';
+    state.sopStale = false;
+    state.catalogStale = false;
     // 日志的 tenant（R24）：只在 DB 配置模式下有
     setLogTenant(d.tenantSlug);
     // 缓存照常装上（对话要用），配置写入暂停、开始重取
     if (lostWhileLoading) onLockLost();
-    const { sop } = loaded;
+    const { sop } = state.loaded;
     console.log(
-      `[config] DB 模式：租户 ${d.tenantSlug} · SOP v${sop.versionNo} · 线路 ${loaded.catalog.routes.length} 条、酒店 ${loaded.catalog.hotels.length} 家 · 前缀 ${sop.prefixHash.slice(0, 12)}`,
+      `[config] DB 模式：租户 ${d.tenantSlug} · SOP v${sop.versionNo} · 线路 ${state.loaded.catalog.routes.length} 条、酒店 ${state.loaded.catalog.hotels.length} 家 · 前缀 ${sop.prefixHash.slice(0, 12)}`,
     );
   } catch (e) {
-    dbInstalled = false;
+    state.dbInstalled = false;
     await lock?.release().catch(() => {});
     await d.closeDb?.().catch(() => {});
     throw e;
@@ -763,8 +859,9 @@ async function writeRerender(
 
 /** 启动时装载的租户名称与行业包（后台 UX spec「接口改动」）：/me 的 tenantName 与 GET /pack 用，不查库 */
 export function currentTenant(): { name: string; pack: IndustryPack } {
-  if (!loaded) throw new ConfigNotReadyError();
-  return { name: loaded.tenantName, pack: loaded.pack };
+  const state = configState();
+  if (!state.loaded) throw new ConfigNotReadyError();
+  return { name: state.loaded.tenantName, pack: state.loaded.pack };
 }
 
 // ---------------- 给编辑流程用 ----------------
@@ -777,13 +874,14 @@ export function configRuntime(): {
   imageSections: readonly SopSection[];
   legacyImageSop: string;
 } {
-  if (!loaded) throw new ConfigNotReadyError();
+  const state = configState();
+  if (!state.loaded) throw new ConfigNotReadyError();
   return {
-    db: loaded.deps.db,
-    tenantId: loaded.tenantId,
-    deps: loaded.deps,
-    imageSections: loaded.imageSections,
-    legacyImageSop: loaded.legacyImageSop,
+    db: state.loaded.deps.db,
+    tenantId: state.loaded.tenantId,
+    deps: state.loaded.deps,
+    imageSections: state.loaded.imageSections,
+    legacyImageSop: state.loaded.legacyImageSop,
   };
 }
 
@@ -791,13 +889,14 @@ export function configRuntime(): {
  * 提交之后换产品库快照的次数（applyCatalogRow 真的换了才加 1）。重读据此认出自己读到的产品库可能已经过时。
  * SOP 不用计数：版本号只增不减，重读读到的旧版本号不会换上去
  */
-let catalogWrites = 0;
 
 /** 只给 src/config/{sop,catalog}.ts 在事务提交之后调用；next.versionNo 不大于当前值时忽略 */
 export function replacePublishedSop(next: PublishedSop): void {
-  if (!loaded || next.versionNo <= loaded.sop.versionNo) return;
-  loaded.sop = next;
-  sopStale = false;
+  if (currentRuntime().state !== 'serving') return;
+  const state = configState();
+  if (!state.loaded || next.versionNo <= state.loaded.sop.versionNo) return;
+  state.loaded.sop = next;
+  state.sopStale = false;
 }
 
 /**
@@ -813,9 +912,11 @@ export function applyCatalogRow(row: {
   version: number;
   payload: unknown;
 }): void {
-  const cur = loaded;
+  if (currentRuntime().state !== 'serving') return;
+  const state = configState();
+  const cur = state.loaded;
   if (!cur || row.status !== 'active') return;
-  catalogWrites++;
+  state.catalogWrites++;
   addVersion(cur.history, row.kind, row.code, row.version, row.payload);
   // 内容没变的写入（原样提交）带回的是这一列上的版本，启动补写之后它可能落后于历史：取大（见 currentVersionOf）
   const versions = { ...cur.catalog.versions, [catalogVersionKey(row.kind, row.code)]: currentVersionOf(row, cur.history) };
@@ -834,34 +935,45 @@ export function applyCatalogRow(row: {
 // ---------------- 锁丢失 ----------------
 
 function onLockLost(): void {
-  if (shuttingDown || !loaded) return;
-  lockState = 'lost';
-  console.error(`[config] 租户锁连接断开：配置写入暂停，对话照常；每 ${reacquireMs / 1000} 秒重取`);
+  const state = configState();
+  if (state.shuttingDown || !state.loaded) return;
+  state.lockState = 'lost';
+  // 沙箱的共享锁连接由组合根 fail-stop，永远不在原进程重取。
+  if (currentRuntime().kind === 'sandbox') return;
+  console.error(`[config] 租户锁连接断开：配置写入暂停，对话照常；每 ${state.reacquireMs / 1000} 秒重取`);
   lockEvent('lost');
   scheduleReacquire();
 }
 
 function scheduleReacquire(): void {
-  if (reacquireTimer) return;
-  reacquireTimer = setTimeout(() => {
-    reacquireTimer = null;
-    void reacquireOnce();
-  }, reacquireMs);
-  reacquireTimer.unref();
+  const state = configState();
+  const currentRuntimeForTimer = currentRuntime();
+  if (state.reacquireTimer) return;
+  state.reacquireTimer = withoutTenantScope(() =>
+    setTimeout(
+      tenantCallback(currentRuntimeForTimer, () => {
+        state.reacquireTimer = null;
+        void reacquireOnce();
+      }),
+      state.reacquireMs,
+    ),
+  );
+  state.reacquireTimer.unref();
 }
 
 async function reacquireOnce(): Promise<void> {
-  const cur = loaded;
-  if (shuttingDown || !cur) return;
+  const state = configState();
+  const cur = state.loaded;
+  if (state.shuttingDown || !cur) return;
   const r = await cur.lock.reacquire().catch(() => 'unreachable' as const);
-  if (shuttingDown || loaded !== cur) return;
+  if (state.shuttingDown || state.loaded !== cur) return;
   if (r === 'ok') {
-    lockState = 'held';
+    state.lockState = 'held';
     console.log('[config] 租户锁已重新取得，配置写入恢复');
     lockEvent('held');
   } else if (r === 'held_by_other') {
     // 另一个进程已经接管：先跑全部停机钩子（在途的企微回复发完、会话落盘），再退出
-    lockTaken = true;
+    state.lockTaken = true;
     console.error('[config] 租户锁已被另一个进程拿走，本进程优雅退出');
     lockEvent('taken');
     cur.deps.gracefulExit(1);
@@ -872,17 +984,15 @@ async function reacquireOnce(): Promise<void> {
 
 // ---------------- 重读 ----------------
 
-let reloading: Promise<void> | null = null;
-let reloadAgain = false;
 const RELOAD_BACKOFF_MS = [5_000, 30_000, 120_000];
-let reloadBackoff = RELOAD_BACKOFF_MS;
 
 /**
  * 读一次库、换上缓存。返回 false 表示没换：读的途中有产品库写入提交并换了快照，这份快照可能早于那次写入，
  * 整体换上去会把那次修改冲掉（spec 否决的「提交后重读」就是这个竞态），要重读。SOP 由版本号只增不减兜住
  */
 async function reloadOnce(cur: Loaded): Promise<boolean> {
-  const writesBefore = catalogWrites;
+  const state = configState();
+  const writesBefore = state.catalogWrites;
   const { row, items, versions } = await withTenant(
     cur.deps.db,
     systemCtx(cur.tenantId),
@@ -891,11 +1001,11 @@ async function reloadOnce(cur: Loaded): Promise<boolean> {
   );
   if (!row) throw new Error('库里没有已发布的 SOP');
   assertIntegrity(row);
-  if (loaded !== cur) return true;
-  if (catalogWrites !== writesBefore) return false;
+  if (currentRuntime().state !== 'serving' || state.loaded !== cur) return true;
+  if (state.catalogWrites !== writesBefore) return false;
   // 版本号只增不减（不变式 13）
   if (row.versionNo! > cur.sop.versionNo) cur.sop = toPublishedSop(cur.tenantId, row, mergeWithImage(row.sections, cur.imageSections));
-  sopStale = false;
+  state.sopStale = false;
   // 版本只追加：库里读到的并进内存里已有的（内存里有、库里没有的不会出现：只有提交之后才加进内存）
   for (const v of versions) addVersion(cur.history, v.kind, v.code, v.version, v.payload);
   const next = snapshotOf(cur.tenantId, items, cur.catalog.generation, cur.history);
@@ -907,13 +1017,14 @@ async function reloadOnce(cur: Loaded): Promise<boolean> {
   ) {
     setCatalog(cur, { ...next, generation: cur.catalog.generation + 1 });
   }
-  catalogStale = false;
+  state.catalogStale = false;
   return true;
 }
 
 function setCatalog(cur: Loaded, snap: CatalogSnapshot): void {
+  const state = configState();
   cur.catalog = deepFreeze(snap);
-  for (const cb of catalogListeners) {
+  for (const cb of [...catalogSubscriptions, ...state.catalogListeners]) {
     try {
       cb(cur.catalog);
     } catch (e) {
@@ -927,48 +1038,52 @@ function setCatalog(cur: Loaded, snap: CatalogSnapshot): void {
  * 单飞：进行中再被调用只置位，结束后再跑一遍；失败按 5 秒、30 秒、2 分钟退避重试，之后每 2 分钟一次
  */
 export function reloadFromDb(): Promise<void> {
-  const cur = loaded;
+  if (currentRuntime().state !== 'serving') return Promise.resolve();
+  const state = configState();
+  const cur = state.loaded;
   if (!cur) return Promise.reject(new ConfigNotReadyError());
-  sopStale = true;
-  catalogStale = true;
-  if (reloading) {
-    reloadAgain = true;
-    return reloading;
+  state.sopStale = true;
+  state.catalogStale = true;
+  if (state.reloading) {
+    state.reloadAgain = true;
+    return state.reloading;
   }
-  reloading = (async () => {
+  state.reloading = (async () => {
     do {
-      reloadAgain = false;
+      state.reloadAgain = false;
       for (let attempt = 0; ; attempt++) {
-        if (shuttingDown || loaded !== cur) return;
+        if (state.shuttingDown || state.loaded !== cur) return;
         try {
           // 读的途中产品库快照被写入换过：这份快照作废，立即再读一遍（不算失败，不退避）
-          if (!(await reloadOnce(cur))) reloadAgain = true;
+          if (!(await reloadOnce(cur))) state.reloadAgain = true;
           break;
         } catch (e) {
-          const wait = reloadBackoff[Math.min(attempt, reloadBackoff.length - 1)]!;
+          const wait = state.reloadBackoff[Math.min(attempt, state.reloadBackoff.length - 1)]!;
           console.error(`[config] 从库里重读配置失败，${wait / 1000} 秒后重试：${message(e)}`);
-          await new Promise((r) => setTimeout(r, wait).unref());
+          await new Promise((r) => withoutTenantScope(() => setTimeout(r, wait).unref()));
         }
       }
-    } while (reloadAgain);
+    } while (state.reloadAgain);
   })().finally(() => {
-    reloading = null;
+    state.reloading = null;
   });
-  return reloading;
+  return state.reloading;
 }
 
 // ---------------- 停机 ----------------
 
 /** onShutdown 的普通阶段调：此后忽略锁连接的一切事件 */
 export function markConfigShuttingDown(): void {
-  shuttingDown = true;
-  if (reacquireTimer) clearTimeout(reacquireTimer);
-  reacquireTimer = null;
+  const state = configState();
+  state.shuttingDown = true;
+  if (state.reacquireTimer) clearTimeout(state.reacquireTimer);
+  state.reacquireTimer = null;
 }
 
 /** onShutdown 的 late 阶段调：其他停机钩子都结束之后，释放锁、关连接池 */
 export async function closeConfig(): Promise<void> {
-  const cur = loaded;
+  const state = configState();
+  const cur = state.loaded;
   if (!cur) return;
   await cur.lock.release().catch(() => {});
   await cur.deps.closeDb?.().catch(() => {});
@@ -976,38 +1091,26 @@ export async function closeConfig(): Promise<void> {
 
 /** 仅供自测：卸下配置源、清空缓存，回到文件模式 */
 export const __configTest = {
+  loadStandardTenants,
   reset(): void {
-    if (reacquireTimer) clearTimeout(reacquireTimer);
-    reacquireTimer = null;
-    dbInstalled = false;
-    loaded = null;
-    installPack('travel');
-    setLogTenant('');
-    lockState = 'held';
-    lockTaken = false;
-    sopStale = false;
-    catalogStale = false;
-    shuttingDown = false;
-    reloading = null;
-    reloadAgain = false;
-    reacquireMs = 5_000;
-    reloadBackoff = RELOAD_BACKOFF_MS;
-    // 不清 catalogListeners：它们是各模块加载时登记的（retrieval.ts），模块不会再加载一次
+    withTenantScope(scopedRuntime() ?? hostRuntime(), () => resetConfig());
   },
   /**
    * 换掉装载好的行业包，返回原来那份：后台接口按另一个包（家装假包）判定会话状态时用。
    * 假包不进注册表（不变量 25），租户行里写它的 pack_id 启动不了，只能这样换
    */
   swapPack(pack: IndustryPack): IndustryPack {
-    if (!loaded) throw new ConfigNotReadyError();
-    const prev = loaded.pack;
-    loaded.pack = pack;
+    const state = configState();
+    if (!state.loaded) throw new ConfigNotReadyError();
+    const prev = state.loaded.pack;
+    state.loaded.pack = pack;
     return prev;
   },
   /** 锁重取间隔与重读退避调短，测试不用真等几秒 */
   setTimings(t: { reacquireMs?: number; reloadBackoffMs?: number[] }): void {
-    if (t.reacquireMs !== undefined) reacquireMs = t.reacquireMs;
-    if (t.reloadBackoffMs) reloadBackoff = t.reloadBackoffMs;
+    const state = configState();
+    if (t.reacquireMs !== undefined) state.reacquireMs = t.reacquireMs;
+    if (t.reloadBackoffMs) state.reloadBackoff = t.reloadBackoffMs;
   },
 };
 
@@ -1019,8 +1122,9 @@ export function prefixSummary(file: () => { system: string; tools: string; sop: 
   prefixHash: string;
   sopHash: string;
 } {
-  if (loaded) {
-    const s = loaded.sop;
+  const state = configState();
+  if (state.loaded) {
+    const s = state.loaded.sop;
     return { sopVersion: s.versionNo, promptHash: s.promptHash, toolsHash: s.toolsHash, prefixHash: s.prefixHash, sopHash: s.sopHash };
   }
   const f = file();
@@ -1029,8 +1133,9 @@ export function prefixSummary(file: () => { system: string; tools: string; sop: 
 
 /** 文件模式与未启动的旧自测入口按 R2 延后装配旅游；DB 装载成功时显式覆盖绑定。 */
 export function currentPack(): PackBinding {
+  const state = configState();
   const binding = boundPack() ?? installPack('travel', configMode() === 'file' ? readFileBrand() : null);
-  return loaded ? { ...binding, brand: loaded.sop.brand } : binding;
+  return state.loaded ? { ...binding, brand: state.loaded.sop.brand } : binding;
 }
 
 /** 与引擎共用有效路径，品牌不会误读 cwd/data 或产品库所在目录。 */
@@ -1099,3 +1204,57 @@ export function packSources(): PackSources {
     isTerminalStage: (...args) => liveSources().isTerminalStage(...args),
   };
 }
+
+function resetConfig(): void {
+  const state = configState();
+  if (state.reacquireTimer) clearTimeout(state.reacquireTimer);
+  state.reacquireTimer = null;
+  state.dbInstalled = false;
+  state.loaded = null;
+  installPack('travel');
+  setLogTenant('');
+  state.lockState = 'held';
+  state.lockTaken = false;
+  state.sopStale = false;
+  state.catalogStale = false;
+  state.shuttingDown = false;
+  state.reloading = null;
+  state.reloadAgain = false;
+  state.reacquireMs = 5_000;
+  state.reloadBackoff = RELOAD_BACKOFF_MS;
+  // 不清 catalogListeners：它们是各模块加载时登记的（retrieval.ts），模块不会再加载一次
+}
+
+function configRegistration(key: keyof TenantConfig) {
+  return {
+    keyCount: (id: string): number => {
+      const rt = tenantRuntimes().find((r) => r.id === id);
+      if (!rt) return 0;
+      const value = rt.config[key];
+      if (Array.isArray(value) || value instanceof Set) return Array.isArray(value) ? value.length : value.size;
+      return rt.config.loaded ? 1 : 0;
+    },
+    drop: (id: string): void => {
+      const rt = tenantRuntimes().find((r) => r.id === id);
+      if (!rt) return;
+      if (rt.config.reacquireTimer) clearTimeout(rt.config.reacquireTimer);
+      Object.assign(rt.config, createTenantConfig());
+    },
+    reset: (): void => {
+      for (const rt of tenantRuntimes()) withTenantScope(rt, resetConfig);
+    },
+  };
+}
+registerTenantState({ name: 'config.dbInstalled', ...configRegistration('dbInstalled') });
+registerTenantState({ name: 'config.loaded', ...configRegistration('loaded') });
+registerTenantState({ name: 'config.lockState', ...configRegistration('lockState') });
+registerTenantState({ name: 'config.lockTaken', ...configRegistration('lockTaken') });
+registerTenantState({ name: 'config.sopStale', ...configRegistration('sopStale') });
+registerTenantState({ name: 'config.catalogStale', ...configRegistration('catalogStale') });
+registerTenantState({ name: 'config.shuttingDown', ...configRegistration('shuttingDown') });
+registerTenantState({ name: 'config.reacquireTimer', ...configRegistration('reacquireTimer') });
+registerTenantState({ name: 'config.catalogListeners', ...configRegistration('catalogListeners') });
+registerTenantState({ name: 'config.lockListeners', ...configRegistration('lockListeners') });
+registerTenantState({ name: 'config.catalogWrites', ...configRegistration('catalogWrites') });
+registerTenantState({ name: 'config.reloading', ...configRegistration('reloading') });
+registerTenantState({ name: 'config.reloadAgain', ...configRegistration('reloadAgain') });

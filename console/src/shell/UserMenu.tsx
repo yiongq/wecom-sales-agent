@@ -33,7 +33,7 @@ export function UserNames({ name, role }: { name: string; role: string }) {
   return (
     <span className="user-names">
       <span className="user-name">{name}</span>
-      <span className="user-role">{role}</span>
+      {role && <span className="user-role">{role}</span>}
     </span>
   );
 }
@@ -49,7 +49,15 @@ export interface UserMenuProps {
 const checkable = (role: 'menuitemradio' | 'menuitemcheckbox', checked: boolean): object => ({ role, 'aria-checked': checked });
 
 /** 用户菜单的条目（外观子菜单、减少动态效果、关于、退出登录）；身份块在 popupRender 里 */
-export function userMenuItems({ appearance, reduce }: { appearance: Appearance; reduce: boolean }): NonNullable<MenuProps['items']> {
+export function userMenuItems({
+  appearance,
+  reduce,
+  sandbox = false,
+}: {
+  appearance: Appearance;
+  reduce: boolean;
+  sandbox?: boolean;
+}): NonNullable<MenuProps['items']> {
   return [
     {
       key: 'appearance',
@@ -85,8 +93,7 @@ export function userMenuItems({ appearance, reduce }: { appearance: Appearance; 
       ),
     },
     { key: 'about', label: '关于' },
-    { type: 'divider' },
-    { key: 'logout', label: '退出登录', icon: <Icon of={LogOut} /> },
+    ...(!sandbox ? [{ type: 'divider' as const }, { key: 'logout', label: '退出登录', icon: <Icon of={LogOut} /> }] : []),
   ];
 }
 
@@ -98,7 +105,9 @@ const SUBMENU_ARROW = (
 );
 
 export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
-  const role = ROLE_LABEL[me.role];
+  const role = me.sandbox ? '' : ROLE_LABEL[me.role];
+  const name = me.sandbox ? '体验访客' : me.displayName;
+  const identity = role ? `${name}，${role}` : name;
   const [open, setOpen] = useState(false);
   // 偏好只存在 prefs.ts 一处（⌘K、别的标签页也会改），每次渲染现读；这里改了以后重渲一次
   const [, rerender] = useReducer((n: number) => n + 1, 0);
@@ -107,7 +116,7 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
   // 缓存弹层），点得快时外观子菜单还会被点之前悬停排下的定时器重新打开，勾停在旧值上，直到再打开菜单（验收之后在浏览器里看到）
   const keepOpen = useRef(false);
   const button = useRef<HTMLButtonElement>(null);
-  const items = userMenuItems({ appearance, reduce });
+  const items = userMenuItems({ appearance, reduce, sandbox: !!me.sandbox });
 
   const onClick: MenuProps['onClick'] = ({ key, domEvent }) => {
     // 键盘的 Enter 在 keydown 里就点了菜单项：拦下默认动作，这一下不再落到随即拿到焦点的按钮上（同话术页、条目详情的「更多」）
@@ -151,25 +160,18 @@ export function UserMenu({ me, collapsed, onAbout, onSignOut }: UserMenuProps) {
       popupRender={(menu) => (
         <PopupRegion className="user-menu" label="用户选项">
           <div className="user-menu-id">
-            <div className="user-menu-name">{me.displayName}</div>
-            <div className="user-menu-role">{role}</div>
+            <div className="user-menu-name">{name}</div>
+            {role && <div className="user-menu-role">{role}</div>}
           </div>
           <div className="user-menu-divider" />
           {menu}
         </PopupRegion>
       )}
     >
-      <Tooltip title={`${me.displayName}·${role}`} placement={collapsed ? 'right' : 'top'} open={open ? false : undefined}>
-        <button
-          ref={button}
-          type="button"
-          className="user-btn"
-          aria-haspopup="menu"
-          aria-expanded={open}
-          aria-label={`${me.displayName}，${role}`}
-        >
-          <Avatar name={me.displayName} />
-          <UserNames name={me.displayName} role={role} />
+      <Tooltip title={me.sandbox ? name : `${name}·${role}`} placement={collapsed ? 'right' : 'top'} open={open ? false : undefined}>
+        <button ref={button} type="button" className="user-btn" aria-haspopup="menu" aria-expanded={open} aria-label={identity}>
+          <Avatar name={me.sandbox ? '访' : name} />
+          <UserNames name={name} role={role} />
           <Icon of={ChevronsUpDown} size={14} className="user-chevron" />
         </button>
       </Tooltip>

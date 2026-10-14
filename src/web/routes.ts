@@ -1,3 +1,8 @@
+import { scopedState } from '../tenancy/scoped-state.js';
+import { registerTenantState } from '../tenancy/state.js';
+import { publicHostMiddleware } from '../tenancy/hosts.js';
+import { TenantScopeMissing } from '../tenancy/runtime.js';
+import { withoutTenantScope, tenantCallback, currentRuntime } from '../tenancy/runtime.js';
 import { currentPack } from '../config/source.js';
 import { brandTexts, renderBrandPage } from '../core/brand.js';
 // 03 R14：正式网页渠道。每次读写的会话都只由账号与 HttpOnly cookie 推导。
@@ -24,6 +29,14 @@ import { getOrCreateSession, getSession, onShutdown, recentMsgids, saveSession }
 import { onTurnEnd } from '../trace/recorder.js';
 import type { Session } from '../types.js';
 
+const tenantState = scopedState(() => ({
+  processing: new Set<string>(),
+  dailyCounts: new Map<string, Daily>(),
+}));
+const state = tenantState.get;
+registerTenantState({ name: 'web.routes.processing', ...tenantState.registration('processing') });
+registerTenantState({ name: 'web.routes.dailyCounts', ...tenantState.registration('dailyCounts') });
+
 const COOKIE = '__Host-wv';
 const MAX_AGE = 30 * 24 * 60 * 60;
 const IDLE_MS = 30 * 60_000;
@@ -39,21 +52,19 @@ const bodySchema = z.union([
 ]);
 // 状态随 conversations.state 落库：即使顾问交还、重启或消息窗口推进，也不重复触发预算转人工。
 type WebSession = Session & { webTurnLimited?: true };
-const processing = new Set<string>();
 const streams = new Set<{ tick: (now: number) => void; close: () => void }>();
 const messageLimited = makeLimiter(Math.max(1, numEnv('WEB_RATE_PER_MIN', 20)));
 const newIpHits = new Map<string, number[]>();
 type Daily = { day: string; newConversations: number; turns: number; alerted: boolean };
-const dailyCounts = new Map<string, Daily>();
 
 function daily(account: ChannelAccount): Daily {
   // 自然日用服务器时区，与定时清理、告警的日期口径相同。
   const d = new Date();
   const day = `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-  let counter = dailyCounts.get(account.id);
+  let counter = state().dailyCounts.get(account.id);
   if (!counter || counter.day !== day) {
     counter = { day, newConversations: 0, turns: 0, alerted: false };
-    dailyCounts.set(account.id, counter);
+    state().dailyCounts.set(account.id, counter);
   }
   return counter;
 }
@@ -116,13 +127,14 @@ export const webRoutes = new Hono();
 const webOnly = async (c: Context, next: () => Promise<void>): Promise<Response | void> => {
   c.header('Cache-Control', 'no-store');
   c.header('X-Content-Type-Options', 'nosniff');
-  if (!profile().flags.web_channel || !accountByKey(c.req.param('key') ?? '', 'web')) return c.notFound();
+  if (!profile().flags.web_channel || !accountByKey(c.req.param('key') ?? '', 'web', currentRuntime().id)) return c.notFound();
   return next();
 };
+webRoutes.use('*', publicHostMiddleware);
 webRoutes.use('/w/:key', webOnly);
 webRoutes.use('/api/web/:key/*', webOnly);
 webRoutes.get('/w/:key', async (c) => {
-  const account = accountByKey(c.req.param('key'), 'web')!;
+  const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
   const binding = currentPack();
   const welcome = account.web!.welcomeText ?? brandTexts(binding.runtime, binding.brand).webWelcome;
   const config = JSON.stringify({
@@ -142,13 +154,14 @@ webRoutes.get('/w/:key', async (c) => {
 });
 
 webRoutes.post('/api/web/:key/messages', async (c) => {
+  const owner = currentRuntime();
   if (c.req.header('x-web-chat') !== '1') return c.json({ error: 'forbidden' }, 403);
   const ip = clientKey(c);
   if (messageLimited(ip)) return c.json({ error: 'rate_limited' }, 429);
   const parsed = bodySchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'invalid_message' }, 400);
   const body = parsed.data;
-  const account = accountByKey(c.req.param('key'), 'web')!;
+  const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
   let token = visitorToken(c);
   let s = ownSession(account, token);
   // 点击必须属于已问过的同意菜单，不凭匿名点击创建会话或捏造同意。
@@ -158,7 +171,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
     if (!s || !notice || !menu || body.menu !== consentMenuButtonId(menu.category, menu.decision) || !s.consent?.[menu.category]) {
       return c.json({ error: 'invalid_menu' }, 400);
     }
-    if (processing.has(s.id)) return c.json({ error: 'in_progress' }, 409);
+    if (state().processing.has(s.id)) return c.json({ error: 'in_progress' }, 409);
     setVisitorCookie(c, token!);
     const changed = applyConsentDecision(s, menu.category, menu.decision, body.menu, notice.version);
     if (changed && menu.decision === 'declined') s.messages.push({ role: 'agent', content: CONSENT_DECLINED_REPLY, at: Date.now() });
@@ -173,7 +186,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
     s.channelAccountId = account.id;
     saveSession(s);
   }
-  if (processing.has(s.id)) return c.json({ error: 'in_progress' }, 409);
+  if (state().processing.has(s.id)) return c.json({ error: 'in_progress' }, 409);
   setVisitorCookie(c, token!);
   const at = body.cid ? s.messages.findIndex((m) => m.role === 'customer' && m.msgid === body.cid) : -1;
   if (at >= 0) {
@@ -184,12 +197,15 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
     }
     if (s.handedOver && !s.webTurnLimited) return c.json({ reply: null });
   } else if (body.cid && recentMsgids(s.id).has(body.cid)) return c.json({ reply: null });
-  processing.add(s.id);
+  state().processing.add(s.id);
   let reservation: Daily | null = null;
   let usedModel = false;
-  const unsubscribeTurn = onTurnEnd(({ turn }) => {
-    if (turn.conversationId === s.id && turn.llm.length > 0) usedModel = true;
-  });
+  const unsubscribeTurn = onTurnEnd(
+    ({ turn }) => {
+      if (turn.llm.length > 0) usedModel = true;
+    },
+    { owner, conversationId: s.id },
+  );
   try {
     const count = daily(account);
     if (count.turns >= account.web!.dailyTurns && (!s.handedOver || s.webTurnLimited)) {
@@ -210,19 +226,20 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
       ...(at >= 0 ? { alreadyRecorded: true } : {}),
     });
     return c.json({ reply: s.handedOver || !reply.text ? null : webReply(reply.text) });
-  } catch {
+  } catch (e) {
+    if (e instanceof TenantScopeMissing) throw e;
     // 不序列化异常（上游异常可能含输入），客户端重试同 cid 可从已记录状态恢复。
     log.error('网页咨询处理失败');
     return c.json({ error: 'temporarily_unavailable' }, 503);
   } finally {
     unsubscribeTurn();
     if (reservation && !usedModel) reservation.turns--;
-    processing.delete(s.id);
+    state().processing.delete(s.id);
   }
 });
 
 webRoutes.get('/api/web/:key/history', lookupLimit, (c) => {
-  const account = accountByKey(c.req.param('key'), 'web')!;
+  const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
   const s = ownSession(account, visitorToken(c));
   const messages: WebMessage[] = (s?.messages ?? []).flatMap((m) => {
     if (m.role === 'system') return [];
@@ -238,16 +255,17 @@ webRoutes.get('/api/web/:key/events', lookupLimit, (c) => {
     c.header('Allow', 'GET');
     return c.body(null, 405);
   }
-  const account = accountByKey(c.req.param('key'), 'web')!;
+  const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
   const s = ownSession(account, visitorToken(c));
   if (!s) return c.json({ error: 'unauthorized' }, 401);
+  const rt = currentRuntime();
   const encoder = new TextEncoder();
   let controller: ReadableStreamDefaultController<Uint8Array>;
   let timer: NodeJS.Timeout | undefined;
   let lastActivity = Date.now();
   let closed = false;
   let cancelSubscription = (): void => {};
-  const close = (): void => {
+  const close = tenantCallback(rt, (): void => {
     if (closed) return;
     closed = true;
     if (timer) clearInterval(timer);
@@ -259,7 +277,7 @@ webRoutes.get('/api/web/:key/events', lookupLimit, (c) => {
     } catch {
       // ReadableStream.cancel 已先关闭控制器；订阅与定时器仍须释放。
     }
-  };
+  });
   const send = (event: string, data: unknown): void => {
     if (closed) throw new Error('closed');
     // 客户不读时关闭连接，防止慢连接无限积压正文与心跳。
@@ -269,11 +287,16 @@ webRoutes.get('/api/web/:key/events', lookupLimit, (c) => {
     }
     controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`));
   };
-  const unsubscribe = subscribeWeb(s.id, clientKey(c), (ev: WebEvent) => {
-    lastActivity = Date.now();
-    const { type, ...data } = ev;
-    send(type, data);
-  });
+  const unsubscribe = subscribeWeb(
+    s.id,
+    clientKey(c),
+    (ev: WebEvent) => {
+      lastActivity = Date.now();
+      const { type, ...data } = ev;
+      send(type, data);
+    },
+    close,
+  );
   if (unsubscribe === 'too_many') return c.json({ error: 'too_many' }, 429);
   cancelSubscription = unsubscribe;
   const connection = {
@@ -294,13 +317,18 @@ webRoutes.get('/api/web/:key/events', lookupLimit, (c) => {
       start(ctrl) {
         controller = ctrl;
         streams.add(connection);
-        c.req.raw.signal.addEventListener('abort', close, { once: true });
+        withoutTenantScope(() => c.req.raw.signal.addEventListener('abort', close, { once: true }));
         if (c.req.raw.signal.aborted) {
           close();
           return;
         }
         send('ping', Date.now());
-        timer = setInterval(() => connection.tick(Date.now()), PING_MS);
+        timer = withoutTenantScope(() =>
+          setInterval(
+            tenantCallback(rt, () => connection.tick(Date.now())),
+            PING_MS,
+          ),
+        );
         timer.unref();
       },
       cancel: close,
@@ -322,9 +350,11 @@ webRoutes.post('/api/web/:key/end', (c) => {
   setVisitorCookie(c, '', 0);
   return c.json({ ok: true });
 });
-onShutdown(() => {
-  for (const stream of streams) stream.close();
-});
+withoutTenantScope(() =>
+  onShutdown(() => {
+    for (const stream of streams) stream.close();
+  }),
+);
 
 /** 自测手动触发生产用的心跳巡检，不缩短生产超时。 */
 export const __webTest = {

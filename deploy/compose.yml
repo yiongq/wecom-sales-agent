@@ -1,6 +1,12 @@
 # 01 spec「构建与部署 · compose」。平时由 deploy.sh 调用：
 #   APP_IMAGE=<镜像> docker compose -f deploy/compose.yml up -d app        # 依次拉起 db、跑完 migrate、再换 app
 #   APP_IMAGE=<:prev> docker compose -f deploy/compose.yml up -d --no-deps app   # 回滚：不跑 migrate（旧镜像的迁移是新镜像的子集）
+# 05：只有 .env.sandbox 在才启用；手工只重建沙箱（不换宿主、不跑迁移）：
+#   docker compose -f deploy/compose.yml --profile sandbox up -d --no-deps sandbox
+# 长期停用：--profile sandbox rm -sfv sandbox，把 .env.sandbox 改名为 .env.sandbox.off，并摘掉反向代理站点。
+# .env.sandbox：DEPLOY_PROFILE=demo、CONFIG_SOURCE=db、SESSION_STORE=db、DATABASE_URL、SANDBOX_HOST=<Host>、
+# SANDBOX_TEMPLATE_SLUG=<宿主slug>；不能有 DEFAULT_TENANT_SLUG 或 R16 禁止的变量。
+# 体验客服可不配；配时 SANDBOX_WECOM_CORP_ID / SECRET / TOKEN / AES_KEY / OPEN_KFID 五项必须齐全。
 # 不给 APP_IMAGE 时取 <容器名>:current：deploy.sh 最后一次换上的镜像（部署成功是新镜像，自动回滚后是 :prev），
 # 所以下面的手工命令不用带它。别手写 :latest：自动回滚之后它指向的是那个没起来的坏镜像。
 # 命令行（一律 --rm）：
@@ -29,7 +35,7 @@
 #   .env.db       POSTGRES_PASSWORD、AGENT_OWNER_PASSWORD、AGENT_APP_PASSWORD、AGENT_PLATFORM_PASSWORD；可选 AGENT_DB（缺省 agent）。
 #                 不要设 POSTGRES_DB：entrypoint 会以超级用户为属主先建出那个库，roles.sh 见库已存在就跳过，属主就错了。
 #   .env.migrate  DATABASE_OWNER_URL=postgres://agent_owner:<口令>@db:5432/agent
-#   .env.platform DATABASE_PLATFORM_URL=postgres://agent_platform:<口令>@db:5432/agent
+#   .env.platform DATABASE_PLATFORM_URL=postgres://agent_platform:<口令>@db:5432/agent；demo 部署还需 DEPLOY_PROFILE=demo
 #   .env          应用自己的 env（LLM key、企微、ADMIN_PASS、DEPLOY_PROFILE……）；DB 模式再加 CONFIG_SOURCE=db、
 #                 DATABASE_URL=postgres://agent_app:<口令>@db:5432/agent、DEFAULT_TENANT_SLUG。不能有 owner、platform
 #                 与超级用户的口令：应用启动时查到就拒绝启动（env_privileged）。
@@ -104,6 +110,35 @@ services:
     # 大于停机钩子等在途企微回复的 8 秒：SIGTERM 之后先发完、落盘再退
     stop_grace_period: 10s
     # LOG_FORMAT=json 之后每天的日志量可观；轮转封顶（02 spec「保留期清理」），不靠宿主机另装 logrotate
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: '5'
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  sandbox:
+    image: ${APP_IMAGE:-${APP_CONTAINER:-wecom-sales-agent}:current}
+    container_name: ${APP_CONTAINER:-wecom-sales-agent}-sandbox
+    profiles: [sandbox]
+    restart: unless-stopped
+    env_file:
+      - path: ../.env.sandbox
+        format: raw
+        # 未启用时其他服务照常解析 compose；启用时 deploy.sh 先检查并试读此文件。
+        required: false
+    environment:
+      APP_ROLE: sandbox
+      PORT: '3200'
+      LOG_FORMAT: json
+    ports:
+      - '127.0.0.1:${SANDBOX_PORT:-3211}:3200'
+    # 没有 var/ 卷：沙箱停机丢弃未落库的数据、不写 spill。
+    stop_grace_period: 10s
     logging:
       driver: json-file
       options:

@@ -14,7 +14,10 @@ import { auditAction } from '../shared/ui-labels.js';
 import { openDb, type Db } from './client.js';
 import { readBrand } from './repo/tenants.js';
 import { createRealPgFixture, installSeededConfig, openTestDb } from './testing.js';
+import { hostRuntime } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-brand-selftest-'));
 const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const brand: BrandProfile = {
@@ -249,8 +252,8 @@ try {
           .filter((p) => p.platform)
           .map((p) => p.col)
           .sort(),
-        ['brand', 'retention_customer_days', 'retention_lead_days', 'retention_trace_days'],
-        '真实 PG 平台只可更新品牌和原保留期列',
+        ['brand', 'llm_daily_alert_milli', 'public_host', 'retention_customer_days', 'retention_lead_days', 'retention_trace_days'],
+        '真实 PG 平台只可更新品牌、原保留期列与 05 的 public_host、软上限列',
       );
       equal(
         permissions.every((p) => !p.app),

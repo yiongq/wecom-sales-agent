@@ -10,7 +10,10 @@ import { importConfig } from '../config/transfer.js';
 import { closeConfig, initConfig } from '../config/source.js';
 import { __takeoverTest } from '../handoff/takeover.js';
 import type { FinishedTurn } from './recorder.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 if (!process.env.PG_TEST_URL) {
   if (process.env.CI === 'true') throw new Error('CI 下必须设 PG_TEST_URL：guard_verdicts 须在真实 PG 验证');
   console.log('GUARD VERDICTS SELFTEST：没有 PG_TEST_URL，跳过真实 PG 迁移、授权与每轮一份裁决');
@@ -21,9 +24,9 @@ if (!process.env.PG_TEST_URL) {
   process.env.NOTIFY_WEBHOOK_URL = '';
   const fx = await createRealPgFixture(process.env.PG_TEST_URL);
   const app = await openDb(fx.urls.app);
-  const { onTurnEnd } = await import('./recorder.js');
-  const store = await import('../store.js');
-  const { handleMessage, onToolCall } = await import('../engine.js');
+  const { onTurnEnd } = await withoutTenantScope(() => import('./recorder.js'));
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const { handleMessage, onToolCall } = await withoutTenantScope(() => import('../engine.js'));
   const turns: FinishedTurn[] = [];
   const off = onTurnEnd((turn) => turns.push(turn));
   const sid = 'wecom:wmVerdicts';

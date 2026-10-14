@@ -20,7 +20,10 @@ import { fileURLToPath } from 'node:url';
 import { format } from 'node:util';
 import type { AddressInfo } from 'node:net';
 import type { Session } from '../types.js';
+import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
+enterTenantScopeForTest(hostRuntime());
 const CHILD = process.env.NOTIFY_CHILD ?? '';
 const SELF = fileURLToPath(import.meta.url);
 const CLOCK_MODULE = fileURLToPath(new URL('../store/parity-clock.ts', import.meta.url));
@@ -57,9 +60,13 @@ else await parentMain();
 // ======================================================================================
 
 async function parentMain(): Promise<never> {
-  const { handoffNoticeTitle, HANDOFF_NOTICE_TEXT, channelCustomerLabel } = await import('../shared/conversation.js');
-  const { noticeText, workbenchLink, UNSAVED_MARK } = await import('./notifier.js');
-  const { handoffNotifyOps, orderUnconfirmedNotifyOps, HANDOFF_UNCLAIMED_MS, WINDOW_NOTICE_MS } = await import('../jobs/notify.js');
+  const { handoffNoticeTitle, HANDOFF_NOTICE_TEXT, channelCustomerLabel } = await withoutTenantScope(
+    () => import('../shared/conversation.js'),
+  );
+  const { noticeText, workbenchLink, UNSAVED_MARK } = await withoutTenantScope(() => import('./notifier.js'));
+  const { handoffNotifyOps, orderUnconfirmedNotifyOps, HANDOFF_UNCLAIMED_MS, WINDOW_NOTICE_MS } = await withoutTenantScope(
+    () => import('../jobs/notify.js'),
+  );
 
   const base = { label: '企微客户', shortId: '7F3A', paidCustomer: false };
   check('标题：普通转人工「企微客户 · 7F3A 等人接手」', handoffNoticeTitle({ ...base, kind: 'complaint' }) === '企微客户 · 7F3A 等人接手');
@@ -338,21 +345,23 @@ interface Rig {
 
 async function childSuite(rig: Rig): Promise<void> {
   const { hits, okFor, allFor, failHttp, failErrcode, slow, llm, logs } = rig;
-  const store = await import('../store.js');
-  const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock, fakeDbError } = await import('../db/testing.js');
+  const store = await withoutTenantScope(() => import('../store.js'));
+  const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock, fakeDbError } = await withoutTenantScope(
+    () => import('../db/testing.js'),
+  );
   const t = await openTestDb();
   const lock = fakeLock();
   await installSeededConfig(t, { deps: { lock: async () => lock } });
   const fx = await installPgSessionStore(t, { varDir: process.env.VAR_DIR! });
   await store.initSessionStore(fx.deps);
-  const runner = await import('../jobs/runner.js');
-  const { handleMessage } = await import('../engine.js');
-  const { enterHandoff, HANDOFF_REASON } = await import('../handoff/record.js');
-  const { orderUnconfirmedNotifyOps, HANDOFF_UNCLAIMED_MS, WINDOW_NOTICE_MS } = await import('../jobs/notify.js');
-  const { sendWindow, recordSend } = await import('../quota/ledger.js');
-  const { __handoffNotifyTest } = await import('./handoff.js');
-  const { __notifierTest } = await import('./notifier.js');
-  const { deliverHandoffUnsaved } = await import('../store/events.js');
+  const runner = await withoutTenantScope(() => import('../jobs/runner.js'));
+  const { handleMessage } = await withoutTenantScope(() => import('../engine.js'));
+  const { enterHandoff, HANDOFF_REASON } = await withoutTenantScope(() => import('../handoff/record.js'));
+  const { orderUnconfirmedNotifyOps, HANDOFF_UNCLAIMED_MS, WINDOW_NOTICE_MS } = await withoutTenantScope(() => import('../jobs/notify.js'));
+  const { sendWindow, recordSend } = await withoutTenantScope(() => import('../quota/ledger.js'));
+  const { __handoffNotifyTest } = await withoutTenantScope(() => import('./handoff.js'));
+  const { __notifierTest } = await withoutTenantScope(() => import('./notifier.js'));
+  const { deliverHandoffUnsaved } = await withoutTenantScope(() => import('../store/events.js'));
   const pushes: string[] = [];
   runner.__jobsTest.start(async (id) => {
     pushes.push(id);

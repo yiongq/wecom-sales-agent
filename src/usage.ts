@@ -1,3 +1,6 @@
+import { TenantObservers } from './tenancy/observers.js';
+import { currentRuntime, withTenantScope, withoutTenantScope, type TenantRuntime } from './tenancy/runtime.js';
+import { registerTenantState } from './tenancy/state.js';
 // 模型调用用量与成本核算。此前 API 响应里的 usage 字段从头到尾没被读过，
 // 导致「这套系统一天花多少钱、一个客户聊到成交要花多少」只能靠估算——
 // 而选型（air 还是 5.2）恰恰要靠这个数决定。
@@ -85,32 +88,72 @@ interface UsageState {
 const today = todayIso;
 const blank = (): UsageState => ({ day: today(), byModel: {}, bySession: {} });
 
-let state: UsageState = blank();
-try {
-  const raw = JSON.parse(fs.readFileSync(FILE, 'utf8')) as UsageState;
-  if (raw?.day === today()) state = { day: raw.day, byModel: raw.byModel ?? {}, bySession: raw.bySession ?? {} };
-} catch (e) {
-  if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT') {
-    console.error('[usage] usage.json 解析失败，今日用量统计已从 0 重新开始:', logError(e));
-  }
+// 惰性读取：模块加载与非宿主调用都不接触宿主文件。
+interface HostUsage {
+  state: UsageState;
+  timer: NodeJS.Timeout | null;
 }
-
-let timer: NodeJS.Timeout | null = null;
-function persist(): void {
-  if (timer) return;
-  timer = setTimeout(() => {
-    timer = null;
+const hosts = new Map<TenantRuntime, HostUsage>();
+function hostUsage(): HostUsage | null {
+  const rt = currentRuntime();
+  if (!rt.isHost || rt.kind !== 'standard') return null;
+  let entry = hosts.get(rt);
+  if (!entry) {
+    entry = { state: blank(), timer: null };
     try {
-      fs.mkdirSync(VAR_DIR, { recursive: true });
-      // 原子写：半截文件下次启动解析失败，今日成本统计会静默归零
-      const tmp = FILE + '.tmp';
-      fs.writeFileSync(tmp, JSON.stringify(state));
-      fs.renameSync(tmp, FILE);
-    } catch {
-      /* 用量统计落盘失败不该影响对话 */
+      const raw = JSON.parse(fs.readFileSync(FILE, 'utf8')) as UsageState;
+      if (raw?.day === today()) entry.state = { day: raw.day, byModel: raw.byModel ?? {}, bySession: raw.bySession ?? {} };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException)?.code !== 'ENOENT')
+        console.error('[usage] usage.json 解析失败，今日用量统计已从 0 重新开始:', logError(e));
     }
-  }, 3000);
+    hosts.set(rt, entry);
+  }
+  if (entry.state.day !== today()) entry.state = blank();
+  return entry;
 }
+function persist(entry: HostUsage): void {
+  if (entry.timer) return;
+  const rt = currentRuntime();
+  entry.timer = withoutTenantScope(() =>
+    setTimeout(
+      () =>
+        withTenantScope(rt, () => {
+          entry.timer = null;
+          if (hosts.get(rt) !== entry || rt.state !== 'serving') return;
+          try {
+            fs.mkdirSync(VAR_DIR, { recursive: true });
+            const tmp = FILE + '.tmp';
+            fs.writeFileSync(tmp, JSON.stringify(entry.state));
+            fs.renameSync(tmp, FILE);
+          } catch {
+            /* 用量统计落盘失败不该影响对话 */
+          }
+        }),
+      3000,
+    ),
+  );
+  entry.timer.unref();
+}
+function hostUsageRegistration(field: 'state' | 'timer') {
+  return {
+    keyCount: (id: string) => [...hosts].filter(([rt, h]) => rt.id === id && (field === 'state' || h.timer !== null)).length,
+    drop: (id: string) => {
+      for (const [rt, h] of hosts)
+        if (rt.id === id) {
+          if (h.timer) clearTimeout(h.timer);
+          hosts.delete(rt);
+        }
+    },
+    reset: () => {
+      for (const h of hosts.values()) if (h.timer) clearTimeout(h.timer);
+      hosts.clear();
+      warnedUnknown.clear();
+    },
+  };
+}
+registerTenantState({ name: 'usage.host.state', ...hostUsageRegistration('state') });
+registerTenantState({ name: 'usage.host.timer', ...hostUsageRegistration('timer') });
 
 export function costOf(model: string, promptTokens: number, completionTokens: number, cachedTokens = 0): number {
   const price = PRICE[model];
@@ -129,11 +172,21 @@ export function costOf(model: string, promptTokens: number, completionTokens: nu
   return (fresh * p.in + hit * p.cachedIn + completionTokens * p.out) / 1_000_000;
 }
 
+/** 沙箱估算不享受缓存折扣；阶梯取较贵价，未知模型取全表各项最高价。宿主的 costOf 保持原口径。 */
+export function sandboxCostOf(model: string, promptTokens: number, completionTokens: number, cachedTokens = 0, estimate = false): number {
+  if (PRICE[model] && !estimate) return costOf(model, promptTokens, completionTokens, cachedTokens);
+  const prices = PRICE[model] ? [PRICE[model]!] : Object.values(PRICE);
+  const rows = prices.flatMap((p) => (p.outTier ? [p, p.outTier] : [p]));
+  return (promptTokens * Math.max(...rows.map((p) => p.in)) + completionTokens * Math.max(...rows.map((p) => p.out))) / 1_000_000;
+}
+
 /** 这次调用的用途（02 spec「逐轮 trace、护栏事件与用量」）：usage_daily 按它分列，与库里 purpose 的 CHECK 同一组值 */
 export type UsagePurpose = 'chat' | 'followup' | 'insight' | 'suggestion' | 'draft' | 'embedding';
 
 /** recordUsage 记下的一笔，交给 onUsage 的订阅者（轮次的 trace、usage_daily 的累加器）。token 是夹过上下界之后计入 usage.json 的那份 */
 export interface UsageEvent {
+  /** 发出这一笔用量时的所属租户；同步订阅仍在其作用域里执行。 */
+  tenantId: string;
   /** 服务器时区的日期（与 usage.json 的 day 同一个口径），'YYYY-MM-DD' */
   day: string;
   model: string;
@@ -147,12 +200,12 @@ export interface UsageEvent {
   cny: number;
 }
 
-const usageListeners = new Set<(e: UsageEvent) => void>();
+const usageListeners = new TenantObservers<(e: UsageEvent) => void>();
+registerTenantState({ name: 'usage.usageListeners', ...usageListeners.registration() });
 
 /** 订阅每一笔用量，返回退订函数。订阅者出错不影响记账与对话 */
 export function onUsage(cb: (e: UsageEvent) => void): () => void {
-  usageListeners.add(cb);
-  return () => usageListeners.delete(cb);
+  return usageListeners.subscribe(cb);
 }
 
 /** 每次真实模型调用后记一笔。sessionId 可空（后台洞察/建议这类非会话调用）；purpose 缺省 chat */
@@ -164,31 +217,41 @@ export function recordUsage(
   cachedTokens = 0,
   reasoningTokens = 0,
   purpose: UsagePurpose = 'chat',
+  accountedMilli?: number,
 ): void {
-  if (state.day !== today()) state = blank();
-  const m = (state.byModel[model] ??= { calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, reasoningTokens: 0, cny: 0 });
-  // 旧 usage.json 里没有 cachedTokens / reasoningTokens 字段，跨版本重启后这里会是 undefined，
-  // += 直接变 NaN 并顺着 JSON 落盘污染当天所有统计。补一次默认值。
-  m.cachedTokens ??= 0;
-  m.reasoningTokens ??= 0;
-  const cny = costOf(model, promptTokens, completionTokens, cachedTokens);
+  const rt = currentRuntime();
+  if (rt.state === 'closed') return;
+  const entry = hostUsage();
+  const state = entry?.state;
+  const cny =
+    rt.kind === 'sandbox' && accountedMilli !== undefined
+      ? accountedMilli / 1000
+      : costOf(model, promptTokens, completionTokens, cachedTokens);
   const cached = Math.min(Math.max(0, cachedTokens), promptTokens);
   const reasoning = Math.min(Math.max(0, reasoningTokens), completionTokens);
-  m.calls += 1;
-  m.promptTokens += promptTokens;
-  m.completionTokens += completionTokens;
-  m.cachedTokens += cached;
-  m.reasoningTokens += reasoning;
-  m.cny += cny;
-  if (sessionId) {
-    const s = (state.bySession[sessionId] ??= { calls: 0, cny: 0 });
-    s.calls += 1;
-    s.cny += cny;
+  if (state) {
+    const m = (state.byModel[model] ??= { calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, reasoningTokens: 0, cny: 0 });
+    // 旧 usage.json 里没有 cachedTokens / reasoningTokens 字段，跨版本重启后这里会是 undefined，
+    // += 直接变 NaN 并顺着 JSON 落盘污染当天所有统计。补一次默认值。
+    m.cachedTokens ??= 0;
+    m.reasoningTokens ??= 0;
+    m.calls += 1;
+    m.promptTokens += promptTokens;
+    m.completionTokens += completionTokens;
+    m.cachedTokens += cached;
+    m.reasoningTokens += reasoning;
+    m.cny += cny;
+    if (sessionId) {
+      const s = (state.bySession[sessionId] ??= { calls: 0, cny: 0 });
+      s.calls += 1;
+      s.cny += cny;
+    }
+    persist(entry!);
   }
-  persist();
   if (!usageListeners.size) return;
   const ev: UsageEvent = {
-    day: state.day,
+    tenantId: rt.id,
+    day: today(),
     model,
     purpose,
     ...(sessionId ? { sessionId } : {}),
@@ -220,7 +283,7 @@ export function usageToday(): {
   reasoningTokens: number;
   byModel: Record<string, UsageStat>;
 } {
-  if (state.day !== today()) state = blank();
+  const state = hostUsage()?.state ?? blank();
   const models = Object.values(state.byModel);
   const totalCalls = models.reduce((a, m) => a + m.calls, 0);
   const totalCny = models.reduce((a, m) => a + m.cny, 0);
@@ -258,5 +321,5 @@ export function usageToday(): {
 
 /** 某个会话累计花了多少（后台会话详情展示） */
 export function sessionCost(sessionId: string): { calls: number; cny: number } {
-  return state.bySession[sessionId] ?? { calls: 0, cny: 0 };
+  return hostUsage()?.state.bySession[sessionId] ?? { calls: 0, cny: 0 };
 }

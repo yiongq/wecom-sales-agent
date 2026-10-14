@@ -50,6 +50,22 @@ export async function updateBrand(tx: Tx, tenantId: string, brand: BrandProfile 
   await tx.update(tenants).set({ brand }).where(eq(tenants.id, tenantId));
 }
 
+/** 05 R7：平台命令锁定租户后检查种类，再写目标列与审计。 */
+export async function lockTenantKind(tx: Tx, tenantId: string): Promise<'standard' | 'sandbox' | undefined> {
+  const [row] = await tx.select({ kind: tenants.kind }).from(tenants).where(eq(tenants.id, tenantId)).for('update');
+  return row?.kind;
+}
+
+/** 仅更新列级授权的 public_host；规范化与审计由命令负责，下次启动生效。 */
+export async function updatePublicHost(tx: Tx, tenantId: string, publicHost: string | null): Promise<void> {
+  await tx.update(tenants).set({ publicHost }).where(eq(tenants.id, tenantId));
+}
+
+/** standard 的软告警上限，null 取消；不更新租户的其他列。 */
+export async function updateLlmDailyAlert(tx: Tx, tenantId: string, llmDailyAlertMilli: number | null): Promise<void> {
+  await tx.update(tenants).set({ llmDailyAlertMilli }).where(eq(tenants.id, tenantId));
+}
+
 export interface RetentionSettings {
   leadDays: number;
   customerDays: number;
@@ -73,4 +89,12 @@ export async function updateRetention(db: Db, tenantId: string, patch: Partial<R
   if (patch.traceDays !== undefined) set.retentionTraceDays = patch.traceDays;
   if (Object.keys(set).length === 0) return;
   await db.update(tenants).set(set).where(eq(tenants.id, tenantId));
+}
+
+/** 05 宿主启动清单：不装沙箱；无 public_host 的非宿主只记录并跳过。 */
+export async function standardTenants(db: Db): Promise<{ id: string; slug: string; publicHost: string | null }[]> {
+  return db
+    .select({ id: tenants.id, slug: tenants.slug, publicHost: tenants.publicHost })
+    .from(tenants)
+    .where(eq(tenants.kind, 'standard'));
 }

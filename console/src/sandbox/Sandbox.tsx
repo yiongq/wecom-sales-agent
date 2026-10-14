@@ -1,0 +1,367 @@
+// 05 第 24 步：同一外壳里的体验提示与清单。完成度只读 /me，不在浏览器推断。
+import { Button, Drawer, Modal, Tag } from 'antd';
+import { CircleCheck, Info, MessageSquare, PanelRightClose } from 'lucide-react';
+import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from 'react';
+import { SANDBOX_DATA_COPY } from '../../../src/shared/entry-ui.js';
+import type { Me, SandboxConversationOwner } from '../../../src/shared/console-api.js';
+import { HttpError } from '../api.js';
+import { ConfirmDanger } from '../parts/ConfirmDanger.js';
+import { ErrorAlert } from '../parts/ErrorAlert.js';
+import { Skeleton } from '../parts/StateView.js';
+import { csrfHeader, sessionFetch } from '../session.js';
+import { cjk } from '../typography.js';
+import { Icon } from '../shell/icons.js';
+import { currentThemeState } from '../theme/prefs.js';
+import { WechatStep } from './WechatStep.js';
+
+export type SandboxInfo = NonNullable<Me['sandbox']>;
+
+export function OwnConversationTag({ owner }: { owner?: SandboxConversationOwner }) {
+  return owner ? <Tag className="own-conversation-tag">{owner === 'wechat' ? '你的微信' : '你的模拟器会话'}</Tag> : null;
+}
+
+export const simulatorHref = (id?: string): string | null =>
+  id === undefined ? '/chat.html' : id.startsWith('sbx-') ? `/chat.html?c=${encodeURIComponent(id)}` : null;
+
+export function SimulatorLink({ id }: { id: string }) {
+  const href = simulatorHref(id);
+  return href ? (
+    <Button size="small" icon={<Icon of={MessageSquare} size={14} />} href={href} target="_blank" rel="noopener noreferrer">
+      在模拟器里打开
+    </Button>
+  ) : null;
+}
+
+export function remainingTime(expiresAt: string, now: number): string {
+  const minutes = Math.max(0, Math.ceil((Date.parse(expiresAt) - now) / 60_000));
+  if (!Number.isFinite(minutes)) return '剩余时间暂不可用';
+  if (minutes === 0) return '体验已到期';
+  return minutes >= 60 ? `还剩${Math.ceil(minutes / 60)}小时` : `还剩${minutes}分钟`;
+}
+
+const ChecklistContext = createContext<{
+  collapsed: boolean;
+  overview: boolean;
+  drawerOpen: boolean;
+  toggle: () => void;
+  open: () => void;
+  close: () => void;
+} | null>(null);
+
+export function SandboxControls({
+  slug,
+  children,
+  overview = true,
+  page,
+}: {
+  slug: string;
+  children: ReactNode;
+  overview?: boolean;
+  page?: string;
+}) {
+  const [collapsed, setCollapsed] = useState(() => readCollapsed(slug));
+  const [drawerAt, setDrawerAt] = useState<{ page?: string } | null>(null);
+  const drawerOpen = drawerAt !== null && drawerAt.page === page;
+  const toggle = () =>
+    setCollapsed((previous) => {
+      writeCollapsed(slug, !previous);
+      return !previous;
+    });
+  return (
+    <ChecklistContext.Provider
+      value={{
+        collapsed,
+        overview,
+        drawerOpen,
+        toggle,
+        open: () => (overview ? toggle() : setDrawerAt({ page })),
+        close: () => setDrawerAt(null),
+      }}
+    >
+      {children}
+    </ChecklistContext.Provider>
+  );
+}
+
+export function wechatCopy(wechat: SandboxInfo['wechat']): string {
+  return wechat === 'unbound'
+    ? '扫码绑定后，微信里的回复只发到你自己的微信'
+    : wechat === 'bound'
+      ? '已连上你的微信，微信里的回复只发给它'
+      : '对话只在网页模拟器和你的工作台里';
+}
+
+export function SandboxBanner({ sandbox }: { sandbox: SandboxInfo }) {
+  const [now, setNow] = useState(Date.now);
+  const [confirm, setConfirm] = useState(false);
+  const [dataOpen, setDataOpen] = useState(false);
+  const checklist = useContext(ChecklistContext);
+  const [error, setError] = useState<unknown>(null);
+  const completed = sandbox.steps.reduce((mask, done, i) => mask | (done ? 1 << i : 0), 0);
+  const previous = useRef(completed);
+  const [flash, setFlash] = useState(0);
+  const flashSequence = useRef(0);
+  useEffect(() => {
+    if (previous.current !== completed) {
+      const newlyCompleted = (completed & ~previous.current) !== 0;
+      previous.current = completed;
+      setFlash(newlyCompleted && !currentThemeState().reduceMotion ? ++flashSequence.current : 0);
+      const timer = setTimeout(() => setFlash(0), 150);
+      return () => clearTimeout(timer);
+    }
+  }, [completed]);
+  const launcher = checklist && (!checklist.overview || checklist.collapsed) && (
+    <Button
+      size="small"
+      type="text"
+      className="sandbox-checklist-trigger"
+      onClick={checklist.open}
+      aria-haspopup={checklist.overview ? undefined : 'dialog'}
+      aria-expanded={checklist.overview ? !checklist.collapsed : checklist.drawerOpen}
+    >
+      {flash > 0 && <span key={flash} className="sandbox-progress-flash" aria-hidden="true" />}
+      {cjk(`体验清单${sandbox.steps.filter(Boolean).length}/4`)}
+    </Button>
+  );
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
+  const end = async (): Promise<void> => {
+    setError(null);
+    try {
+      const res = await sessionFetch('/api/sandbox/end', { method: 'POST', headers: csrfHeader() });
+      if (!res.ok) throw new HttpError(res.status, await res.json());
+      window.location.replace('/try?ended=1');
+    } catch (e) {
+      setConfirm(false);
+      setError(e);
+    }
+  };
+  return (
+    <>
+      <section className="sandbox-banner" aria-label="体验环境">
+        <div className="sandbox-banner-row">
+          <div className="sandbox-banner-copy">
+            <Icon of={Info} size={16} />
+            <strong>体验环境</strong>
+            <span>
+              · {remainingTime(sandbox.expiresAt, now)}
+              <span className="sandbox-wechat-summary"> · {wechatCopy(sandbox.wechat)}</span>
+            </span>
+            <button className="sandbox-data-link" onClick={() => setDataOpen(true)}>
+              数据怎么处理
+            </button>
+          </div>
+          <div className="sandbox-banner-actions">
+            <Button
+              className="sandbox-banner-simulator"
+              size="small"
+              icon={<Icon of={MessageSquare} size={14} />}
+              href="/chat.html"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              打开模拟器
+            </Button>
+            {launcher}
+            <Button size="small" type="text" onClick={() => setConfirm(true)}>
+              <span className="sandbox-end-desktop">结束体验</span>
+              <span className="sandbox-end-mobile">结束</span>
+            </Button>
+          </div>
+        </div>
+        {error !== null && <ErrorAlert error={error} onRetry={() => void end()} />}
+        <Modal open={dataOpen} title="体验数据怎么处理" footer={null} onCancel={() => setDataOpen(false)}>
+          {SANDBOX_DATA_COPY.map((line) => (
+            <p key={line}>{line}</p>
+          ))}
+        </Modal>
+        <ConfirmDanger
+          open={confirm}
+          title="结束这次体验？"
+          confirmText="结束并删除"
+          cancelText="继续体验"
+          onCancel={() => setConfirm(false)}
+          onConfirm={end}
+        >
+          <ul className="sandbox-end-effects">
+            <li>体验立即结束，数据随后全部删除，不能恢复</li>
+            <li>之后在微信里再发消息，只会收到「去开一个新体验」的提示</li>
+            <li>企业微信服务器上的聊天记录，按企业微信的规则保存</li>
+          </ul>
+        </ConfirmDanger>
+      </section>
+      {launcher && <div className="sandbox-mobile-checklist">{launcher}</div>}
+    </>
+  );
+}
+
+const storageKey = (slug: string): string => `sandbox-checklist:v1:${slug}`;
+export function readCollapsed(slug: string): boolean {
+  try {
+    return localStorage.getItem(storageKey(slug)) === '1';
+  } catch {
+    return false;
+  }
+}
+export function writeCollapsed(slug: string, collapsed: boolean): void {
+  try {
+    localStorage.setItem(storageKey(slug), collapsed ? '1' : '0');
+  } catch {
+    /* 禁用存储时仍可在当前页收起 */
+  }
+}
+
+export function SandboxChecklist({
+  slug,
+  sandbox,
+  pending = false,
+  error,
+  onRetry,
+  presentation = 'inline',
+}: {
+  slug: string;
+  sandbox: SandboxInfo;
+  pending?: boolean;
+  error?: unknown;
+  onRetry: () => void;
+  presentation?: 'inline' | 'drawer';
+}) {
+  const [localCollapsed, setCollapsed] = useState(() => readCollapsed(slug));
+  const controls = useContext(ChecklistContext);
+  const inDrawer = presentation === 'drawer';
+  const collapsed = inDrawer ? !controls?.drawerOpen : (controls?.collapsed ?? localCollapsed);
+  const [dataOpen, setDataOpen] = useState(false);
+  const current = sandbox.steps.findIndex((step) => !step);
+  const done = sandbox.steps.filter(Boolean).length;
+  const items = [
+    {
+      title: sandbox.wechat === 'off' || sandbox.wechat === 'full' ? '打开模拟器发一句' : '用微信扫码，当一回客户',
+      description: '',
+      href: '',
+      action: '',
+    },
+    {
+      title: '看AI怎么接待、报价',
+      description:
+        sandbox.wechat === 'off' || sandbox.wechat === 'full'
+          ? '在模拟器里问一句，看AI怎么推荐、报价。把时间、人数说具体，AI会给出正式报价。'
+          : '在微信里问一句，看AI怎么推荐、报价。把时间、人数说具体，AI会给出正式报价。',
+      href: sandbox.ownConversationId ? `/console/conversations/${encodeURIComponent(sandbox.ownConversationId)}` : '/chat.html',
+      action: sandbox.ownConversationId ? '查看这段会话' : '打开模拟器',
+    },
+    {
+      title: '接手会话，自己回一句',
+      description: '接手会话后自己回一句，到微信或模拟器里看看',
+      href: sandbox.ownConversationId ? `/console/conversations/${encodeURIComponent(sandbox.ownConversationId)}` : '/chat.html',
+      action: sandbox.ownConversationId ? '接手这段会话' : '打开模拟器',
+    },
+    {
+      title: '改价、标已付或改话术',
+      description: '任选一项：改产品价格、标记已付，或改话术并发布。',
+      href: '/console/sop',
+      action: '修改话术',
+    },
+  ];
+  const content = (
+    <aside className={`sandbox-checklist${inDrawer ? ' in-drawer' : collapsed ? ' is-collapsed' : ''}`} aria-label="体验清单">
+      {!inDrawer && (
+        <div className="sandbox-checklist-head">
+          <h2>
+            体验清单<span>{done}/4</span>
+          </h2>
+          <Button
+            size="small"
+            aria-expanded={!collapsed}
+            aria-controls="sandbox-checklist-steps"
+            onClick={() => {
+              if (controls) {
+                controls.toggle();
+                return;
+              }
+              const next = !collapsed;
+              setCollapsed(next);
+              writeCollapsed(slug, next);
+            }}
+            type="text"
+            aria-label={collapsed ? '展开体验清单' : '收起体验清单'}
+            icon={<Icon of={PanelRightClose} size={16} />}
+          >
+            {collapsed ? '展开' : '收起'}
+          </Button>
+        </div>
+      )}
+      <div id="sandbox-checklist-steps" hidden={collapsed}>
+        {pending ? (
+          <div role="status" aria-label="正在载入体验进度">
+            <Skeleton rows={4} />
+          </div>
+        ) : error ? (
+          <ErrorAlert error={error} title="没取到体验进度" onRetry={onRetry} />
+        ) : (
+          <>
+            <p className="sandbox-checklist-intro">照着走一遍，大约5分钟</p>
+            <ol>
+              {items.map((item, i) => (
+                <li key={item.title} className={`${sandbox.steps[i] ? 'is-done' : ''}${i === current ? ' is-current' : ''}`}>
+                  <div className="sandbox-step-heading">
+                    <span className="sandbox-step-mark" aria-label={sandbox.steps[i] ? '已完成' : '未完成'}>
+                      {sandbox.steps[i] ? <Icon of={CircleCheck} size={20} /> : i + 1}
+                    </span>
+                    <h3>{item.title}</h3>
+                  </div>
+                  {i === 0 ? (
+                    <div className="sandbox-step-content" hidden={i !== current && sandbox.wechat !== 'bound'}>
+                      <WechatStep
+                        key={`${slug}:${sandbox.wechat}`}
+                        wechat={sandbox.wechat}
+                        expanded={!collapsed && (i === current || sandbox.wechat === 'bound')}
+                      />
+                    </div>
+                  ) : i === current ? (
+                    <div className="sandbox-step-content">
+                      <p>{cjk(item.description)}</p>
+                      <Button size="small" href={item.href}>
+                        {item.action}
+                      </Button>
+                    </div>
+                  ) : null}
+                </li>
+              ))}
+            </ol>
+            {done === 4 && <p role="status">四步已完成，你可以继续体验。</p>}
+            <div className="sandbox-checklist-tools">
+              <Button size="small" icon={<Icon of={MessageSquare} size={14} />} href="/chat.html" target="_blank" rel="noopener noreferrer">
+                打开模拟器
+              </Button>
+              <button className="sandbox-data-link" onClick={() => setDataOpen(true)}>
+                数据怎么处理
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+      <Modal open={dataOpen} title="体验数据怎么处理" footer={null} onCancel={() => setDataOpen(false)}>
+        {SANDBOX_DATA_COPY.map((line) => (
+          <p key={line}>{line}</p>
+        ))}
+      </Modal>
+    </aside>
+  );
+  return inDrawer ? (
+    <Drawer
+      open={controls?.drawerOpen ?? false}
+      placement="right"
+      size={420}
+      title={cjk(`体验清单${done}/4`)}
+      onClose={controls?.close}
+      rootClassName="sandbox-checklist-drawer"
+      forceRender
+    >
+      {content}
+    </Drawer>
+  ) : (
+    content
+  );
+}

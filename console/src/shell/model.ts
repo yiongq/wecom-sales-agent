@@ -108,7 +108,7 @@ export function searchPlaceholder(pack: IndustryPack, viewer: ShellViewer): stri
 // ---------------- 租户、标题 ----------------
 
 /** 侧栏租户行与标签页标题里的租户名；匿名不显示租户名，写「演示」（开放问题 5） */
-export const tenantLabel = (v: ShellViewer): string => (v.kind === 'member' ? v.me.tenantName : '演示');
+export const tenantLabel = (v: ShellViewer): string => (v.kind === 'member' ? (v.me.sandbox ? 'AI销售工作台' : v.me.tenantName) : '演示');
 
 /** 标签页标题：「页名 · 租户名」，详情页「条目名 · 实体名 · 租户名」（spec「信息架构」，不变量 23） */
 export const documentTitle = (page: readonly string[], v: ShellViewer): string => [...page, tenantLabel(v)].join(' · ');

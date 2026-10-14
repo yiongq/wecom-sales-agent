@@ -1,24 +1,31 @@
-// 登录页（spec「登录」，设计系统 §2.3 的 display 字阶、§3「登录页控件 40」、§5.1）。一栏居中：标题「运营后台」、一句说明、表单；
-// 不做半屏品牌色块加表单卡。外面照外壳的样子，是 --frame 底上一块内嵌的内容面板：登录之后侧栏出现，面板还在原处。
-// 从匿名演示点「登录」进来时（viewer 带着 demo），表单下方给「返回演示」：左键就地换回原来的匿名视图，不重新载入、地址不变，
-// 焦点放回内容面板；它是指向当前地址的真链接，新标签打开照样是这一页的演示。prod 下没有演示，不给这个链接。
+// 登录页（05 spec「界面 · 登录页」，2026-10-12 owner 定的设计稿 B；设计系统 §2.3 display、§3「登录页控件 40」）。
+// demo：左栏字标、标题「登录」、一句说明、表单，下方一行「没有账号？免登录体验」（没配沙箱时是「只看演示数据」）；
+// 右栏是产品画面图，图与 alt 由 /api/console/entry 下发，console 源码不出现行业词。prod：单栏卡片，没有右栏与体验入口。
 // 登录成功后重新判断来者：并发取 /me 与 /pack（shell/boot.ts），进成员外壳；地址不变，登录前在哪一页，登录后还在哪一页
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouterState } from '@tanstack/react-router';
 import { type MouseEvent, useEffect, useRef } from 'react';
 import { LoginForm } from '../LoginForm.js';
 import { useDocumentTitle } from '../shell/hooks.js';
-import { documentTitle } from '../shell/model.js';
-import { shellViewerOf } from '../shell/PageHeader.js';
+import { SHOWCASE_COPY, type Showcase } from '../../../src/shared/entry-ui.js';
 import { cjk } from '../typography.js';
 import { type AnonViewer, type Viewer, VIEWER_KEY } from '../viewer.js';
 
-export function LoginPage({ demo }: { demo?: AnonViewer }) {
+export function LoginPage({
+  demo,
+  tryUrl,
+  showcase,
+  returning: back = false,
+}: {
+  demo?: AnonViewer;
+  tryUrl?: string | null;
+  showcase?: Showcase | null;
+  returning?: boolean;
+}) {
   const qc = useQueryClient();
   const href = useRouterState({ select: (s) => s.location.publicHref });
-  const sv = shellViewerOf(demo);
-  useDocumentTitle(sv ? documentTitle(['登录'], sv) : '登录');
-  // 「返回演示」时这个链接随登录页一起卸载，焦点不能掉到 body 上：卸载时放到演示页的内容面板（外壳的 main，这时已经挂上了）
+  useDocumentTitle('AI销售工作台');
+  // 进入匿名视图时链接随登录页卸载，焦点放到已挂载的外壳 main。
   const returning = useRef(false);
   useEffect(
     () => () => {
@@ -36,18 +43,32 @@ export function LoginPage({ demo }: { demo?: AnonViewer }) {
   };
 
   return (
-    <div className="login-page">
+    <div className={`login-page ${demo ? 'login-demo' : 'login-prod'}`}>
       <main id="main" className="login-panel">
+        <div className="entry-wordmark">AI销售工作台</div>
         <div className="login-column">
-          <h1 className="login-title">运营后台</h1>
-          {/* 在逗号处断行：一栏 360 宽放不下一整句，任由它折行会把「它们」拆到两行 */}
+          <h1 className="login-title">登录</h1>
           <p className="login-lead">
-            {cjk('在这里维护销售话术和产品库，')}
+            {cjk('AI在企业微信里接待客户，')}
             <br />
-            {cjk('企业微信里的AI销售按它们接待客户')}
+            {cjk('你在这里管话术、产品和会话。')}
           </p>
           <LoginForm autoFocus onSuccess={() => void qc.resetQueries({ queryKey: VIEWER_KEY })} />
           {demo && (
+            <p className="login-back">
+              没有账号？
+              {tryUrl ? (
+                <a href={`${tryUrl}?start=1`} rel="nofollow">
+                  免登录体验
+                </a>
+              ) : (
+                <a href="/console/?view=demo" onClick={backToDemo}>
+                  只看演示数据
+                </a>
+              )}
+            </p>
+          )}
+          {demo && back && tryUrl && (
             <p className="login-back">
               <a href={href} onClick={backToDemo}>
                 返回演示
@@ -56,6 +77,15 @@ export function LoginPage({ demo }: { demo?: AnonViewer }) {
           )}
         </div>
       </main>
+      {demo && showcase && (
+        <aside className="entry-showcase" aria-label="产品画面">
+          <div className="entry-showcase-content">
+            <img src={showcase.src} alt={showcase.alt} width="460" />
+            <h2>{SHOWCASE_COPY.title}</h2>
+            <p>{SHOWCASE_COPY.description}</p>
+          </div>
+        </aside>
+      )}
     </div>
   );
 }

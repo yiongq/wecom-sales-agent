@@ -1,0 +1,324 @@
+.sandbox-banner {
+  flex: none;
+  background: var(--info-bg);
+}
+.sandbox-banner-row {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 12px 0 20px;
+  flex-wrap: wrap;
+}
+.sandbox-banner-copy,
+.sandbox-banner-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 22px;
+}
+.sandbox-banner-copy > svg {
+  color: var(--info);
+}
+.sandbox-banner-copy strong {
+  font-weight: 500;
+}
+.sandbox-banner-copy span {
+  color: var(--text-2);
+}
+.sandbox-data-link {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--accent-text);
+  font: inherit;
+  cursor: pointer;
+}
+.sandbox-data-link:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.sandbox-body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+.sandbox-body > .shell-scroll {
+  min-width: 0;
+}
+.sandbox-checklist {
+  order: 1;
+  box-sizing: border-box;
+  flex: 0 0 320px;
+  padding: 24px;
+  border-left: 1px solid var(--divider);
+  overflow: auto;
+}
+.sandbox-checklist.is-collapsed {
+  display: none;
+}
+.sandbox-checklist-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sandbox-checklist h2 {
+  margin: 0;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+}
+.sandbox-checklist h2 span {
+  margin-left: 8px;
+  color: var(--text-2);
+  font-size: 13px;
+  font-weight: 400;
+}
+.sandbox-checklist ol {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0 0;
+}
+.sandbox-checklist li {
+  padding: 12px 0;
+  border-top: 1px solid var(--divider);
+}
+.sandbox-checklist li:last-child {
+  border-bottom: 1px solid var(--divider);
+}
+.sandbox-step-heading {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.sandbox-checklist h3 {
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 400;
+  color: var(--text-2);
+}
+.sandbox-checklist .is-current h3 {
+  font-weight: 500;
+  color: var(--text);
+}
+.sandbox-step-content {
+  margin-left: 30px;
+}
+.sandbox-checklist p {
+  margin: 6px 0;
+  color: var(--text-2);
+  font-size: 13px;
+  line-height: 20px;
+}
+.sandbox-checklist p.sandbox-checklist-intro {
+  margin: 2px 0 0;
+  color: var(--text-3);
+}
+.sandbox-checklist a {
+  font-size: 13px;
+}
+.sandbox-step-mark {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--control-border);
+  border-radius: var(--r-full);
+  font-size: 12px;
+  color: var(--text-2);
+}
+.is-current .sandbox-step-mark {
+  background: var(--primary);
+  color: var(--on-primary);
+  border-color: var(--primary);
+}
+.is-done .sandbox-step-mark {
+  border: 0;
+  color: var(--success);
+}
+.sandbox-qr {
+  display: block;
+  width: 184px;
+  max-width: 100%;
+  height: auto;
+  margin: 16px 0;
+  border-radius: var(--r-md);
+  box-shadow: var(--ring);
+  shape-rendering: crispEdges;
+}
+.sandbox-code-row {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+.sandbox-wechat-code {
+  font-family: var(--mono);
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--text);
+}
+.sandbox-open-wechat,
+.sandbox-mobile-hint {
+  display: none;
+}
+.sandbox-end-effects {
+  margin: 12px 0 20px;
+  padding-left: 20px;
+}
+.sandbox-end-effects li {
+  margin-top: 8px;
+}
+@media (max-width: 767px) {
+  .sandbox-qr,
+  .sandbox-desktop-hint {
+    display: none;
+  }
+  .sandbox-mobile-hint {
+    display: block;
+  }
+  .sandbox-checklist a.sandbox-open-wechat {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    justify-content: center;
+    height: 44px;
+    margin-top: 12px;
+    border-radius: var(--r-sm);
+    background: var(--primary);
+    color: var(--on-primary);
+    font-size: 16px;
+    font-weight: 500;
+  }
+  .sandbox-banner-row {
+    padding: 8px 12px;
+  }
+  .sandbox-banner-copy {
+    flex-wrap: wrap;
+  }
+  .sandbox-wechat-summary {
+    display: none;
+  }
+}
+@media (max-width: 1279px) {
+  .sandbox-body {
+    flex-direction: column;
+    overflow: auto;
+  }
+  .sandbox-checklist {
+    order: 0;
+    flex: none;
+    border-left: 0;
+    border-bottom: 1px solid var(--divider);
+    margin: 16px;
+    padding: 16px;
+    border-radius: var(--r-md);
+    box-shadow: var(--shadow-card);
+    overflow: visible;
+  }
+  .sandbox-body > .shell-scroll {
+    flex: 1 0 auto;
+    overflow: visible;
+  }
+}
+
+/* 自己的会话标签不被长需求摘要挤掉；只改变带标记的沙箱行。 */
+.cv-conv-link.has-owner,
+.wb-row-title.has-owner,
+.ov-todo-title.has-owner {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.has-owner .own-conversation-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+.has-owner .own-conversation-tag {
+  flex: none;
+  margin-inline-end: 0;
+}
+
+.sandbox-checklist-trigger {
+  position: relative;
+  isolation: isolate;
+}
+.sandbox-progress-flash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: -1;
+  border-radius: inherit;
+  background: var(--accent-bg);
+  animation: sandbox-progress-flash 150ms linear 1 forwards;
+}
+@keyframes sandbox-progress-flash {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+html[data-reduce-motion='true'] .sandbox-progress-flash {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .sandbox-progress-flash {
+    display: none;
+  }
+}
+.sandbox-mobile-checklist,
+.sandbox-end-mobile,
+.sandbox-checklist-tools {
+  display: none;
+}
+.sandbox-checklist.in-drawer {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  box-shadow: none;
+  overflow: visible;
+}
+@media (max-width: 767px) {
+  .sandbox-banner-row,
+  .sandbox-banner-copy {
+    flex-wrap: nowrap;
+    white-space: nowrap;
+  }
+  .sandbox-banner-copy {
+    gap: 4px;
+  }
+  .sandbox-banner-copy > svg,
+  .sandbox-banner-copy > .sandbox-data-link,
+  .sandbox-banner-simulator,
+  .sandbox-banner-actions > .sandbox-checklist-trigger,
+  .sandbox-end-desktop {
+    display: none;
+  }
+  .sandbox-end-mobile {
+    display: inline;
+  }
+  .sandbox-mobile-checklist {
+    display: flex;
+    justify-content: flex-end;
+    padding: 8px 12px;
+  }
+  .sandbox-checklist-tools {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 16px;
+  }
+}

@@ -1,3 +1,8 @@
+import { TenantLocal } from '../tenancy/local-state.js';
+import { registerTenantState } from '../tenancy/state.js';
+import { currentRuntime, scopedRuntime, TenantScopeMissing } from '../tenancy/runtime.js';
+import { tenantRuntimes, withTenantScope, withoutTenantScope, onTenantScopeMissing, backgroundEntry } from '../tenancy/runtime.js';
+import { onDomainEventMismatch } from '../store/events.js';
 // 告警（docs/architecture/02-conversations-workbench/spec.md「可观测性与告警 · 告警」、R24、不变量 32、50）。
 // 推到 ALERT_WEBHOOK_URL（企微群机器人，text 消息），内容是「[实例名] 中文说明 · 时间」，只有计数、短码、错误码：不含客户原话、
 // external_userid、密钥和带凭据的地址（地址只在 env 文件里，日志里也不打它）。
@@ -26,11 +31,24 @@ import { onPlanRejected, onSendSettled, onUnsafeSend, type SendSettled } from '.
 import { onShutdown, onStoreIncident, storeCounters, storeHealth, type StoreHealth, type StoreIncident } from '../store.js';
 import { onTurnEnd, type FinishedTurn } from '../trace/recorder.js';
 
-export type AlertKey = 'model_errors' | 'wecom_send' | 'tenant_lock' | 'store' | 'jobs' | 'channel';
+export type AlertKey =
+  | 'model_errors'
+  | 'wecom_send'
+  | 'tenant_lock'
+  | 'store'
+  | 'jobs'
+  | 'channel'
+  | 'tenant_scope_missing'
+  | 'sandbox_pool'
+  | 'sandbox_purge'
+  | 'sandbox_send_refused'
+  | 'sandbox_wecom_full';
 
 export interface AlertOpts {
   /** 同一告警键下按账号与原因独立去重，正文仍只有公开账号 key。 */
   scope?: string;
+  /** 进程资源的事实（模型、恢复汇总等），不借用某个租户的去重表。 */
+  instance?: boolean;
   /** 发一条「已恢复」：这个键没在告警中时什么都不发 */
   resolved?: boolean;
   /** 条件变重（如租户锁确认被别的进程持有、开始停机）：不受 30 分钟去重限制 */
@@ -52,7 +70,45 @@ interface KeyState {
   active: boolean;
   lastSentAt: number;
 }
-const states = new Map<string, KeyState>();
+const instanceStates = new Map<string, KeyState>();
+const tenants = new TenantLocal(
+  () => ({
+    states: new Map<string, KeyState>(),
+    wecomAccounts: new Map<
+      string,
+      { fails: { at: number; result: 'rejected' | 'unknown'; errcode: number | null }[]; lastFailAt: number }
+    >(),
+    inboxAlerted: new Map<string, { at: number; pending: number }>(),
+    poisonedSeen: new Set<string>(),
+    lagAlerted: false,
+    dropSamples: [] as { at: number; n: number }[],
+    replayFailedSeen: 0,
+    storeSubscribed: false,
+  }),
+  (s) => {
+    s.states.clear();
+    s.wecomAccounts.clear();
+    s.inboxAlerted.clear();
+    s.poisonedSeen.clear();
+    s.dropSamples.length = 0;
+  },
+);
+const tenantAlerts = () => tenants.get();
+function statesFor(key: AlertKey, instance = false): Map<string, KeyState> {
+  if (instance || key === 'model_errors' || key === 'tenant_scope_missing' || key === 'sandbox_pool' || key === 'sandbox_send_refused')
+    return instanceStates;
+  return tenantAlerts().states;
+}
+registerTenantState({ name: 'alert.states', ...tenants.registration((s) => s.states.size) });
+registerTenantState({ name: 'alert.wecomAccounts', ...tenants.registration((s) => s.wecomAccounts.size) });
+registerTenantState({ name: 'alert.inboxAlerted', ...tenants.registration((s) => s.inboxAlerted.size) });
+registerTenantState({ name: 'alert.poisonedSeen', ...tenants.registration((s) => s.poisonedSeen.size) });
+registerTenantState({
+  name: 'alert.storeSamples',
+  ...tenants.registration(
+    (s) => s.dropSamples.length + Number(s.lagAlerted) + Number(s.replayFailedSeen !== 0) + Number(s.storeSubscribed),
+  ),
+});
 const sentAt: number[] = [];
 let lastThrottleLog = 0;
 const inflight = new Set<Promise<void>>();
@@ -87,7 +143,7 @@ function errName(e: unknown): string {
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((resolve) => {
-    setTimeout(resolve, ms).unref();
+    withoutTenantScope(() => setTimeout(resolve, ms)).unref();
   });
 
 async function send(url: string, content: string): Promise<void> {
@@ -140,7 +196,10 @@ function deliver(content: string, t: number): void {
  */
 export function alert(key: AlertKey, text: string, opts: AlertOpts = {}): void {
   try {
+    const owner = scopedRuntime();
+    if (owner && owner.state !== 'serving' && !opts.instance) return;
     const t = clock();
+    const states = statesFor(key, opts.instance);
     const stateKey = opts.scope ? `${key}:${opts.scope}` : key;
     const st = states.get(stateKey) ?? { active: false, lastSentAt: 0 };
     if (opts.resolved) {
@@ -152,13 +211,19 @@ export function alert(key: AlertKey, text: string, opts: AlertOpts = {}): void {
       st.lastSentAt = t;
     }
     states.set(stateKey, st);
-    deliver(`[${instanceLabel()}] ${opts.resolved ? '已恢复：' : ''}${safeText(text)} · ${stamp(t)}`, t);
+    const content = `[${instanceLabel()}] ${opts.resolved ? '已恢复：' : ''}${safeText(text)} · ${stamp(t)}`;
+    if (owner?.kind === 'sandbox' && !opts.instance && key !== 'model_errors' && key !== 'tenant_scope_missing') {
+      console.warn(`[alert] 沙箱租户告警只记在日志里：${content}`);
+      return;
+    }
+    deliver(content, t);
   } catch (e) {
+    if (e instanceof TenantScopeMissing) throw e;
     console.error(`[alert] 告警处理出错（${errName(e)}），已忽略`);
   }
 }
 
-const isActive = (key: AlertKey): boolean => states.get(key)?.active ?? false;
+const isActive = (key: AlertKey): boolean => statesFor(key).get(key)?.active ?? false;
 
 // ---------------- model_errors ----------------
 
@@ -203,14 +268,8 @@ function onTurn(f: FinishedTurn): void {
 
 const WECOM_WINDOW_MS = 10 * 60_000;
 const WECOM_FAILS = 3;
-const wecomAccounts = new Map<
-  string,
-  {
-    fails: { at: number; result: 'rejected' | 'unknown'; errcode: number | null }[];
-    lastFailAt: number;
-  }
->();
 const wecomStateOf = (account: string) => {
+  const wecomAccounts = tenantAlerts().wecomAccounts;
   let st = wecomAccounts.get(account);
   if (!st) {
     st = { fails: [], lastFailAt: 0 };
@@ -221,7 +280,11 @@ const wecomStateOf = (account: string) => {
 const wecomScope = (account: string): AlertOpts => (account === 'env' ? {} : { scope: account });
 
 function onSettled(s: SendSettled): void {
+  if (currentRuntime().state !== 'serving') return;
   if (s.result === 'accepted') return;
+  // 无欢迎码的沙箱欢迎语由企微判窗口；明确拒绝带 errcode 记账，只记接口诊断。
+  // send_msg_on_event 欢迎语的失败仍沿用原来的空 errcode 与告警行为。
+  if (currentRuntime().kind === 'sandbox' && s.kind === 'welcome' && s.result === 'rejected' && s.errcode !== null) return;
   const t = clock();
   const st = wecomStateOf(s.account);
   st.lastFailAt = t;
@@ -239,6 +302,7 @@ function onSettled(s: SendSettled): void {
 }
 
 function onToken(code: string, account: string): void {
+  if (currentRuntime().state !== 'serving') return;
   wecomStateOf(account).lastFailAt = clock();
   alert('wecom_send', `取不到企微 access_token（${codeOf(code)}），收发消息都停了 · 账号 ${codeOf(account)}`, wecomScope(account));
 }
@@ -256,7 +320,7 @@ function onUnsafe(countIn10m: number): void {
   alert(
     'channel',
     `最近 10 分钟有 ${countIn10m} 段企微消息在发送状态没落库时照发（库写不进去，R6）：这期间进程崩溃的话这几段可能再发一次`,
-    { escalate: true },
+    { escalate: true, instance: true },
   );
 }
 
@@ -266,7 +330,7 @@ function onRejected(reason: string): void {
 
 /** 入站 poison、too_old 的告警（03 第 9 步）：每种原因每个账号 10 分钟至多一条，带这段时间里的条数（停机两天之后一次过期一批不刷屏） */
 const INBOX_ALERT_MS = 10 * 60_000;
-const inboxAlerted = new Map<string, { at: number; pending: number }>();
+
 const INBOX_REASON_TEXT: Partial<Record<InboxAbandoned['reason'], string>> = {
   poison: '处理了三次都没走完（每次都让处理中断）',
   too_old: '收到时已超过 48 小时发送窗口',
@@ -286,7 +350,7 @@ function restoreCutoffText(): string {
 function flushRestoreCutoff(t: number, force: boolean): void {
   if (restoreCutoff.sent || !restoreCutoff.conversations || (!force && t - restoreCutoff.lastAt < RESTORE_QUIET_MS)) return;
   restoreCutoff.sent = true;
-  alert('channel', restoreCutoffText(), { escalate: true });
+  alert('channel', restoreCutoffText(), { escalate: true, instance: true });
 }
 
 function onInboxGivenUp(e: InboxAbandoned): void {
@@ -298,9 +362,11 @@ function onInboxGivenUp(e: InboxAbandoned): void {
     return;
   }
   const why = INBOX_REASON_TEXT[e.reason];
+  if (currentRuntime().state !== 'serving') return;
   if (!why) return;
   const k = `${e.reason}:${e.account}`;
   const t = clock();
+  const inboxAlerted = tenantAlerts().inboxAlerted;
   const st = inboxAlerted.get(k) ?? { at: 0, pending: 0 };
   st.pending += 1;
   inboxAlerted.set(k, st);
@@ -316,6 +382,17 @@ function onInboxGivenUp(e: InboxAbandoned): void {
 // ---------------- tenant_lock ----------------
 
 function onLock(ev: LockEvent): void {
+  if (currentRuntime().kind === 'sandbox') {
+    if (ev === 'taken') alert('tenant_lock', '租户锁已被另一个进程持有，本进程开始停机', { instance: true, scope: 'lock_taken' });
+    else if (ev === 'lost') alert('tenant_lock', '沙箱租户锁连接断开：配置写入暂停，正在重取', { instance: true, scope: 'lock_lost' });
+    else if (
+      tenantRuntimes()
+        .filter((rt) => rt.kind === 'sandbox' && rt.state === 'serving')
+        .every((rt) => withTenantScope(rt, () => configHealth().lock !== 'lost'))
+    )
+      alert('tenant_lock', '沙箱租户锁重新取得，配置写入恢复', { instance: true, scope: 'lock_lost', resolved: true });
+    return;
+  }
   if (ev === 'lost') alert('tenant_lock', '租户锁连接断开：配置写入暂停、对话照常，正在重取');
   else if (ev === 'held') alert('tenant_lock', '租户锁重新取得，配置写入恢复', { resolved: true });
   else alert('tenant_lock', '租户锁已被另一个进程持有，本进程开始停机', { escalate: true });
@@ -326,10 +403,6 @@ function onLock(ev: LockEvent): void {
 const LAG_ALERT_MS = 60_000;
 const LAG_OK_MS = 5_000;
 const DROP_WINDOW_MS = 10 * 60_000;
-let lagAlerted = false;
-let poisonedSeen = new Set<string>();
-let dropSamples: { at: number; n: number }[] = [];
-let replayFailedSeen = 0;
 
 /** 自测可以换掉读写库健康与计数的地方（积压要 60 秒才造得出来） */
 let probe: { health: () => StoreHealth; counters: () => ReturnType<typeof storeCounters> } = {
@@ -339,7 +412,11 @@ let probe: { health: () => StoreHealth; counters: () => ReturnType<typeof storeC
 
 function onIncident(i: StoreIncident): void {
   if (i.kind === 'conflict')
-    alert('store', `store_conflict：落库撞上另一写者（${safeCodes(i.detail)}），本进程优雅停机，没落库的写进 spill`);
+    alert(
+      'store',
+      `store_conflict：落库撞上另一写者（${safeCodes(i.detail)}），本进程优雅停机，没落库的写进 spill`,
+      currentRuntime().kind === 'sandbox' ? { instance: true, scope: 'store_conflict' } : {},
+    );
   else alert('store', `停机时 ${i.sessions} 个会话没落库，退出时写进 spill 文件（下次启动先回放）`);
 }
 
@@ -347,37 +424,63 @@ function onIncident(i: StoreIncident): void {
 const safeCodes = (s: string): string => s.replace(/[^\w\s·:\-\p{Script=Han}]/gu, '').slice(0, 60);
 
 function checkStore(t: number): void {
+  const local = tenantAlerts();
   const h = probe.health();
-  if (h.conflict) alert('store', 'store_conflict：落库撞上另一写者，本进程优雅停机');
-  const fresh = h.poisoned.filter((c) => !poisonedSeen.has(c));
+  if (currentRuntime().kind !== 'sandbox' && h.conflict) alert('store', 'store_conflict：落库撞上另一写者，本进程优雅停机');
+  const fresh = h.poisoned.filter((c) => !local.poisonedSeen.has(c));
   if (fresh.length) {
-    for (const c of fresh) poisonedSeen.add(c);
+    for (const c of fresh) local.poisonedSeen.add(c);
     alert(
       'store',
       `会话 ${fresh.map(codeOf).join('、')} 停止落库（poisoned，${safeCodes(h.lastError ?? '原因见日志')}），内存照旧服务客户`,
     );
   }
-  if (h.lagMs > LAG_ALERT_MS) {
-    lagAlerted = true;
+  if (currentRuntime().kind !== 'sandbox' && h.lagMs > LAG_ALERT_MS) {
+    local.lagAlerted = true;
     alert('store', `写库积压 ${Math.round(h.lagMs / 1000)} 秒（${h.dirty} 个会话有没落库的改动）`);
-  } else if (lagAlerted && h.lagMs <= LAG_OK_MS) {
-    lagAlerted = false;
+  } else if (currentRuntime().kind !== 'sandbox' && local.lagAlerted && h.lagMs <= LAG_OK_MS) {
+    local.lagAlerted = false;
     if (!h.conflict && h.poisoned.length === 0) alert('store', '写库积压回到 5 秒以内', { resolved: true });
   }
   const c = probe.counters();
   if (!c) return;
-  if (c.replayFailedFiles > replayFailedSeen) {
-    replayFailedSeen = c.replayFailedFiles;
+  if (c.replayFailedFiles > local.replayFailedSeen) {
+    local.replayFailedSeen = c.replayFailedFiles;
     alert('store', `启动时 ${c.replayFailedFiles} 个 spill 文件回放失败，已改名 .failed，需要人工处理`);
   }
   // 丢掉的遥测批次：第一次读到的是基线（startAlerts 时就读一次），之后比上一次多了就报，报的是最近 10 分钟里的批数
-  const prev = dropSamples.at(-1)?.n;
-  dropSamples = dropSamples.filter((s) => t - s.at <= DROP_WINDOW_MS);
-  const before = dropSamples[0]?.n ?? prev ?? c.telemetryDropped;
-  dropSamples.push({ at: t, n: c.telemetryDropped });
+  const prev = local.dropSamples.at(-1)?.n;
+  local.dropSamples = local.dropSamples.filter((s) => t - s.at <= DROP_WINDOW_MS);
+  const before = local.dropSamples[0]?.n ?? prev ?? c.telemetryDropped;
+  local.dropSamples.push({ at: t, n: c.telemetryDropped });
   if (prev !== undefined && c.telemetryDropped > prev) {
     alert('store', `最近 10 分钟有 ${c.telemetryDropped - before} 批遥测行（trace、护栏事件、发送账本）没写进库，已丢弃`);
   }
+}
+
+/** 沙箱共用 PG：汇总后按故障种类使用实例去重，单个 poisoned 等仍由 checkStore 只记日志。 */
+function checkSandboxStores(health: StoreHealth[]): void {
+  if (!health.length) return;
+  const lagMs = Math.max(...health.map((h) => h.lagMs));
+  const dirty = health.reduce((n, h) => n + h.dirty, 0);
+  if (health.some((h) => h.conflict))
+    alert('store', 'store_conflict：落库撞上另一写者，本进程优雅停机', { instance: true, scope: 'store_conflict' });
+  if (lagMs > LAG_ALERT_MS)
+    alert('store', `沙箱写库积压 ${Math.round(lagMs / 1000)} 秒（${dirty} 个会话有没落库的改动，可能库不可达）`, {
+      instance: true,
+      scope: 'store_lag',
+    });
+  else if (lagMs <= LAG_OK_MS && health.every((h) => !h.conflict && !h.poisoned.length))
+    alert('store', '沙箱写库积压回到 5 秒以内', { instance: true, scope: 'store_lag', resolved: true });
+}
+
+/** 新开通的沙箱也必须收到写者冲突的即时通知，不等下一次巡检。 */
+export function watchStoreAlerts(): void {
+  if (currentRuntime().state !== 'serving') return;
+  const local = tenantAlerts();
+  if (local.storeSubscribed) return;
+  onStoreIncident(onIncident);
+  local.storeSubscribed = true;
 }
 
 // ---------------- jobs ----------------
@@ -420,17 +523,39 @@ function checkChannels(now: number): void {
 function tick(): void {
   try {
     const t = clock();
-    checkStore(t);
+    const sandboxHealth: StoreHealth[] = [];
+    for (const rt of tenantRuntimes().filter((rt) => rt.state === 'serving'))
+      backgroundEntry(() =>
+        withTenantScope(rt, () => {
+          watchStoreAlerts();
+          checkStore(t);
+          if (rt.kind === 'sandbox') sandboxHealth.push(probe.health());
+        }),
+      );
+    withoutTenantScope(() => checkSandboxStores(sandboxHealth));
     flushRestoreCutoff(t, false);
-    for (const [account, st] of wecomAccounts) {
-      if (st.lastFailAt && t - st.lastFailAt >= WECOM_WINDOW_MS) {
-        st.lastFailAt = 0;
-        st.fails = [];
-        alert('wecom_send', `企微发送 10 分钟没有失败 · 账号 ${codeOf(account)}`, { ...wecomScope(account), resolved: true });
-      }
-    }
-    const p = refreshChannelObservability()
-      .then(() => checkChannels(t))
+    for (const rt of tenantRuntimes().filter((rt) => rt.state === 'serving'))
+      withTenantScope(rt, () => {
+        for (const [account, st] of tenantAlerts().wecomAccounts) {
+          if (st.lastFailAt && t - st.lastFailAt >= WECOM_WINDOW_MS) {
+            st.lastFailAt = 0;
+            st.fails = [];
+            alert('wecom_send', `企微发送 10 分钟没有失败 · 账号 ${codeOf(account)}`, { ...wecomScope(account), resolved: true });
+          }
+        }
+      });
+    const p = Promise.all(
+      tenantRuntimes()
+        .filter((rt) => rt.state === 'serving')
+        .map((rt) =>
+          withTenantScope(rt, async () => {
+            const local = tenants.get(rt);
+            await refreshChannelObservability();
+            if (rt.state === 'serving' && !rt.cancel.aborted && tenants.owns(rt, local)) checkChannels(t);
+          }),
+        ),
+    )
+      .then(() => undefined)
       .finally(() => inflight.delete(p));
     inflight.add(p);
   } catch (e) {
@@ -443,33 +568,54 @@ let timer: NodeJS.Timeout | null = null;
 
 /** 挂上各处的订阅（模型、企微、租户锁、写库、任务）与每 5 秒一次的巡检。两种存储都挂，文件存储下与库相关的键自然不触发。可以调多次 */
 export function startAlerts(): void {
-  if (started) return;
+  if (started) {
+    // boot 先挂订阅，起渠道后再调用；sending 转 unknown 要到 startChannels 才产生。
+    // 只补查启动告警（由 alert 去重），不重复订阅或创建巡检定时器。
+    for (const rt of tenantRuntimes().filter((rt) => rt.state === 'serving')) withTenantScope(rt, checkChannelStartup);
+    return;
+  }
   started = true;
-  onTurnEnd(onTurn);
-  onSendSettled(onSettled);
-  onUnsafeSend(onUnsafe);
-  onPlanRejected(onRejected);
-  onInboxAbandoned(onInboxGivenUp);
-  onTokenError(onToken);
-  onLockEvent(onLock);
-  onStoreIncident(onIncident);
-  onJobFailed(onJob);
-  // 停机：在途的推送（store_conflict、锁被拿走、drain 段末尾的 spill）等到 late 段的截止时刻，再退出
-  onShutdown(
-    async ({ deadline }) => {
-      flushRestoreCutoff(clock(), true);
-      if (!inflight.size) return;
-      await Promise.race([Promise.allSettled(inflight), sleep(Math.max(0, deadline - Date.now()))]);
-    },
-    { phase: 'late' },
-  );
-  // 启动之前就成立的：锁在装载途中就断了；回放失败的 spill 在第一次巡检里报
-  if (configHealth().lock === 'lost') onLock('lost');
-  // 03：渠道装载时判出的（R15 的网页账号没启用、R19 的欢迎语按没设处理），合成一条
-  checkChannelStartup();
-  tick();
-  timer = setInterval(tick, TICK_MS);
-  timer.unref();
+  // 这里的 exit 控制注册分支、停机钩子与 timer，不改变同步订阅的发出方上下文；巡检逐 rt 进入作用域。
+  withoutTenantScope(() => {
+    onTenantScopeMissing(() => alert('tenant_scope_missing', '后台入口缺少租户作用域'));
+    onDomainEventMismatch(() =>
+      alert('store', '领域事件租户不匹配，已跳过该事件', { scope: 'domain_event_tenant_mismatch', instance: true }),
+    );
+    onTurnEnd(onTurn);
+    onSendSettled(onSettled);
+    onUnsafeSend(onUnsafe);
+    onPlanRejected(onRejected);
+    onInboxAbandoned(onInboxGivenUp);
+    onTokenError(onToken);
+    onLockEvent(onLock);
+    for (const rt of tenantRuntimes()) withTenantScope(rt, watchStoreAlerts);
+    onJobFailed(onJob);
+    // 停机：在途的推送（store_conflict、锁被拿走、drain 段末尾的 spill）等到 late 段的截止时刻，再退出
+    onShutdown(
+      async ({ deadline }) => {
+        flushRestoreCutoff(clock(), true);
+        if (!inflight.size) return;
+        await Promise.race([Promise.allSettled(inflight), sleep(Math.max(0, deadline - Date.now()))]);
+      },
+      { phase: 'late' },
+    );
+    // 启动之前就成立的：锁在装载途中就断了；回放失败的 spill 在第一次巡检里报
+    for (const rt of tenantRuntimes())
+      withTenantScope(rt, () => {
+        if (configHealth().lock === 'lost') onLock('lost');
+      });
+    // 03：渠道装载时判出的（R15 的网页账号没启用、R19 的欢迎语按没设处理），合成一条
+    for (const rt of tenantRuntimes().filter((rt) => rt.state === 'serving')) withTenantScope(rt, checkChannelStartup);
+    tick();
+    timer = withoutTenantScope(() => setInterval(tick, TICK_MS));
+    timer.unref();
+  });
+}
+
+/** 沙箱进程关闭后停止巡检；已经开始的告警仍可排空。 */
+export function stopAlertPolling(): void {
+  if (timer) clearInterval(timer);
+  timer = null;
 }
 
 /** 仅供自测 */
@@ -491,6 +637,7 @@ export const __alertTest = {
     timer = null;
   },
   tick,
+  onLock,
   checkChannelStartup,
   /** 等在途的推送都结束 */
   async settle(): Promise<void> {
@@ -499,21 +646,20 @@ export const __alertTest = {
   inflight: () => inflight.size,
   /** 清掉去重、限流与各键的计数（订阅不动） */
   reset(): void {
-    states.clear();
+    const subscriptions = tenantRuntimes()
+      .filter((rt) => rt.state === 'serving')
+      .map((rt) => ({ rt, subscribed: tenants.get(rt).storeSubscribed }));
+    tenants.registration(() => 0).reset();
+    for (const { rt, subscribed } of subscriptions) if (subscribed) tenants.get(rt).storeSubscribed = true;
+    instanceStates.clear();
     sentAt.length = 0;
     lastThrottleLog = 0;
     failStreak = 0;
     okStreak = 0;
     streakKinds = [];
     recentTurns = [];
-    wecomAccounts.clear();
     lastUnsafeAlertAt = 0;
-    inboxAlerted.clear();
     Object.assign(restoreCutoff, { conversations: 0, lastAt: 0, sent: false });
-    lagAlerted = false;
-    poisonedSeen = new Set();
-    dropSamples = [];
-    replayFailedSeen = 0;
   },
   isActive,
 };

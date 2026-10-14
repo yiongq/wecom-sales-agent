@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex">
+<title>AI销售工作台</title>
+<!-- console styles -->
+<style>
+[hidden] { display:none !important; }
+.try-panel { display:flex; flex-direction:column; }
+.try-lead-break { display:none; }
+@media (max-width:767px) { .try-lead-break { display:initial; } }
+.try-panel .login-column { margin-bottom:64px; }
+.try-start { display:inline-flex; align-items:center; justify-content:center; gap:8px; width:100%; height:40px; border:0; border-radius:var(--r-sm); background:var(--primary); color:var(--on-primary); font:500 14px/22px var(--font); cursor:pointer; }
+.try-start:hover { background:var(--primary-hover); }
+.try-start:disabled, .try-start:disabled:hover { cursor:wait; background:var(--primary); }
+.try-icon { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+.try-spinner { display:none; }
+.try-start[aria-busy="true"] .try-spinner { display:block; animation:try-spin 1s linear infinite; }
+@keyframes try-spin { to { transform:rotate(360deg); } }
+.try-start:focus-visible, .try-data-link:focus-visible, .try-fallback a:focus-visible { outline:2px solid var(--focus); outline-offset:2px; }
+.try-steps { margin:32px 0 24px; }
+.try-steps h2 { margin:0 0 12px; font-size:13px; line-height:20px; font-weight:500; color:var(--text-2); }
+.try-steps ol { padding:0; margin:0; list-style:none; }
+.try-steps li { display:flex; align-items:center; gap:10px; margin-top:10px; }
+.try-steps span { width:20px; height:20px; border:1px solid var(--control-border); border-radius:var(--r-full); text-align:center; font-size:12px; line-height:18px; color:var(--text-2); }
+.try-notes { font-size:13px; line-height:20px; color:var(--text-2); }
+.try-notes p { margin:8px 0; }
+#notes { padding-top:16px; border-top:1px solid var(--divider); }
+.try-note { display:flex; align-items:flex-start; gap:8px; }
+.try-note > svg { margin-top:2px; color:var(--text-3); }
+.try-data-row { margin:8px 0; font-size:13px; line-height:20px; color:var(--text-2); }
+.try-data-link { color:var(--accent-text); }
+.try-ended-notes { margin:24px 0; }
+.try-footer { margin-top:auto; text-align:center; font-size:13px; line-height:20px; color:var(--text-2); }
+.try-data { margin-top:16px; font-size:13px; line-height:20px; color:var(--text-2); }
+.try-alert { display:flex; gap:10px; align-items:flex-start; margin:16px 0; padding:12px 16px; border-radius:var(--r-md); background:var(--danger-bg); color:var(--danger); font-size:13px; line-height:20px; overflow-wrap:anywhere; }
+.try-fallback a { display:flex; align-items:center; gap:12px; min-height:56px; margin-top:12px; padding:8px 14px; border-radius:var(--r-md); box-shadow:var(--shadow-card); color:var(--text); }
+.try-fallback a > span { flex:1; min-width:0; }
+.try-fallback strong { display:block; font:500 14px/22px var(--font); }
+.try-fallback small { display:block; color:var(--text-2); font-size:13px; line-height:20px; }
+.try-fallback svg { color:var(--text-2); }
+.try-fallback svg:last-child { color:var(--text-3); }
+.try-alert svg { width:16px; height:16px; flex:none; margin-top:2px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; }
+</style>
+</head>
+<body>
+<div class="login-page login-demo">
+  <main class="login-panel try-panel">
+    <div class="entry-wordmark">AI销售工作台</div>
+    <div class="login-column">
+      <h1 class="login-title" id="tryTitle">免登录体验</h1>
+      <p class="login-lead" id="tryLead">一份只属于你的示例后台，<br class="try-lead-break">带示例会话、订单和产品。</p>
+      <div id="status" class="try-alert" role="alert" hidden><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="m9 9 6 6m0-6-6 6"></path></svg><span id="statusMessage"></span></div>
+      <button type="button" class="try-start" id="startBtn" aria-busy="false"><svg class="try-icon try-spinner" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12a9 9 0 1 1-6.219-8.56"></path></svg><span id="startLabel">开始体验</span></button>
+      <div class="try-steps" id="steps">
+        <h2>进去以后可以</h2>
+        <ol><li><span>1</span>用微信扫码，当一回客户</li><li><span>2</span>看AI怎么接待、报价</li><li><span>3</span>接手会话，自己回一句</li><li><span>4</span>改价、标已付或改话术</li></ol>
+      </div>
+      <div class="try-notes" id="notes"><p class="try-note"><svg class="try-icon clock" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 6v6l4 2"></path></svg><span>最长保留24小时，闲置2小时会提前结束</span></p><p class="try-note"><svg class="try-icon lock" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"></rect><path d="M7 11V7a5 5 0 0 1 10 0v4"></path></svg><span>工作台只能在这个浏览器里打开；扫码绑定后，微信里的回复只发到你自己的微信</span></p></div>
+      <div class="try-notes try-ended-notes" id="ended" hidden><p>之后在微信里再发消息，只会收到「去开一个新体验」的提示</p><p>企业微信服务器上的聊天记录按企业微信的规则保存</p></div>
+      <div class="try-note try-data-row" id="dataNote"><svg class="try-icon info" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="10"></circle><path d="M12 16v-4m0-4h.01"></path></svg><span><span id="dataWarning">别填真实的姓名和手机号 · </span><a class="try-data-link" id="dataToggle" href="#tryData" aria-controls="tryData" aria-expanded="false">体验数据怎么处理</a></span></div>
+      <div class="try-data" id="tryData" hidden><!-- data copy --></div>
+      <div class="try-fallback" id="fallback" hidden>
+        <a id="hostConsole" hidden><svg class="try-icon layout-dashboard" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="3" width="7" height="9" rx="1"></rect><rect x="14" y="3" width="7" height="5" rx="1"></rect><rect x="14" y="12" width="7" height="9" rx="1"></rect><rect x="3" y="16" width="7" height="5" rx="1"></rect></svg><span><strong>只读看演示后台</strong><small>会话、产品库和话术都能看，不能改</small></span><svg class="try-icon chevron-right" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"></path></svg></a>
+        <a id="hostChat" hidden><svg class="try-icon message-square" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg><span><strong>在网页上和AI聊几句</strong><small>你扮演客户，看它怎么推荐、报价</small></span><svg class="try-icon arrow-up-right" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h10v10M7 17 17 7"></path></svg></a>
+        <p id="fallbackUnavailable">备用入口暂未配置，请稍后重试。</p>
+      </div>
+      <noscript><p>需要开启 JavaScript 才能开始体验</p></noscript>
+    </div>
+    <p class="try-footer">已有账号？<a id="hostLogin" hidden>登录</a></p>
+  </main>
+  <!-- showcase -->
+</div>
+<script>
+(() => {
+  const button = document.getElementById('startBtn');
+  const label = document.getElementById('startLabel');
+  const dataNote = document.getElementById('dataNote');
+  const data = document.getElementById('tryData');
+  const dataToggle = document.getElementById('dataToggle');
+  dataToggle.addEventListener('click', (event) => {
+    event.preventDefault();
+    data.hidden = !data.hidden;
+    dataToggle.setAttribute('aria-expanded', String(!data.hidden));
+  });
+  const status = document.getElementById('status');
+  const title = document.getElementById('tryTitle');
+  const lead = document.getElementById('tryLead');
+  const fallback = document.getElementById('fallback');
+  const params = new URLSearchParams(location.search);
+  const ended = params.get('ended') === '1';
+  const auto = params.get('start') === '1' && !ended;
+  if (params.has('start')) {
+    params.delete('start');
+    history.replaceState(null, '', location.pathname + (params.size ? '?' + params.toString() : '') + location.hash);
+  }
+  const links = ['hostConsole', 'hostChat', 'hostLogin'].map((id) => document.getElementById(id));
+  for (const link of links) link.hidden = !link.hasAttribute('href');
+  document.getElementById('fallbackUnavailable').hidden = links.slice(0, 2).every((link) => link.hasAttribute('href'));
+  if (ended) {
+    title.textContent = '上一次体验已结束';
+    lead.textContent = '上一次体验已结束，里面的数据会全部删除。想再看一遍，可以重新开一个。';
+    label.textContent = '再开一个体验';
+    document.getElementById('dataWarning').hidden = true;
+    document.getElementById('ended').hidden = false;
+    document.getElementById('steps').hidden = true;
+    document.getElementById('notes').hidden = true;
+  }
+  async function start() {
+    if (button.disabled) return;
+    button.disabled = true;
+    button.setAttribute('aria-busy', 'true');
+    button.hidden = false;
+    label.textContent = '正在准备…';
+    title.textContent = '正在准备体验环境';
+    lead.textContent = '一份只属于你的示例后台，通常几秒就好。';
+    status.hidden = true;
+    fallback.hidden = true;
+    dataNote.hidden = false;
+    document.getElementById('notes').hidden = ended;
+    document.getElementById('steps').hidden = ended;
+    const slow = setTimeout(() => { lead.textContent = '比平时慢一点，再等等'; }, 5000);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 30000);
+    let entering = false;
+    try {
+      const response = await fetch('/api/sandbox', {
+        method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: '{}', signal: controller.signal,
+      });
+      const body = await response.json();
+      clearTimeout(slow);
+      if (body.error === 'sandbox_limited') {
+        title.textContent = body.scope === 'ip' ? '这个网络今天开得有点多了' : '暂时没有空余的体验名额';
+        const seconds = Number(body.retryAfter || response.headers.get('retry-after') || 3600);
+        const delay = seconds < 3600 ? Math.max(1, Math.ceil(seconds / 60)) + '分钟' : Math.ceil(seconds / 3600) + '小时';
+        lead.textContent = body.scope === 'ip' ? '过一会儿再试，或者先看看这些：' : '体验环境的名额有限，约' + delay + '后再试。先看看这些：';
+        document.getElementById('steps').hidden = true;
+        document.getElementById('notes').hidden = true;
+        dataNote.hidden = true;
+        data.hidden = true;
+        fallback.hidden = false;
+        button.hidden = true;
+        return;
+      }
+      if (!response.ok || body.url !== '/console/') throw new Error(body.error || 'sandbox_unavailable');
+      location.replace('/console/');
+      entering = true;
+    } catch (error) {
+      status.hidden = false;
+      document.getElementById('statusMessage').textContent = error.message === 'sandbox_unavailable' ? '暂时无法开通体验，请稍后重试。' : error.message === 'cross_site' ? '请在体验页面里重新开始。' : '暂时无法开通体验，请检查网络后重试。';
+    } finally {
+      clearTimeout(slow);
+      clearTimeout(timeout);
+      if (!entering) { button.disabled = false; button.setAttribute('aria-busy', 'false'); label.textContent = '重试'; }
+    }
+  }
+  button.addEventListener('click', start);
+  if (auto) {
+    title.textContent = '正在准备体验环境';
+    lead.textContent = '一份只属于你的示例后台，通常几秒就好。';
+    label.textContent = '正在准备…';
+    const visible = () => {
+      if (document.visibilityState !== 'visible') return;
+      document.removeEventListener('visibilitychange', visible);
+      void start();
+    };
+    if (document.visibilityState === 'visible') visible();
+    else document.addEventListener('visibilitychange', visible);
+  }
+})();
+</script>
+</body>
+</html>

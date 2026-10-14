@@ -1,3 +1,5 @@
+import { scopedRuntime, currentRuntime, type TenantRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { registerTenantState } from '../tenancy/state.js';
 // 逐轮 trace 与护栏事件（docs/architecture/02-conversations-workbench/spec.md「逐轮 trace、护栏事件与用量」、R16）。
 // 每处理一条客户消息收集一条轮次记录（确定性路径也记），两种会话存储都收集、只在内存；db 存储下真实会话的那一条在 endTurn 时
 // 排进这个会话的下一次落库（写在存档点里，写失败只丢这几行），demo 类会话与文件存储下不入库。
@@ -340,35 +342,41 @@ export function noteToolError(args: Record<string, unknown>): void {
   p!.call.failed = true;
 }
 
+// 同步订阅在发出方的轮次/租户作用域执行；注册时 exit 不会改变回调上下文。
 // llm.ts 在一次调用结束（成功或失败）时通知，带这次的耗时：开始时刻倒推出来
-onLlmCall((c) => {
-  const h = live();
-  if (h) h.llm.push({ trace: c, usage: null, startedAt: Date.now() - c.ms });
-});
+withoutTenantScope(() =>
+  onLlmCall((c) => {
+    const h = live();
+    if (h) h.llm.push({ trace: c, usage: null, startedAt: Date.now() - c.ms });
+  }),
+);
 
 // 主对话每次调用的 token：llm.ts 先通知 onLlmCall、再记用量，这一笔归最近一次还没有用量、同一模型的成功调用
-onUsage((e) => {
-  if (e.purpose !== 'chat') return;
-  const h = live();
-  const slot = h?.llm.findLast((x) => !x.usage && x.trace.error === null && x.trace.model === e.model);
-  if (slot) {
-    slot.usage = {
-      promptTokens: e.promptTokens,
-      completionTokens: e.completionTokens,
-      cachedTokens: e.cachedTokens,
-      reasoningTokens: e.reasoningTokens,
-    };
-  }
-});
+withoutTenantScope(() =>
+  onUsage((e) => {
+    if (e.purpose !== 'chat') return;
+    const h = live();
+    const slot = h?.llm.findLast((x) => !x.usage && x.trace.error === null && x.trace.model === e.model);
+    if (slot) {
+      slot.usage = {
+        promptTokens: e.promptTokens,
+        completionTokens: e.completionTokens,
+        cachedTokens: e.cachedTokens,
+        reasoningTokens: e.reasoningTokens,
+      };
+    }
+  }),
+);
 
-const endObservers = new Set<(t: FinishedTurn) => void>();
+const endObservers = new Set<{ fn: (t: FinishedTurn) => void; owner: TenantRuntime | undefined; conversationId?: string }>();
 /**
  * 轮次结束的订阅（自测用；OpenTelemetry 导出也挂在这里：设了 OTEL_EXPORTER_OTLP_ENDPOINT 时 boot() 经 src/ops/otel.ts
  * 动态 import src/otel/export.ts 再订阅，见第 18 步）。没人订阅时 endTurn 里只有一次判断
  */
-export function onTurnEnd(fn: (t: FinishedTurn) => void): () => void {
-  endObservers.add(fn);
-  return () => endObservers.delete(fn);
+export function onTurnEnd(fn: (t: FinishedTurn) => void, opts: { owner?: TenantRuntime; conversationId?: string } = {}): () => void {
+  const observer = { fn, owner: opts.owner ?? scopedRuntime(), conversationId: opts.conversationId };
+  endObservers.add(observer);
+  return () => endObservers.delete(observer);
 }
 
 type TraceRow = NonNullable<TelemetryRows['traces']>[number];
@@ -415,7 +423,10 @@ function finish(
       signals: h.signals,
       input: h.input,
     };
-    for (const fn of endObservers) {
+    const rt = currentRuntime();
+    for (const { fn, owner, conversationId } of endObservers) {
+      if (owner && (owner !== rt || owner.cancel.aborted || owner.state === 'closed')) continue;
+      if (conversationId !== undefined && conversationId !== t.conversationId) continue;
       try {
         fn(done);
       } catch {
@@ -469,3 +480,14 @@ export function endTurn(
   const h = live();
   if (h) finish(h, outcome, finalText, stageBefore, stageAfter, reply);
 }
+
+registerTenantState({
+  name: 'trace.endObservers',
+  keyCount: (id) => [...endObservers].filter((o) => o.owner?.id === id).length,
+  drop: (id) => {
+    for (const o of endObservers) if (o.owner?.id === id) endObservers.delete(o);
+  },
+  reset: () => {
+    for (const o of endObservers) if (o.owner) endObservers.delete(o);
+  },
+});

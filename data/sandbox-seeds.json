@@ -1,0 +1,212 @@
+{
+  "$comment": "由 scripts/seed-demo.py --fixture 生成；sessions 与 orders 沿用默认场景字段。沿用既有沙箱夹具的旧线路修正：B01 的 r-bali-lux 改为目录 r-bali，正文、标题与金额按目录对应。各会话 updatedAt 等于最后一条消息时间。沙箱是默认场景的5段会话、2个对应订单子集。所有 at、createdAt、updatedAt、paidAt 均为相对最新消息的毫秒偏移（整数，<=0，最新消息为0）；开通时加上开通时刻减5分钟。profile.dates 与 departDate 是行程日期文本，不是时间戳。会话 id、channel 与订单引用在开通时重映射。",
+  "sessions": [
+    {
+      "id": "wecom:cust_A01",
+      "channel": "wecom",
+      "stage": "paid",
+      "profile": {
+        "nickname": "Cici陈",
+        "destinationInterest": "马尔代夫",
+        "travelers": "2人",
+        "dates": "2026-10-15",
+        "budget": "每人6万"
+      },
+      "messages": [
+        {
+          "role": "customer",
+          "content": "你好，想去马尔代夫蜜月，两个人",
+          "at": -10980000
+        },
+        {
+          "role": "agent",
+          "content": "太棒了，马尔代夫是蜜月首选！给您推荐 Soneva Jani 蜜月 6 日，水上别墅可开顶观星～大概什么时候出发？",
+          "at": -10920000
+        },
+        {
+          "role": "customer",
+          "content": "预算每人6万，10月15号出发",
+          "at": -10860000
+        },
+        {
+          "role": "agent",
+          "content": "给您报个价：Soneva Jani 蜜月 6 日，每人 52,800，2 人共 105,600 元。可以吗？",
+          "at": -10800000
+        },
+        {
+          "role": "customer",
+          "content": "就订这个",
+          "at": -10740000
+        },
+        {
+          "role": "agent",
+          "content": "已为您锁定名额，请点链接完成支付～",
+          "at": -10680000
+        },
+        {
+          "role": "agent",
+          "content": "已收到您的支付，太开心啦！顾问稍后对接行程细节～",
+          "at": -10620000
+        }
+      ],
+      "orderIds": ["ord_seed_A01"],
+      "handedOver": false,
+      "createdAt": -10980000,
+      "updatedAt": -10620000
+    },
+    {
+      "id": "wecom:cust_B01",
+      "channel": "wecom",
+      "stage": "closing",
+      "profile": {
+        "nickname": "Momo酱",
+        "destinationInterest": "巴厘岛",
+        "travelers": "2人",
+        "dates": "2026-11-10",
+        "budget": "每人4万"
+      },
+      "messages": [
+        {
+          "role": "customer",
+          "content": "想去巴厘岛蜜月",
+          "at": -180000
+        },
+        {
+          "role": "agent",
+          "content": "巴厘岛乌布雨林蜜月 6 日了解一下？私人泳池俯瞰雨林～",
+          "at": -120000
+        },
+        {
+          "role": "customer",
+          "content": "11月10号，可以下单",
+          "at": -60000
+        },
+        {
+          "role": "agent",
+          "content": "已为您生成订单，巴厘岛乌布雨林蜜月 6 日，2 人共 45,600 元，请点链接支付～",
+          "at": 0
+        }
+      ],
+      "orderIds": ["ord_seed_B01"],
+      "handedOver": false,
+      "createdAt": -180000,
+      "updatedAt": 0
+    },
+    {
+      "id": "wecom:cust_C01",
+      "channel": "wecom",
+      "stage": "quote",
+      "profile": {
+        "nickname": "李行舟",
+        "destinationInterest": "瑞士",
+        "travelers": "2人",
+        "budget": "每人6万"
+      },
+      "messages": [
+        {
+          "role": "customer",
+          "content": "瑞士深度游有什么推荐",
+          "at": -7380000
+        },
+        {
+          "role": "agent",
+          "content": "冰川快车全景环线 9 日，穿行阿尔卑斯～",
+          "at": -7320000
+        },
+        {
+          "role": "customer",
+          "content": "两个人多少钱",
+          "at": -7260000
+        },
+        {
+          "role": "agent",
+          "content": "每人 62,800，2 人共 125,600 元。要不要帮您留位？",
+          "at": -7200000
+        }
+      ],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": -7380000,
+      "updatedAt": -7200000
+    },
+    {
+      "id": "wecom:cust_E01",
+      "channel": "wecom",
+      "stage": "discovery",
+      "profile": {},
+      "messages": [
+        {
+          "role": "customer",
+          "content": "你好",
+          "at": -180000
+        },
+        {
+          "role": "agent",
+          "content": "您好！云途定制旅行顾问在此～最近想去哪儿放松呢？",
+          "at": -120000
+        }
+      ],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": -180000,
+      "updatedAt": -120000
+    },
+    {
+      "id": "wecom:cust_F01",
+      "channel": "wecom",
+      "stage": "handoff",
+      "profile": {
+        "nickname": "刘倩",
+        "destinationInterest": "马尔代夫",
+        "travelers": "2人"
+      },
+      "messages": [
+        {
+          "role": "customer",
+          "content": "这个太贵了，我要投诉",
+          "at": -3780000
+        },
+        {
+          "role": "agent",
+          "content": "非常抱歉给您带来不好的体验 我马上为您转接资深顾问处理～",
+          "at": -3720000
+        }
+      ],
+      "orderIds": [],
+      "handedOver": true,
+      "createdAt": -3780000,
+      "updatedAt": -3720000,
+      "handoff": {
+        "kind": "complaint",
+        "at": -3720000,
+        "reason": "客户投诉价格太贵",
+        "quote": "这个太贵了，我要投诉"
+      }
+    }
+  ],
+  "orders": [
+    {
+      "id": "ord_seed_A01",
+      "sessionId": "wecom:cust_A01",
+      "routeId": "r-maldives",
+      "routeTitle": "马尔代夫 Soneva Jani 蜜月 6 日",
+      "travelers": 2,
+      "departDate": "2026-10-15",
+      "totalPrice": 105600,
+      "status": "paid",
+      "createdAt": -10980000,
+      "paidAt": -10500000
+    },
+    {
+      "id": "ord_seed_B01",
+      "sessionId": "wecom:cust_B01",
+      "routeId": "r-bali",
+      "routeTitle": "巴厘岛乌布雨林蜜月 6 日",
+      "travelers": 2,
+      "departDate": "2026-11-10",
+      "totalPrice": 45600,
+      "status": "pending_payment",
+      "createdAt": -180000
+    }
+  ]
+}
