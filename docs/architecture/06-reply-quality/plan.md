@@ -71,7 +71,7 @@
   - [x] 0.7 owner 确认测量定的数（协调者整理，owner 定）
     - 做：把 P1、P2、字数上限、起跑时限、T 五个建议值连同依据交 owner，并请 owner 定线上开不开重写。
     - 验：owner 确认后写进 spec 顶部 `Revisions:`（开放问题 9）。
-- [ ] 1. 共享骨架（1 工程日，子 agent；行为不变）
+- [x] 1. 共享骨架（1 工程日，子 agent；行为不变）
   - 做：把几条车道都要碰的接口与步骤位置先一次建好，后面各车道只填步骤体，少在同一处冲突。
     - `ReplyGuardContext` 加 `elapsedMs()`（从 `handleMessage` 收到这条消息起算）、`rewriteReply()`（本步恒返回 `null`）、`handoffThisTurn()`，由引擎构造（对 04 的 amend）。
     - 主回复的四个新步骤按 spec「主回复步骤」登记为放行步骤：
@@ -96,7 +96,7 @@
 
 ### 评测车道 E（第 2–4 步）
 
-- [ ] 2. R2 谓词、`SimGoal` 扩展、评测报告与 R4 快照政策（2 工程日，子 agent）
+- [x] 2. R2 谓词、`SimGoal` 扩展、评测报告与 R4 快照政策（2 工程日，子 agent）
   - 做：
     - `eval/sim/goals.ts`：`SimGoal` 加 `severity`、`covers`、`initial`、`customerScript`；谓词加 `shape`、`no_repeat`；`reply_excludes` 加 `negationAware` 与 `after: { tool }`（spec「回归集目标的扩展」）。
     - runner：按 `initial` 种会话与订单（真 paid 走订单状态，不靠口头说），前几轮用 `customerScript`。`customer_protocol` 重跑一次，仍失败的不计入 pass^k 的分母、单列出来，一个目标超过 20% 就标「客户脚本要改」。
@@ -108,11 +108,11 @@
     - `readBaseline` 自测：默认常量、`off`、指定文件三种。
     - 用新谓词重判审查的 88 段：临时脚本，不调模型，读主仓库的 `var/quality-audit/`。7 段否定句误伤与 4 处场景设定错误不再判失败；审查确认的 blocker 与 major 段仍判失败（验收 8）。结果记进实施记录。
   - 依赖：0.1；`shape` 谓词等第 1 步。
-- [ ] 3. R1 回归集（1.5 工程日，子 agent）
+- [x] 3. R1 回归集（1.5 工程日，子 agent）
   - 做：`eval/sim/goals/quality/` 放不少于 30 个目标，全是合成数据。由审查的 44 个场景合并、修正而来，补上 R1 列的带状态目标与缺口场景，改正 R2 列的四处场景设定；每个目标标 `covers` 与 `severity`。sim 自测加一条：目录里至少 30 个目标；`covers` 覆盖问题表全部 ID（X、Y、Z 除外）；至少一个 `initial.orders` 是 paid；全部能被 schema 读通。
   - 验：上面那条自测；用 sim 的假模型冒烟一遍，确认种子能起、脚本能读完（不花钱）。
   - 依赖：2。第 2 步的 schema 定稿后，可以由另一个子 agent 提前开写。
-- [ ] 4. k=5 基线（0.5 工程日，协调者；真实模型 ≤¥8）
+- [x] 4. k=5 基线（0.5 工程日，协调者；真实模型 ≤¥8）
   - 做：第 2、3 步合并之后、任何第一批车道 PR 合并之前，在当时的 `dev` 提交上跑回归集 k=5，带 `--budget 8`，出沙箱跑。这时产品代码就是第一批改动之前的状态（第 1 步行为不变）。
   - 验：记下提交、模型、逐目标的谓词结果、第 2 步那套汇总与费用（验收 9）。跑完合并闸打开。
   - 依赖：2、3。
@@ -121,7 +121,7 @@
 
 contextNote、`preModel`、`planPrefetch` 都在 `src/packs/travel/turn.ts`，只归这条车道，车道内串行。每步都用第 0.3 步的探针核不变量 3。
 
-- [ ] 5. R5 订单与付款状态、R6 敏感问法口径进上下文（1 工程日，子 agent）
+- [x] 5. R5 订单与付款状态、R6 敏感问法口径进上下文（1 工程日，子 agent）
   - 做：
     - R5：订单行（最近 3 张没作废的；线路、人数、出发日按 `cardDate`、待付款 / 已付款；不给金额）、已付款附句、自称已付时的口径行（联系方式用第 1 步的三种渲染）。
     - R6：敏感问法的口径行，只按问法触发，不认地名。
@@ -132,7 +132,7 @@ contextNote、`preModel`、`planPrefetch` 都在 `src/packs/travel/turn.ts`，�
     - 锁定照绿：`engine.selftest.ts` 的会话状态测试、`llm.selftest.ts` 的位置测试。
     - contextNote 不进快照，预计不生成新快照；有差异就逐条说明。
   - 依赖：开发 1、0.2；合并 4。
-- [ ] 6. R7 已提醒项与已推荐线路、R14 付款后寒暄短路（1.5 工程日，子 agent）
+- [x] 6. R7 已提醒项与已推荐线路、R14 付款后寒暄短路（1.5 工程日，子 agent）
   - 做：
     - R7：`note_reply` 的步骤体，用确定性规则从最终文本里认出四项提醒和点了名的线路（最多 5 条，去重）；被中止（`abort`）的轮不记。contextNote 加两行。工具结果照旧带 `altitudeNote`。
     - R14：在 `preModel` 里，与 `resendPayReply` 同一处、排在已转人工静默之后，短路付款后的纯寒暄；从包里 2–3 个变体中轮换；`reminders.paidNext` 记过的，不再重复确认书和拉群。
@@ -141,7 +141,7 @@ contextNote、`preModel`、`planPrefetch` 都在 `src/packs/travel/turn.ts`，�
     - v2 用例：paid +「你好」不发模型请求，回复一行，不含「确认书」；paid +「酒店是哪几家」照常走模型；已转人工照旧静默（验收 3 第五项、验收 7 第一项）。
     - 具名快照。
   - 依赖：5。
-- [ ] 7. R8 换目的地有条件预取、R17 每人预算与方案书日期（1.5 工程日，子 agent）
+- [x] 7. R8 换目的地有条件预取、R17 每人预算与方案书日期（1.5 工程日，子 agent）
   - 做：
     - R8：三个条件全满足才触发（至少一张待付款订单、点了一个与它不同的库内目的地、不在 `paid`）。目的地识别用 `destinationMentions`；加换目的地那一行，预取一次 `search_routes`。
     - R17：`PER_PERSON_WORD`（`price-rules.ts`）与 `PER_PERSON_BUDGET` 补「每个人、每一位、每位」，不放宽成「个人」；`generate_proposal` 缺日期时沿用最近一次报价的出发日。
@@ -155,7 +155,7 @@ contextNote、`preModel`、`planPrefetch` 都在 `src/packs/travel/turn.ts`，�
 
 ### 出口车道 B（第 8–10 步）
 
-- [ ] 8. R12 结尾句由代码管（0.75 工程日，子 agent）
+- [x] 8. R12 结尾句由代码管（0.75 工程日，子 agent）
   - 做：填 `closing` 的步骤体。
     - 收尾轮的认法：命中 `ORDER_DEFERRED`，再排除三种：命中 `QUOTE_ONLY` 的、问句（`ORDER_QUESTION`）、「考虑」前面是「不」的；另加「谢谢」「先这样」。排除顺序不能改。
     - （第 0.3 步 Open-2，协调者裁决）判断前先照 `netOrderIntent` 去掉 `PRICE_OK`（「不用再看看了，就订这个」不算收尾）；本轮建了单的不算收尾轮（v2 `travel-engine-3575-07` 守住）。
@@ -165,7 +165,7 @@ contextNote、`preModel`、`planPrefetch` 都在 `src/packs/travel/turn.ts`，�
     - 锁定 p2（:1225）照绿（验收 7 第四项）。
     - 具名快照。
   - 依赖：开发 1、0.2；合并 4。
-- [ ] 9. R10 出口形状检查（裁剪）与迁移（2.5 工程日，子 agent）
+- [x] 9. R10 出口形状检查（裁剪）与迁移（2.5 工程日，子 agent）
   - 做：
     - `shape_check` 的步骤体：
       - 按本轮工具结果分类，算上预取：推荐 / 报价类上限 6 行，普通类 3 行；字数上限用第 0.7 步确认的值，由包给。
@@ -195,7 +195,7 @@ contextNote、`preModel`、`planPrefetch` 都在 `src/packs/travel/turn.ts`，�
 
 ### 词表与话术车道 C（第 11–12 步）
 
-- [ ] 11. R13 越权说法词表 `claim_words`（2 工程日，子 agent）
+- [x] 11. R13 越权说法词表 `claim_words`（2 工程日，子 agent）
   - 做：
     - 填 `claim_words` 的步骤体，词表放包里新文件，按 spec 的 12 类做。
     - 删换只按小句来；含 `/pay/`、`/proposal/` 链接的句子整句不动。D 类用正向词表，不套通用的否定守卫。
@@ -209,7 +209,7 @@ contextNote、`preModel`、`planPrefetch` 都在 `src/packs/travel/turn.ts`，�
     - 锁定照绿：`dejargon.selftest.ts`、:1000、:1113、p1f、r2c。
     - 具名快照。
   - 依赖：开发 1、0.2；合并 4。
-- [ ] 12. R9 报价兜底模板、R15 护栏残句、R16 转人工话术（2 工程日，子 agent）
+- [x] 12. R9 报价兜底模板、R15 护栏残句、R16 转人工话术（2 工程日，子 agent）
   - 做：
     - R9：`rewriteUnbackedPrices` 的 `quoteLine` 与 `strandedReply` 的报价句、结尾句统一用一个模板函数，三种日期情形与「不含往返大交通」照 R9；不动模型自己写的报价句和「微调」，不补模型漏写的报价句。
     - R15：（一）`askForProposal` 与 `repair_links:fill` 在正文已经在问时不再追加；（二）照 R15 扩大 `stranded` 的判定。
@@ -448,6 +448,51 @@ contextNote、`preModel`、`planPrefetch` 都在 `src/packs/travel/turn.ts`，�
 
 **owner 确认的数**（0.7，2026-10-15）：重写（R11）推到后续、本 spec 不做；P1 = 0.70（第一批 `shape` 达标占比，裁剪且线路名行受保护）；字数上限 300；T = 第一批前 k=5 基线的整轮 p90 + 300 ms，超 8 秒占比不升。已写进 spec 顶部 `Revisions:`。
 
+### 第 1–3 步 · 骨架与评测地基（2026-10-15）
+
+全部由 Claude 子 agent 在 worktree 里实现，协调者审查、补跑沙箱外门禁（`db`、`rollback-guard`、`ops`）并提交。
+
+- **第 1 步（#223）**：照本步条目。`v2-pre04.json` 不重生成，两条路径 774/774、754 条 0 差异；锁定全绿，PREFIX 不变。CI 抓到 #217 留下的潜伏问题：`pages.selftest` 读 `console/dist/index.html`，测试分片里没有 dist；改成 `CONSOLE_DIST` 指向夹具、读不到 dist 时按存在过滤。
+- **第 2 步（#225）**：照本步条目；`shape` 谓词与出口 `shape_check` 共用一份数法（`eval/sim/shape-count.ts` 转导出 `src/core/guards/shape.ts`）。用新谓词重判审查 88 段：6 段否定句误伤与 4 处场景设定错误消除，blocker 与 major 段仍判失败。
+- **第 3 步（#228）**：46 个目标（safety 16、quality 30），问题表 A–W 每项至少一个目标 covers，12 个带 `initial`，33 个客户话术全由脚本给出。离线判分审查 88 段：31/83 通过，不过的原因与问题表对得上。
+
+### 第 4 步 · k=5 基线（2026-10-15，协调者）
+
+`dev` 3dd2b92（第 1–3 步合入、任何第一批车道合入之前）。销售 `glm-5.3-flashx`，客户 `glm-5.2`，出沙箱跑。主跑带 `--budget 8`，跑到 196 段时撞上限（¥8.00）；owner 同意补跑缺的 6 个目标加 `qa-repeat-question`（35 段，¥1.27），并把单次上限改为 k=3 ≤¥6、k=5 ≤¥10，整份 ≤¥35 不变（spec `Revisions:` 同步）。合并后 46 目标 × 5 = 230 段，¥9.27。报告在主仓库检出目录的 `var/06-baseline/`（git 忽略）。
+
+| 指标           | 基线                                                                                                                                                  |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| pass^5         | 15/46                                                                                                                                                 |
+| safety k/k     | 8/16（未过：claim-paid-pending、paid-chat、sensitive-region、hotel-media、switch-after-order、competitor-compare、injection-prompt、illegal-request） |
+| `shape` 达标   | 390/609 = 64.0%                                                                                                                                       |
+| 报价轮「微调」 | 95/131（73%）；「这是起价」99 次                                                                                                                      |
+| 超 8 秒        | 132/652 = 20.2%（主跑 23.1%，p90 10364 ms；补跑 6.4%，p90 6594 ms）                                                                                   |
+
+- 主跑时段智谱接口明显偏慢，主跑与补跑的耗时差了一截。T 与「超 8 秒不升」按合并后的数比，第 14 步要把同时段的接口快慢一并记下，避免把接口波动当成改动的效果。
+- two-quotes-confirm、two-quotes-hold 5/5（#221 生效）。
+- injection-prompt、illegal-request 不在第一批的修复范围，第 14 步核是回答真有问题还是谓词过严。
+
+### 第 5–12 步 · 第一批（2026-10-15，经集成 PR #234 一次合入）
+
+各车道分别开 PR（#226、#227、#229–#233）、各自 CI 绿；合并闸打开后，由一个子 agent 把 7 个分支合进 `integ/06-batch1`，解决冲突，生成具名快照，以 #234 一次合入。协调者审查了每个车道 PR 和集成分支。
+
+- **第 5 步（#227，R5/R6）**：照本步条目。为模板模式渲染，`TurnContext` 加可选 `brand`（spec `Amends:` 已补）。contextNote 探针 1052 轮里 116 轮有新增行，去掉新增行后与基线逐字节一致。`web.selftest` 逐字比对网页对话，对比前先去掉 06 的新增行，并断言新增行里没有金额。
+- **第 6 步（#229，R7/R14）**：照本步条目。3 个固定词表登记进 `state-manifest.ts`（`kind: instance`）。
+- **第 7 步（#232，R8/R17）**：比 spec 更保守：同一句里也点了订单那处、点了不止一处、或者说了认不出每人上限的钱时，不触发换目的地。`planPrefetch` 本身不改。快照 2 个 case 多一个前置 `search_routes`，与 0.3 的预判一致。
+- **第 8 步（#226，R12）**：照本步条目。`turn.ts` hooks 多导出 `PRICE_OK`；`reply-pipeline.selftest` 的「放行步骤不改文本」循环去掉 `closing`，改由新自测与 v2 用例守。
+- **第 9 步（#231，R10）**：照本步条目与 0.7 的裁决。迁移 `0013_reply_shape` 只加 `turn_traces.reply_shape`。新增的核心接口：`ReplyGuardFlags.fixedReply` / `replyShape`、`ReplyShape`（含 `overLimit`），以及包阈值 `thresholds.shape`。用真函数重放审查 383 条回复，`shape` 达标约 66%，裁剪 p99 1.2 ms。
+- **第 10 步**：不做（0.7）。
+- **第 11 步（#230，R13）**：12 类词表。偏离 spec 字面三处：引出 `/pay/`、`/proposal/` 链接的句子整句不动；带金额的小句交给价格护栏；模型已经说明「发不了」时只删命中的小句、不补句。三处都是为了不弄坏锁定用例（:1113 等）和价格护栏的置位。
+- **第 12 步（#233，R9/R15/R16）**：照本步条目。核心 `handoffReply` 加可选第 4 参数 `opts`（品牌、是否问身份；spec `Amends:` 已补）。转人工轮的后文已经在讲转接时，身份句只留「我是〔品牌〕的 AI 旅行顾问。」。
+
+**集成**（#234）：
+
+- 合并后测出两处单个车道看不出的交互，在集成分支修好：
+  - R14 让已付款客户的「谢谢」「你好」不再调模型，3 个旧测试（`parity.selftest`、`sim.selftest`、`q06-claim-words-04`）原本靠这句话喂预置回复。改法是把客户输入换成实质问题，断言不动。
+  - `eval/v2/worker.ts` 的夹具订单可能落在不同毫秒，`orders.last` 的排序因此偶发不稳。改成共用一个 `createdAt`。
+- 具名快照 `eval/baselines/v2-06-batch1.json`（827 条），`DEFAULT_BASELINE` 指向它。对 `v2-pre04` 是 28 个 case、71 处差异，与各车道报告的清单逐条吻合，没有清单外的差异。
+- 锁定的 8 个文件与 `public/chat.html` 未改，PREFIX 不变。
+
 ## 验收记录
 
 （第 14、15、18、19、20 步填。）
@@ -456,9 +501,13 @@ contextNote、`preModel`、`planPrefetch` 都在 `src/packs/travel/turn.ts`，�
 
 所有真实模型调用逐次记在这里（不变量 14、验收 14）。按上限算，合计正好 ¥35：0.5 ≤¥1，第 4 步 ≤¥8，第 14 步两次 ≤¥10，第 18 步两次 ≤¥16。按审查实测估约 ¥25。线上部署后的冒烟走线上额度，另记，不算在这里。
 
+2026-10-15 第 4 步之后，owner 把单次上限改为 k=3 ≤¥6、k=5 ≤¥10，整份 ≤¥35 不变。重写推后，第 14 步只跑一次 k=3。照第 4 步的实花估算：第 14 步约 ¥5.6，第 18 步两次约 ¥18.5，合计约 ¥33.4，离 ¥35 很近。第 18 步前先核剩余额度。
+
 | 日期       | 步骤 | 内容                                                       | k   | 上限 | 实花  | 累计  |
 | ---------- | ---- | ---------------------------------------------------------- | --- | ---- | ----- | ----- |
 | 2026-10-15 | 0.5  | 重写模型离线实测（glm-4.7-flashx、glm-4.7-flash 各 50 次） | —   | ¥1   | ¥0.02 | ¥0.02 |
+| 2026-10-15 | 4    | k=5 基线主跑（196 段，撞上限停）                           | 5   | ¥8   | ¥8.00 | ¥8.02 |
+| 2026-10-15 | 4    | k=5 基线补跑（7 个目标，35 段；owner 同意）                | 5   | ¥2   | ¥1.27 | ¥9.29 |
 
 ## Open
 
