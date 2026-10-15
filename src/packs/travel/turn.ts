@@ -1417,6 +1417,7 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     ORDER_DEFERRED,
     QUOTE_ONLY,
     ORDER_QUESTION,
+    PRICE_OK,
     WANTS_PERSON,
     DEMANDS_EXCEPTION,
     titleWordHit,

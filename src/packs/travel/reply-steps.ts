@@ -1,5 +1,6 @@
 import { renderBrandTemplate } from '../../core/pack-api.js';
 import { travelTemplates } from './templates.js';
+import { closingLine, HAS_CLOSING, isClosingTurn } from './closing-words.js';
 // 04 R7：旅游主回复步骤，顺序由核心与本表组合；副作用仅经本轮 context。
 import { convLabel, logQuote, cleanText, replyStep, type GuardStep, type ReplyGuardContext } from '../../core/pack-api.js';
 import { CUSTOM_PROMISE } from './itinerary.js';
@@ -52,6 +53,10 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
   } = sources.helpers;
   const {
     netOrderIntent,
+    ORDER_DEFERRED,
+    QUOTE_ONLY,
+    ORDER_QUESTION,
+    PRICE_OK,
     netQuoteFor,
     PURCHASE_INTENT_MAX_LEN,
     OTHER_ORDER,
@@ -476,8 +481,18 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
       ctx.text = restoreProposalSuffixes(ctx.text, ctx.toolSources);
       ctx.recordGuard('proposal_suffix', beforeSuffix, ctx.text, 'patch');
     }),
-    // 06 R12：结尾句，步骤体由第 8 步填
-    replyStep('closing', 'proposal_suffix', [], [], () => {}),
+    // 06 R12：收尾轮（客户说回去商量、谢谢、先这样）、本轮没转人工、没建单、回复里没有同类结尾时，代码加一句固定结尾
+    replyStep('closing', 'proposal_suffix', [], [], (ctx) => {
+      const { session } = ctx;
+      if (ctx.handoffThisTurn() || session.handedOver) return;
+      if (session.orderIds.length > ctx.ordersBefore) return;
+      if (!ctx.text.trim() || HAS_CLOSING.test(ctx.text)) return;
+      if (netOrderIntent(ctx.inputText)) return;
+      if (!isClosingTurn(ctx.inputText, { ORDER_DEFERRED, QUOTE_ONLY, ORDER_QUESTION, PRICE_OK })) return;
+      const before = ctx.text;
+      ctx.text = `${ctx.text.trimEnd()}\n\n${closingLine({ channel: session.channel, templateMode: !!ctx.brand })}`;
+      ctx.recordGuard('closing', before, ctx.text, 'append');
+    }),
     replyStep('system_note', 'final_clean', [], [], (ctx) => {
       const { session } = ctx;
       // 回复里说了「由顾问跟您确认」「我让顾问确认」（守卫换上的，或模型照 SOP 说的）却没转人工：记一条给后台，
