@@ -11,6 +11,16 @@ import { createHash } from 'node:crypto';
 import { sandboxTryDesign, sandboxTryLinks } from './pages.js';
 
 const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'sandbox-pages-'));
+// CI 分片不一定先构建 console：没有构建产物时给 /try 一个最小的 console 入口夹具，样式链接的断言照样能跑。
+if (!process.env.CONSOLE_DIST && !fs.existsSync('console/dist/index.html')) {
+  const dist = path.join(temp, 'console-dist');
+  fs.mkdirSync(dist);
+  fs.writeFileSync(
+    path.join(dist, 'index.html'),
+    '<!doctype html><html><head><link rel="stylesheet" href="/console/assets/fixture.css"></head><body></body></html>',
+  );
+  process.env.CONSOLE_DIST = dist;
+}
 process.env.VAR_DIR = temp;
 const { sandboxApp } = await import('./process.js');
 const { SandboxProvisionError } = await import('./provision.js');
@@ -37,6 +47,7 @@ function localResources(source: string, name: string): void {
 }
 
 // 覆盖页面源文件及 console 实际构建入口、CSS；动态 /try 状态共用同一份页面。
+// CI 分片不一定先构建 console：没有 console/dist 时只查源文件，构建产物由 check-console-dist 守。
 for (const file of [
   'public/try.html',
   'public/chat.html',
@@ -44,10 +55,10 @@ for (const file of [
   'public/proposal.html',
   'console/index.html',
   'console/dist/index.html',
-]) {
+].filter((f) => !f.startsWith('console/dist/') || fs.existsSync(f))) {
   localResources(fs.readFileSync(file, 'utf8'), file);
 }
-for (const dir of ['console/dist/assets', 'public']) {
+for (const dir of ['console/dist/assets', 'public'].filter((d) => fs.existsSync(d))) {
   for (const file of fs.readdirSync(dir, { recursive: true })) {
     if (String(file).endsWith('.css')) localResources(fs.readFileSync(path.join(dir, String(file)), 'utf8'), String(file));
   }
