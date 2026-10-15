@@ -17,7 +17,8 @@ export interface TravelShapeSources extends ClosingTurnPatterns {
   PRICE_ASK: RegExp;
 }
 
-export const TRAVEL_SHAPE_LIMITS = { richMaxLines: 6, plainMaxLines: 3, maxChars: 300 } as const;
+/** generatedListMaxLines：代码整段生成的推荐 / 线路列表（stranded 的线路列表、确定性推荐）每条线最多 4 行、两条线共 8 行（owner 2026-10-15 定） */
+export const TRAVEL_SHAPE_LIMITS = { richMaxLines: 6, plainMaxLines: 3, generatedListMaxLines: 8, maxChars: 300 } as const;
 
 export function createTravelShapePolicy(sources: TravelShapeSources): ShapePolicy {
   return {

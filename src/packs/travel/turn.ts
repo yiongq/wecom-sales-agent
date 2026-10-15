@@ -17,6 +17,7 @@ import {
   saysDay,
   spokenDepartDate as parseSpokenDate,
   statedPastDate as parseStatedPastDate,
+  type BrandProfile,
   type CustomerProfile,
   type Order,
   type Route,
@@ -45,7 +46,7 @@ import {
   travellingText,
 } from './progress.js';
 import { holidayIn, travelDatePolicy } from './dates.js';
-import { paymentPendingReply } from './contact-words.js';
+import { advisorCheck, paymentPendingReply } from './contact-words.js';
 import { isPureChitchat, paidChitchatReply, reminderLines } from './reply-notes.js';
 import { TARGET_DAYS, requestedDays, customHandoffReply } from './itinerary.js';
 
@@ -233,7 +234,7 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
   const RESEND_CLAUSE = /(?:再|重新)(?:发|给)|重发|发(?:我|一下)/;
 
   /** 客户要重发支付链接时的确定性回复；不是这种情况返回 undefined，照常交给模型 */
-  function resendPayReply(session: Session, text: string): string | undefined {
+  function resendPayReply(session: Session, text: string, brand?: BrandProfile | null): string | undefined {
     if (text.length > RESEND_MAX_LEN || !RESEND_ASK.test(text) || /方案|行程/.test(text)) return undefined;
     if (OTHER_ORDER.test(text) || CHANGE_REQUEST.test(text) || REFUND_REQUEST.test(text)) return undefined;
     if (BARGAIN_WORDS.test(text) || /发票|收据|行程单|确认单|合同/.test(text)) return undefined;
@@ -248,7 +249,7 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     const orderLine = `/pay/${o.id}\n《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发，合计 ${yuan(o.totalPrice)}。`;
     // advisor 模式：这条链接不能点开就付，同一意思换一种说法（02 spec「收款流程」）；online 模式原样不变
     if (paymentMode() === 'advisor') {
-      return `好的，订单链接给您重新发一次：\n${orderLine}${o.confirmedAt != null ? '请按顾问发的方式付款。' : session.channel === 'web' ? '顾问会在这个页面里跟您核对价格并发收款方式。' : '顾问会在微信里跟您核对价格并发收款方式。'}`;
+      return `好的，订单链接给您重新发一次：\n${orderLine}${o.confirmedAt != null ? '请按顾问发的方式付款。' : `${advisorCheck({ channel: session.channel, templateMode: !!brand }, '跟您核对价格并发收款方式')}。`}`;
     }
     return `好的，支付链接给您重新发一次：\n${orderLine}`;
   }
@@ -1425,7 +1426,7 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
   const hooks: Pick<PackRuntime<TravelTurnTypes>, 'contextNote' | 'preModel' | 'prefetch' | 'beforeTool' | 'afterTool'> = {
     contextNote,
     preModel({ session, text, brand }): DeterministicReply | null {
-      const reply = resendPayReply(session, text);
+      const reply = resendPayReply(session, text, brand);
       if (reply) return { text: reply };
       // 06 R14：付款后的纯寒暄不调模型。已转人工的会话在核心的静默判断里就不会走到这里
       const paid = session.stage === 'paid' || session.orderIds.some((id) => getOrder(id)?.status === 'paid');

@@ -499,6 +499,8 @@ export interface ReplyShape {
   chars: number;
   /** 本轮行数上限 */
   limit: number;
+  /** 整段由代码生成的推荐 / 线路列表（rich 类且 flags.fixedReply）：limit 用 generatedListMaxLines，只记形状不裁；不是这类时不写这个字段 */
+  generatedList?: true;
   /** 裁掉的句数 */
   trimmed: number;
   /** 最终文本仍超行数或字数上限（发的是裁剪稿，或整段由代码生成不裁剪） */
@@ -513,6 +515,8 @@ export interface ShapePolicy {
   richMaxLines: number;
   /** 普通类上限（行） */
   plainMaxLines: number;
+  /** 整段由代码生成的推荐 / 线路列表（rich 类、flags.fixedReply）的上限（行）；包没给就按 richMaxLines */
+  generatedListMaxLines?: number;
   /** 字数上限（非空白，按码点） */
   maxChars: number;
   /** 本轮调过其中任一工具的算推荐 / 报价类 */

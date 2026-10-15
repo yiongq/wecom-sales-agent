@@ -1,6 +1,6 @@
 // 06 第 13 步 · R21：话术、工具提示、代码模板之间的一致性检查（验收 12 第一、二、四项）。
 // 四类文字：渲染后的 SOP、包登记的全部对客固定文字（三种渲染）、工具结果里的提示模板、两套出口词表。
-// 三条规则：quote-final、sop-vs-wordlist、fixed-vs-guards。失败信息一律点名规则 id 和冲突的双方。
+// 四条规则：quote-final、sop-vs-wordlist、fixed-vs-guards、template-no-channel。失败信息一律点名规则 id 和冲突的双方。
 // 用法：npx tsx src/config/consistency.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 钉成 demo，本机 .env 进不来（见 selftest-env.ts）
 import assert from 'node:assert/strict';
@@ -28,7 +28,8 @@ const { checkSopContract } = await withoutTenantScope(() => import('../sop/contr
 const { renderSystemPrompt } = await withoutTenantScope(() => import('../prompt/system.js'));
 const { toolDefs } = await withoutTenantScope(() => import('../tool-defs.js'));
 const cons = await import('../packs/travel/consistency.js');
-const { MODE_CTX, declaredOrigin } = await import('../packs/travel/fixed-replies.js');
+const { MODE_CTX, declaredOrigin, FIXED_REPLY_STEPS } = await import('../packs/travel/fixed-replies.js');
+const { replyLineCount } = await import('../core/guards/shape.js');
 const { travelTemplates } = await import('../packs/travel/templates.js');
 const { shanhaiBrand } = await import('../packs/travel/brand-fixture.js');
 const { formatConflict, resolveConflicts, originProblems, FIXED_REPLY_MODES } = await import('../core/consistency.js');
@@ -57,8 +58,8 @@ check(
   runtime.fixedReplies === consistency.fixedReplies && runtime.fixedReplies!.length > 0,
 );
 check(
-  'PackRuntime.consistencyRules：三条规则，每条有 id、两方、范围、理由',
-  runtime.consistencyRules!.map((r) => r.id).join(',') === 'quote-final,sop-vs-wordlist,fixed-vs-guards' &&
+  'PackRuntime.consistencyRules：四条规则，每条有 id、两方、范围、理由',
+  runtime.consistencyRules!.map((r) => r.id).join(',') === 'quote-final,sop-vs-wordlist,fixed-vs-guards,template-no-channel' &&
     runtime.consistencyRules!.every((r) => r.a && r.b && r.scope.length > 0 && r.why),
 );
 {
@@ -284,9 +285,77 @@ const SOP_VS_WORDLIST_ITEMS = (): ConsistencyText[] => {
     fixed.every((f) => f.origin) && fixed.some((f) => f.id.startsWith('fixed:payment.paid') && f.origin && 'outside' in f.origin),
   );
   const conflicts = await cons.fixedVsGuardsConflicts(fixed, guards, order);
-  const res = resolveConflicts(conflicts, [], cons.FIXED_VS_GUARDS_PENDING);
-  check('fixed-vs-guards：待裁决清单之外没有冲突', res.failing.length === 0, `\n    ${names(res.failing)}`);
-  check('fixed-vs-guards：待裁决清单里的项都真的命中（没命中就删）', res.unusedPending.length === 0, JSON.stringify(res.unusedPending));
+  check(
+    'fixed-vs-guards：没有冲突，也没有待裁决清单',
+    conflicts.length === 0 && !('FIXED_VS_GUARDS_PENDING' in cons),
+    `\n    ${names(conflicts)}`,
+  );
+  // 代码整段生成的推荐 / 线路列表单独给上限（8），和出口 shape_check 同一口径；清单对着真实步骤表核
+  check(
+    'fixed-vs-guards：置 fixedReply 的回复步骤清单与真实步骤表一致',
+    [...FIXED_REPLY_STEPS].sort().join(',') ===
+      pipelines.reply.steps
+        .filter((s) => s.writes?.includes('fixedReply'))
+        .map((s) => s.id)
+        .sort()
+        .join(','),
+    pipelines.reply.steps
+      .filter((s) => s.writes?.includes('fixedReply'))
+      .map((s) => s.id)
+      .join(','),
+  );
+  const listIds = fixed.filter((f) => f.generatedList).map((f) => f.id.replace(/\[.*$/, ''));
+  check(
+    'fixed-vs-guards：代码生成的推荐列表含 stranded.routes.high-altitude 与 recommend.deterministic',
+    listIds.includes('fixed:stranded.routes.high-altitude') && listIds.includes('fixed:recommend.deterministic'),
+    [...new Set(listIds)].join(','),
+  );
+  const high = fixed.find((f) => f.id === 'fixed:stranded.routes.high-altitude[legacy]')!;
+  check(
+    'fixed-vs-guards：高海拔线路列表 8 行，按列表上限 8 通过',
+    high.generatedList && replyLineCount(high.text) === 8,
+    String(replyLineCount(high.text)),
+  );
+  const nine = await cons.fixedVsGuardsConflicts([{ ...high, text: `${high.text}\n多一行` }], guards, order);
+  check(
+    'fixed-vs-guards 变异：代码生成的列表 9 行 → 点名列表上限 8',
+    nine.some((c) => c.b === 'line-cap:list=8'),
+    names(nine),
+  );
+  const seven = await cons.fixedVsGuardsConflicts(
+    [
+      {
+        ...high,
+        generatedList: false,
+        text: high.text
+          .split('\n')
+          .filter((l) => l.trim())
+          .slice(0, 7)
+          .join('\n'),
+      },
+    ],
+    guards,
+    order,
+  );
+  check(
+    'fixed-vs-guards：非代码生成的 rich 回复 7 行 → 点名 rich 上限 6',
+    seven.some((c) => c.b === 'line-cap:rich=6'),
+    names(seven),
+  );
+  const channelHits = cons.templateNoChannelConflicts(fixed);
+  check('template-no-channel：模板模式的固定文字不点名渠道', channelHits.length === 0, `\n    ${names(channelHits)}`);
+  // 变异：在某条 template 文字里加回「微信」→ 点名规则与文字 id
+  {
+    const tpl = fixed.find((f) => f.mode === 'template' && f.id.startsWith('fixed:order.net.created.advisor'))!;
+    const bad = cons.templateNoChannelConflicts([{ ...tpl, text: `${tpl.text}顾问会在微信上联系您。` }]);
+    check(
+      'template-no-channel 变异：template 文字里加回「微信」→ 点名规则与文字 id',
+      bad.length === 1 && formatConflict(bad[0]!).startsWith(`[template-no-channel] ${tpl.id}`),
+      names(bad),
+    );
+    const legacyOnly = cons.templateNoChannelConflicts([{ ...tpl, mode: 'legacy', text: `${tpl.text}顾问会在微信上联系您。` }]);
+    check('template-no-channel：旧版 / 网页渲染里的「微信」不查', legacyOnly.length === 0, names(legacyOnly));
+  }
   check(
     'fixed-vs-guards：纯文字护栏清单',
     consistency
@@ -368,6 +437,6 @@ if (failures.length) {
 }
 assert.ok(passed > 0);
 console.log(
-  `CONSISTENCY SELFTEST PASS: ${passed} 项断言全通（登记 / 三条规则：quote-final、sop-vs-wordlist、fixed-vs-guards / 变异 / 契约 consistency 写好未启用）`,
+  `CONSISTENCY SELFTEST PASS: ${passed} 项断言全通（登记 / 四条规则：quote-final、sop-vs-wordlist、fixed-vs-guards、template-no-channel / 变异 / 契约 consistency 写好未启用）`,
 );
 process.exit(0);

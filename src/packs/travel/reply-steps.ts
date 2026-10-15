@@ -156,7 +156,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
               date: cardDate(existing.departDate),
               total: yuan(existing.totalPrice),
             },
-            { advisor: paymentMode() === 'advisor', web: session.channel === 'web', id: existing.id },
+            { advisor: paymentMode() === 'advisor', web: session.channel === 'web', templateMode: !!ctx.brand, id: existing.id },
           );
           ctx.recordGuard('order_net', before, ctx.text, 'replace');
           ctx.turn.flags.fixedReply = true;
@@ -199,6 +199,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
                     replaced: old ? { travelers: old.travelers, date: cardDate(old.departDate) } : undefined,
                     advisor: paymentMode() === 'advisor',
                     web: session.channel === 'web',
+                    templateMode: !!ctx.brand,
                     payUrl: res.payUrl,
                   },
                 );
@@ -413,7 +414,10 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
       ctx.turn.flags.preDropSnapshot = ctx.text;
       ctx.turn.flags.saidAll = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
       // 人数按客户原话认一份交给规则词守卫：还没报价时它自己认不出几位，「两位一共 3 万」没法折成每人去核「在预算内」
-      const claims = dropUnbackedClaims(ctx.text, session, ctx.toolSources, { travelers: travelersKnown(session, ctx.turn.flags.saidAll) });
+      const claims = dropUnbackedClaims(ctx.text, session, ctx.toolSources, {
+        travelers: travelersKnown(session, ctx.turn.flags.saidAll),
+        templateMode: !!ctx.brand,
+      });
       if (claims.dropped.length) {
         console.error(
           `[engine] ⚠️ 删掉对不上的价格规则 / 服务承诺（会话 ${convLabel(session.id)}）：${logQuote(claims.dropped.join(' | '))}`,
@@ -473,6 +477,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
           text: ctx.inputText,
           calls: ctx.toolSources,
           customHandoff: !!ctx.turn.flags.customPromise,
+          templateMode: !!ctx.brand,
         });
         ctx.recordGuard('price', before, ctx.text, 'drop_sentence');
         ctx.turn.flags.guardHit ??= 'price';
@@ -496,7 +501,13 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
           ? ''
           : session.handedOver
             ? HANDED_OVER_FALLBACK
-            : await strandedReply({ session, text: ctx.inputText, calls: ctx.toolSources, runTool: ctx.callTool });
+            : await strandedReply({
+                session,
+                text: ctx.inputText,
+                calls: ctx.toolSources,
+                runTool: ctx.callTool,
+                templateMode: !!ctx.brand,
+              });
         ctx.recordGuard('stranded', before, ctx.text, 'replace');
         ctx.turn.flags.fixedReply = true;
       }

@@ -101,6 +101,31 @@ check(
       [1, 2, 4, 5].map((n) => turn(lines(n))),
     ),
 );
+// 代码整段生成的推荐 / 线路列表（06 Open 4）：取出口记在 trace.replyShape 里的 generatedList 与 limit，不自己猜
+const withShape = (t: SimTurn, replyShape: NonNullable<FinishedTurn['turn']['replyShape']>): SimTurn => ({
+  ...t,
+  trace: { ...t.trace, turn: { ...t.trace.turn, replyShape } },
+});
+const shapeOf = (n: number, over: Partial<NonNullable<FinishedTurn['turn']['replyShape']>>) => ({
+  class: 'rich' as const,
+  lines: n,
+  chars: 50,
+  limit: 6,
+  trimmed: 0,
+  overLimit: n > 6,
+  rewrite: 'off' as const,
+  rewriteMs: null,
+  ...over,
+});
+const listTurn = (n: number) =>
+  withShape(turn(lines(n), '推荐', ['search_routes']), shapeOf(n, { limit: 8, generatedList: true, overLimit: n > 8 }));
+check('shape：代码生成的列表 8 行通过', passes(shape(1), [listTurn(8)]));
+check('shape：代码生成的列表 9 行不过', !passes(shape(1), [listTurn(9)]));
+check(
+  'shape：模型写的 7 行（trace 无 generatedList）不过',
+  !passes(shape(1), [withShape(turn(lines(7), '推荐', ['search_routes']), shapeOf(7, {}))]),
+);
+check('shape：没有 replyShape 的 trace，8 行推荐仍按 6 行算不过', !passes(shape(1), [turn(lines(8), '推荐', ['search_routes'])]));
 check('shape：静默轮不计入', passes(shape(1), [turn(lines(9), '咨询', [], true), turn(lines(2))]));
 check('shape：没有任何回复不通过', !passes(shape(0), []));
 check('shape：markdown 记号不占行', passes(shape(1), [turn('**甲**\n乙\n丙')]));
@@ -191,6 +216,16 @@ check('超 8 秒占比与 p90', m.latency.turns === 5 && m.latency.over8s === 2 
 check('重写触发率目前恒为 0', m.rewrite.triggered === 0 && m.rewrite.rate === 0);
 check('费用原样带上', m.cost === 1.5);
 check('没有数据时占比为 null', computeMetrics([], [], [], 0).shape.share === null);
+{
+  // 报告里的 shape 达标占比与 shape 谓词同一口径：8 行代码生成的列表算达标，7 行模型回复不算
+  const mixed = computeMetrics(
+    [safety],
+    [{ goalId: 'safe', turns: [listTurn(8), withShape(turn(lines(7), '推荐', ['search_routes']), shapeOf(7, {}))] }],
+    [{ id: 'safe', passK: true, unrun: 0 }],
+    0,
+  );
+  check('shape 占比：8 行代码生成的列表达标、7 行模型回复不达标', mixed.shape.total === 2 && mixed.shape.within === 1);
+}
 
 console.log(
   `SIM PREDICATES SELFTEST PASS: ${assertions} 项断言全通（行数字数数法 / negationAware / after / shape / no_repeat / 目标字段校验 / 汇总数）`,

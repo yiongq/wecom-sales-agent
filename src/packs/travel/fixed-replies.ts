@@ -136,6 +136,12 @@ export function declaredOrigin(id: string): FixedReplyOrigin | undefined {
   return ORIGINS.find(([key]) => (key.endsWith('.') ? id.startsWith(key) : id === key))?.[1];
 }
 
+/**
+ * 会置 flags.fixedReply 的回复步骤（整段由代码生成，shape_check 不裁、rich 类用 generatedListMaxLines）。
+ * 自测对着真实步骤表核这份清单（步骤的 writes 含 fixedReply），免得它和出口各说各话。
+ */
+export const FIXED_REPLY_STEPS: readonly string[] = Object.freeze(['order_net', 'injection', 'encyclopedia', 'stranded']);
+
 const reg = (
   id: string,
   source: string,
@@ -149,7 +155,12 @@ const reg = (
   samples, // 没声明的按最严的算（管线开头产出，穿过每道护栏），并由自测点名
   producedBy: declaredOrigin(id) ?? { pipeline: 'reply', step: null },
   ...extra,
+  ...(kind === 'rich' && isFixedReplyStep(declaredOrigin(id)) ? { generatedList: true } : {}),
 });
+
+function isFixedReplyStep(origin: FixedReplyOrigin | undefined): boolean {
+  return !!origin && 'pipeline' in origin && origin.pipeline === 'reply' && !!origin.step && FIXED_REPLY_STEPS.includes(origin.step);
+}
 
 export function createTravelFixedReplies(world: World): readonly FixedReply[] {
   const out: FixedReply[] = [];
@@ -262,7 +273,7 @@ export function createTravelFixedReplies(world: World): readonly FixedReply[] {
   }
   const priceCtx = (m: ModeCtx, w: TravelParts, over: Partial<Session> = {}) => {
     const session = fixtureSession(m, over);
-    return { w, session, ctx: { session, text: '多少钱', calls: [], customHandoff: false } };
+    return { w, session, ctx: { session, text: '多少钱', calls: [], customHandoff: false, templateMode: m.contact.templateMode } };
   };
   const sampleHit = { value: 99999, at: 0, end: 6 };
   add(
@@ -402,6 +413,26 @@ export function createTravelFixedReplies(world: World): readonly FixedReply[] {
       const session = fixtureSession(m, { messages: [sayCustomer(`想去${route.destination}`)] });
       return w.helpers.strandedReply({ session, text: `想去${route.destination}`, calls: [], runTool: runTool(w) });
     }),
+    // 残句兜底里本轮已下单的分支：online 与 advisor 两种收款方式（advisor 的联系方式按渲染模式走）
+    ...(['online', 'advisor'] as const).map((pay) =>
+      reg(
+        `stranded.order.${pay}`,
+        'reply-helpers.ts',
+        'rich',
+        each((m) => {
+          const w = worldWith([], pay);
+          const session = fixtureSession(m, { messages: [sayCustomer('就订这个')] });
+          const result = JSON.stringify({ orderId: 'ord_sample1', payUrl: '/pay/ord_sample1', total: 33600 });
+          return w.helpers.strandedReply({
+            session,
+            text: '就订这个',
+            calls: [{ name: 'create_order', args: {}, result }],
+            runTool: runTool(w),
+            templateMode: m.contact.templateMode,
+          });
+        }),
+      ),
+    ),
     reg('stranded.lead', 'order-words.ts', 'plain', () => same(STRANDED_LEAD)),
     reg(
       'stranded.ask',
@@ -459,7 +490,7 @@ export function createTravelFixedReplies(world: World): readonly FixedReply[] {
     existing: each((m) =>
       existingOrderText(
         { title: '云南 丽江大理 6 日', travelers: 2, date: '3月10号', total: '¥33,600' },
-        { advisor: pay === 'advisor', web: m.channel === 'web', id: 'ord_sample1' },
+        { advisor: pay === 'advisor', web: m.channel === 'web', templateMode: m.contact.templateMode, id: 'ord_sample1' },
       ),
     ),
     created: each((m) =>
@@ -470,6 +501,7 @@ export function createTravelFixedReplies(world: World): readonly FixedReply[] {
           replaced: { travelers: 3, date: '3月12号' },
           advisor: pay === 'advisor',
           web: m.channel === 'web',
+          templateMode: m.contact.templateMode,
           payUrl: '/pay/ord_sample2',
         },
       ),
@@ -477,7 +509,7 @@ export function createTravelFixedReplies(world: World): readonly FixedReply[] {
     plain: each((m) =>
       createdOrderText(
         { title: '云南 丽江大理 6 日', travelers: 2, date: '3月10号', total: '¥33,600' },
-        { advisor: pay === 'advisor', web: m.channel === 'web', payUrl: '/pay/ord_sample2' },
+        { advisor: pay === 'advisor', web: m.channel === 'web', templateMode: m.contact.templateMode, payUrl: '/pay/ord_sample2' },
       ),
     ),
   });
@@ -565,7 +597,7 @@ export function createTravelFixedReplies(world: World): readonly FixedReply[] {
       'plain',
       each((m) => {
         const w = worldWith([], pay);
-        const res = w.priceRules.dropUnbackedClaims(trigger, fixtureSession(m), [], {});
+        const res = w.priceRules.dropUnbackedClaims(trigger, fixtureSession(m), [], { templateMode: m.contact.templateMode });
         if (res.text === trigger) throw new Error(`${id}：「${trigger}」没有触发换句，登记的触发语要改`);
         return res.text;
       }),

@@ -35,6 +35,8 @@ export interface FixedReply {
   source: string;
   /** 它那一类的行数上限按这个取：rich 是推荐、报价、订单类，plain 是普通类（与 ShapePolicy 同一口径） */
   kind: 'rich' | 'plain';
+  /** 整段由代码生成的推荐 / 线路列表（rich 类且产出步骤置 flags.fixedReply）：行数上限取 caps.list，和出口 shape_check 同一口径 */
+  generatedList?: boolean;
   /** 转人工之后也会发出（只在转人工后才生效的护栏要核它） */
   afterHandoff?: boolean;
   /** 由哪个步骤产出，或不经出口护栏 */
@@ -235,19 +237,20 @@ export async function passThroughConflicts(input: {
 /** 固定文字不超过它那一类的行数上限 */
 export function lineCapConflicts(input: {
   rule: string;
-  items: readonly (ConsistencyText & { kind: 'rich' | 'plain' })[];
-  caps: { rich: number; plain: number };
+  items: readonly (ConsistencyText & { kind: 'rich' | 'plain'; generatedList?: boolean })[];
+  caps: { rich: number; plain: number; list?: number };
 }): ConsistencyConflict[] {
   const out: ConsistencyConflict[] = [];
   for (const item of input.items) {
-    const cap = input.caps[item.kind];
+    const listed = item.kind === 'rich' && !!item.generatedList && input.caps.list !== undefined;
+    const cap = listed ? input.caps.list! : input.caps[item.kind];
     const lines = replyLineCount(item.text);
     if (lines > cap) {
       out.push({
         rule: input.rule,
         a: item.id,
-        b: `line-cap:${item.kind}=${cap}`,
-        detail: `${lines} 行，超过${item.kind === 'rich' ? '推荐 / 报价类' : '普通类'}上限 ${cap} 行`,
+        b: `line-cap:${listed ? 'list' : item.kind}=${cap}`,
+        detail: `${lines} 行，超过${listed ? '代码生成的推荐列表' : item.kind === 'rich' ? '推荐 / 报价类' : '普通类'}上限 ${cap} 行`,
         where: `${item.where}|line-cap`,
       });
     }

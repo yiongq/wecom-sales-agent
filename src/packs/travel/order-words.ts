@@ -1,5 +1,7 @@
 // 成单安全网（reply-steps 的 order_net）对客的固定文字。纯函数，只拼字，不碰订单和存储；
 // 从 reply-steps 原样搬出来，好让一致性检查（R21）能渲染同一份文字。
+import { advisorCheck } from './contact-words.js';
+
 export interface OrderNetOrderText {
   title: string;
   travelers: number;
@@ -9,14 +11,18 @@ export interface OrderNetOrderText {
   total: string;
 }
 
-/** 顾问会在哪儿核对价格：advisor 收款模式下的说法 */
-const whereAdvisor = (web: boolean): string => (web ? '在这个页面里' : '在微信里');
+/** advisor 收款模式下顾问怎么核对价格、发收款方式：旧版 / 网页的写法不动，模板模式（非网页）不点名渠道（见 contact-words） */
+const advisorCheckPrice = (link: { web: boolean; templateMode?: boolean }): string =>
+  advisorCheck({ channel: link.web ? 'web' : 'wecom', templateMode: !!link.templateMode }, '跟您核对价格并发收款方式');
 
 /** 已有完全同参的待付款订单：重发原链接 */
-export function existingOrderText(o: OrderNetOrderText, link: { advisor: boolean; web: boolean; id: string }): string {
+export function existingOrderText(
+  o: OrderNetOrderText,
+  link: { advisor: boolean; web: boolean; templateMode?: boolean; id: string },
+): string {
   // advisor 模式：这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」）；online 模式原样不变
   const how = link.advisor
-    ? `订单链接：/pay/${link.id}\n顾问会${whereAdvisor(link.web)}跟您核对价格并发收款方式，想改人数或日期的话跟我说一声，我重新为您安排～`
+    ? `订单链接：/pay/${link.id}\n${advisorCheckPrice(link)}，想改人数或日期的话跟我说一声，我重新为您安排～`
     : `直接点这里完成支付即可：/pay/${link.id}\n想改人数或日期的话跟我说一声，我重新为您安排～`;
   return `您这单已经建好啦～《${o.title}》${o.travelers} 位出行、${o.date}出发，总价 ${o.total}。\n${how}`;
 }
@@ -31,6 +37,8 @@ export function createdOrderText(
     replaced?: { travelers: number; date: string };
     advisor: boolean;
     web: boolean;
+    /** 品牌模板模式（非网页时不点名渠道） */
+    templateMode?: boolean;
     payUrl: string;
   },
 ): string {
@@ -41,7 +49,7 @@ export function createdOrderText(
     : '';
   // 没付款不算锁定名额：此前「已为您锁定名额」和「名额以付款为准」写在同一条里，前后矛盾
   const how = parts.advisor
-    ? `订单链接：${parts.payUrl}\n顾问会${whereAdvisor(parts.web)}跟您核对价格并发收款方式，不用点链接付款。`
+    ? `订单链接：${parts.payUrl}\n${advisorCheckPrice(parts)}，不用点链接付款。`
     : `请点此完成支付：${parts.payUrl}\n名额以付款为准，付款后顾问会与您确认行程细节～`;
   return `好的，订单已生成～\n《${o.title}》${o.travelers} 位出行、${o.date}出发，总价 ${o.total}。${diff}${replaced}\n${how}`;
 }

@@ -190,7 +190,9 @@ export function shapeCheckStep<Context extends ReplyGuardContext>() {
     const policy = (ctx.thresholds as { shape?: ShapePolicy } | undefined)?.shape;
     if (!policy || !ctx.text.trim()) return;
     const rich = ctx.toolSources.some((c) => policy.richTools.includes(c.name));
-    const lineCap = rich ? policy.richMaxLines : policy.plainMaxLines;
+    // 代码整段生成的推荐 / 线路列表（rich 类且 fixedReply）有单独的上限；模型写的回复仍按 rich / plain
+    const generatedList = rich && !!ctx.turn.flags.fixedReply && policy.generatedListMaxLines !== undefined;
+    const lineCap = generatedList ? policy.generatedListMaxLines! : rich ? policy.richMaxLines : policy.plainMaxLines;
     // 整段由代码生成或替换的回复（订单文本、兜底话术）与转人工轮：不删句，只记形状
     const fixed = !!ctx.turn.flags.fixedReply || ctx.handoffThisTurn() || ctx.session.handedOver;
     let trimmed = 0;
@@ -219,6 +221,7 @@ export function shapeCheckStep<Context extends ReplyGuardContext>() {
       lines,
       chars,
       limit: lineCap,
+      ...(generatedList ? { generatedList: true as const } : {}),
       trimmed,
       overLimit: lines > lineCap || chars > policy.maxChars,
       rewrite: 'off',

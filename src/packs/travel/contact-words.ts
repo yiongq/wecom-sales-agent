@@ -22,6 +22,16 @@ export function advisorContact(mode: ContactMode): string {
   return `顾问会${contactTail(mode)}`;
 }
 
+/**
+ * advisor 收款模式下「顾问会…核对价格、发收款方式」：旧版「顾问会在微信里」、网页「顾问会在这个页面里」，后面接 legacyTail（各处原来的写法，一字不动）；
+ * 模板模式（非网页）不点名渠道：「顾问会联系您核对价格、发收款方式」，尾巴统一，不带 legacyTail。
+ */
+export function advisorCheck(mode: ContactMode, legacyTail: string): string {
+  if (mode.channel === 'web') return `顾问会在这个页面里${legacyTail}`;
+  if (!mode.templateMode) return `顾问会在微信里${legacyTail}`;
+  return `${advisorContact(mode)}核对价格、发收款方式`;
+}
+
 /** R5 的到账口径对客句：客户说已付款而系统还没收到到账时用；不说已到账、订单生效、订单已确认。 */
 export function paymentPendingReply(mode: ContactMode): string {
   return `款项到账后您会收到确认，顾问核实后会${contactTail(mode)}。`;

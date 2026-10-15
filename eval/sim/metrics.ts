@@ -1,5 +1,5 @@
 import type { SimGoal } from './goals.js';
-import { isRichTurn } from './judge.js';
+import { generatedListLimit, isRichTurn, turnLineLimit } from './judge.js';
 import type { SimTurn } from './judge.js';
 import { countChars, countLines } from './shape-count.js';
 
@@ -10,6 +10,8 @@ export interface TurnMetric {
   lines: number;
   chars: number;
   rich: boolean;
+  /** 代码整段生成的推荐 / 线路列表时，出口记在 trace 里的行数上限；不是这类回复为 null（旧存档没有这个字段） */
+  listLimit?: number | null;
   silent: boolean;
   rewrite: boolean;
 }
@@ -28,6 +30,7 @@ export function turnMetric(t: SimTurn): TurnMetric {
     lines: t.silent ? 0 : countLines(t.reply),
     chars: t.silent ? 0 : countChars(t.reply),
     rich: isRichTurn(t),
+    listLimit: generatedListLimit(t),
     silent: t.silent,
     // 重写（R11）上线后，在这里认它写进 trace 的标记；现在没有这个步骤，恒为 false。
     rewrite: false,
@@ -81,7 +84,7 @@ export function computeMetrics(goals: SimGoal[], runs: RunLike[], summary: Summa
       if (m.rewrite) rewriteHits++;
       if (m.silent) return;
       total++;
-      if (m.lines <= (m.rich ? limit.richMax : limit.plainMax)) within++;
+      if (m.lines <= turnLineLimit(m.listLimit ?? null, m.rich, limit.richMax, limit.plainMax)) within++;
       if (m.tools.includes('create_quote')) {
         quote.turns++;
         if (FINE_TUNE.test(t.reply)) quote.fineTune++;

@@ -196,6 +196,47 @@ for (const o of [{ fixed: true }, { handoff: true }]) {
   assert.equal(c.shape()!.overLimit, true);
   assert.deepEqual(c.events, []);
 }
+// 代码整段生成的推荐 / 线路列表（rich 且 fixedReply）有单独的上限 8（06 Open 4）；模型写的回复仍按 rich 6 / plain 3
+{
+  const withList = { shape: { ...policy, generatedListMaxLines: 8 } };
+  const lines = (n: number): string => Array.from({ length: n }, (_, i) => `第${i + 1}句。`).join('\n');
+  const eight = makeCtx({ text: lines(8), tools: ['search_routes'], fixed: true, thresholds: withList });
+  assert.deepEqual(await step.run(eight.ctx), { action: 'pass' });
+  assert.equal(eight.ctx.text, lines(8));
+  assert.deepEqual(
+    { limit: eight.shape()!.limit, over: eight.shape()!.overLimit, list: eight.shape()!.generatedList, trimmed: eight.shape()!.trimmed },
+    { limit: 8, over: false, list: true, trimmed: 0 },
+    '代码生成的 8 行列表：上限 8，不超限',
+  );
+  const nine = makeCtx({ text: lines(9), tools: ['search_routes'], fixed: true, thresholds: withList });
+  await step.run(nine.ctx);
+  assert.deepEqual([nine.shape()!.limit, nine.shape()!.overLimit, nine.ctx.text === lines(9)], [8, true, true], '9 行仍超限，且不裁');
+  const model7 = makeCtx({ text: lines(7), tools: ['search_routes'], thresholds: withList });
+  await step.run(model7.ctx);
+  assert.deepEqual(
+    { limit: model7.shape()!.limit, over: model7.shape()!.overLimit, list: model7.shape()!.generatedList },
+    { limit: 6, over: true, list: undefined },
+    '模型写的 7 行回复：仍按 rich 6，超限',
+  );
+  const plainFixed = makeCtx({ text: lines(4), fixed: true, thresholds: withList });
+  await step.run(plainFixed.ctx);
+  assert.deepEqual(
+    [plainFixed.shape()!.limit, plainFixed.shape()!.generatedList, plainFixed.shape()!.overLimit],
+    [3, undefined, true],
+    'plain 类代码生成不沾光',
+  );
+  const handoffRich = makeCtx({ text: lines(8), tools: ['search_routes'], handoff: true, thresholds: withList });
+  await step.run(handoffRich.ctx);
+  assert.deepEqual(
+    [handoffRich.shape()!.limit, handoffRich.shape()!.generatedList, handoffRich.shape()!.overLimit],
+    [6, undefined, true],
+    '转人工轮不算',
+  );
+  // 包没给 generatedListMaxLines：行为不变
+  const noList = makeCtx({ text: lines(8), tools: ['search_routes'], fixed: true });
+  await step.run(noList.ctx);
+  assert.deepEqual([noList.shape()!.limit, noList.shape()!.generatedList, noList.shape()!.overLimit], [6, undefined, true]);
+}
 // 裁完仍超限：发裁剪稿，overLimit 为真
 {
   const c = makeCtx({ text: '第一句。\n第二句。\n第三句。\n第四句。\n祝你好～' });

@@ -1,6 +1,6 @@
 // 06 第 1 步：三种联系方式渲染、到账口径对客句，以及 createTravelTurnHooks 导出的三个常量。
 import assert from 'node:assert/strict';
-import { advisorContact, paymentPendingReply, type ContactMode } from './contact-words.js';
+import { advisorCheck, advisorContact, paymentPendingReply, type ContactMode } from './contact-words.js';
 
 const legacyWecom: ContactMode = { channel: 'wecom', templateMode: false };
 const legacyWeb: ContactMode = { channel: 'web', templateMode: false };
@@ -30,6 +30,13 @@ for (const text of [advisorContact(templateWecom), paymentPendingReply(templateW
 
 // createTravelTurnHooks 导出 R12 / R10 要用的常量
 const { createTravelTurnHooks } = await import('./turn.js');
+// advisor 收款模式的核对价格句：旧版、网页的写法一字不动，模板模式（非网页）不点名渠道
+assert.equal(advisorCheck(legacyWecom, '跟您核对价格并发收款方式'), '顾问会在微信里跟您核对价格并发收款方式');
+assert.equal(advisorCheck(legacyWeb, '跟您核对价格并发收款方式'), '顾问会在这个页面里跟您核对价格并发收款方式');
+assert.equal(advisorCheck(templateWeb, '核对价格、发收款方式'), '顾问会在这个页面里核对价格、发收款方式');
+assert.equal(advisorCheck(templateWecom, '跟您核对价格并发收款方式'), '顾问会联系您核对价格、发收款方式');
+assert.equal(advisorCheck(templateWecom, '核对价格、发收款方式'), advisorContact(templateWecom) + '核对价格、发收款方式');
+
 type Sources = Parameters<typeof createTravelTurnHooks>[0];
 const hooks = createTravelTurnHooks({
   loadRoutes: () => [],
