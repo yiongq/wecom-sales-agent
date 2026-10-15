@@ -115,7 +115,6 @@ export function createTravelRuntime(sources: PackSources) {
       loadRoutes: catalog.loadRoutes,
       getOrder: sources.getOrder,
       paymentMode: sources.paymentMode,
-      loadRoutes: catalog.loadRoutes,
       isConfigNotReadyError: sources.isConfigNotReadyError,
       dejargon,
       handoffReasons: sources.handoffReasons,

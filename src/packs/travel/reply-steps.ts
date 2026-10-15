@@ -14,7 +14,7 @@ import type { TravelReplyHelpers } from './reply-helpers.js';
 export interface TravelReplyStepSources {
   helpers: TravelReplyHelpers;
   turnHooks: ReturnType<typeof createTravelTurnHooks>;
-  priceGuard: Pick<TravelPriceGuard, 'findUnbackedPriceHits' | 'strandedAfterDrop' | 'dropSentences'>;
+  priceGuard: Pick<TravelPriceGuard, 'findUnbackedPriceHits' | 'strandedAfterDrop' | 'strandedShape' | 'dropSentences'>;
   priceRules: Pick<ReturnType<typeof createTravelPriceRules>, 'dropUnbackedClaims'>;
   getOrder: (id: string) => import('../../core/pack-api.js').Order | undefined;
   paymentMode: () => import('../../core/pack-api.js').PaymentMode;
@@ -80,7 +80,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
     deterministicRecommend,
     kidsHeadcountUnclear,
   } = sources.turnHooks;
-  const { findUnbackedPriceHits, strandedAfterDrop, dropSentences } = sources.priceGuard;
+  const { findUnbackedPriceHits, strandedAfterDrop, strandedShape, dropSentences } = sources.priceGuard;
   const { dropUnbackedClaims } = sources.priceRules;
   const { getOrder, paymentMode, dejargon, handoffReasons: HANDOFF_REASON, loadRoutes } = sources;
   return [
@@ -475,7 +475,15 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
     replyStep('stranded', 'price', ['customPromise', 'preDropSnapshot'], ['fixedReply'], async (ctx) => {
       const { session } = ctx;
       // 按句删完剩下的是残句（还指着删掉的那条线、宣称报价却没有数、只剩一句问话）：不发残句，整条换成有内容的兜底
-      if (strandedAfterDrop(ctx.turn.flags.preDropSnapshot, ctx.text)) {
+      // 06 R15：strandedAfterDrop 之外的残句形态（开头是分点、「亮点」没有线路名、引导句后面不是线路）
+      const shape = ctx.turn.flags.customPromise || session.handedOver ? null : strandedShape(ctx.turn.flags.preDropSnapshot, ctx.text);
+      if (shape === 'lead' && !strandedAfterDrop(ctx.turn.flags.preDropSnapshot, ctx.text)) {
+        const before = ctx.text;
+        ctx.text = `给您看看这几条：\n${ctx.text}`;
+        ctx.recordGuard('stranded', before, ctx.text, 'replace');
+        return;
+      }
+      if (strandedAfterDrop(ctx.turn.flags.preDropSnapshot, ctx.text) || shape === 'replace') {
         console.error(`[engine] ⚠️ 按句删除后只剩残句，改用兜底（会话 ${convLabel(session.id)}）：${logQuote(ctx.text)}`);
         const before = ctx.text;
         ctx.text = ctx.turn.flags.customPromise

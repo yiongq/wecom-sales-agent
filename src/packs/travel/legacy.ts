@@ -21,6 +21,8 @@ export const hardRequirements = [
 
 // 旧版客户出口集中保存；历史欢迎语识别串仍留在渠道适配器。
 export const identityAnswer = '我是云途定制旅行的 AI 旅行顾问，7×24 在线为您服务～';
+/** R16 合并句的身份部分：不带「7×24 在线为您服务」，转人工时一句话说完 */
+export const identityHandoffHead = '我是云途定制旅行的 AI 旅行顾问';
 export const offTopicReply =
   '不好意思，我是云途定制旅行的旅行顾问，只帮您处理旅行相关的事～\n想去哪儿、几位出行、大概什么预算，随时告诉我，我来帮您安排！';
 export const welcomeText =

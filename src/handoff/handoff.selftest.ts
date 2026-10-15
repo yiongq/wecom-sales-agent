@@ -1417,7 +1417,7 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
     json({ v4, w: sess(sid).turnSignals, sig: lastTurn(sid)?.signals }),
   );
   // 在问的重复：第 2 遍记失败，第 3 遍连续 2 轮失败转人工
-  const REQUEST = '好的，马上为您转接资深顾问，请稍候～';
+  const REQUEST = '好的，马上为您转接资深顾问，顾问会在微信上联系您，请稍候～';
   const sidQ = newSid('FAILASK');
   await say(sidQ, '西藏几月去合适？', [{ content: '西藏一般 5 到 10 月去～您几位出行？' }]);
   await say(sidQ, '西藏几月去合适？', [{ content: '5 到 10 月都合适～' }]);
@@ -1451,7 +1451,7 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
 }
 {
   // 交互失败的转人工：连续 2 轮失败、6 轮里 3 轮失败各转一次，清零后重新计
-  const REQUEST = '好的，马上为您转接资深顾问，请稍候～';
+  const REQUEST = '好的，马上为您转接资深顾问，顾问会在微信上联系您，请稍候～';
   const empty = (): Step[] => [{ content: '' }, { content: '' }]; // 空文本重试一次之后仍空，落到兜底话术
   const sid = newSid('FAIL2');
   await say(sid, '想去云南玩', [{ content: '云南很好～几位出行？' }]);

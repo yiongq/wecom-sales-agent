@@ -26,3 +26,18 @@ export function advisorContact(mode: ContactMode): string {
 export function paymentPendingReply(mode: ContactMode): string {
   return `款项到账后您会收到确认，顾问核实后会${contactTail(mode)}。`;
 }
+
+/**
+ * R16：转人工话术的开头。identityHead 有值（客户在问身份）时合并成一句承认加转接：
+ *   「我是〔品牌〕的 AI 顾问，马上为您转接资深顾问，顾问会在微信上联系您。」
+ * 请求头保持「好的，马上为您转接资深顾问」开头（锁定断言）；投诉那种开头已有「顾问会尽快与您联系」，不在这里。
+ */
+export function handoffHead(kind: 'refund' | 'request', mode: ContactMode, identityHead?: string): string {
+  const contact = advisorContact(mode);
+  if (kind === 'request') {
+    return identityHead ? `${identityHead}，马上为您转接资深顾问，${contact}。` : `好的，马上为您转接资深顾问，${contact}，请稍候～`;
+  }
+  return identityHead
+    ? `${identityHead}，退改由资深顾问为您处理，马上为您转接，${contact}。`
+    : `退改由资深顾问为您处理，马上为您转接，${contact}，请稍候～`;
+}
