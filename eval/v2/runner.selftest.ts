@@ -7,7 +7,8 @@ import { validateCase, type CaseV2 } from './schema.js';
 import { normalize, resolveValues, resolvePattern } from './values.js';
 import { startFakeModel } from './fake-model.js';
 import { resetCaseState, resetModuleNames } from './isolation.js';
-import { compareCaseSnapshot, createSnapshot, observeTurn, readBaseline, serializeSnapshot } from './snapshot.js';
+import { compareCaseSnapshot, createSnapshot, DEFAULT_BASELINE, observeTurn, readBaseline, serializeSnapshot } from './snapshot.js';
+import { pathToFileURL } from 'node:url';
 import type { FinishedTurn } from '../../src/trace/recorder.js';
 import type { Order } from '../../src/types.js';
 
@@ -365,6 +366,38 @@ await test('运行入口支持自定义基线、差异判失败、off 跳过比�
     else process.env.EVAL_V2_BASELINE = previous;
     if (previousDb === undefined) delete process.env.CONFIG_TEST_DB;
     else process.env.CONFIG_TEST_DB = previousDb;
+  }
+});
+await test('readBaseline：默认常量、off、指定文件三种（R4）', async () => {
+  const previous = process.env.EVAL_V2_BASELINE;
+  delete process.env.EVAL_V2_BASELINE;
+  try {
+    // 默认：常量指向仓库里真实存在的具名快照，读出来与直接读文件一致
+    const file = new URL(`../baselines/${DEFAULT_BASELINE}`, import.meta.url);
+    assert.ok(fs.existsSync(file), '默认常量必须指向存在的文件');
+    assert.deepEqual(readBaseline(), JSON.parse(fs.readFileSync(file, 'utf8')));
+    // 换一个默认文件名与目录：读的是常量参数，不是写死的 v2-pre04
+    const dir = path.join(selftestDir, 'baselines');
+    fs.mkdirSync(dir, { recursive: true });
+    const named = { version: 1, cases: [{ id: 'x', turns: [] }] };
+    fs.writeFileSync(path.join(dir, 'v2-06-step9.json'), JSON.stringify(named));
+    const dirUrl = pathToFileURL(dir + path.sep);
+    assert.deepEqual(readBaseline(undefined, 'v2-06-step9.json', dirUrl), named);
+    // 默认文件不存在：保留旧行为，不比对
+    assert.equal(readBaseline(undefined, 'missing.json', dirUrl), undefined);
+    // off 关闭
+    assert.equal(readBaseline('off'), undefined);
+    // 指定文件：覆盖默认，文件不存在或格式错误则失败
+    assert.deepEqual(readBaseline(path.join(dir, 'v2-06-step9.json')), named);
+    assert.throws(() => readBaseline(path.join(dir, 'missing.json')));
+    fs.writeFileSync(path.join(dir, 'bad.json'), '{"version":2,"cases":[]}');
+    assert.throws(() => readBaseline(path.join(dir, 'bad.json')), /格式错误/);
+    // 环境变量与参数等价
+    process.env.EVAL_V2_BASELINE = path.join(dir, 'v2-06-step9.json');
+    assert.deepEqual(readBaseline(), named);
+  } finally {
+    if (previous === undefined) delete process.env.EVAL_V2_BASELINE;
+    else process.env.EVAL_V2_BASELINE = previous;
   }
 });
 for (const missing of [false, true]) {

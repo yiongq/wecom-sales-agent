@@ -75,7 +75,8 @@ export async function engineRuntime(
     const engine = await import('../../src/engine.js');
     const recorder = await import('../../src/trace/recorder.js');
     const store = await import('../../src/store.js');
-    return { usage, llm, engine, recorder, store };
+    const tools = await import('../../src/tools.js');
+    return { usage, llm, engine, recorder, store, tools };
   };
   const modules = await load().catch(async (e: unknown) => {
     await restoreProcess();
@@ -86,6 +87,7 @@ export async function engineRuntime(
   const { handleMessage } = modules.engine;
   const { onTurnEnd } = modules.recorder;
   const store = modules.store;
+  const { createQuote, routeVersion } = modules.tools;
   const salesCfg = llmCfg();
   const customerCfg = {
     baseUrl: process.env.SIM_CUSTOMER_BASE_URL || salesCfg.baseUrl,
@@ -218,9 +220,40 @@ export async function engineRuntime(
           },
         };
       },
-      start() {
+      start(seed) {
         const id = `sim-eval-${randomUUID()}`;
-        store.getOrCreateSession(id, 'simulator');
+        const session = store.getOrCreateSession(id, 'simulator');
+        if (seed) {
+          // 订单走真实的订单状态：待付款 / 已付款 / 作废都由 store 的函数落成，不靠对话里口头说
+          const now = Date.now();
+          const history = seed.history ?? [];
+          session.messages = history.map((m, i) => ({
+            role: m.role === 'customer' ? 'customer' : 'agent',
+            content: m.content,
+            at: now - (history.length - i) * 60_000,
+          }));
+          Object.assign(session.profile, seed.profile);
+          for (const o of seed.orders ?? []) {
+            const quote = createQuote({ routeId: o.routeId, travelers: o.travelers, departDate: o.departDate });
+            const order = store.createOrder({
+              sessionId: id,
+              routeId: o.routeId,
+              routeTitle: quote.routeTitle,
+              travelers: quote.travelers,
+              departDate: o.departDate,
+              totalPrice: quote.total,
+              catalogVersion: routeVersion(o.routeId),
+            });
+            if (o.status === 'paid') store.markOrderPaid(order.id);
+            else if (o.status === 'cancelled') {
+              order.status = 'cancelled';
+              store.saveOrder(order);
+            }
+            session.orderIds.push(order.id);
+          }
+          session.stage = seed.stage ?? ((seed.orders ?? []).some((o) => o.status === 'paid') ? 'paid' : session.stage);
+          store.saveSession(session);
+        }
         return { id, initial: snapshot(id) };
       },
       async sales(id, customer) {
