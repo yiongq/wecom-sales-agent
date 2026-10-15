@@ -2755,7 +2755,7 @@
           }
         ],
         "expect": {
-          "replyMatches": ["^链接里的价格是起价，按最终行程和出发日期微调，大头不会变。您更倾向哪条？$(?![\\s\\S])"],
+          "replyMatches": ["^链接里的价格是起价，大头不会变。您更倾向哪条？$(?![\\s\\S])"],
           "stage": "quote",
           "silent": false,
           "handoff": false,
