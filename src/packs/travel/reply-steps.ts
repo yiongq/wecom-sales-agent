@@ -3,6 +3,7 @@ import { travelTemplates } from './templates.js';
 // 04 R7：旅游主回复步骤，顺序由核心与本表组合；副作用仅经本轮 context。
 import { convLabel, logQuote, cleanText, replyStep, type GuardStep, type ReplyGuardContext } from '../../core/pack-api.js';
 import { CUSTOM_PROMISE } from './itinerary.js';
+import { noteReply } from './reply-notes.js';
 import type { createTravelTurnHooks } from './turn.js';
 import type { createTravelPriceRules } from './price-rules.js';
 import type { TravelPriceGuard } from './price-guard.js';
@@ -13,6 +14,7 @@ export interface TravelReplyStepSources {
   turnHooks: ReturnType<typeof createTravelTurnHooks>;
   priceGuard: Pick<TravelPriceGuard, 'findUnbackedPriceHits' | 'strandedAfterDrop'>;
   priceRules: Pick<ReturnType<typeof createTravelPriceRules>, 'dropUnbackedClaims'>;
+  loadRoutes: () => import('../../core/pack-api.js').Route[];
   getOrder: (id: string) => import('../../core/pack-api.js').Order | undefined;
   paymentMode: () => import('../../core/pack-api.js').PaymentMode;
   dejargon(text: string, sessionId: string): string;
@@ -73,7 +75,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
   } = sources.turnHooks;
   const { findUnbackedPriceHits, strandedAfterDrop } = sources.priceGuard;
   const { dropUnbackedClaims } = sources.priceRules;
-  const { getOrder, paymentMode, dejargon, handoffReasons: HANDOFF_REASON } = sources;
+  const { getOrder, paymentMode, dejargon, handoffReasons: HANDOFF_REASON, loadRoutes } = sources;
   return [
     replyStep('other_order', 'stage_advance', [], ['wantsOrder', 'friendsOwn'], (ctx) => {
       const { session } = ctx;
@@ -498,7 +500,9 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         });
       }
     }),
-    // 06 R6：本轮回复的会话记录（reminders 等），步骤体由第 6 步填
-    replyStep('note_reply', 'system_note', [], [], () => {}),
+    // 06 R7：本轮回复的会话记录（已提醒项、已推荐线路）。从最终文本里用确定性规则认；被中止的轮走不到这里；不往会话追加消息
+    replyStep('note_reply', 'system_note', [], [], (ctx) => {
+      noteReply(ctx.session, ctx.text, loadRoutes());
+    }),
   ];
 }

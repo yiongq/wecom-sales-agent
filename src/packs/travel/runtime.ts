@@ -100,6 +100,7 @@ export function createTravelRuntime(sources: PackSources) {
       turnHooks,
       priceGuard,
       priceRules,
+      loadRoutes: catalog.loadRoutes,
       getOrder: sources.getOrder,
       paymentMode: sources.paymentMode,
       dejargon,

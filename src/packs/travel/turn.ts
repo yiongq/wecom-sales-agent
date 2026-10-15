@@ -46,6 +46,7 @@ import {
 } from './progress.js';
 import { holidayIn, travelDatePolicy } from './dates.js';
 import { paymentPendingReply } from './contact-words.js';
+import { isPureChitchat, paidChitchatReply, reminderLines } from './reply-notes.js';
 import { TARGET_DAYS, requestedDays, customHandoffReply } from './itinerary.js';
 
 export interface TravelTurnTypes extends PackRuntimeTypes {
@@ -630,6 +631,8 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
           '不给签证时长和费用；不说「正常开放」「不用办手续」「会协助办好」「身体负担小」',
       );
     }
+    // 06 R7：已对客户说过的提醒与本会话推荐过的线路。没有记录时不加
+    lines.push(...reminderLines(session));
     lines.push(quoteTimingNote(session, text) ?? '', headcountAskNote(session, text) ?? '');
     return lines;
   }
@@ -1372,9 +1375,13 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
 
   const hooks: Pick<PackRuntime<TravelTurnTypes>, 'contextNote' | 'preModel' | 'prefetch' | 'beforeTool' | 'afterTool'> = {
     contextNote,
-    preModel({ session, text }): DeterministicReply | null {
+    preModel({ session, text, brand }): DeterministicReply | null {
       const reply = resendPayReply(session, text);
-      return reply ? { text: reply } : null;
+      if (reply) return { text: reply };
+      // 06 R14：付款后的纯寒暄不调模型。已转人工的会话在核心的静默判断里就不会走到这里
+      const paid = session.stage === 'paid' || session.orderIds.some((id) => getOrder(id)?.status === 'paid');
+      if (paid && isPureChitchat(text)) return { text: paidChitchatReply(session, { channel: session.channel, templateMode: !!brand }) };
+      return null;
     },
     async prefetch(ctx): Promise<PrefetchResult> {
       const calls: PrefetchResult['calls'] = [];
