@@ -49,7 +49,7 @@ export function createTravelPriceRules(
 
   const BUDGET_TALK = /预算|budget|以内|之内|以下|不超过|控制在|封顶|顶多|最多/i;
   const BUDGET_FLOOR_WORD = /至少|起码|最少|不低于|不少于|以上|往上|打底/;
-  const PER_PERSON_WORD = /每人|人均|每位|单人|一个人|一人|[/／]\s*人|per\s*person|\bpp\b|each/i;
+  const PER_PERSON_WORD = /每人|每个人|每一位|人均|每位|单人|一个人|一人|[/／]\s*人|per\s*person|\bpp\b|each/i;
   const TOTAL_WORD = /一共|总共|总预算|合计|加起来|总价|总计|全家|全部/;
   /**
    * 客户把预算放开了：「预算不是问题」「不设上限」「钱不是问题」「不差钱」。这句没带数时就是最新的说法，之前说的数不再是上限——
