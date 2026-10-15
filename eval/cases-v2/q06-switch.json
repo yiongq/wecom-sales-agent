@@ -1,0 +1,233 @@
+[
+  {
+    "version": 2,
+    "id": "q06-switch-pending-order",
+    "desc": "R8：有云南待付款单、客户问「四川呢」：预取四川并有换目的地行。",
+    "tags": ["q06", "prefetch"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ],
+      "session": {
+        "stage": "closing"
+      }
+    },
+    "turns": [
+      {
+        "say": "四川呢",
+        "script": [
+          {
+            "content": "我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "tools": ["search_routes"],
+          "contextMatches": [
+            "^客户这轮问到四川；会话里还有云南的待付款订单，它不会因为聊四川而自动作废：照实回答四川；说到那张单，就照「订单」一行说，不说「不冲突」「自动失效」$"
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-switch-no-order",
+    "desc": "R8：没有订单时「四川呢」不预取，也没有换目的地行（与开工时相同）。",
+    "tags": ["q06", "prefetch"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote"
+      }
+    },
+    "turns": [
+      {
+        "say": "四川呢",
+        "script": [
+          {
+            "content": "我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "tools": [],
+          "contextExcludes": ["待付款订单", "自动作废"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-switch-paid-stage",
+    "desc": "R8：paid 阶段不预取，也没有换目的地行。",
+    "tags": ["q06", "prefetch"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "paid"
+        }
+      ],
+      "session": {
+        "stage": "paid"
+      }
+    },
+    "turns": [
+      {
+        "say": "四川呢",
+        "script": [
+          {
+            "content": "我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "tools": [],
+          "contextExcludes": ["自动作废"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-switch-cancelled-order",
+    "desc": "R8：订单已作废的不算待付款，不触发。",
+    "tags": ["q06", "prefetch"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "cancelled"
+        }
+      ],
+      "session": {
+        "stage": "closing"
+      }
+    },
+    "turns": [
+      {
+        "say": "四川呢",
+        "script": [
+          {
+            "content": "我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "tools": [],
+          "contextExcludes": ["自动作废"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-switch-same-destination",
+    "desc": "R8：点的就是订单的目的地（云南）不触发。",
+    "tags": ["q06", "prefetch"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ],
+      "session": {
+        "stage": "closing"
+      }
+    },
+    "turns": [
+      {
+        "say": "云南呢",
+        "script": [
+          {
+            "content": "我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "tools": [],
+          "contextExcludes": ["自动作废"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-switch-comparing-with-order-dest",
+    "desc": "R8：同一句里也点了订单那处（云南还是四川）不触发。",
+    "tags": ["q06", "prefetch"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ],
+      "session": {
+        "stage": "closing"
+      }
+    },
+    "turns": [
+      {
+        "say": "云南还是四川好呢",
+        "script": [
+          {
+            "content": "我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "tools": [],
+          "contextExcludes": ["自动作废"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-per-person-budget-words",
+    "desc": "R17：「每个人一万五」认成每人预算并预取；「两个人预算5万」照旧不预取。",
+    "tags": ["q06", "prefetch"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想去云南，每个人预算一万五",
+        "script": [
+          {
+            "content": "我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "tools": ["search_routes"]
+        }
+      },
+      {
+        "say": "想去四川，两个人预算5万",
+        "script": [
+          {
+            "content": "我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "tools": []
+        }
+      }
+    ]
+  }
+]

@@ -350,7 +350,7 @@
               "status": "pending_payment"
             }
           },
-          "tools": ["create_order"]
+          "tools": ["search_routes", "create_order"]
         }
       }
     ]

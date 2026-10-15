@@ -631,6 +631,14 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
           '不给签证时长和费用；不说「正常开放」「不用办手续」「会协助办好」「身体负担小」',
       );
     }
+    // 06 R8：换目的地。旧的待付款单不会因为聊新目的地自动作废
+    const sw = destinationSwitch(session, text);
+    if (sw) {
+      lines.push(
+        `客户这轮问到${sw.dest}；会话里还有${sw.old.join('、')}的待付款订单，它不会因为聊${sw.dest}而自动作废：照实回答${sw.dest}；` +
+          '说到那张单，就照「订单」一行说，不说「不冲突」「自动失效」',
+      );
+    }
     // 06 R7：已对客户说过的提醒与本会话推荐过的线路。没有记录时不加
     lines.push(...reminderLines(session));
     lines.push(quoteTimingNote(session, text) ?? '', headcountAskNote(session, text) ?? '');
@@ -696,7 +704,7 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
   // 不带的话，模型自己减出来的「比您预算多 6,800 元」会被当成编价整条拦下。
   // 说了钱却认不出是不是「每人」（「预算5万」可能是两个人的总数）就不预取，交给模型自己理解。
   const PER_PERSON_BUDGET =
-    /(?:每人|人均)\s*(?:预算)?\s*(?:大概|大约|差不多|在)?\s*(\d+(?:\.\d+)?|[一二两三四五六七八九十]+)\s*(万|千|元|块)?(?:\s*([一二两三四五六七八九]|\d)(?![\d.])\s*千?)?/;
+    /(?:每人|每个人|每一位|每位|人均)\s*(?:预算)?\s*(?:大概|大约|差不多|在)?\s*(\d+(?:\.\d+)?|[一二两三四五六七八九十]+)\s*(万|千|元|块)?(?:\s*([一二两三四五六七八九]|\d)(?![\d.])\s*千?)?/;
   const MENTIONS_MONEY = /预算|\d\s*(?:万|千|元|块)|[一二两三四五六七八九十]\s*(?:万|千(?!米))/;
   // 预算数后面接区间或下限（「一万到两万」「8000-12000」「3万以上」「5万起」），或前面带「至少/起码」，
   // 这个数就不是每人上限。当成上限的代价：「每人一万到两万」按 1 万查，工具对预算内的 16,800 算出
@@ -794,6 +802,41 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
       .toSorted((a, b) => a.at - b.at)
       .slice(0, 2)
       .map((c) => c.args);
+  }
+
+  /**
+   * 06 R8：会话里有待付款订单、客户这句点了产品库里另一个目的地、阶段不在 paid——三样都满足才算「换目的地」。
+   * 目的地认法用 destinationMentions（不用 switchesTo：它遇到句末的「呢」返回 false，认不出「四川呢」）。
+   * 同一句里也点了订单那处（「云南还是四川」）、点了不止一处、说了认不出上限的钱（「两个人预算5万」）都不算。
+   * 不在 paid：paid 阶段预取会让 advanceStage 把阶段推回问需，跟进与 R14 的条件都会失效。
+   */
+  function destinationSwitch(
+    session: Session,
+    text: string,
+  ): { dest: string; kw: string; old: string[]; args: Record<string, unknown> } | undefined {
+    if (session.stage === 'paid') return undefined;
+    const routes = loadRoutes();
+    const old = new Set<string>();
+    for (const id of session.orderIds) {
+      const o = getOrder(id);
+      const dest = o?.status === 'pending_payment' ? routes.find((r) => r.id === o.routeId)?.destination : undefined;
+      if (dest) old.add(dest);
+    }
+    if (!old.size) return undefined;
+    const budget = perPersonBudget(text);
+    if (budget === undefined && (MENTIONS_MONEY.test(text) || PER_PERSON_BUDGET.test(text))) return undefined;
+    const said = withoutNegatedPlaces(text);
+    const picks = [...destinationMentions(said)].filter(([, kw]) => !isOriginMention(said, kw));
+    if (picks.length !== 1 || old.has(picks[0][0])) return undefined;
+    const [dest, kw] = picks[0];
+    const segment = detectSegment(text);
+    const maxBudgetPerPerson = budget ?? (liftsBudget(text) ? undefined : perPersonBudget(session.profile.budget));
+    return {
+      dest,
+      kw,
+      old: [...old],
+      args: { destination: kw, ...(segment ? { segment } : {}), ...(maxBudgetPerPerson ? { maxBudgetPerPerson } : {}) },
+    };
   }
 
   /**
@@ -1223,6 +1266,12 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
         out.departDate = iso;
         fixed.push(`补出发日期 ${iso}`);
       }
+      // 06 R17：方案书缺日期、客户这句也没给日期时，沿用最近一次报价的出发日，方案书上的价才和报价一致（修 K）
+      const quotedDate = session.lastQuote?.departDate;
+      if (name === 'generate_proposal' && !out.departDate && quotedDate && quotedDate >= todayIso()) {
+        out.departDate = quotedDate;
+        fixed.push(`沿用最近报价的出发日期 ${quotedDate}`);
+      }
       // 客户只说了节假日（「国庆」）：按那天定季节价，回复里只说「国庆出发」——和只说到月份的一样（见下面 departNote）
       if (
         name !== 'create_order' &&
@@ -1387,7 +1436,14 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
       const calls: PrefetchResult['calls'] = [];
       const timings: string[] = [];
       try {
-        for (const args of planPrefetch(ctx.session, ctx.text)) {
+        // 06 R8：planPrefetch 不预取（过了推荐阶段）时，换目的地的条件满足就替模型查一次新目的地；已在聊的目的地不重查
+        let plan = planPrefetch(ctx.session, ctx.text);
+        if (!plan.length) {
+          const sw = destinationSwitch(ctx.session, ctx.text);
+          const known = ctx.session.profile.destinationInterest;
+          if (sw && !(known && (known === sw.dest || known === sw.kw || destinationsInText(known).includes(sw.dest)))) plan = [sw.args];
+        }
+        for (const args of plan) {
           const t = Date.now();
           const call = await ctx.callTool('search_routes', args);
           timings.push(`search_routes ${Date.now() - t}ms`);

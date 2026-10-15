@@ -190,4 +190,53 @@ assert.match(rejected.reject, /这是过去的日期/);
   assert.equal(netQuoteFor(both, '确认下单，2个人'), undefined, '「2个人」是人数不是序号：仍不触发');
 }
 
+// 06 R17：每人预算的说法补「每个人、每一位、每位」，不放宽成「个人」；方案书缺日期时沿用最近报价的出发日
+{
+  const budgetOf = async (text: string): Promise<unknown[]> => {
+    const s: Session = {
+      ...structuredClone(session),
+      stage: 'discovery',
+      profile: {},
+      messages: [{ role: 'customer', content: text, at: 0 }],
+    };
+    const calls: Record<string, unknown>[] = [];
+    await hooks.prefetch!({
+      session: s,
+      text,
+      async callTool(name, args) {
+        calls.push(args);
+        return { name, args, result: '[]' };
+      },
+    });
+    return calls.map((a) => a.maxBudgetPerPerson);
+  };
+  assert.deepEqual(await budgetOf('想去云南，每个人预算一万五'), [15000]);
+  assert.deepEqual(await budgetOf('想去云南，每一位预算两万'), [20000]);
+  assert.deepEqual(await budgetOf('想去云南，每位一万八'), [18000]);
+  assert.deepEqual(await budgetOf('想去云南，每人预算一万五'), [15000], '原有的说法照旧');
+  assert.deepEqual(await budgetOf('想去云南，两个人预算5万'), [], '「个人」不放宽：说了钱却认不出每人上限，不预取');
+
+  const quoted: Session = {
+    ...structuredClone(session),
+    lastQuote: { routeId: 'fixture-0', routeTitle: '云南测试线路', travelers: 2, departDate: '2099-12-10', perPerson: 10000, total: 20000 },
+  };
+  const blank = { session: quoted, text: '发个方案书', hints: {}, args: {}, notes: {}, handoffDeclined: false } as TurnToolContext;
+  const withDate = hooks.beforeTool!('generate_proposal', { routeId: 'fixture-0', travelers: 2 }, blank);
+  assert.ok('args' in withDate && (withDate.args as Record<string, unknown>).departDate === '2099-12-10', '缺日期沿用最近报价的出发日');
+  const keep = hooks.beforeTool!(
+    'generate_proposal',
+    { routeId: 'fixture-0', travelers: 2 },
+    { ...blank, session: { ...quoted, lastQuote: { ...quoted.lastQuote!, departDate: undefined } } },
+  );
+  assert.ok('args' in keep && (keep.args as Record<string, unknown>).departDate === undefined, '最近报价没带出发日：不补');
+  const past = hooks.beforeTool!(
+    'generate_proposal',
+    { routeId: 'fixture-0', travelers: 2 },
+    { ...blank, session: { ...quoted, lastQuote: { ...quoted.lastQuote!, departDate: '2020-01-01' } } },
+  );
+  assert.ok('args' in past && (past.args as Record<string, unknown>).departDate === undefined, '过去的日子不沿用');
+  const quote = hooks.beforeTool!('create_quote', { routeId: 'fixture-0', travelers: 2 }, blank);
+  assert.ok('args' in quote && (quote.args as Record<string, unknown>).departDate === undefined, '只有方案书沿用，报价不补');
+}
+
 console.log('TRAVEL TURN SELFTEST PASS: context、预取实际参数/顺序/部分失败与工具核正/结果/画像边界/成单安全网意图与选线');
