@@ -85,7 +85,7 @@ const { resolveProfile, capFlags, BASELINE_FLAG_NAMES, PROFILE_ENV_NAMES, Profil
 );
 const { channelCustomerLabel } = await withoutTenantScope(() => import('../shared/conversation.js'));
 const WEB_NOTE = '客户正在网页上咨询，不在微信里；说到顾问跟进时，请说顾问会在这个页面里回复您，不要说在微信上联系。';
-const SYSTEM_SHA = 'ee39197645430537351a585092f287600e5674f666bac371c18f152c183cbaad';
+const SYSTEM_SHA = 'fab15319b77960b9e4dc5e398cd83a60d7ce2711eaa7c6b1a3b38d939e30fb95';
 const TOOLS_SHA = '64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1';
 const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 // 下面是开工提交 5b697c2 的原文；仅随机订单凭据替换成 <ORDER>，其余字节原样保留。

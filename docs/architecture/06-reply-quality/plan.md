@@ -556,7 +556,8 @@ Claude 子 agent 实现，与 Open 4 并行；协调者审查、改了一处口�
   - R6 的 contextNote 行、R8 换线行、R13 的两句替换句改成定稿口径。
   - `quote-final` 白名单清空。
   - 契约检查的 `consistency` 默认开，发布、回滚、启动重渲染、导出都查。`SOP_CHECK_LABEL` 并入 `CONSISTENCY_CHECK_LABEL`，后台清单 8 项。
-- **新前缀**（此后的基准，到第 17 步前）：`PREFIX sha256 system=ee39197645430537351a585092f287600e5674f666bac371c18f152c183cbaad tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1`。tools 没变。`web`、`brand`、`brand-publish` 三个自测里写死的 system 哈希同步更新。
+- **新前缀**（此后的基准，到第 17 步前）：`PREFIX sha256 system=fab15319b77960b9e4dc5e398cd83a60d7ce2711eaa7c6b1a3b38d939e30fb95 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1`。tools 没变。`web`、`brand`、`brand-publish` 三个自测里写死的 system 哈希同步更新。
+- **第 18 步对比后加的一句**（owner 选「先调付款后闲聊」）：stages 锁定节的 paid 那句补上「说过一次就别再说：之后答酒店、退改这类细节时直接答，答不了就说『由顾问跟您确认』，不再带出确认书和服务群」，`templates.ts` 同步。上面的前缀是加了这句之后的值。
 - **启动重渲染不会被新检查拦**：线上 `sopHash` `55e5caa59580` 等于仓库改前的 `data/sop.md`，可见 demo 租户的话术没在后台改过。协调者用「新锁定节 + 改前的可编辑节」跑契约检查（`consistency` 默认开）：0 条违规。对照：往旧可编辑节塞一句「起价，按最终行程微调」，被 `quote-final` 拦下并点名报价模板。
 - **验**：
   - `test:locked` 全绿，V2、V5 的「这是起价」还在。

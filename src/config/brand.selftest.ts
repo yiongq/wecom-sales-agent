@@ -45,7 +45,7 @@ const oldFetch = globalThis.fetch;
 let t: Awaited<ReturnType<typeof openTestDb>> | undefined;
 
 try {
-  assert.equal(sha256(baseline.system), 'ee39197645430537351a585092f287600e5674f666bac371c18f152c183cbaad');
+  assert.equal(sha256(baseline.system), 'fab15319b77960b9e4dc5e398cd83a60d7ce2711eaa7c6b1a3b38d939e30fb95');
   assert.equal(sha256(baseline.tools), '64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1');
   assert.equal(baseline.tools, JSON.stringify(toolDefs));
   assert.equal(legacy.identityAnswer, '我是云途定制旅行的 AI 旅行顾问，7×24 在线为您服务～');
