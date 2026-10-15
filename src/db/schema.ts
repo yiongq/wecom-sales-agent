@@ -7,7 +7,7 @@
 // 列名一律显式写 snake_case，不依赖 casing 推导：迁移 SQL 与 spec 的 DDL 逐列对得上。
 // 改这个文件之后跑 `pnpm db:generate` 生成新迁移，已提交的迁移文件永远不改（lint 会查）。
 import { sql } from 'drizzle-orm';
-import type { BrandProfile, GuardVerdict } from '../core/pack-api.js';
+import type { BrandProfile, GuardVerdict, ReplyShape } from '../core/pack-api.js';
 import {
   type AnyPgColumn,
   bigint,
@@ -447,6 +447,8 @@ export const turnTraces = pgTable(
     signals: json('signals'),
     /** 04 R8：全部执行过的主回复步骤；未进入流水线为 null。 */
     guardVerdicts: json('guard_verdicts').$type<GuardVerdict[]>(),
+    /** 06 R10：本轮回复的形状（类别、行数、字数、上限、裁掉句数）；未进入主回复流水线为 null。 */
+    replyShape: json('reply_shape').$type<ReplyShape>(),
   },
   (t) => [
     primaryKey({ columns: [t.tenantId, t.id] }),

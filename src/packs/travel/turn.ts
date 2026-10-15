@@ -45,6 +45,8 @@ import {
   travellingText,
 } from './progress.js';
 import { holidayIn, travelDatePolicy } from './dates.js';
+import { paymentPendingReply } from './contact-words.js';
+import { isPureChitchat, paidChitchatReply, reminderLines } from './reply-notes.js';
 import { TARGET_DAYS, requestedDays, customHandoffReply } from './itinerary.js';
 
 export interface TravelTurnTypes extends PackRuntimeTypes {
@@ -581,7 +583,24 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     return undefined;
   }
 
-  function contextNote({ session, text }: TurnContext): string[] {
+  /** R5：客户这句在说自己已经付了款（「已付」「付完了」「付好了」「转账了」「打款了」）；「还没付好」「没转账」不算 */
+  const PAID_CLAIM = /已(?:经)?(?:付|转账|打款)|付(?:完|好)了|转账了|打款了/;
+  const PAID_CLAIM_NEGATED = /[没未不]\s*(?:有)?\s*(?:已(?:经)?)?(?:付|转账|打款)/;
+  /**
+   * R6：只按问法触发，不认地名：问安全、开放、手续、证件。「想去西藏」「新疆几月去好」不触发
+   */
+  const SENSITIVE_ASK =
+    /(?:安全|开放|能去|可以去|让去|允许去?)(?:吗|么|嘛|不)|安不安全|开不开放|能不能去|边防证|通行证|入藏函|签证|出入境|(?:办|要办|需要办|得办|什么|哪些|啥).{0,4}手续|手续.{0,3}(?:怎么|多久|复杂)|(?:证件|身份证).{0,4}(?:够|要|需)/;
+
+  /** R5：最近 3 张没作废的订单（待付款 / 已付款），不给金额 */
+  function liveOrders(session: Session) {
+    return session.orderIds
+      .map((id) => getOrder(id))
+      .filter((o): o is NonNullable<typeof o> => !!o && (o.status === 'pending_payment' || o.status === 'paid'))
+      .slice(-3);
+  }
+
+  function contextNote({ session, text, brand }: TurnContext): string[] {
     const lines: string[] = [];
     // 线路 id 跨轮带着走：历史里只有文本，没有这一行，客户说「第二条报个价」时模型得先重查一遍库
     const shown = session.lastShownRoutes ?? [];
@@ -591,6 +610,37 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     const q = session.lastQuote;
     // 只给参数不给金额：人数或日期一变价格就得重算，给了旧金额模型会顺手沿用
     if (q) lines.push(`最近报价: ${q.routeId}《${q.routeTitle}》${q.travelers} 人${q.departDate ? `，${q.departDate} 出发` : ''}`);
+    // 06 R5：订单与付款状态。没有订单、客户这句也不是在说已付款时一个字节都不加
+    const live = liveOrders(session);
+    if (live.length) {
+      lines.push(
+        `订单: ${live.map((o) => `《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发，${o.status === 'paid' ? '已付款' : '待付款'}`).join('；')}`,
+      );
+      if (live.some((o) => o.status === 'paid')) lines.push('已付款的单：顾问会发行程确认书、拉服务群；说过就别再说');
+    }
+    if (PAID_CLAIM.test(text) && !PAID_CLAIM_NEGATED.test(text) && !session.orderIds.some((id) => getOrder(id)?.status === 'paid')) {
+      lines.push(
+        '客户说已付款，但系统还没收到到账：不要说已到账、订单生效、订单已确认；' +
+          `要说就说「${paymentPendingReply({ channel: session.channel, templateMode: !!brand })}」`,
+      );
+    }
+    // 06 R6：敏感地区与证件手续的口径，只复述 SOP 现有规则
+    if (SENSITIVE_ASK.test(text)) {
+      lines.push(
+        '客户问到敏感地区或证件手续：政策会变，说「由顾问按您的出行时间确认」；通行证只照线路的「含 / 不含」说；' +
+          '不给签证时长和费用；不说「正常开放」「不用办手续」「会协助办好」「身体负担小」',
+      );
+    }
+    // 06 R8：换目的地。旧的待付款单不会因为聊新目的地自动作废
+    const sw = destinationSwitch(session, text);
+    if (sw) {
+      lines.push(
+        `客户这轮问到${sw.dest}；会话里还有${sw.old.join('、')}的待付款订单，它不会因为聊${sw.dest}而自动作废：照实回答${sw.dest}；` +
+          '说到那张单，就照「订单」一行说，不说「不冲突」「自动失效」',
+      );
+    }
+    // 06 R7：已对客户说过的提醒与本会话推荐过的线路。没有记录时不加
+    lines.push(...reminderLines(session));
     lines.push(quoteTimingNote(session, text) ?? '', headcountAskNote(session, text) ?? '');
     return lines;
   }
@@ -654,7 +704,7 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
   // 不带的话，模型自己减出来的「比您预算多 6,800 元」会被当成编价整条拦下。
   // 说了钱却认不出是不是「每人」（「预算5万」可能是两个人的总数）就不预取，交给模型自己理解。
   const PER_PERSON_BUDGET =
-    /(?:每人|人均)\s*(?:预算)?\s*(?:大概|大约|差不多|在)?\s*(\d+(?:\.\d+)?|[一二两三四五六七八九十]+)\s*(万|千|元|块)?(?:\s*([一二两三四五六七八九]|\d)(?![\d.])\s*千?)?/;
+    /(?:每人|每个人|每一位|每位|人均)\s*(?:预算)?\s*(?:大概|大约|差不多|在)?\s*(\d+(?:\.\d+)?|[一二两三四五六七八九十]+)\s*(万|千|元|块)?(?:\s*([一二两三四五六七八九]|\d)(?![\d.])\s*千?)?/;
   const MENTIONS_MONEY = /预算|\d\s*(?:万|千|元|块)|[一二两三四五六七八九十]\s*(?:万|千(?!米))/;
   // 预算数后面接区间或下限（「一万到两万」「8000-12000」「3万以上」「5万起」），或前面带「至少/起码」，
   // 这个数就不是每人上限。当成上限的代价：「每人一万到两万」按 1 万查，工具对预算内的 16,800 算出
@@ -752,6 +802,41 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
       .toSorted((a, b) => a.at - b.at)
       .slice(0, 2)
       .map((c) => c.args);
+  }
+
+  /**
+   * 06 R8：会话里有待付款订单、客户这句点了产品库里另一个目的地、阶段不在 paid——三样都满足才算「换目的地」。
+   * 目的地认法用 destinationMentions（不用 switchesTo：它遇到句末的「呢」返回 false，认不出「四川呢」）。
+   * 同一句里也点了订单那处（「云南还是四川」）、点了不止一处、说了认不出上限的钱（「两个人预算5万」）都不算。
+   * 不在 paid：paid 阶段预取会让 advanceStage 把阶段推回问需，跟进与 R14 的条件都会失效。
+   */
+  function destinationSwitch(
+    session: Session,
+    text: string,
+  ): { dest: string; kw: string; old: string[]; args: Record<string, unknown> } | undefined {
+    if (session.stage === 'paid') return undefined;
+    const routes = loadRoutes();
+    const old = new Set<string>();
+    for (const id of session.orderIds) {
+      const o = getOrder(id);
+      const dest = o?.status === 'pending_payment' ? routes.find((r) => r.id === o.routeId)?.destination : undefined;
+      if (dest) old.add(dest);
+    }
+    if (!old.size) return undefined;
+    const budget = perPersonBudget(text);
+    if (budget === undefined && (MENTIONS_MONEY.test(text) || PER_PERSON_BUDGET.test(text))) return undefined;
+    const said = withoutNegatedPlaces(text);
+    const picks = [...destinationMentions(said)].filter(([, kw]) => !isOriginMention(said, kw));
+    if (picks.length !== 1 || old.has(picks[0][0])) return undefined;
+    const [dest, kw] = picks[0];
+    const segment = detectSegment(text);
+    const maxBudgetPerPerson = budget ?? (liftsBudget(text) ? undefined : perPersonBudget(session.profile.budget));
+    return {
+      dest,
+      kw,
+      old: [...old],
+      args: { destination: kw, ...(segment ? { segment } : {}), ...(maxBudgetPerPerson ? { maxBudgetPerPerson } : {}) },
+    };
   }
 
   /**
@@ -1181,6 +1266,12 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
         out.departDate = iso;
         fixed.push(`补出发日期 ${iso}`);
       }
+      // 06 R17：方案书缺日期、客户这句也没给日期时，沿用最近一次报价的出发日，方案书上的价才和报价一致（修 K）
+      const quotedDate = session.lastQuote?.departDate;
+      if (name === 'generate_proposal' && !out.departDate && quotedDate && quotedDate >= todayIso()) {
+        out.departDate = quotedDate;
+        fixed.push(`沿用最近报价的出发日期 ${quotedDate}`);
+      }
       // 客户只说了节假日（「国庆」）：按那天定季节价，回复里只说「国庆出发」——和只说到月份的一样（见下面 departNote）
       if (
         name !== 'create_order' &&
@@ -1333,15 +1424,26 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
 
   const hooks: Pick<PackRuntime<TravelTurnTypes>, 'contextNote' | 'preModel' | 'prefetch' | 'beforeTool' | 'afterTool'> = {
     contextNote,
-    preModel({ session, text }): DeterministicReply | null {
+    preModel({ session, text, brand }): DeterministicReply | null {
       const reply = resendPayReply(session, text);
-      return reply ? { text: reply } : null;
+      if (reply) return { text: reply };
+      // 06 R14：付款后的纯寒暄不调模型。已转人工的会话在核心的静默判断里就不会走到这里
+      const paid = session.stage === 'paid' || session.orderIds.some((id) => getOrder(id)?.status === 'paid');
+      if (paid && isPureChitchat(text)) return { text: paidChitchatReply(session, { channel: session.channel, templateMode: !!brand }) };
+      return null;
     },
     async prefetch(ctx): Promise<PrefetchResult> {
       const calls: PrefetchResult['calls'] = [];
       const timings: string[] = [];
       try {
-        for (const args of planPrefetch(ctx.session, ctx.text)) {
+        // 06 R8：planPrefetch 不预取（过了推荐阶段）时，换目的地的条件满足就替模型查一次新目的地；已在聊的目的地不重查
+        let plan = planPrefetch(ctx.session, ctx.text);
+        if (!plan.length) {
+          const sw = destinationSwitch(ctx.session, ctx.text);
+          const known = ctx.session.profile.destinationInterest;
+          if (sw && !(known && (known === sw.dest || known === sw.kw || destinationsInText(known).includes(sw.dest)))) plan = [sw.args];
+        }
+        for (const args of plan) {
           const t = Date.now();
           const call = await ctx.callTool('search_routes', args);
           timings.push(`search_routes ${Date.now() - t}ms`);
@@ -1417,6 +1519,7 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     ORDER_DEFERRED,
     QUOTE_ONLY,
     ORDER_QUESTION,
+    PRICE_OK,
     WANTS_PERSON,
     DEMANDS_EXCEPTION,
     titleWordHit,

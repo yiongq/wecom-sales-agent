@@ -4,7 +4,7 @@
 import { and, asc, eq, sql } from 'drizzle-orm';
 import { currentTenantCtx, type Tx } from '../client.js';
 import { guardEvents, turnTraces } from '../schema.js';
-import type { GuardVerdict } from '../../core/pack-api.js';
+import type { GuardVerdict, ReplyShape } from '../../core/pack-api.js';
 
 export interface TurnTraceRow {
   id: string;
@@ -24,6 +24,8 @@ export interface TurnTraceRow {
   llm: unknown[];
   signals: unknown;
   guardVerdicts?: GuardVerdict[] | null;
+  /** 06 R10：本轮回复的形状；未进入主回复流水线为 null */
+  replyShape?: ReplyShape | null;
 }
 
 export interface GuardEventRow {
@@ -39,9 +41,15 @@ export interface GuardEventRow {
 export async function insertTurnTraces(tx: Tx, rows: readonly TurnTraceRow[]): Promise<void> {
   if (!rows.length) return;
   const { tenantId } = currentTenantCtx();
-  await tx
-    .insert(turnTraces)
-    .values(rows.map((r) => ({ tenantId, ...r, signals: r.signals ?? null, guardVerdicts: r.guardVerdicts ?? null })));
+  await tx.insert(turnTraces).values(
+    rows.map((r) => ({
+      tenantId,
+      ...r,
+      signals: r.signals ?? null,
+      guardVerdicts: r.guardVerdicts ?? null,
+      replyShape: r.replyShape ?? null,
+    })),
+  );
 }
 
 /** 要排在所属 trace 之后写（外键） */

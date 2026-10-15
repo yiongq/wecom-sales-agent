@@ -8,6 +8,9 @@ const webWelcomeTemplate =
 const brandSlot = { legacy: '云途定制旅行', template: '{brandName}', context: 'html-text' } as const;
 const chatTitle = { legacy: '云途定制旅行顾问', template: '{brandName} · {advisorTitle}', context: 'html-text' } as const;
 
+/** R16 合并句的身份部分（模板模式）；旧版文本在 legacy.ts 的 identityHandoffHead */
+export const identityHandoffHeadTemplate = '我是{brandName}的{aiTitle}';
+
 export const travelTemplates: BrandTemplates = {
   hardRequirements: [
     '【硬性要求】',

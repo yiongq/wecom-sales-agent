@@ -127,7 +127,7 @@ const BASELINE: Record<string, Transcript> = {
     context: [],
     tools: [],
     reply:
-      '好的，马上为您转接资深顾问，请稍候～\n您刚下的《云南丽江大理 6 日舒适之旅》订单顾问会一并跟进，之前发您的订单链接仍然有效，顾问会在微信里核对价格、发收款方式。',
+      '好的，马上为您转接资深顾问，顾问会在微信上联系您，请稍候～\n您刚下的《云南丽江大理 6 日舒适之旅》订单顾问会一并跟进，之前发您的订单链接仍然有效，顾问会在微信里核对价格、发收款方式。',
   },
   'tool-order-stranded': {
     context: [
@@ -236,6 +236,20 @@ async function run(tag: string, s: Session, text: string, steps: Step[]): Promis
     tools: bodies.flatMap((b) => b.messages.filter((m) => m.role === 'tool').map((m) => normalize(m.content!, s))),
     reply: normalize(reply.text, s),
   };
+  // 06 R5–R7 起，contextNote 在有订单、客户自称已付、问到敏感地区或证件手续、说过提醒或推荐过线路时多几行。
+  // 开工原文早于它们：比对前剥掉这几类行，另核订单行不带金额
+  const R5_LINE = /^(?:订单: .*|已付款的单：.*|客户说已付款，.*|客户问到敏感地区或证件手续：.*|已对客户说过：.*|本会话推荐过：.*)$/;
+  const r5Lines = got.context.flatMap((c) => c.split('\n').filter((line) => R5_LINE.test(line)));
+  assert.ok(
+    r5Lines.every((line) => !/¥|\d+\s*元/.test(line)),
+    `${tag} 订单行不带金额`,
+  );
+  got.context = got.context.map((c) =>
+    c
+      .split('\n')
+      .filter((line) => !R5_LINE.test(line))
+      .join('\n'),
+  );
   {
     const expected = BASELINE[tag]!;
     assert.ok(expected, `${tag} 有开工原文`);

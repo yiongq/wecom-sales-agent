@@ -29,7 +29,7 @@ import type {
   PackBinding,
   TurnToolCall as ToolCall,
 } from '../pack-api.js';
-import { answerIdentity as coreAnswerIdentity } from '../guards/text.js';
+import { answerIdentity as coreAnswerIdentity, IDENTITY_QUESTION } from '../guards/text.js';
 import { tryReserveVisitorLLM } from '../../budget.js';
 import { BudgetExhausted } from '../../llm-gate.js';
 import { numEnv, todayIso } from '../../env.js';
@@ -59,6 +59,7 @@ import {
   noteDraft,
   noteGuard,
   noteGuardVerdict,
+  noteReplyShape,
   notePrefix,
   noteSignals,
   noteToolError,
@@ -295,6 +296,7 @@ async function handleMessageInner(
   const turnContext: TurnContext = {
     session,
     text: state.text,
+    brand: state.binding.brand,
     callTool: async (name, args) => {
       const result = await tools.runTool(name, args, { prefetch: true });
       return { name, args: calls[calls.length - 1]?.args ?? args, result };
@@ -388,6 +390,8 @@ function preflight(state: TurnState): AgentReply | null {
   const { text, opts, session, runtime, triggers, answerIdentity, done } = state;
   const { isComplaint, isHandoffIntent, departNoteForHandoff, safetyNetKind, handoffReply } = runtime.engineHooks;
   const { negativeLevel, pushWindow, SENTIMENT_WINDOW, emergencyOf, consentWithdrawalOf, sentimentThresholdReached } = triggers;
+  // 06 R16：转人工话术按品牌快照渲染联系方式；客户同时在问身份时合并成一句
+  const handoffOpts = (t: string) => ({ brand: state.binding.brand, identity: IDENTITY_QUESTION.test(t) });
   // 重置口令（演示/测试便利）：清空会话并解除转人工，从头开始。网页与企微都生效——
   // 这是演示项目，拿手机微信反复走流程是主要用法（2026-09 曾限定为仅网页，被要求改回）。
   // 代价是接真实客户后，客户发一句「重新开始」就会绕过人工、清空聊天记录、连已支付订单一起删掉，
@@ -549,7 +553,7 @@ function preflight(state: TurnState): AgentReply | null {
       quote: cleanText(text, 200),
       ...(departNote ? { departNote } : {}),
     });
-    const reply = cleanText(answerIdentity(text, handoffReply(session, text, kind)));
+    const reply = cleanText(answerIdentity(text, handoffReply(session, text, kind, handoffOpts(text))));
     const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
     session.messages.push(msg);
     saveSession(session);
@@ -568,7 +572,7 @@ function preflight(state: TurnState): AgentReply | null {
       ...(departNote ? { departNote } : {}),
     });
     delete session.negativeHits;
-    const reply = cleanText(answerIdentity(text, handoffReply(session, text, 'complaint')));
+    const reply = cleanText(answerIdentity(text, handoffReply(session, text, 'complaint', handoffOpts(text))));
     const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
     session.messages.push(msg);
     saveSession(session);
@@ -782,7 +786,7 @@ async function finishTurn(
     extractProfile: (session, calls, text) => ({ ...session.profile, ...runtime.extractProfile(text, session, calls) }),
     fallbackReply,
     answerIdentity,
-    handoffReply,
+    handoffReply: (s, t, k, o) => handoffReply(s, t, k, { brand: binding.brand, identity: IDENTITY_QUESTION.test(t), ...o }),
     departNoteForHandoff,
     failureReason: HANDOFF_REASON.failure,
     handoffFallback: runtime.legacy.handoffFallback,
@@ -836,6 +840,7 @@ async function finishTurn(
       saveSession(session);
       logSlowTurn(session.id, Date.now() - turnStart, { prefetchMs: modelStart - turnStart, prefetchTimes, modelMs, tag: turn.tag });
       if (configMode() === 'db') console.log(`[engine] 本轮完成（会话 ${convLabel(session.id)}）· ${turn.tag()}`);
+      if (ctx.turn.flags.replyShape) noteReplyShape(ctx.turn.flags.replyShape);
       const reply: AgentReply = { text: ctx.text, stage: session.stage };
       if (session.handedOver) reply.handoff = true;
       if (session.orderIds.length > ordersBefore) reply.orderId = session.orderIds[session.orderIds.length - 1];

@@ -84,11 +84,19 @@ assert.throws(
   },
 );
 
-// 5) 新增步骤本步不改文本（行为不变）
+// 5) 步骤体还没填的新增步骤不改文本（closing 在第 8 步已填，由 closing-words 自测与 q06-closing 用例守；claim_words 第 11 步已填，下面单独测）
 const ctx = { text: '原文', recordGuard() {} } as never;
-for (const id of ['claim_words', 'closing', 'shape_check', 'note_reply']) {
+for (const id of ['shape_check', 'note_reply']) {
   const verdict = await steps.get(id)!.run(ctx);
   assert.deepEqual(verdict, { action: 'pass' }, id);
 }
+const claimCtx = {
+  text: '原文',
+  brand: null,
+  session: { id: 'wm-pipeline', channel: 'wecom', stage: 'greeting', orderIds: [], messages: [] },
+  turn: { flags: {} },
+  recordGuard() {},
+} as never;
+assert.deepEqual(await steps.get('claim_words')!.run(claimCtx), { action: 'pass' }, 'claim_words');
 
 console.log('pipelines 自测：32 步顺序、新步骤锚点、shape_check 装载校验通过');

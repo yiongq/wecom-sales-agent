@@ -336,7 +336,7 @@ try {
       ],
     },
   };
-  customer.script.push(say('你好', true));
+  customer.script.push(say('行程怎么安排', true));
   sales.script.push({ content: '您好，订单已收到付款。' });
   report = await execute(seeded);
   const seed = report.runs[0]!.initial;
