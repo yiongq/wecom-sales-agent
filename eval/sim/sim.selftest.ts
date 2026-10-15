@@ -202,13 +202,50 @@ try {
     '{"say":"你好","done":false,"extra":1}',
     '{"say":"","done":false}',
   ]) {
-    customer.script.push({ content: bad }, { content: bad });
+    // 第一遍两次都坏，整遍重跑一次，重跑的两次也坏：才算 customer_protocol
+    customer.script.push({ content: bad }, { content: bad }, { content: bad }, { content: bad });
     report = await execute();
     check(
       '协议错误单列',
-      report.customer_protocol === 1 && report.summary[0]!.failed === 0 && report.runs[0]!.reasons.join() === 'customer_protocol',
+      report.customer_protocol === 1 &&
+        report.summary[0]!.failed === 0 &&
+        report.runs[0]!.reasons.join() === 'customer_protocol' &&
+        report.runs[0]!.rerun,
+    );
+    check(
+      '协议错误不计入分母、整个目标要改脚本',
+      report.summary[0]!.denominator === 0 && !report.summary[0]!.passK && report.summary[0]!.needsScriptFix,
     );
   }
+  // 第一遍协议失败、重跑一遍成功：照常计入
+  customer.script.push({ content: '坏 JSON' }, { content: '坏 JSON' }, say('你好', true));
+  sales.script.push({ content: '您好，您想去哪旅行？' });
+  report = await execute();
+  check(
+    '协议失败重跑一遍后通过',
+    report.runs[0]!.rerun &&
+      report.runs[0]!.status === 'passed' &&
+      report.customer_protocol === 0 &&
+      report.summary[0]!.denominator === 1 &&
+      report.summary[0]!.passK &&
+      !report.summary[0]!.needsScriptFix,
+  );
+  check('重跑的费用并进同一遍', report.runs[0]!.charges.length >= 3);
+  // k=2：一遍通过、一遍两次协议失败：分母 1、通过 1，pass^k 达标，但协议失败占 50%，标客户脚本要改
+  customer.script.push(say('你好', true), ...Array.from({ length: 4 }, () => ({ content: '坏 JSON' })));
+  sales.script.push({ content: '您好，您想去哪旅行？' });
+  report = await execute(goal(), 2);
+  check(
+    '协议失败不计入 pass^k 的分母，单列',
+    report.summary[0]!.passed === 1 &&
+      report.summary[0]!.denominator === 1 &&
+      report.summary[0]!.customer_protocol === 1 &&
+      report.summary[0]!.passK &&
+      report.summary[0]!.needsScriptFix,
+  );
+  // 超过 20% 才标：5 遍里 1 遍 = 20%，不标
+  const share = (protocol: number, k: number) => (protocol / k > 0.2 ? 1 : 0);
+  check('20% 的边界', share(1, 5) === 0 && share(1, 4) === 1);
   customer.script.push(say('你好', true), say('你好', true));
   sales.script.push({ content: '您好，您想去哪旅行？' }, { content: '您好，您想去哪旅行？' });
   report = await execute(goal(), 2);
@@ -231,6 +268,66 @@ try {
     '工具结果与轨迹',
     report.runs[0]!.turns[0]!.trace.turn.calls.some((c) => c.name === 'search_routes' && c.resultBytes > 0 && c.resultHead.length > 0),
   );
+  // customerScript：前几轮客户原话固定，不调客户模型；之后才交给客户模型
+  const requestsBefore = customer.requests.length;
+  customer.script.push(say('先这样', true));
+  sales.script.push({ content: '您好，您想去哪旅行？' }, { content: '不客气。' }, { content: '好的。' });
+  report = await execute({ ...goal(), customerScript: ['你好', '谢谢'] });
+  check(
+    'customerScript 固定前几轮，之后交给客户模型',
+    report.runs[0]!.turns.map((t) => t.customer.say).join('|') === '你好|谢谢|先这样' && customer.requests.length === requestsBefore + 1,
+  );
+  check(
+    '客户模型看得到固定的前几轮',
+    customer.requests.at(-1)!.messages.some((m) => m.role === 'assistant' && m.content === '你好') &&
+      customer.requests.at(-1)!.messages.some((m) => m.role === 'user' && m.content === '您好，您想去哪旅行？'),
+  );
+  // 脚本把 maxTurns 用完：一次客户模型也不调
+  const requestsBeforeFull = customer.requests.length;
+  sales.script.push({ content: '您好。' }, { content: '好的。' });
+  report = await execute({ ...goal(), maxTurns: 2, customerScript: ['你好', '谢谢'] });
+  check('脚本占满轮数，不调客户模型', customer.requests.length === requestsBeforeFull && report.runs[0]!.turns.length === 2);
+  // initial：订单走真实的订单状态，已付款的单是真的 paid
+  const seeded: SimGoal = {
+    ...goal([{ kind: 'order', count: 1, fields: { status: 'paid' } }]),
+    initial: {
+      orders: [{ routeId: 'r-sichuan-mid', travelers: 2, departDate: '2027-03-10', status: 'paid' }],
+      history: [
+        { role: 'customer', content: '我们要订四川那条' },
+        { role: 'ai', content: '好的，已为您生成订单' },
+      ],
+    },
+  };
+  customer.script.push(say('你好', true));
+  sales.script.push({ content: '您好，订单已收到付款。' });
+  report = await execute(seeded);
+  const seed = report.runs[0]!.initial;
+  check(
+    '种子订单是真的 paid，阶段随之为 paid',
+    seed.orders.length === 1 && seed.orders[0]!.status === 'paid' && seed.orders[0]!.paidAt !== undefined && seed.stage === 'paid',
+  );
+  check('种子订单金额由真实报价算出', seed.orders[0]!.totalPrice > 0 && seed.orders[0]!.routeTitle.includes('熊猫'));
+  check('种子订单参与 order 谓词', report.summary[0]!.passK);
+  check(
+    '种子对话进客户模型的视角',
+    customer.requests.at(-1)!.messages.some((m) => m.role === 'assistant' && m.content === '我们要订四川那条') &&
+      customer.requests.at(-1)!.messages.some((m) => m.role === 'user' && m.content === '好的，已为您生成订单'),
+  );
+  check(
+    '种子对话进会话',
+    sales.requests.at(-1)!.messages.some((m) => m.content === '我们要订四川那条') &&
+      sales.requests.at(-1)!.messages.some((m) => m.content === '好的，已为您生成订单'),
+  );
+  customer.script.push(say('你好', true));
+  sales.script.push({ content: '您好。' });
+  report = await execute({
+    ...goal([{ kind: 'order', count: 1, fields: { status: 'pending_payment' } }]),
+    initial: { orders: [{ routeId: 'r-sichuan-mid', travelers: 2, departDate: '2027-03-10', status: 'pending_payment' }] },
+  });
+  check('待付款种子订单与阶段缺省', report.summary[0]!.passK && report.runs[0]!.initial.stage === 'greeting');
+  const probe = runtime.deps.start();
+  check('每遍结束清掉种子订单', report.runs[0]!.initial.orders.length === 1 && probe.initial.orders.length === 0);
+  await runtime.deps.end(probe.id);
   // 最后一个销售回包到点：后续同轮工具往返不能再发 HTTP，新的一遍也不开始。
   const beforeSales = sales.requests.length;
   customer.script.push(say('你好'));
@@ -260,6 +357,10 @@ try {
   check('客户到点不发销售', calledSales === 0 && report.budget_stop === 1 && report.summary[0]!.unrun === 1);
   const token = { promptTokens: 100, completionTokens: 50, cachedTokens: 80, reasoningTokens: 40 };
   check('缓存按子集、思考不重复计价', Math.abs(runtime.deps.price('sim-fake-customer', token) - 0.00016) < 1e-12);
+  check(
+    '报告带汇总数',
+    typeof report.metrics.shape.total === 'number' && report.runs.every((r) => r.turnMetrics.length === r.turns.length),
+  );
   console.log(
     `SIM SELFTEST PASS: ${assertions} 项断言全通（全部谓词正反例 / 禁用短语 / 越权工具 / 结束协议 / JSON 一次重试 / 两边预算 / pass^k / 真实引擎观察口）`,
   );
