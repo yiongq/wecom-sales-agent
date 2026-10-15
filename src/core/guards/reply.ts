@@ -3,7 +3,7 @@ import type { GuardStep, ReplyGuardContext, StepVerdict } from '../pack-api.js';
 import { cleanText } from '../../shared/text.js';
 import { stripAdvisorPrefix } from '../../shared/conversation.js';
 import { FAILURE_WINDOW, failureThresholdReached, pushWindow, turnFailed, type TurnSignals } from '../../handoff/trigger-rules.js';
-import { stripMarkdown, trimDangling } from './text.js';
+import { IDENTITY_QUESTION, stripMarkdown, trimDangling } from './text.js';
 import { replyStep } from './reply-step.js';
 import { shapeCheckStep } from './shape.js';
 
@@ -69,7 +69,15 @@ export function coreReplySteps<Context extends ReplyGuardContext>(): GuardStep<C
     replyStep('advisor_prefix', 'dangling', [], [], dropAdvisorPrefix),
     replyStep('identity', 'advisor_prefix', [], [], (ctx) => {
       const before = ctx.text;
-      ctx.text = ctx.answerIdentity(ctx.inputText, ctx.text);
+      // 06 R16（customPromise 由旅游包的 custom_promise-a 写，不声明读取：别的包没有这个旗标）：这一轮转人工、客户又在问身份：开头一句话说完。后面的正文已经在讲转接或联系（模型的话，或稍后 custom_promise-b
+      // 要接上的定制转人工话术），开头只放一句身份承认；没讲才用合并句（承认 AI 加转接加联系方式）
+      if (ctx.handoffThisTurn() && IDENTITY_QUESTION.test(ctx.inputText) && !/AI|ai\b|人工智能/.test(ctx.text)) {
+        const talksTransfer = !!ctx.turn.flags.customPromise || /转接|转给|转交|顾问[^。！？\n]{0,8}(?:联系|回复)/.test(ctx.text);
+        const head = ctx.handoffReply(ctx.session, ctx.inputText, 'request', { identityOnly: talksTransfer });
+        ctx.text = !ctx.text.trim() ? head : talksTransfer ? `${head}\n\n${ctx.text}` : `${head}\n${ctx.text}`;
+      } else {
+        ctx.text = ctx.answerIdentity(ctx.inputText, ctx.text);
+      }
       ctx.recordGuard('identity', before, ctx.text, 'append');
     }),
     shapeCheckStep<Context>(),

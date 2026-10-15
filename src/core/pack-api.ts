@@ -502,7 +502,8 @@ export interface ReplyGuardContext extends GuardContext<GuardContextTypes & { fl
   extractProfile(session: Session, calls: GuardToolSource[], text: string): CustomerProfile;
   fallbackReply(stage: SalesStage): string;
   answerIdentity(text: string, reply: string): string;
-  handoffReply(session: Session, text: string, kind: 'complaint' | 'refund' | 'request'): string;
+  /** identityOnly：只要一句不带转接与联系方式的身份承认（后面的正文已经在讲转接，06 R16） */
+  handoffReply(session: Session, text: string, kind: 'complaint' | 'refund' | 'request', opts?: { identityOnly?: boolean }): string;
   departNoteForHandoff(session: Session): string | undefined;
   failureReason: string;
   handoffFallback: string;
@@ -622,7 +623,16 @@ export interface EnginePackHooks {
   isComplaint(text: string): boolean;
   isHandoffIntent(text: string): boolean;
   safetyNetKind(session: Session, text: string): 'complaint' | 'refund' | 'request';
-  handoffReply(session: Session, text: string, kind: 'complaint' | 'refund' | 'request'): string;
+  /**
+   * opts 由引擎带上（品牌快照、客户这句是不是在问身份），旧调用不传也行：
+   * 06 R16 的合并句与联系方式渲染按它选文字
+   */
+  handoffReply(
+    session: Session,
+    text: string,
+    kind: 'complaint' | 'refund' | 'request',
+    opts?: { brand?: BrandProfile | null; identity?: boolean; identityOnly?: boolean },
+  ): string;
   departNoteForHandoff(session: Session): string | undefined;
   fallbackReply(stage: SalesStage): string;
   hintsFor(name: string, ctx: TurnToolContext): ToolHints;

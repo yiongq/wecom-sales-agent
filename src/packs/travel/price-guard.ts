@@ -756,6 +756,47 @@ export function createTravelPriceGuard(sources: PriceGuardSources, thresholds: R
     return statements.join('').replace(/[^\p{L}\p{N}]/gu, '').length < 6;
   }
 
+  /**
+   * 06 R15：strandedAfterDrop 管不到的残句。仍以「这轮删过句子」为前提，豁免后面跟着链接的情形。删完以后：
+   *   · 正文以「·」项开头、前面没有引导句：项里还有线路名，只是开头被删了，补一句引导句（'lead'）；没有线路名就整条换兜底（'replace'）；
+   *   · 剩下「亮点」类条目，却没有一个线路名（'replace'）；
+   *   · 引导句以「：」结尾，后面不是线路名（'replace'）。
+   * strandedAfterDrop 的真假值不变（price-guard 自测逐字断言），这里是新分支
+   */
+  function strandedShape(before: string, after: string): 'replace' | 'lead' | null {
+    if (before === after || !after.trim() || /\/(?:pay|proposal)\//.test(after)) return null;
+    let routes: Route[] = [];
+    try {
+      routes = loadRoutes();
+    } catch (e) {
+      if (isConfigNotReadyError(e)) throw e; // 数据文件坏了另有告警；配置源没装载好照常抛
+    }
+    const names = routeNames(routes);
+    const named = (t: string): boolean => namedRoutes(t, names).length > 0;
+    // 删掉的得是在说线路或价钱的话：「说几点实在的：· 付款只走官方链接 · 签电子合同」删了一条编的资金说法，剩下的不是残句
+    if (!priceMentions(before).length && !named(before)) return null;
+    const bullet = /^[·•・]/;
+    const lines = after
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean);
+    // 开头被删了（原来第一行不是分点，现在是）才算；原文本来就是分点开头的不动
+    const firstBefore =
+      before
+        .split('\n')
+        .find((l) => l.trim())
+        ?.trim() ?? '';
+    if (bullet.test(lines[0]) && !bullet.test(firstBefore)) return named(after) ? 'lead' : 'replace';
+    if (lines.some((l) => bullet.test(l) && /亮点|特色|看点/.test(l)) && !named(after)) return 'replace';
+    for (const [i, l] of lines.entries()) {
+      // 后面跟着的是价钱的话（「报好了：」下面一行「每人 16,511 元」）不算悬空
+      if (/[：:]$/.test(l) && !(lines[i + 1] && (named(lines[i + 1]) || priceMentions(lines[i + 1]).length || /\d/.test(lines[i + 1])))) {
+        return 'replace';
+      }
+    }
+    return null;
+  }
+
   /** 仅供自测使用的内部函数出口 */
   const __priceGuardTest = {
     parseAmounts,
@@ -778,6 +819,7 @@ export function createTravelPriceGuard(sources: PriceGuardSources, thresholds: R
     saidBefore,
     dropSentences,
     strandedAfterDrop,
+    strandedShape,
     __priceGuardTest,
   };
 }
