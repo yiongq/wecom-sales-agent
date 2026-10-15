@@ -1,0 +1,64 @@
+{
+  "id": "qa-date-next-month",
+  "persona": "你是客户，两人，第一句话已说想去三亚、下个月出发，不给具体日期。对方追问就说「十一月中旬吧」。之后问「这个价格是哪天出发的价」。答复后结束，不下单。",
+  "maxTurns": 9,
+  "allowedTools": [
+    "search_routes",
+    "get_route_detail",
+    "search_hotels",
+    "create_quote",
+    "generate_proposal",
+    "create_order",
+    "handoff_to_human"
+  ],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "几号|哪天|具体.{0,4}(?:日期|哪天|几号)|出发日期|(?:11|十一)月.{0,6}(?:日|号)",
+      "scope": "any"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "按\\s*(?:11|十一)\\s*月\\s*(?:1|一)\\s*[日号]",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "节假日价|旺季价|平日价|周末价|儿童价|早鸟|团购|半价|名额紧张|名额有限|房源紧俏|(?:这条线|该线路|线路|名额|档期|房源|位置|房间|席位)[^。，\\n]{0,6}抢手|最低价",
+      "scope": "all",
+      "negationAware": true
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "产品库|线路库|系统里|查库|库里|工具返回",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "availability|budget|package|option",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:[\\u{1F300}-\\u{1FAFF}\\u2600-\\u27BF].*){2,}",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "更正一下|报错了|算错了|重新(?:算|报)了|刚才.{0,8}(?:说|报)(?:错|的不对)|之前.{0,6}(?:有误|不准)",
+      "scope": "all"
+    }
+  ],
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>", "【硬性要求】"],
+  "severity": "quality",
+  "covers": ["K"],
+  "customerScript": ["我们两个人想去三亚，下个月出发。"]
+}
