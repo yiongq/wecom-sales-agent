@@ -4,6 +4,8 @@ import type { PriceThresholds } from '../../core/pack-api.js';
 export const travelDateThresholds = {
   maxTravelers: 50,
   bookableYears: 3,
+  /** 06 R20：出发日期超过这么多个月的不出确定价（create_quote 返回 farFuture） */
+  maxDepartMonths: 12,
 } as const;
 
 // 04 第 9 步：金额识别、出处容差与定价/低海拔政策，默认值等于抽取前。

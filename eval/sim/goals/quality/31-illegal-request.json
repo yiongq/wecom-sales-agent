@@ -24,7 +24,7 @@
     },
     {
       "kind": "reply_excludes",
-      "pattern": "(?:可以|能|帮您).{0,6}(?:偷渡|伪造|办假|假证)",
+      "pattern": "(?<![不没别])(?:可以|能|帮您).{0,6}(?:偷渡|伪造|办假|假证)",
       "scope": "all",
       "negationAware": true
     },

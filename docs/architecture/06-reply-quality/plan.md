@@ -537,6 +537,38 @@ Claude 子 agent 实现，与第 16 步并行；协调者审查并提交。
   - 变异核对：把模板分支改回「在微信里」，`template-no-channel` 失败，点名 6 条文字。
   - `shape.selftest` 有三例：8 行代码生成列表不超限，9 行超限，模型写的 7 行超限。
 
+### 第 16 步 · R18–R20 话术与工具配套（2026-10-15）
+
+Claude 子 agent 实现，与 Open 4 并行；协调者审查、改了一处口径，变基到 #240 之后再提交。
+
+- **话术**：
+  - `data/sop.md` 的锁定节（stages、orders、capabilities）与可编辑节（tone、objections、wechat-style）照 R18 的表与 a–h 改。
+  - `templates.ts` 的三个锁定节模板由脚本从 `data/sop.md` 生成：先在旧 SOP 上逐字复现了旧模板，再用到新 SOP 上。
+  - `SOP_CONTRACT` 的 17 条原样保留。
+  - 协调者改了一处：wechat-style 的 emoji 口径改回「开场问候、成交祝贺这类情绪点可用，收尾一句与信息行零 emoji」。子 agent 原稿连成交也不许用，和【硬性要求】冲突；R18 只要求去掉收尾的 emoji。
+- **R20**：
+  - `create_quote` 出发日超出 `maxDepartMonths`（12）时返回 `farFuture: true` 和 `priceFrom`，不出确定价，也不写最近报价。按日历月数算而不按精确日期，是为了不让锁定的 V2c 在固定时钟下被误判成远期。`create_order` 同样拒绝远期。
+  - `search_routes` 的每条 `overBudget` 结果附 `cheapestOverall`，所指线路记入已见线路，价格护栏不删它的价。
+  - 两个字段进 `SOP_KNOWN_FIELDS`，后台话术页给了中文名。
+  - `generate_proposal` 对远期日期仍按日期算价：spec 只点名了 `create_quote`，这一步没改，记为已知缺口。
+- **出口兜底**（新文件 `quote-hedge.ts`，放在 `claim_words` 步骤体开头，单独记一条 `patch`）：报价轮删「按最终行程…微调」那半句；只剩「起价」的项目符号行整行删；「这是起价」照留。非报价轮不动；q4（:1280）开工时核过，不是报价轮。
+- **同步改**：
+  - R6 的 contextNote 行、R8 换线行、R13 的两句替换句改成定稿口径。
+  - `quote-final` 白名单清空。
+  - 契约检查的 `consistency` 默认开，发布、回滚、启动重渲染、导出都查。`SOP_CHECK_LABEL` 并入 `CONSISTENCY_CHECK_LABEL`，后台清单 8 项。
+- **新前缀**（此后的基准，到第 17 步前）：`PREFIX sha256 system=fab15319b77960b9e4dc5e398cd83a60d7ce2711eaa7c6b1a3b38d939e30fb95 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1`。tools 没变。`web`、`brand`、`brand-publish` 三个自测里写死的 system 哈希同步更新。
+- **第 18 步对比后加的一句**（owner 选「先调付款后闲聊」）：stages 锁定节的 paid 那句补上「说过一次就别再说：之后答酒店、退改这类细节时直接答，答不了就说『由顾问跟您确认』，不再带出确认书和服务群」，`templates.ts` 同步。上面的前缀是加了这句之后的值。
+- **启动重渲染不会被新检查拦**：线上 `sopHash` `55e5caa59580` 等于仓库改前的 `data/sop.md`，可见 demo 租户的话术没在后台改过。协调者用「新锁定节 + 改前的可编辑节」跑契约检查（`consistency` 默认开）：0 条违规。对照：往旧可编辑节塞一句「起价，按最终行程微调」，被 `quote-final` 拦下并点名报价模板。
+- **验**：
+  - `test:locked` 全绿，V2、V5 的「这是起价」还在。
+  - R20 的 v2 用例 4 条（`q06-tools`），两条主用例做过变异核对。
+  - 验收 12 第三项：在 tone 节写「报价时写『起价，按最终行程微调』」，发布被拦，违规码 `consistency`，点名 `fixed:quote.line.exact-date`。
+  - 一致性检查四条规则全过。console 构建、`check-console-dist`、`check-fonts` 通过。
+- **快照**：`eval/baselines/v2-06-step16.json`（831 条，多了 `q06-tools` 4 条）。相对 `v2-06-batch1.json`，既有用例 10 条有差异：
+  - 报价轮兜底 8 条：1772-02-01/02、1022 与其裁决克隆、2790（V2）、2854-01/02 与其裁决克隆。「（起价，按最终行程微调）」「· 起价，按最终行程微调」删掉，「这是起价，最终按行程微调。」变成「这是起价。」
+  - R13 替换句 2 条：`q06-claim-words-01`、`-06`。
+  - 变基到 #240 之后，文件与 PGlite 两条路径 831/831、0 处差异。
+
 ## 验收记录
 
 （第 14、15、18、19、20 步填。）

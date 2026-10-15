@@ -76,8 +76,10 @@ export const SOP_CONTRACT: readonly SopContractRule[] = Object.freeze([
 export const SOP_KNOWN_FIELDS: readonly string[] = Object.freeze([
   'altitudeNote',
   'bestSeason',
+  'cheapestOverall',
   'departDate',
   'destinationMiss',
+  'farFuture',
   'intensityNote',
   'maxBudgetPerPerson',
   'maxNightlyPrice',

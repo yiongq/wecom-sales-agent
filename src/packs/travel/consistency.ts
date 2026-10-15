@@ -104,8 +104,12 @@ export const SOP_REQUIRED_SENTENCES: readonly { id: string; text: string }[] = O
   { id: 'superseded-order', text: '之前那张单已作废、旧链接失效，按这张新的付款' },
   { id: 'kids-headcount', text: '这单按 2 位出行下的' },
   { id: 'holiday-which-day', text: '国庆具体哪天走？' },
-  { id: 'ack-expensive', text: '确实不便宜' },
-  { id: 'family-decision', text: '我先把这条线的详细行程发您，您跟家人对一下日期' },
+  // 第二批（06 第 16 步）定稿口径：政策、单订酒店、照片视频、换线旧单、自称已付
+  { id: 'policy-defer', text: '这块政策会变，由顾问按您的出行时间确认' },
+  { id: 'hotel-recommend-only', text: '酒店我可以推荐，要订请顾问确认房态' },
+  { id: 'media-by-advisor', text: '照片和视频我这边发不了，请顾问发给您' },
+  { id: 'old-order-hold', text: '之前那张单请先别付款，我请顾问帮您处理' },
+  { id: 'payment-pending', text: '款项到账后您会收到确认' },
 ]);
 
 // ---------------- 登记 ----------------
@@ -294,6 +298,7 @@ export function createTravelConsistency(world: (over: Partial<PackSources>) => T
         { id: 'pay.web', text: catalog.advisorPayNote(fixtureSession(MODE_CTX[1]!)) },
         { id: 'date.past', text: catalog.pastDateError('2000-01-01') ?? undefined },
         { id: 'date.far', text: catalog.pastDateError('2999-01-01') ?? undefined },
+        { id: 'quote.far-future', text: catalog.farFutureNote(`${year + 2}-06-01`) ?? undefined },
         { id: 'handoff', text: HANDOFF_NOTE },
       ];
       // create_order 的两条提示（复用、作废旧单）：换一份假订单存储，真走一遍工具

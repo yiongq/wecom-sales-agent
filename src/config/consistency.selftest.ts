@@ -158,22 +158,17 @@ check(
   const all = cons.quoteFinalConflicts(texts);
   const res = resolveConflicts(all, cons.QUOTE_FINAL_EXEMPTIONS);
   check('quote-final：白名单之外没有冲突', res.failing.length === 0, `\n    ${names(res.failing)}`);
+  check('quote-final：白名单已删，为空（第 16 步）', cons.QUOTE_FINAL_EXEMPTIONS.length === 0, JSON.stringify(cons.QUOTE_FINAL_EXEMPTIONS));
   check(
-    'quote-final：白名单只有 stages「quote」与 templates.ts 两处（第 16 步删除）',
-    cons.QUOTE_FINAL_EXEMPTIONS.map((e) => `${e.rule}@${e.where}`).join(',') === 'quote-final@sop:stages/quote,quote-final@templates.ts' &&
-      cons.QUOTE_FINAL_EXEMPTIONS.every((e) => /第 16 步删除/.test(e.note)),
-  );
-  check(
-    'quote-final：白名单的两处都真的命中（没命中就是过期了，要删）',
-    res.unusedExemptions.length === 0,
-    JSON.stringify(res.unusedExemptions),
-  );
-  check(
-    'quote-final：旧版与模板模式的 SOP 里，「微调」都只在 stages 的 quote 条',
+    'quote-final：旧版与模板模式的 SOP 里，任何位置都没有「按最终行程…微调」',
     ['legacy', 'template'].every((mode) => {
       const units = cons.splitSopUnits(mode === 'legacy' ? legacySop : templateSop);
-      return units.filter((u) => cons.QUOTE_HEDGE.test(u.text)).every((u) => u.where === 'sop:stages/quote');
+      return units.every((u) => !cons.QUOTE_HEDGE.test(u.text));
     }),
+  );
+  check(
+    'quote-final：templates.ts 的源码字面量里也没有',
+    templates.every((t) => !cons.QUOTE_HEDGE.test(t.text)),
   );
   // 白名单之外不许有任何豁免：同一位置的另一条规则、别的位置，都不被它放过
   check(
@@ -386,7 +381,7 @@ const SOP_VS_WORDLIST_ITEMS = (): ConsistencyText[] => {
   check('fixed-vs-guards：声明了管线里没有的步骤 → 自测点名', bad.length === 1 && bad[0]!.includes('no_such_step'), bad.join(';'));
 }
 
-// ---------------- 契约检查：写好了但没启用 ----------------
+// ---------------- 契约检查：consistency 默认开 ----------------
 {
   const spec = TRAVEL_SOP_SECTIONS;
   const toolNames = toolDefs.map((t) => t.function.name);
@@ -403,17 +398,14 @@ const SOP_VS_WORDLIST_ITEMS = (): ConsistencyText[] => {
   const edit = (key: string, extra: string) =>
     legacySop.map((s, i) => (s.key === key ? withBody(spec[i]!, `${sectionBody(s, spec[i]!)}\n${extra}`, i === spec.length - 1) : s));
   const draft = edit('tone', '- 报价要写成「起价，按最终行程微调」，总价 ¥1 不作数。');
+  check('契约：当前 data/sop.md 默认就是零 violation（没有白名单）', contract(legacySop).length === 0);
   check(
-    '契约：当前 data/sop.md 开着 consistency 也零 violation（锁定节的白名单生效）',
-    contract(legacySop, { consistency: true }).length === 0,
+    '契约：模板模式渲染出来的 SOP 也是零 consistency',
+    contract(templateSop, { consistency: true }).every((v) => v.code !== 'consistency'),
   );
+  const on = contract(draft).filter((v) => v.code === 'consistency');
   check(
-    '契约：默认不启用，草稿里写「按最终行程微调」也不拦（任何租户现在发布都不被它拦）',
-    contract(draft).every((v) => v.code !== 'consistency'),
-  );
-  const on = contract(draft, { consistency: true }).filter((v) => v.code === 'consistency');
-  check(
-    '契约：开着时拦下，违规码 consistency，落在 tone 节，点名规则和冲突的模板',
+    '契约：默认就拦（验收 12 第三项），违规码 consistency，落在 tone 节，点名规则和冲突的模板',
     on.length === 1 &&
       on[0]!.sectionKey === 'tone' &&
       on[0]!.match === '按最终行程微调' &&
@@ -421,9 +413,11 @@ const SOP_VS_WORDLIST_ITEMS = (): ConsistencyText[] => {
       on[0]!.detail.includes('总价'),
     JSON.stringify(on),
   );
-  const noPrice = contract(edit('tone', '- 报价后补一句：这是起价，按最终行程微调。'), { consistency: true }).filter(
-    (v) => v.code === 'consistency',
+  check(
+    '契约：只有显式传 false 才关',
+    contract(draft, { consistency: false }).every((v) => v.code !== 'consistency'),
   );
+  const noPrice = contract(edit('tone', '- 报价后补一句：这是起价，按最终行程微调。')).filter((v) => v.code === 'consistency');
   check(
     '契约：同段没有确定价说法时，点名代码里的报价模板',
     noPrice.length === 1 && noPrice[0]!.detail.includes(cons.QUOTE_TEMPLATE_ID),
@@ -437,6 +431,6 @@ if (failures.length) {
 }
 assert.ok(passed > 0);
 console.log(
-  `CONSISTENCY SELFTEST PASS: ${passed} 项断言全通（登记 / 四条规则：quote-final、sop-vs-wordlist、fixed-vs-guards、template-no-channel / 变异 / 契约 consistency 写好未启用）`,
+  `CONSISTENCY SELFTEST PASS: ${passed} 项断言全通（登记 / 四条规则：quote-final、sop-vs-wordlist、fixed-vs-guards、template-no-channel / 变异 / 契约 consistency 默认开）`,
 );
 process.exit(0);

@@ -10,18 +10,13 @@ export const QUOTE_DEFINITE = /总价|每人价|¥\s?\d[\d,]*/;
 /** quote-final 在代码模板里没有同段确定价说法时，点名的那条确定价模板 */
 export const QUOTE_TEMPLATE_ID = 'fixed:quote.line.exact-date';
 
-// ---------------- 有期限的白名单与待裁决 ----------------
+// ---------------- 白名单 ----------------
 
 /**
- * quote-final 的白名单，有期限：现在锁定节里就有「起价，按最终行程微调」，规则要等第二批（第 16 步）改掉这两处才能无豁免生效。
- * 只有这两处，白名单之外不许有任何豁免。第 16 步删除这个数组，并启用契约检查的 `consistency` 违规码。
+ * quote-final 的白名单：第二批（第 16 步）改掉锁定节 stages「quote」与 templates.ts 里的「按最终行程微调」之后删空，
+ * 现在没有任何豁免，也不许再加。
  */
-export const QUOTE_FINAL_EXEMPTIONS: readonly ConsistencyException[] = Object.freeze([
-  // 第 16 步删除：data/sop.md 与模板模式渲染出来的 SOP 里，stages「quote」那一条
-  { rule: 'quote-final', where: 'sop:stages/quote', note: '第 16 步删除：锁定节 stages 的 quote 条里的「按最终行程微调」' },
-  // 第 16 步删除：templates.ts（模板模式的锁定节模板）里的同一句
-  { rule: 'quote-final', where: 'templates.ts', note: '第 16 步删除：templates.ts 锁定节模板里的「按最终行程微调」' },
-]);
+export const QUOTE_FINAL_EXEMPTIONS: readonly ConsistencyException[] = Object.freeze([]);
 
 // ---------------- SOP 切成可定位的段 ----------------
 
@@ -72,7 +67,7 @@ export function splitSopUnits(sections: readonly { key: string; text: string }[]
   return out;
 }
 
-// ---------------- 契约检查（第 16 步才接进发布路径） ----------------
+// ---------------- 契约检查（发布、回滚、启动重渲染都查） ----------------
 
 export interface SopConsistencyViolation {
   sectionKey: string;
@@ -81,8 +76,8 @@ export interface SopConsistencyViolation {
 }
 
 /**
- * 一份 SOP 里和代码模板矛盾的说法：现在只有 quote-final。白名单里的位置不算。
- * 注意：这个函数写好了但没有接进发布路径（checkSopContract 的 consistency 开关默认关）。
+ * 一份 SOP 里和代码模板矛盾的说法：现在只有 quote-final，没有豁免。
+ * checkSopContract 默认调它（违规码 consistency）：发布、回滚、启动重渲染、导出都查。
  */
 export function sopConsistencyViolations(sections: readonly { key: string; text: string }[]): SopConsistencyViolation[] {
   const conflicts = hedgeConflicts({

@@ -7,6 +7,7 @@ import { convLabel, logQuote, cleanText, replyStep, type GuardStep, type ReplyGu
 import { CUSTOM_PROMISE } from './itinerary.js';
 import { noteReply } from './reply-notes.js';
 import { rewriteClaimWords } from './claim-words.js';
+import { dropQuoteHedge, isQuoteRound } from './quote-hedge.js';
 import type { createTravelTurnHooks } from './turn.js';
 import type { createTravelPriceRules } from './price-rules.js';
 import type { TravelPriceGuard } from './price-guard.js';
@@ -432,6 +433,16 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
     }),
     // 06 R13：越权说法词表。只按小句删或换，含 /pay/、/proposal/ 链接的句子整句不动；PRICE_GUARD=0 时同价格护栏一起关
     replyStep('claim_words', 'unbacked_claims', ['customPromise'], [], (ctx) => {
+      // 06 R19：报价轮里删掉模型照旧写的「按最终行程微调」那半句（「这是起价」照留）；非报价轮一个字不动。
+      // 报价是工具算的确定价，这半句让价格不作数。和下面的词表是两件事，所以单独记一条
+      if (isQuoteRound(ctx.toolSources ?? [])) {
+        const unhedged = dropQuoteHedge(ctx.text);
+        if (unhedged !== ctx.text) {
+          const before = ctx.text;
+          ctx.text = unhedged;
+          ctx.recordGuard('claim_words', before, ctx.text, 'patch');
+        }
+      }
       if (process.env.PRICE_GUARD === '0') return;
       const { session } = ctx;
       let routes: import('../../core/pack-api.js').Route[] = [];

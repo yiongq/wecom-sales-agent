@@ -15,6 +15,7 @@ import {
 } from '../../../core/pack-api.js';
 import { latestBookableDate } from '../dates.js';
 import { travelDateThresholds, travelPriceThresholds, travelSearchThresholds } from '../thresholds.js';
+import { cheapestOverall } from '../claim-words.js';
 
 export interface SearchRoutesArgs {
   query?: string;
@@ -846,6 +847,7 @@ export function createTravelCatalog(sources: TravelToolSources) {
     // 「库里还有一条…」），所以措辞只用对客户也说得出口的（「我们现有的线路」「现成线路」），不写「库里」
     if (args.maxBudgetPerPerson) {
       const cap = Number(args.maxBudgetPerPerson);
+      const floorRoute = cheapestOverall(all);
       for (const r of out) {
         // 从全库补进来的那条可能就在预算内（见上），它不带超预算标记；预算内补进来的客群线（见上）超了，一样带
         if (r.priceFrom <= cap) continue;
@@ -855,6 +857,8 @@ export function createTravelCatalog(sources: TravelToolSources) {
         const over = Math.round((gap / cap) * 100);
         const row = r as Record<string, unknown>;
         row.gapPerPerson = gap;
+        // 06 R20：全库最低起价那一条，嫌贵、预算低于所有线路时照实说「我们最实惠的一条是…」，不另举目的地
+        if (floorRoute) row.cheapestOverall = { id: floorRoute.id, title: floorRoute.title, priceFrom: floorRoute.priceFrom };
         row.overBudget =
           `这条每人 ${r.priceFrom} 元，比客户说的每人 ${cap} 元高约 ${over}%（每人多 ${gap} 元）。` +
           '**不要说「没有合适的线路」**——我们现有的线路就是这些。照实讲超了多少，只用这里给的每人价、百分比和每人差额，' +
@@ -1054,6 +1058,23 @@ export function createTravelCatalog(sources: TravelToolSources) {
   }
 
   /**
+   * 06 R20：出发日期超过包阈值 maxDepartMonths 个月时的说明，没超返回 null。create_quote 据此返回 farFuture、不出确定价，
+   * create_order 据此不下单。参考价只用线路的 priceFrom（价格护栏认本会话出现过的线路的起价）。
+   * 按日历月数：今天所在月往后数 maxDepartMonths 个月的那个月，整月都算在内（今天 10 月 2 日，明年 10 月 8 日还在范围内）。
+   */
+  function farFutureNote(departDate: string): string | null {
+    const months = travelDateThresholds.maxDepartMonths;
+    const monthIndex = (iso: string): number => Number(iso.slice(0, 4)) * 12 + Number(iso.slice(5, 7));
+    if (monthIndex(departDate) - monthIndex(todayIso()) <= months) return null;
+    return (
+      `departDate=${departDate} 距今超过 ${months} 个月：这么远的价格到时可能有变，这里不出确定价，也不下单。` +
+      '照实告诉客户：目前只受理 ' +
+      `${months} 个月以内出发的订单；这条线路现在的参考价是 priceFrom（每人起价），到时可能有变，具体由顾问到时跟您确认。` +
+      '不要把参考价说成报价，不要调 create_order。'
+    );
+  }
+
+  /**
    * handoff_to_human 回给模型的话。转人工后引擎让 AI 彻底沉默（engine.ts handleMessageInner），模型却不知道：
    * 实测转完还写「想听听别的线路随时告诉我，我可以马上帮您查～」，客户真回一句就没人应了。
    */
@@ -1102,5 +1123,6 @@ export function createTravelCatalog(sources: TravelToolSources) {
     advisorPayNote,
     parseTravelers,
     pastDateError,
+    farFutureNote,
   };
 }

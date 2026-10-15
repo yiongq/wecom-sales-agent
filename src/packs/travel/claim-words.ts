@@ -11,7 +11,7 @@ import type { Order, Route } from '../../core/pack-api.js';
 import { sentenceUnits } from '../../core/pack-api.js';
 import { paymentPendingReply, type ContactMode } from './contact-words.js';
 
-/** 全库最低起价的那条线（产品库快照由调用方传入）。第 16 步的 cheapestOverall 复用它。 */
+/** 全库最低起价的那条线（产品库快照由调用方传入）。search_routes 的 cheapestOverall（06 R20）复用它。 */
 export function cheapestOverall(routes: readonly Route[]): Route | undefined {
   let best: Route | undefined;
   for (const r of routes) if (typeof r.priceFrom === 'number' && r.priceFrom > 0 && (!best || r.priceFrom < best.priceFrom)) best = r;
@@ -39,7 +39,7 @@ export interface ClaimWordsDeps {
 
 // ---------------- 固定话术 ----------------
 
-const POLICY_REPLY = '这块政策会变，由顾问按您的出行时间跟您确认。';
+const POLICY_REPLY = '这块政策会变，由顾问按您的出行时间确认。';
 const VISA_REPLY = '签证怎么办、要多久，由顾问跟您确认。';
 /** 与 price-rules 的专票句同一句 */
 const INVOICE_REPLY = '发票（含专票）怎么开，由顾问跟您确认。';
@@ -151,7 +151,7 @@ function buildRules(): Rule[] {
       },
       replace: (ctx) => {
         const r = cheapestOverall(ctx.routes);
-        return r ? `我们这边最实惠的一条是《${r.title}》，人均 ${ctx.yuan(r.priceFrom)} 起。` : undefined;
+        return r ? `我们这边最实惠的一条是《${r.title}》，人均 ${ctx.yuan(r.priceFrom)} 起。要不要请顾问帮您看看？` : undefined;
       },
     },
     // ---- D 安全与手续断言（正向词表）----
