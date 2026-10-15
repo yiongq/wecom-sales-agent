@@ -85,7 +85,7 @@ const { resolveProfile, capFlags, BASELINE_FLAG_NAMES, PROFILE_ENV_NAMES, Profil
 );
 const { channelCustomerLabel } = await withoutTenantScope(() => import('../shared/conversation.js'));
 const WEB_NOTE = '客户正在网页上咨询，不在微信里；说到顾问跟进时，请说顾问会在这个页面里回复您，不要说在微信上联系。';
-const SYSTEM_SHA = 'dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60';
+const SYSTEM_SHA = 'ee39197645430537351a585092f287600e5674f666bac371c18f152c183cbaad';
 const TOOLS_SHA = '64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1';
 const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 // 下面是开工提交 5b697c2 的原文；仅随机订单凭据替换成 <ORDER>，其余字节原样保留。
@@ -238,7 +238,8 @@ async function run(tag: string, s: Session, text: string, steps: Step[]): Promis
   };
   // 06 R5–R7 起，contextNote 在有订单、客户自称已付、问到敏感地区或证件手续、说过提醒或推荐过线路时多几行。
   // 开工原文早于它们：比对前剥掉这几类行，另核订单行不带金额
-  const R5_LINE = /^(?:订单: .*|已付款的单：.*|客户说已付款，.*|客户问到敏感地区或证件手续：.*|已对客户说过：.*|本会话推荐过：.*)$/;
+  const R5_LINE =
+    /^(?:订单: .*|已付款的单：.*|客户说已付款，.*|客户问到敏感地区、?(?:安全)?或证件手续：.*|已对客户说过：.*|本会话推荐过：.*)$/;
   const r5Lines = got.context.flatMap((c) => c.split('\n').filter((line) => R5_LINE.test(line)));
   assert.ok(
     r5Lines.every((line) => !/¥|\d+\s*元/.test(line)),

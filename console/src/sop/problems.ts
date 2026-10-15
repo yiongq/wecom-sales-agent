@@ -4,7 +4,7 @@
 // - 点了去哪：phrase_forbidden、unknown_tool、unknown_field 在那一节的正文里选中 match；structure、locked_changed、
 //   phrase_missing 打开那一节；over_budget 去额度条。
 // - 怎么说：说明按 code、match 由前端生成（服务端的 detail 只进技术详情）。unknown_* 的说明就是编辑器里的行内提醒；
-//   consistency（R21，第 16 步启用）同 phrase_forbidden：选中 match。其余四类写在中栏编辑卡片的上方（这一节的问题）；over_budget 写在清单的那一项上。
+//   consistency（R21，第 16 步起启用）同 phrase_forbidden：选中 match。其余四类写在中栏编辑卡片的上方（这一节的问题）；over_budget 写在清单的那一项上。
 // - 「改成…」的候选：只在行业包的词汇里找，工具名找 vocabulary.tools，字段名找 sopFields，编辑距离 ≤2 里最近的一个。
 import type { ContractViolation, ViolationCode } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';

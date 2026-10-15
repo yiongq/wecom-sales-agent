@@ -199,7 +199,7 @@ eq(parseSpokenAmount('两万五'), 25000, '金额 两万五');
 eq(parseSpokenAmount('1.5万'), 15000, '金额 1.5万');
 {
   const out = run('我帮您找找 5000 以内能玩得好的线路？');
-  assert.ok(out.includes('我们这边最实惠的一条是《贵州 荔波小七孔 5 日》，人均 ¥5,800 起。'), out);
+  assert.ok(out.includes('我们这边最实惠的一条是《贵州 荔波小七孔 5 日》，人均 ¥5,800 起。要不要请顾问帮您看看？'), out);
   assert.ok(!out.includes('5000'), out);
   passed++;
 }
@@ -268,7 +268,7 @@ for (const t of [
   '机票代订的事由顾问跟您确认。',
   '顾问会在微信上联系您。',
   '款项到账后您会收到确认，顾问核实后会在微信上联系您。',
-  '这块政策会变，由顾问按您的出行时间跟您确认。',
+  '这块政策会变，由顾问按您的出行时间确认。',
   '签证怎么办、要多久，由顾问跟您确认。',
   '酒店我可以推荐，要订请顾问确认房态。',
   '照片和视频我这边发不了，请顾问发给您。',
@@ -292,7 +292,7 @@ const replies = [
   paymentPendingReply(legacy),
   paymentPendingReply({ channel: 'web', templateMode: false }),
   paymentPendingReply({ channel: 'wecom', templateMode: true }),
-  '我们这边最实惠的一条是《贵州 荔波小七孔 5 日》，人均 ¥5,800 起。',
+  '我们这边最实惠的一条是《贵州 荔波小七孔 5 日》，人均 ¥5,800 起。要不要请顾问帮您看看？',
 ];
 for (const r of replies) {
   const out = run(r, { orders: other, focusRouteId: 'r-c' });

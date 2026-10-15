@@ -546,7 +546,7 @@ const sop = sopTodo(SOP, CHECK, TRAVEL);
 eq('话术草稿：改了哪几节、各差多少字', sop?.title, '改了2节：话术原则（+44字）、异议处理（+9字）');
 eq('话术草稿：问题用 danger，后跟发布前检查', sop?.context, [
   { text: '1个问题：话术原则里有个工具名写错了', tone: 'danger' },
-  { text: '发布前检查6/7通过' },
+  { text: '发布前检查7/8通过' },
 ]);
 eq('话术草稿：检查没取到时只写第一行', sopTodo(SOP, undefined, TRAVEL)?.context, []);
 eq('没有草稿就没有这一行', sopTodo({ ...SOP, draft: null }, CHECK, TRAVEL), null);
@@ -576,7 +576,7 @@ eq(
   '话术草稿：两个问题写「等」，检查通过项按问题的种类数算',
   sopTodo(SOP, { ...CHECK, violations: [violation('phrase_forbidden', 'tone'), violation('phrase_forbidden', 'objections')] }, TRAVEL)
     ?.context,
-  [{ text: '2个问题：话术原则里有不能出现的话等', tone: 'danger' }, { text: '发布前检查6/7通过' }],
+  [{ text: '2个问题：话术原则里有不能出现的话等', tone: 'danger' }, { text: '发布前检查7/8通过' }],
 );
 {
   const codes = [
@@ -1185,7 +1185,7 @@ const member = (role: Role, pack = TRAVEL): Viewer => ({ kind: 'member', me: me(
     '原因：已付款客户要退款·等了40分钟',
     '原因：客户要找顾问·等了26分钟',
     '原因：客户投诉价格太贵·等了8分钟',
-    '1个问题：话术原则里有个工具名写错了·发布前检查6/7通过',
+    '1个问题：话术原则里有个工具名写错了·发布前检查7/8通过',
     '小林更新于13:40·必须项7/7已过·建议1条没做：体力强度没填（不拦上架）',
     '小林更新于11:20·青城山六善酒店、成都锦江宾馆、大研安缦等6条',
   ]);

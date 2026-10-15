@@ -304,7 +304,7 @@ export function sopProblemText(v: ContractViolation, pack: IndustryPack, sop: Pi
 }
 
 /**
- * 话术草稿这一行：「改了2节：话术原则（+44字）、异议处理（+9字）」；上下文是检查的问题（danger）和「发布前检查6/7通过」。
+ * 话术草稿这一行：「改了2节：话术原则（+44字）、异议处理（+9字）」；上下文是检查的问题（danger）和「发布前检查7/8通过」。
  * 不写保存时间：接口里没有草稿的最后保存时间（设计系统 §10.0 修正 8，spec 开放问题 6）。check 没取到时只写第一行
  */
 export function sopTodo(sop: SopOverview, check: DraftCheck | undefined, pack: IndustryPack): TodoRow | null {

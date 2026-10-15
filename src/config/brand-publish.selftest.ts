@@ -99,7 +99,7 @@ async function transition(before: BrandProfile | null, after: BrandProfile | nul
   await config.initConfig(deps);
   check(() => assert.equal(config.currentSop().versionNo, next.versionNo));
   if (!edited && before === shanhaiBrand && after === null) {
-    check(() => assert.equal(next.promptHash, 'dd2c10ee4d4205c1938f7ebdd3a4258490828a146a30c9931c33e35872ffdd60'));
+    check(() => assert.equal(next.promptHash, 'ee39197645430537351a585092f287600e5674f666bac371c18f152c183cbaad'));
   }
   // 待生效配置再次改变；发布与跨品牌回滚继续使用启动捕获的镜像和品牌。
   await t.pg.exec('RESET ROLE');

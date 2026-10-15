@@ -1817,6 +1817,8 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     ['objections', '看结果里的 destinationMissing。', 'unknown_field'],
     ['wechat-style', '正文\n## 新节\n多出来的一节', 'structure'],
     ['tone', '多'.repeat(5000), 'over_budget'],
+    // 06 验收 12 第三项：可编辑节写「起价，按最终行程微调」，后台发布被拦，违规码 consistency，点名冲突的模板
+    ['tone', '- 报价时写「起价，按最终行程微调」。', 'consistency'],
   ];
   for (const [key, extra, code] of bad) {
     const cur = cfg.currentSop();
@@ -1831,6 +1833,16 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
       checked.violations.some((v) => v.code === code),
       checked.violations.map((v) => v.code).join(','),
     );
+    if (code === 'consistency') {
+      const hit = checked.violations.find((v) => v.code === 'consistency');
+      check(
+        '闸：consistency 落在 tone 节，点名规则 quote-final 和冲突的报价模板',
+        hit?.sectionKey === 'tone' &&
+          !!hit.detail.startsWith('[quote-final] sop:tone/') &&
+          hit.detail.includes('fixed:quote.line.exact-date'),
+        JSON.stringify(hit),
+      );
+    }
     check(
       `闸：这份草稿发布 → SopContractError，已发布版本与缓存不变（${code}）`,
       (await errName(sopApi.publishSopDraft(ctx, { rev: d.rev, changeNote: '想发布' }))) === 'SopContractError' &&

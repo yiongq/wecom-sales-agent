@@ -625,10 +625,10 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
           `要说就说「${paymentPendingReply({ channel: session.channel, templateMode: !!brand })}」`,
       );
     }
-    // 06 R6：敏感地区与证件手续的口径，只复述 SOP 现有规则
+    // 06 R6：敏感地区与证件手续的口径（第二批定稿，与 SOP capabilities 节、词表的替换句同一说法）
     if (SENSITIVE_ASK.test(text)) {
       lines.push(
-        '客户问到敏感地区或证件手续：政策会变，说「由顾问按您的出行时间确认」；通行证只照线路的「含 / 不含」说；' +
+        '客户问到敏感地区、安全或证件手续：统一说「这块政策会变，由顾问按您的出行时间确认」，不转人工；通行证只照线路的「含 / 不含」说；' +
           '不给签证时长和费用；不说「正常开放」「不用办手续」「会协助办好」「身体负担小」',
       );
     }
@@ -637,7 +637,8 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     if (sw) {
       lines.push(
         `客户这轮问到${sw.dest}；会话里还有${sw.old.join('、')}的待付款订单，它不会因为聊${sw.dest}而自动作废：照实回答${sw.dest}；` +
-          '说到那张单，就照「订单」一行说，不说「不冲突」「自动失效」',
+          '说到那张单，就照「订单」一行说：旧单仍然有效，「之前那张单请先别付款，我请顾问帮您处理」，不说「不冲突」「自动失效」，继续聊' +
+          sw.dest,
       );
     }
     // 06 R7：已对客户说过的提醒与本会话推荐过的线路。没有记录时不加

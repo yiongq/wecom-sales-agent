@@ -317,8 +317,10 @@ export const travel: IndustryPack = {
     sopFields: {
       altitudeNote: '海拔提示',
       bestSeason: '最佳季节',
+      cheapestOverall: '最低起价',
       departDate: '出发日期',
       destinationMiss: '没有的目的地',
+      farFuture: '超出可订期',
       intensityNote: '强度提示',
       maxBudgetPerPerson: '每人预算上限',
       maxNightlyPrice: '每晚预算上限',

@@ -1,0 +1,198 @@
+[
+  {
+    "version": 2,
+    "id": "q06-tools-far-future-01",
+    "desc": "R20 远期预订：出发日期超过 12 个月，create_quote 返回 farFuture、不出确定价、不写最近报价；下一轮的会话状态里没有「最近报价」，客户说订也不建单",
+    "tags": ["q06", "tools"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "我们计划2028年1月去丽江大理，两个人，报个价吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2028-01-15"
+                }
+              }
+            ]
+          },
+          {
+            "content": "2028 年 1 月离现在超过 12 个月了，暂时给不了确定的报价。这条线路现在是每人 16800 起，到时可能有变，具体由顾问到时跟您确认。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"],
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["超过 12 个月", "每人 16800 起", "到时可能有变"],
+          "replyExcludes": ["总价", "起价，按最终行程微调"]
+        }
+      },
+      {
+        "say": "好的，就按这个订吧",
+        "script": [
+          {
+            "content": "这个出发日期比较远，订单这边先不下，到时请顾问跟您确认～"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "orders": {
+            "count": 0
+          },
+          "contextExcludes": ["最近报价"],
+          "replyExcludes": ["/pay/"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-tools-far-future-02",
+    "desc": "R20 对照：同一天按 12 个月以内的日期（2027 年 10 月）照常出确定价，不是 farFuture",
+    "tags": ["q06", "tools"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "明年10月5号去丽江大理，两个人，报个价吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-10-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "2027 年 10 月 5 日出发，每人 18480 元，2 位总价 36960 元（10 月为最佳出行季，价格上浮 10%）。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_quote"],
+          "replyMatches": ["每人 18480 元", "总价 36960 元"]
+        }
+      },
+      {
+        "say": "好的，就按这个订吧",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2027-10-05"
+                }
+              }
+            ]
+          },
+          {
+            "content": "订单建好了，您点这里付款。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_order"],
+          "orders": {
+            "count": 1
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-tools-cheapest-overall-01",
+    "desc": "R20 低预算：search_routes 的 overBudget 结果附 cheapestOverall（全库最低起价），模型照实说最实惠的一条和人均起价，价格护栏认得这个起价（没有它，12,800 会被当成编的价换掉）",
+    "tags": ["q06", "tools"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想去云南玩，两个人，预算人均5000",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "云南",
+                  "maxBudgetPerPerson": 5000
+                }
+              }
+            ]
+          },
+          {
+            "content": "云南的线路都超出您说的每人 5000 了。我们这边最实惠的一条，人均 ¥12,800 起。要不要请顾问帮您看看？"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes"],
+          "replyMatches": ["最实惠的一条，人均 ¥12,800 起", "要不要请顾问帮您看看？"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-tools-cheapest-overall-02",
+    "desc": "R20 对照：预算够得着时结果不带 overBudget，也不带 cheapestOverall；客户没说预算不提预算",
+    "tags": ["q06", "tools"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想去云南玩，两个人，预算人均2万",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "云南",
+                  "maxBudgetPerPerson": 20000
+                }
+              }
+            ]
+          },
+          {
+            "content": "云南这边有一条丽江大理 6 日，每人 16800 起，您大概几号出发？"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes"],
+          "replyMatches": ["每人 16800 起"],
+          "replyExcludes": ["最实惠"]
+        }
+      }
+    ]
+  }
+]

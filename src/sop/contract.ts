@@ -46,9 +46,8 @@ export function checkSopContract(input: {
   brand?: BrandProfile | null;
   hardRequirements?: string;
   /**
-   * 06 R21：检查话术与包登记的对客固定文字有没有互相矛盾，违规码 `consistency`。
-   * 写好了但还没启用：现在没有任何调用方传 true，所以任何租户的发布都不会被它拦。第 16 步删 quote-final 的白名单后，
-   * 由发布、回滚、启动重渲染的调用方统一传 true（或把默认值改成开）。
+   * 06 R21：检查话术与包登记的对客固定文字有没有互相矛盾，违规码 `consistency`。默认开（发布、回滚、启动重渲染、导出都查）；
+   * 只有自测要单独看别的检查项时才传 false。
    */
   consistency?: boolean;
 }): ContractViolation[] {
@@ -143,8 +142,8 @@ export function checkSopContract(input: {
     }
   }
 
-  // 话术与固定文字不矛盾（R21，默认关）：点名冲突的另一方（代码里的报价模板）
-  if (input.consistency === true) {
+  // 话术与固定文字不矛盾（R21，默认开）：点名冲突的另一方（代码里的报价模板）
+  if (input.consistency !== false) {
     for (const v of sopConsistencyViolations(input.sections)) add('consistency', v.sectionKey, v.detail, v.match);
   }
 

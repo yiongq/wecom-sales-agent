@@ -200,8 +200,8 @@ export type ViolationCode =
   | 'unknown_tool' // snake_case 标识符不是现有工具名
   | 'unknown_field' // camelCase 标识符不在 knownFields 里
   | 'over_budget' // 可编辑节正文总长 > 基线 × BUDGET_RATIO
-  // 06 R21：这一节的话和包里登记的对客固定文字互相矛盾（如「起价，按最终行程微调」对「总价」）。第 16 步才启用，
-  // 此前 checkSopContract 不产出这一类，任何租户的发布都不会被它拦
+  // 06 R21：这一节的话和包里登记的对客固定文字互相矛盾（如「起价，按最终行程微调」对「总价」）。第 16 步起启用：
+  // 发布、回滚、启动重渲染都查
   | 'consistency';
 
 export interface ContractViolation {
