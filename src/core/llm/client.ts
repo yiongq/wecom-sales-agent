@@ -252,11 +252,19 @@ class LlmHttpError extends Error {
   constructor(
     readonly status: number,
     readonly model: string,
-    detail: string,
+    readonly detail: string,
   ) {
     const hint = status === 401 || status === 403 ? '（API key 无效或无权限，请检查 LLM_API_KEY）' : '';
     super(`LLM 请求失败 ${status}${hint} model=${model}: ${detail.slice(0, 300)}`);
   }
+}
+
+/**
+ * 供应商的内容审核拦了这次请求（智谱 400、code 1301）。同一句话重试也照样被拦，
+ * 引擎要当场回一句固定话术，不能抛给渠道去重试（06 第 14 步验收：客户收不到任何回复）。
+ */
+export function isContentFiltered(e: unknown): boolean {
+  return e instanceof LlmHttpError && e.status === 400 && /"code"\s*:\s*"?1301\b/.test(e.detail);
 }
 
 /**
@@ -881,5 +889,5 @@ async function realChatOnce(opts: ChatOptions, trace: CallTrace[] = []): Promise
 /** 仅供自测：模型调用失败的分类（02 spec 的 LlmErrorKind） */
 export const __llmTest = {
   llmErrorKind,
-  httpError: (status: number): Error => new LlmHttpError(status, 'selftest', ''),
+  httpError: (status: number, detail = ''): Error => new LlmHttpError(status, 'selftest', detail),
 };

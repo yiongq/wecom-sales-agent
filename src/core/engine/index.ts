@@ -18,7 +18,7 @@ import {
   queueJobs,
   saveSession,
 } from '../../store.js';
-import { chat } from '../llm/client.js';
+import { chat, isContentFiltered } from '../llm/client.js';
 import type { PrefetchedCall } from '../llm/types.js';
 import { createToolRegistry } from '../tools/registry.js';
 import type {
@@ -317,6 +317,15 @@ async function handleMessageInner(
     model = await callModel(state, turnContext, tools.runTool);
   } catch (error) {
     if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent())) return state.unsentTakenOver();
+    // 供应商内容审核拦截：重试也是同样结果，回包里的离题话术兜住，不抛给渠道（06 第 14 步验收）
+    if (isContentFiltered(error)) {
+      console.warn(`[engine] 模型供应商的内容审核拦下了这一轮，已回固定话术（会话 ${convLabel(sessionId)}）`);
+      const reply = cleanText(brandTexts(runtime, state.binding.brand).offTopicReply);
+      const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+      session.messages.push(msg);
+      saveSession(session);
+      return done('deterministic', { text: reply, stage: session.stage }, msg);
+    }
     throw error;
   }
   if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent())) return state.unsentTakenOver();
