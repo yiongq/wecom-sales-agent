@@ -19,7 +19,13 @@ export function brandCase(c: CaseV2, name: string): CaseV2 {
     turns: c.turns.map((t) => ({
       ...t,
       script: t.script?.map((s) => ({ ...s, ...(s.content === undefined ? {} : { content: text(s.content) }) })),
-      expect: { ...t.expect, replyMatches: t.expect.replyMatches?.map(text), replyExcludes: t.expect.replyExcludes?.map(text) },
+      expect: {
+        ...t.expect,
+        replyMatches: t.expect.replyMatches?.map(text),
+        replyExcludes: t.expect.replyExcludes?.map(text),
+        contextMatches: t.expect.contextMatches?.map(text),
+        contextExcludes: t.expect.contextExcludes?.map(text),
+      },
     })),
   };
 }

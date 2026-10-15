@@ -139,6 +139,10 @@ export interface Session {
    * 之后 AI 不再应答，客户问「那你推荐的那个多少钱」没人理（见 engine.ts unwarrantedHandoff）。
    */
   missedDestinations?: { place: string; at: number }[];
+  /** 06 R7：已对客户说过的提醒，值是轮次号（旅游字段，进 resetSession） */
+  reminders?: { altitude?: number; elderAge?: number; proposalSent?: number; paidNext?: number };
+  /** 06 R7：本会话推荐过的线路，最多 5 条，去重（旅游字段，进 resetSession） */
+  recommendedRoutes?: { id: string; title: string }[];
   /** 本次转人工的记录（R9）：交还、重置时清 */
   handoff?: HandoffRecord;
   /** 第一次转人工的时间，永不清 */

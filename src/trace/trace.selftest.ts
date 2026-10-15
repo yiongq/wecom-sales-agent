@@ -118,7 +118,7 @@ function check(name: string, cond: boolean, detail = ''): void {
   } else fails.push(`${name}${detail ? `：${detail}` : ''}`);
 }
 const json = (v: unknown): string => JSON.stringify(v);
-// 04 开工表的 28 个执行位置；中止时只允许这个序列的前缀。
+// 04 开工表的 28 个执行位置加 06 第 1 步的四个放行步骤（共 32 个）；中止时只允许这个序列的前缀。
 const replyStepIds = [
   'pre_clean',
   'takeover_check:pre',
@@ -135,6 +135,7 @@ const replyStepIds = [
   'injection',
   'encyclopedia',
   'unbacked_claims',
+  'claim_words',
   'price',
   'stranded',
   'adults',
@@ -144,10 +145,13 @@ const replyStepIds = [
   'custom_promise-b',
   'post_handoff',
   'proposal_suffix',
+  'closing',
+  'shape_check',
   'takeover_check:post',
   'turn_failure',
   'final_clean',
   'system_note',
+  'note_reply',
 ];
 async function waitFor(cond: () => boolean, ms = 5000): Promise<boolean> {
   const end = Date.now() + ms;
@@ -451,8 +455,8 @@ const YUNNAN = 'r-yunnan-mid';
   if (row) {
     check('04：每轮恰好一行 trace，guard_verdicts 与 FinishedTurn 完全一致', json(row.guard_verdicts) === json(turn.turn.guardVerdicts));
     check(
-      '04：完整裁决含 28 个步骤与放行，旧 guard_events 仍只记一次文字改写',
-      row.guard_verdicts?.length === 28 && row.guard_verdicts.some((v) => v.action === 'pass') && turn.turn.guards.length === 1,
+      '04：完整裁决含 32 个步骤（28 个原有加 06 的四个）与放行，旧 guard_events 仍只记一次文字改写',
+      row.guard_verdicts?.length === 32 && row.guard_verdicts.some((v) => v.action === 'pass') && turn.turn.guards.length === 1,
     );
     check('trace：outcome=replied，阶段前后', row.outcome === 'replied' && row.stage_before === 'greeting' && !!row.stage_after, json(row));
     check(

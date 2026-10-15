@@ -5,6 +5,7 @@ import { stripAdvisorPrefix } from '../../shared/conversation.js';
 import { FAILURE_WINDOW, failureThresholdReached, pushWindow, turnFailed, type TurnSignals } from '../../handoff/trigger-rules.js';
 import { stripMarkdown, trimDangling } from './text.js';
 import { replyStep } from './reply-step.js';
+import { shapeCheckStep } from './shape.js';
 
 function dropAdvisorPrefix(ctx: ReplyGuardContext): void {
   const before = ctx.text;
@@ -71,7 +72,8 @@ export function coreReplySteps<Context extends ReplyGuardContext>(): GuardStep<C
       ctx.text = ctx.answerIdentity(ctx.inputText, ctx.text);
       ctx.recordGuard('identity', before, ctx.text, 'append');
     }),
-    replyStep('takeover_check:post', 'identity', ['handedOverSelfDecided'], [], (ctx): StepVerdict =>
+    shapeCheckStep<Context>(),
+    replyStep('takeover_check:post', 'shape_check', ['handedOverSelfDecided'], [], (ctx): StepVerdict =>
       ctx.takenOver() || (ctx.session.handedOver && !ctx.turn.flags.handedOverSelfDecided) ? { action: 'abort' } : { action: 'pass' },
     ),
     replyStep('turn_failure', 'takeover_check:post', ['emptyModelReply', 'guardHit'], [], (ctx) => {
