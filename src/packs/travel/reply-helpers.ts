@@ -1526,6 +1526,9 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
     whitelistLinks,
     DEFER_TO_CONSULTANT,
     promisesContact,
+    // R21 一致性检查要渲染这两句固定的追问
+    askToOrder,
+    askForProposal,
   };
 }
 export type TravelReplyHelpers = ReturnType<typeof createTravelReplyHelpers>;

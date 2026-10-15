@@ -298,6 +298,7 @@ export function sopProblemText(v: ContractViolation, pack: IndustryPack, sop: Pi
     unknown_tool: `${where}有个工具名写错了`,
     unknown_field: `${where}有个字段名写错了`,
     over_budget: '字数超出了额度',
+    consistency: `${where}有和固定对客文字矛盾的话`,
   };
   return Object.hasOwn(text, v.code) ? text[v.code] : `${where}有个问题`;
 }

@@ -851,7 +851,7 @@ async function finishTurn(
 }
 
 /** 紧急情况的固定应急话术（02 spec「确定性转人工触发」） */
-const EMERGENCY_REPLY =
+export const EMERGENCY_REPLY =
   '您的安全最要紧。如果有生命危险，请马上拨打 120（在境外请拨当地的急救电话）；证件丢了先到就近的派出所或我国使领馆求助。我已经通知顾问，会尽快联系您。';
 
 /** 失败与情绪的窗口：pushWindow 全 0 时返回 undefined，会话上就不留这个键 */

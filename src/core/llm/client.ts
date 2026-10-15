@@ -62,6 +62,9 @@ export function observeRequests(cb: ((req: ObservedRequest) => void) | null): vo
   requestObserver.get().fn = cb;
 }
 
+/** 工具往返用尽仍没有文字回复时的兜底话术（当作模型原文，再走出口护栏） */
+export const TOOL_LOOP_FALLBACK = '好的，我核对一下细节，稍等片刻马上回复您～';
+
 /** 引擎唯一入口：返回助手最终文本（末尾可能带 <state> 块，由引擎剥离） */
 export async function chat(opts: ChatOptions, runtime: LlmRuntime): Promise<string> {
   // 落库事务的回调里不调模型（02 不变量 9）：在 withTenant 里调到这里，说明有人把模型调用放进了事务，持锁跨过整次生成
@@ -872,7 +875,7 @@ async function realChatOnce(opts: ChatOptions, trace: CallTrace[] = []): Promise
     // 只取 content：reasoning_content 是模型的内部推理，绝不能发给客户
     return stripLeaked(msg.content ?? '');
   }
-  return '好的，我核对一下细节，稍等片刻马上回复您～';
+  return TOOL_LOOP_FALLBACK;
 }
 
 /** 仅供自测：模型调用失败的分类（02 spec 的 LlmErrorKind） */

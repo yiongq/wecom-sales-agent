@@ -576,6 +576,30 @@ export interface ReplyGuardContext extends GuardContext<GuardContextTypes & { fl
 
 export { replyStep } from './guards/reply-step.js';
 
+/** 06 R21：一致性检查的登记类型；通用的检查函数在 core/consistency.ts，包只登记文字和规则 */
+export type {
+  ConsistencyConflict,
+  ConsistencyException,
+  ConsistencyGroup,
+  ConsistencyRule,
+  ConsistencyText,
+  FixedReply,
+  FixedReplyMode,
+  FixedReplyOrigin,
+  PipelineOrder,
+  FixedReplySample,
+  TextTransform,
+} from './consistency.js';
+export {
+  hedgeConflicts,
+  passThroughConflicts,
+  lineCapConflicts,
+  resolveConflicts,
+  formatConflict,
+  originProblems,
+  FIXED_REPLY_MODES,
+} from './consistency.js';
+
 /** R15：最终文本的站内链接部件，只用于渠道投影，不写入 ChatMessage。 */
 export type { MessagePart } from '../shared/channel-types.js';
 
@@ -655,6 +679,10 @@ export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   followupTemplates: T['FollowupTemplates'];
   insightPrompts: T['InsightPrompts'];
   mock: T['MockPolicy'];
+  /** 06 R21：全部对客固定文字（id 加样例）。没登记的包，一致性检查什么都不查 */
+  fixedReplies?: readonly import('./consistency.js').FixedReply[];
+  /** 06 R21：这个包要守的一致性规则 */
+  consistencyRules?: readonly import('./consistency.js').ConsistencyRule[];
 }
 
 export interface PackBinding<T extends PackRuntimeTypes = PackRuntimeTypes> {
