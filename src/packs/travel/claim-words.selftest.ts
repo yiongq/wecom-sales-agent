@@ -162,6 +162,16 @@ same('付款已完成，订单生效。', { orders: [order({ status: 'paid', pai
 same('款项到账后您会收到确认，顾问核实后会联系您。');
 same('等您付款完成后，我请顾问核实。');
 same('款项还没到账，顾问核实后会在微信上联系您。');
+// 06 第 14 步验收的原话：待付款单上说「付款已收到，订单正式生效了」
+for (const t of ['付款已收到，订单正式生效了。', '支付已到账。', '订单已正式生效。']) {
+  const out = run(t);
+  assert.ok(out.includes(paymentPendingReply(legacy)), `${t} -> ${out}`);
+  assert.ok(!/付款已收到|支付已到账|正式生效/.test(out), out);
+  passed++;
+}
+same('付款已收到，订单正式生效了。', { orders: [order({ status: 'paid', paidAt: 1 })] }, '有已付款订单不拦（新说法）');
+same('付款后订单才正式生效。');
+same('订单还没正式生效，付完款顾问会核实。');
 // 「订单已确认」：带 confirmedAt 的订单是真话
 const confirmed = [order({ confirmedAt: 5 })];
 lacks('您的订单已确认。', '订单已确认');
