@@ -1,6 +1,6 @@
 import { identityAnswer, identityHandoffHead, offTopicReply } from './legacy.js';
 import { identityHandoffHeadTemplate } from './templates.js';
-import { handoffHead } from './contact-words.js';
+import { advisorCheck, advisorContact, handoffHead } from './contact-words.js';
 // 04 第 16 步：旅游回复/跟进共用的护栏判断与修补；读能力显式注入。
 import {
   convLabel,
@@ -668,7 +668,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
   function rewriteUnbackedPrices(
     visible: string,
     hits: PriceHit[],
-    ctx: { session: Session; text: string; calls: ToolCall[]; customHandoff: boolean },
+    ctx: { session: Session; text: string; calls: ToolCall[]; customHandoff: boolean; templateMode?: boolean },
   ): string {
     const { session, text, calls } = ctx;
     const q = session.lastQuote;
@@ -703,9 +703,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
     if (session.handedOver)
       return substantive
         ? kept
-        : session.channel === 'web'
-          ? '具体价格由资深顾问为您核准，已为您转接，顾问会在这个页面里回复您，请稍候～'
-          : '具体价格由资深顾问为您核准，已为您转接，顾问会在微信上联系您，请稍候～';
+        : `具体价格由资深顾问为您核准，已为您转接，${advisorContact({ channel: session.channel, templateMode: !!ctx.templateMode })}，请稍候～`;
     const sorry = '不好意思，刚才的价格说得不准，以这次核准的为准：';
     if (substantive) {
       if (!wrongBefore) return kept;
@@ -796,7 +794,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
       // advisor 模式：这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」）；online 模式原样不变
       const how =
         paymentMode() === 'advisor'
-          ? `订单链接：${payUrl}\n顾问会${session.channel === 'web' ? '在这个页面里' : '在微信里'}跟您核对价格并发收款方式，不用点链接付款。`
+          ? `订单链接：${payUrl}\n${advisorCheck({ channel: session.channel, templateMode: !!ctx.templateMode }, '跟您核对价格并发收款方式')}，不用点链接付款。`
           : `请点此完成支付：${payUrl}\n名额以付款为准～`;
       return `订单已生成，总价 ${yuan(Number(order.total))}。\n${how}`;
     }
@@ -1007,6 +1005,8 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
     calls: ToolCall[];
     /** 与模型同一个工具入口（记 calls、通知观测者、过日期拦截） */
     runTool: (name: string, args: Record<string, unknown>) => Promise<string>;
+    /** 品牌模板模式（非网页时联系方式不点名渠道） */
+    templateMode?: boolean;
   }
 
   /**
@@ -1388,7 +1388,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
     // 客户只是想找真人问问，不等于不买了：告诉他付款入口还在，别让这单悬着。企微里付款链接是以卡片发的；
     // advisor 模式下这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」，第 15 步审查第 5 条）
     if (paymentMode() === 'advisor') {
-      return `${head}\n您刚下的${title}订单顾问会一并跟进，之前发您的订单链接仍然有效，顾问会${session.channel === 'web' ? '在这个页面里' : '在微信里'}核对价格、发收款方式。`;
+      return `${head}\n您刚下的${title}订单顾问会一并跟进，之前发您的订单链接仍然有效，${advisorCheck(mode, '核对价格、发收款方式')}。`;
     }
     const payEntry = session.channel === 'wecom' ? '付款卡片' : '付款链接';
     return `${head}\n您刚下的${title}订单顾问会一并跟进，之前发您的${payEntry}仍然有效。`;

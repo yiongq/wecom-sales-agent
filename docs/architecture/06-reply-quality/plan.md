@@ -519,6 +519,24 @@ Claude 子 agent 实现，协调者裁决 7 项、审查并提交。
   - 变异核对。在 `renderQuoteLine` 加回「起价，按最终行程微调」，失败并点名 `quote-final`；把「名额以付款为准」加进 `SCARCITY`，失败并点名 `sop-vs-wordlist`（同时 `fixed-vs-guards` 点名 `order.net.created.*`）。两次都在同一条命令里改、跑、还原。
   - 回复不变：`v2-06-batch1.json` 文件与 PGlite 两条路径 827/827、0 处差异；`test:locked` 全绿，PREFIX 不变；`web.selftest` 通过；console 构建与 `check-console-dist` 通过。
 
+### Open 4 · 两类既有固定文字（2026-10-15，owner 照推荐定）
+
+Claude 子 agent 实现，与第 16 步并行；协调者审查并提交。
+
+- **代码整段生成的推荐列表单独放宽到 8 行**，文字不动。
+  - 适用范围：rich 类、整段由代码生成（`flags.fixedReply`）的回复，行数上限取包阈值 `generatedListMaxLines`（8）；模型写的回复仍按 rich 6 / plain 3。
+  - 三处口径一致：出口 `shape_check` 记的 `limit` 与 `overLimit`（`ReplyShape` 多一个 `generatedList` 标记）、一致性检查 `fixed-vs-guards`、评测 `shape` 谓词与报告（从 trace 的 `replyShape` 取；没有时按原来的 rich / plain 算）。
+  - `FIXED_VS_GUARDS_PENDING` 整个删掉。
+- **模板模式（非网页）下不点名渠道**。
+  - 只改模板模式那一份，换成「顾问会联系您核对价格、发收款方式」一类说法（`contact-words.ts` 的 `advisorCheck`）；旧版企微与网页一字不动。
+  - 改到的文字：`order.net.*.advisor`、`order.resend.advisor`、`handoff.request.order-pending-advisor`、`price.rewrite.handed-over`、`replace.guard.phone`。另查出 `strandedReply`「本轮已下单」分支的 advisor 文案同样点名「微信」，一并改，并登记为 `stranded.order.*`。
+  - 新增一致性规则 `template-no-channel`：登记文字的模板渲染里不许出现「微信」「企微」「企业微信」。
+- **验**：
+  - `test:locked` 全绿，PREFIX 不变。
+  - v2 两条路径 827/827、0 处差异（v2 里没有走到模板模式 advisor 收款的用例），不生成快照。
+  - 变异核对：把模板分支改回「在微信里」，`template-no-channel` 失败，点名 6 条文字。
+  - `shape.selftest` 有三例：8 行代码生成列表不超限，9 行超限，模型写的 7 行超限。
+
 ## 验收记录
 
 （第 14、15、18、19、20 步填。）
@@ -571,7 +589,7 @@ Claude 子 agent 实现，协调者裁决 7 项、审查并提交。
 3. **（已定：一个 PR、两个提交，锁定文件只动这三处，符合 owner 的授权范围，2026-10-15）「只改三处锁定断言」的 PR 要带一个代码提交。**
    - 新断言是「不含『起价』『微调』」，现有代码过不了，所以这个 PR 必须有出口兜底的改动；只改断言，CI 是红的。
    - 本文件照 05 第 2 步的做法：一个 PR、两个提交、merge commit，锁定文件只动这三处。如果 owner 要的是只含断言的 PR，就要和第 16 步合成一个 PR，与「R18–R20 一个 PR」冲突。
-4. **（待定：第 16 步随话术改动，由 owner 定）第 13 步查出、这一步没改的两类既有文字。**
+4. **（已定：owner 2026-10-15，两条都照推荐；已修，见实施记录「Open 4」）第 13 步查出、这一步没改的两类既有文字。**
    - 两条线的推荐列表 8 行，超了 rich 的 6 行：`stranded.routes.high-altitude`（带长辈、高海拔时每条线多一行）与 `recommend.deterministic`。两种办法：改成每条线少一行，或者给代码整段生成的推荐列表单独定上限。在 `FIXED_VS_GUARDS_PENDING` 里，第 16 步删掉。
    - 模板模式非网页下点名了「微信」，违反「原则」的「不点名渠道」：advisor 收款模式的文案（`order.net.*.advisor`、`order.resend.advisor`、`handoff.request.order-pending-advisor`）、`price.rewrite.handed-over`、`replace.guard.phone`。都是 06 之前就有的文字，还没做成规则；第 16 步要么改文字并加一条规则，要么记为接受。
 5. **（已定：owner 照推荐，2026-10-15）第一批的 `shape` 达标 67.2%，低于 P1 = 0.70。**

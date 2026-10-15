@@ -15,7 +15,7 @@ const policy = createTravelShapePolicy({
 });
 
 // 阈值（owner 2026-10-15 定）
-assert.deepEqual(TRAVEL_SHAPE_LIMITS, { richMaxLines: 6, plainMaxLines: 3, maxChars: 300 });
+assert.deepEqual(TRAVEL_SHAPE_LIMITS, { richMaxLines: 6, plainMaxLines: 3, generatedListMaxLines: 8, maxChars: 300 });
 assert.deepEqual([policy.richMaxLines, policy.plainMaxLines, policy.maxChars], [6, 3, 300]);
 assert.ok(policy.richTools.includes('search_routes') && policy.richTools.includes('create_order'));
 assert.ok(!policy.richTools.includes('handoff_to_human'));

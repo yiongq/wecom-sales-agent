@@ -36,6 +36,17 @@ export const RICH_TOOLS: ReadonlySet<string> = new Set([
   'create_order',
 ]);
 export const isRichTurn = (t: SimTurn): boolean => t.trace.turn.calls.some((c) => RICH_TOOLS.has(c.name));
+/**
+ * 代码整段生成的推荐 / 线路列表（06 Open 4）：出口 `shape_check` 把它记在 trace 的 replyShape（generatedList，limit 是单独的上限 8），
+ * 评测直接取这个 limit，和出口同一口径。trace 里没有这条记录（别的包、没进主回复流水线）就返回 null，按 rich / plain 算。
+ */
+export const generatedListLimit = (t: SimTurn): number | null => {
+  const shape = t.trace.turn.replyShape;
+  return shape?.generatedList ? shape.limit : null;
+};
+/** 一轮回复的行数上限：代码生成的列表用出口记的上限（不低于目标自带的 richMax），其余按 rich / plain */
+export const turnLineLimit = (listLimit: number | null, rich: boolean, richMax: number, plainMax: number): number =>
+  listLimit !== null ? Math.max(listLimit, richMax) : rich ? richMax : plainMax;
 
 // 否定词必须出现在命中处之前、同一分句里，且相隔不超过 12 个字；顿号不切分句，「没有儿童价、早鸟价」两项都算被否定。
 const NEGATION = /(?:没有|并无|绝无|不存在|不设|不收|不会有|不提供|不涉及|不另|不再|不额外|不是|并非|不需要|无需|不用|没|无|未)/u;
@@ -58,7 +69,7 @@ export function shapeShare(turns: SimTurn[], richMax: number, plainMax: number):
   const replies = turns.filter((t) => !t.silent);
   return {
     total: replies.length,
-    within: replies.filter((t) => countLines(t.reply) <= (isRichTurn(t) ? richMax : plainMax)).length,
+    within: replies.filter((t) => countLines(t.reply) <= turnLineLimit(generatedListLimit(t), isRichTurn(t), richMax, plainMax)).length,
   };
 }
 

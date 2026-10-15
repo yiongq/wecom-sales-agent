@@ -56,25 +56,17 @@ export const travelConsistencyRules: readonly ConsistencyRule[] = Object.freeze(
     scope: ['fixed'],
     why: '代码自己发的固定文字不该被出口护栏改写，也不该长到超出它那一类的行数上限；否则客户读到的与代码里登记的不是同一份。',
   },
+  {
+    id: 'template-no-channel',
+    a: '全部对客固定文字在模板模式（非网页）下的渲染',
+    b: '渠道名「微信」「企微」「企业微信」',
+    scope: ['fixed'],
+    why: '模板模式是品牌白标，对客文字不点名渠道（06 原则）；联系方式只说「顾问会联系您」，旧版企微与网页的说法不受影响。',
+  },
 ]);
 
-/**
- * fixed-vs-guards 的待裁决清单：固定文字超过它那一类的行数上限。这一步不许改变任何回复，所以文字不改，先放在这里让自测过。
- * 它不是白名单：两项都由 owner 在第 16 步随话术改动定（删文字行数，或调上限），定了就删，最迟第 16 步。
- * （线路列表的两格缩进、到账通知两项已按管线位置裁决：它们排在 markdown 之后、或在回复管线之外，不再进清单。）
- */
-export const FIXED_VS_GUARDS_PENDING: readonly ConsistencyException[] = Object.freeze([
-  {
-    rule: 'fixed-vs-guards',
-    where: 'fixed:stranded.routes.high-altitude|line-cap',
-    note: '第 16 步随话术改动由 owner 定：带长辈、高海拔时每条线多一行「行程里最高要到约 N 米」，两条线共 8 行，超过推荐 / 报价类 6 行。第 16 步删除',
-  },
-  {
-    rule: 'fixed-vs-guards',
-    where: 'fixed:recommend.deterministic|line-cap',
-    note: '第 16 步随话术改动由 owner 定：确定性推荐回复两条线共 8 行（标题、天数酒店价、亮点各一行），超过推荐 / 报价类 6 行。第 16 步删除',
-  },
-]);
+/** 模板模式（非网页）的对客文字里不许出现的渠道名 */
+export const TEMPLATE_CHANNEL_NAMES = /企业微信|企微|微信/;
 
 /** sop-vs-wordlist 的待裁决清单，性质同上；现在为空（唯一的一项已改成下面的禁说示例清单） */
 export const SOP_VS_WORDLIST_PENDING: readonly ConsistencyException[] = Object.freeze([]);
@@ -118,7 +110,7 @@ export const SOP_REQUIRED_SENTENCES: readonly { id: string; text: string }[] = O
 
 // ---------------- 登记 ----------------
 
-export type FixedText = ConsistencyText & { kind: 'rich' | 'plain'; afterHandoff: boolean };
+export type FixedText = ConsistencyText & { kind: 'rich' | 'plain'; afterHandoff: boolean; generatedList: boolean };
 
 /** 把登记的固定文字摊开成待查的文字：每条每种渲染一段 */
 export async function flattenFixed(fixed: readonly FixedReply[]): Promise<FixedText[]> {
@@ -133,6 +125,7 @@ export async function flattenFixed(fixed: readonly FixedReply[]): Promise<FixedT
         origin: f.producedBy,
         kind: f.kind,
         afterHandoff: !!f.afterHandoff,
+        generatedList: !!f.generatedList,
       });
     }
   }
@@ -168,9 +161,32 @@ export async function fixedVsGuardsConflicts(
     ...lineCapConflicts({
       rule: 'fixed-vs-guards',
       items: fixed,
-      caps: { rich: TRAVEL_SHAPE_LIMITS.richMaxLines, plain: TRAVEL_SHAPE_LIMITS.plainMaxLines },
+      caps: {
+        rich: TRAVEL_SHAPE_LIMITS.richMaxLines,
+        plain: TRAVEL_SHAPE_LIMITS.plainMaxLines,
+        list: TRAVEL_SHAPE_LIMITS.generatedListMaxLines,
+      },
     }),
   ];
+}
+
+/** template-no-channel：模板模式的固定文字不点名渠道，失败时点名文字 id 与命中的词 */
+export function templateNoChannelConflicts(fixed: readonly FixedText[]): ConsistencyConflict[] {
+  const out: ConsistencyConflict[] = [];
+  for (const f of fixed) {
+    if (f.mode !== 'template') continue;
+    const hit = TEMPLATE_CHANNEL_NAMES.exec(f.text);
+    if (!hit) continue;
+    out.push({
+      rule: 'template-no-channel',
+      a: f.id,
+      b: `渠道名「${hit[0]}」`,
+      detail: `模板模式的对客文字点名了渠道：…${f.text.slice(Math.max(0, hit.index - 8), hit.index + hit[0].length + 8).replace(/\n/g, ' ')}…`,
+      where: f.where,
+      match: hit[0],
+    });
+  }
+  return out;
 }
 
 /** sop-vs-wordlist：SOP 要求说的固定句穿过出口词表后不变 */
@@ -228,7 +244,9 @@ export function createTravelConsistency(world: (over: Partial<PackSources>) => T
         {
           id: 'wordlist:dropUnbackedClaims',
           steps: { reply: 'unbacked_claims', followup: 'unbacked_claims' },
-          run: (t, item) => parts.priceRules.dropUnbackedClaims(t, fixtureSession(modeOf(item)), [], {}).text,
+          run: (t, item) =>
+            parts.priceRules.dropUnbackedClaims(t, fixtureSession(modeOf(item)), [], { templateMode: modeOf(item).contact.templateMode })
+              .text,
         },
         {
           id: 'wordlist:claim_words',
