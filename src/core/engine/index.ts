@@ -296,6 +296,7 @@ async function handleMessageInner(
   const turnContext: TurnContext = {
     session,
     text: state.text,
+    brand: state.binding.brand,
     callTool: async (name, args) => {
       const result = await tools.runTool(name, args, { prefetch: true });
       return { name, args: calls[calls.length - 1]?.args ?? args, result };

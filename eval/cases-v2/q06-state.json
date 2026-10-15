@@ -1,0 +1,355 @@
+[
+  {
+    "version": 2,
+    "id": "q06-state-pending-order",
+    "desc": "R5：待付款订单进订单行，不带金额，不带已付款附句。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "酒店是哪几家",
+        "script": [
+          {
+            "content": "好的，我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "contextMatches": ["^订单: 《云南 丽江大理·洱海古城 6 日》2 位、12月10日出发，待付款$"],
+          "contextExcludes": ["已付款", "¥", "\\d元", "总价", "行程确认书"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-state-paid-order",
+    "desc": "R5：已付款订单进订单行并带「说过就别再说」附句。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "paid"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "酒店是哪几家",
+        "script": [
+          {
+            "content": "好的，我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "contextMatches": [
+            "^订单: 《云南 丽江大理·洱海古城 6 日》2 位、12月10日出发，已付款$",
+            "^已付款的单：顾问会发行程确认书、拉服务群；说过就别再说$"
+          ],
+          "contextExcludes": ["¥", "总价", "报价时机"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-state-cancelled-not-listed",
+    "desc": "R5：已作废（cancelled、superseded）的订单不列，只列待付款那张。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-20",
+          "status": "cancelled"
+        },
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-22",
+          "status": "superseded"
+        },
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "酒店是哪几家",
+        "script": [
+          {
+            "content": "好的，我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "contextMatches": ["^订单: 《云南 丽江大理·洱海古城 6 日》2 位、12月10日出发，待付款$"],
+          "contextExcludes": ["12月20日", "12月22日", "；《"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-state-only-latest-three",
+    "desc": "R5：超过 3 张只列最近 3 张。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-11-01",
+          "status": "pending_payment"
+        },
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-11-08",
+          "status": "pending_payment"
+        },
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-11-15",
+          "status": "pending_payment"
+        },
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-11-22",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "酒店是哪几家",
+        "script": [
+          {
+            "content": "好的，我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "contextMatches": ["^订单: .*11月8日出发，待付款；.*11月15日出发，待付款；.*11月22日出发，待付款$"],
+          "contextExcludes": ["11月1日出发"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-state-claims-paid-pending",
+    "desc": "R5：自称已付而订单待付，加不得说已到账的口径行（旧版企微说在微信上联系）。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "我已经付款了",
+        "script": [
+          {
+            "content": "好的，我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "contextMatches": [
+            "^客户说已付款，但系统还没收到到账：不要说已到账、订单生效、订单已确认；要说就说「款项到账后您会收到确认，顾问核实后会在微信上联系您。」$"
+          ],
+          "contextExcludes": ["云途", "报价时机"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-state-claims-paid-no-order",
+    "desc": "R5：没有任何订单、客户说付好了，同样加口径行。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "我付好了",
+        "script": [
+          {
+            "content": "好的，我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "contextMatches": ["客户说已付款，但系统还没收到到账"],
+          "contextExcludes": ["^订单:"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-state-negated-paid-claim",
+    "desc": "R5：「还没付」「没转账」不算自称已付，不加口径行。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "我还没付款，怎么付",
+        "script": [
+          {
+            "content": "好的，我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "contextExcludes": ["客户说已付款"]
+        }
+      },
+      {
+        "say": "没转账，先问下优惠",
+        "script": [
+          {
+            "content": "好的，我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "contextExcludes": ["客户说已付款"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-state-claims-paid-real-paid",
+    "desc": "R5：会话里已有已付款订单时，不加「还没收到到账」的口径行。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "paid"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "我已经付款了",
+        "script": [
+          {
+            "content": "好的。"
+          }
+        ],
+        "expect": {
+          "contextExcludes": ["还没收到到账", "客户说已付款"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-sensitive-asks",
+    "desc": "R6：安全、开放、手续、证件、签证的问法有口径行，只说地名没有。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "西藏现在安全吗",
+        "script": [
+          {
+            "content": "好的，我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "contextMatches": [
+            "^客户问到敏感地区或证件手续：政策会变，说「由顾问按您的出行时间确认」；通行证只照线路的「含 / 不含」说；不给签证时长和费用；不说「正常开放」「不用办手续」「会协助办好」「身体负担小」$"
+          ],
+          "contextExcludes": ["报价时机"]
+        }
+      },
+      {
+        "say": "去新疆要办边防证吗",
+        "script": [
+          {
+            "content": "好的，我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "contextMatches": ["^客户问到敏感地区或证件手续"]
+        }
+      },
+      {
+        "say": "日本签证要多久",
+        "script": [
+          {
+            "content": "好的，我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "contextMatches": ["^客户问到敏感地区或证件手续"]
+        }
+      },
+      {
+        "say": "想去西藏",
+        "script": [
+          {
+            "content": "好的，我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "contextExcludes": ["敏感地区", "政策会变"]
+        }
+      },
+      {
+        "say": "新疆几月去好",
+        "script": [
+          {
+            "content": "好的，我帮您看一下。"
+          }
+        ],
+        "expect": {
+          "contextExcludes": ["敏感地区", "政策会变"]
+        }
+      }
+    ]
+  }
+]
