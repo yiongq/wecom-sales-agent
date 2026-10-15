@@ -89,6 +89,8 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
     const sid = `eval:v2-${c.id}`;
     const session = store.getOrCreateSession(sid, 'simulator');
     Object.assign(session, c.fixtures?.session, { id: sid, channel: 'simulator' });
+    // 夹具订单共用同一个 createdAt：listOrders 按 createdAt 倒序，跨毫秒创建时「最后一张」会随机变，快照不稳
+    const fixtureCreatedAt = Date.now();
     for (const fixture of c.fixtures?.orders ?? []) {
       const q = createQuote(fixture);
       const order = store.createOrder({
@@ -100,6 +102,7 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
         totalPrice: q.total,
       });
       order.status = fixture.status;
+      order.createdAt = fixtureCreatedAt;
       if (order.status === 'paid') order.paidAt = Date.now();
       store.saveOrder(order);
       session.orderIds.push(order.id);

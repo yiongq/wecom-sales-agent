@@ -84,9 +84,9 @@ assert.throws(
   },
 );
 
-// 5) 新增步骤对没有触发条件的原文仍 pass（closing 第 8 步、claim_words 第 11 步已填，由各自自测与 q06 用例守）
+// 5) 步骤体还没填的新增步骤不改文本（closing 在第 8 步已填，由 closing-words 自测与 q06-closing 用例守；claim_words 第 11 步已填，下面单独测）
 const ctx = { text: '原文', recordGuard() {} } as never;
-for (const id of ['closing', 'claim_words', 'shape_check', 'note_reply']) {
+for (const id of ['shape_check', 'note_reply']) {
   const verdict = await steps.get(id)!.run(ctx);
   assert.deepEqual(verdict, { action: 'pass' }, id);
 }

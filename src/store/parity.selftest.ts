@@ -1162,7 +1162,7 @@ async function runScenarios(mode: Mode, out: ChildOut): Promise<void> {
     await arrived;
     o.note('pay', await post(`/api/orders/${r.orderId}/pay`));
     await turn;
-    await say(o, sid, '谢谢', [{ content: '不客气，祝您旅途愉快～' }]);
+    await say(o, sid, '行程里有什么要提前准备的吗', [{ content: '不客气，祝您旅途愉快～' }]);
   });
 
   // ======== 4. 重置：内存清空、订单移出；库里旧消息都在、窗口推进到重置回复、订单作废 ========
