@@ -147,6 +147,44 @@ const sample = JSON.parse(
   (await fs.readFile('docs/architecture/04-industry-packs/plan.md', 'utf8')).match(/## SimGoal 样例[\s\S]*?```json\n([\s\S]*?)\n```/)![1]!,
 );
 check('plan 样例原样', JSON.stringify(goals[0]) === JSON.stringify(sample));
+// 06 R1 回归集：eval/sim/goals/quality
+const quality = await loadGoals('eval/sim/goals/quality');
+check('回归集不少于 30 个目标', quality.length >= 30);
+const issueIds = [...'ABCDEFGHIJKLMNOPQRSTUVW'];
+const covered = new Set(quality.flatMap((g) => g.covers ?? []));
+check(
+  'covers 覆盖问题表全部 ID（X、Y、Z 除外）',
+  issueIds.every((id) => covered.has(id)),
+);
+check(
+  'covers 里只有问题表的 ID，没有 X、Y、Z',
+  [...covered].every((id) => issueIds.includes(id)),
+);
+check(
+  '每个目标都标了 severity 与 covers（缺口场景的 covers 为空数组）',
+  quality.every((g) => (g.severity === 'safety' || g.severity === 'quality') && Array.isArray(g.covers)),
+);
+check(
+  '至少一个种子订单是 paid',
+  quality.some((g) => g.initial?.orders?.some((o) => o.status === 'paid')),
+);
+check(
+  '种子订单有待付款也有已付款',
+  quality.some((g) => g.initial?.orders?.some((o) => o.status === 'pending_payment')),
+);
+check(
+  '固定客户话术不超过 maxTurns',
+  quality.every((g) => (g.customerScript?.length ?? 0) <= (g.maxTurns ?? 12)),
+);
+check(
+  '种子订单的出发日期都在夹具时钟之后',
+  quality.every((g) => (g.initial?.orders ?? []).every((o) => o.departDate > '2026-10-10')),
+);
+check(
+  'shape 谓词的 minShare 是 owner 定的 P1 = 0.70',
+  quality.every((g) => g.predicates.every((p) => p.kind !== 'shape' || p.minShare === 0.7)),
+);
+check('回归集不带本机路径', !JSON.stringify(quality).includes('/Users/'));
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-goals-test-'));
 try {
   await fs.writeFile(path.join(temp, 'one.json'), JSON.stringify(goal()));
@@ -328,6 +366,35 @@ try {
   const probe = runtime.deps.start();
   check('每遍结束清掉种子订单', report.runs[0]!.initial.orders.length === 1 && probe.initial.orders.length === 0);
   await runtime.deps.end(probe.id);
+  // 回归集的种子都能起：真实订单状态、阶段与对话落进会话，脚本不超轮数（不调模型）
+  for (const g of quality.filter((q) => q.initial)) {
+    const started = runtime.deps.start(g.initial);
+    const want = g.initial!.orders ?? [];
+    check(
+      `${g.id} 种子能起，订单与状态一致`,
+      started.initial.orders.length === want.length &&
+        want.every((o, i) => started.initial.orders[i]!.status === o.status) &&
+        started.initial.orders.filter((o) => o.status === 'paid').every((o) => o.paidAt !== undefined),
+    );
+    check(
+      `${g.id} 阶段随种子`,
+      started.initial.stage === (g.initial!.stage ?? (want.some((o) => o.status === 'paid') ? 'paid' : 'greeting')),
+    );
+    await runtime.deps.end(started.id);
+  }
+  // 假模型冒烟：每个目标的固定客户话术都能读完，按序进引擎（不花钱，回复内容不看）
+  for (const g of quality) {
+    sales.script.length = 0;
+    customer.script.length = 0;
+    const scripted = g.customerScript ?? [];
+    sales.script.push(...Array.from({ length: g.maxTurns ?? 12 }, () => ({ content: '好的。' })));
+    if (scripted.length < (g.maxTurns ?? 12)) customer.script.push(say('', true));
+    const smoke = await simulate([g], 1, meter, runtime.deps);
+    const said = smoke.runs[0]!.turns.map((t) => t.customer.say);
+    check(`${g.id} 固定话术读完`, scripted.every((line, i) => said[i] === line) && smoke.runs[0]!.status !== 'customer_protocol');
+  }
+  sales.script.length = 0;
+  customer.script.length = 0;
   // 最后一个销售回包到点：后续同轮工具往返不能再发 HTTP，新的一遍也不开始。
   const beforeSales = sales.requests.length;
   customer.script.push(say('你好'));

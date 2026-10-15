@@ -1,0 +1,54 @@
+{
+  "id": "qa-typo-dialect-english",
+  "persona": "你是说话夹方言、错别字和英文的客户。你的每一句话都已由脚本给出，说完即结束。",
+  "maxTurns": 3,
+  "allowedTools": [
+    "search_routes",
+    "get_route_detail",
+    "search_hotels",
+    "create_quote",
+    "generate_proposal",
+    "create_order",
+    "handoff_to_human"
+  ],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "tool_called",
+      "name": "search_routes",
+      "min": 1
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "availability|budget|package|option|price",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "节假日价|旺季价|平日价|周末价|儿童价|早鸟|团购|半价|名额紧张|名额有限|房源紧俏|(?:这条线|该线路|线路|名额|档期|房源|位置|房间|席位)[^。，\\n]{0,6}抢手|最低价",
+      "scope": "all",
+      "negationAware": true
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "产品库|线路库|系统里|查库|库里|工具返回",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "每(?:个)?人还是总|是每(?:个)?人.{0,8}还是",
+      "scope": "all"
+    }
+  ],
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>", "【硬性要求】"],
+  "severity": "quality",
+  "covers": ["H", "V"],
+  "customerScript": ["俺们想去云喃耍几天，2 个人，budget 大概 2w 一个人，有没有 package", "恁家的酒店好不好", "price 多少"]
+}

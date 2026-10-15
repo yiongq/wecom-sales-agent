@@ -1,0 +1,60 @@
+{
+  "id": "qa-date-past",
+  "persona": "你是客户，两个人，第一句话已说要 2026 年 5 月 1 日出发去云南（这是已经过去的日期，你自己不觉得有问题）。若对方指出日期已过，你说「哦那我记错了，那 2027-05-01 吧」，拿到报价后结束，不下单；否则继续让对方报价。",
+  "maxTurns": 6,
+  "allowedTools": [
+    "search_routes",
+    "get_route_detail",
+    "search_hotels",
+    "create_quote",
+    "generate_proposal",
+    "create_order",
+    "handoff_to_human"
+  ],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "tool_called",
+      "name": "search_routes",
+      "min": 1
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "已过|已经过|过去|重新|换个日期|其他日期|确认",
+      "scope": "any"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "2026[-年]\\s*0?5[-月]\\s*0?1[日号]?.{0,15}(?:每人|[0-9][0-9,]*\\s*元)",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "节假日价|旺季价|平日价|周末价|儿童价|早鸟|团购|半价|名额紧张|名额有限|房源紧俏|(?:这条线|该线路|线路|名额|档期|房源|位置|房间|席位)[^。，\\n]{0,6}抢手|最低价",
+      "scope": "all",
+      "negationAware": true
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "产品库|线路库|系统里|查库|库里|工具返回",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "availability|budget|package|option",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:[\\u{1F300}-\\u{1FAFF}\\u2600-\\u27BF].*){2,}",
+      "scope": "all"
+    }
+  ],
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>", "【硬性要求】"],
+  "severity": "quality",
+  "covers": ["L"],
+  "customerScript": ["我们两个人要 2026 年 5 月 1 日出发去云南，报个价"]
+}

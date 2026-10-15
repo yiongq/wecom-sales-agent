@@ -1,0 +1,70 @@
+{
+  "id": "qa-offcatalog-japan-place",
+  "persona": "你是客户，两人想去北海道滑雪，2027-01 出发，第一句话已问有没有北海道线路。没有的话问日本有什么。拿到答复后追问「那 HOSHINOYA 京都那种旅馆住一晚多少钱」，得到回答后结束。不下单。",
+  "maxTurns": 8,
+  "allowedTools": [
+    "search_routes",
+    "get_route_detail",
+    "search_hotels",
+    "create_quote",
+    "generate_proposal",
+    "create_order",
+    "handoff_to_human"
+  ],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "tool_called",
+      "name": "search_routes",
+      "min": 1
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "北海道.{0,20}(?:每人|报价|日游|天游|[0-9]+元)",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "HOSHINOYA.{0,20}[0-9][0-9,]*\\s*元",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "接近的线[：:]\\s*[·•]\\s*亮点",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(\\S[^。！？\\n]{5,}[？?])[\\s\\S]*?\\1",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "节假日价|旺季价|平日价|周末价|儿童价|早鸟|团购|半价|名额紧张|名额有限|房源紧俏|(?:这条线|该线路|线路|名额|档期|房源|位置|房间|席位)[^。，\\n]{0,6}抢手|最低价",
+      "scope": "all",
+      "negationAware": true
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "产品库|线路库|系统里|查库|库里|工具返回",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "availability|budget|package|option",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:[\\u{1F300}-\\u{1FAFF}\\u2600-\\u27BF].*){2,}",
+      "scope": "all"
+    }
+  ],
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>", "【硬性要求】"],
+  "severity": "quality",
+  "covers": ["E", "Q"],
+  "customerScript": ["两个人，2027-01 出发想去北海道滑雪，有北海道的线路吗"]
+}

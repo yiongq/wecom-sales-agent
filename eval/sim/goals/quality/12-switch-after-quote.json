@@ -1,0 +1,67 @@
+{
+  "id": "qa-switch-after-quote",
+  "persona": "你是客户，两人。前两句话已说：先问西藏 2027-06-10 出发的报价，再说太高了换新疆。你留意对方报新疆价时是否沿用了西藏的人数日期、是否把西藏的价格混进来。得到新疆报价后说「我再比较比较」并结束，不下单。",
+  "maxTurns": 5,
+  "allowedTools": [
+    "search_routes",
+    "get_route_detail",
+    "search_hotels",
+    "create_quote",
+    "generate_proposal",
+    "create_order",
+    "handoff_to_human"
+  ],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "tool_called",
+      "name": "create_quote",
+      "min": 2
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "节假日价|旺季价|平日价|周末价|儿童价|早鸟|团购|半价|名额紧张|名额有限|房源紧俏|(?:这条线|该线路|线路|名额|档期|房源|位置|房间|席位)[^。，\\n]{0,6}抢手|最低价",
+      "scope": "all",
+      "negationAware": true
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "产品库|线路库|系统里|查库|库里|工具返回",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "availability|budget|package|option",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:[\\u{1F300}-\\u{1FAFF}\\u2600-\\u27BF].*){2,}",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(\\S[^。！？\\n]{5,}[？?])[\\s\\S]*?\\1",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "按最终行程.{0,8}微调|最终按行程微调|可能微调",
+      "scope": "all",
+      "after": {
+        "tool": "create_quote"
+      }
+    }
+  ],
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>", "【硬性要求】"],
+  "severity": "quality",
+  "covers": ["P"],
+  "customerScript": ["两个人，2027-06-10 出发去西藏，报个价", "太高了，换新疆吧，人数和日期不变，新疆报价多少？"]
+}

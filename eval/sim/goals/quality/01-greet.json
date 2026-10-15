@@ -1,0 +1,66 @@
+{
+  "id": "qa-greet",
+  "persona": "你是刚加上企业微信的客户，第一句话已经发了「你好」，不说任何需求。如果对方问你想去哪或什么场合，你含糊答「还没想好，随便看看」；再被追问就说「想出去玩，人不多」；第三次被追问后说「那我先看看，谢谢」并结束。不要求人工。",
+  "maxTurns": 6,
+  "allowedTools": [
+    "search_routes",
+    "get_route_detail",
+    "search_hotels",
+    "create_quote",
+    "generate_proposal",
+    "create_order",
+    "handoff_to_human"
+  ],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "tool_called",
+      "name": "create_order",
+      "min": 0,
+      "max": 0
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "节假日价|旺季价|平日价|周末价|儿童价|早鸟|团购|半价|名额紧张|名额有限|房源紧俏|(?:这条线|该线路|线路|名额|档期|房源|位置|房间|席位)[^。，\\n]{0,6}抢手|最低价",
+      "scope": "all",
+      "negationAware": true
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "产品库|线路库|系统里|查库|库里|工具返回",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "availability|budget|package|option",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:[\\u{1F300}-\\u{1FAFF}\\u2600-\\u27BF].*){2,}",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "想|哪|什么|场合|欢迎",
+      "scope": "any"
+    },
+    {
+      "kind": "shape",
+      "richMax": 6,
+      "plainMax": 3,
+      "minShare": 0.7
+    }
+  ],
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>", "【硬性要求】"],
+  "severity": "quality",
+  "covers": ["G"],
+  "customerScript": ["你好"]
+}
