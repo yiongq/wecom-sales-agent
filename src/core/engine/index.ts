@@ -59,6 +59,7 @@ import {
   noteDraft,
   noteGuard,
   noteGuardVerdict,
+  noteReplyShape,
   notePrefix,
   noteSignals,
   noteToolError,
@@ -836,6 +837,7 @@ async function finishTurn(
       saveSession(session);
       logSlowTurn(session.id, Date.now() - turnStart, { prefetchMs: modelStart - turnStart, prefetchTimes, modelMs, tag: turn.tag });
       if (configMode() === 'db') console.log(`[engine] 本轮完成（会话 ${convLabel(session.id)}）· ${turn.tag()}`);
+      if (ctx.turn.flags.replyShape) noteReplyShape(ctx.turn.flags.replyShape);
       const reply: AgentReply = { text: ctx.text, stage: session.stage };
       if (session.handedOver) reply.handoff = true;
       if (session.orderIds.length > ordersBefore) reply.orderId = session.orderIds[session.orderIds.length - 1];
