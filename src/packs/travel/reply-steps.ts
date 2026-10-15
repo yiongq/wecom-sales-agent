@@ -407,7 +407,9 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         ctx.recordGuard('unbacked_claims', before, ctx.text, 'drop_sentence');
       }
     }),
-    replyStep('price', 'unbacked_claims', ['customPromise', 'guardHit'], ['guardHit'], (ctx) => {
+    // 06 R13：词表替换，步骤体由第 11 步填
+    replyStep('claim_words', 'unbacked_claims', [], [], () => {}),
+    replyStep('price', 'claim_words', ['customPromise', 'guardHit'], ['guardHit'], (ctx) => {
       const { session } = ctx;
       // 价格出口校验：回复里的金额必须能追溯到产品库定价规则、本会话报价/订单，或客户自己说过的数字。
       // 追溯不到就是模型自己编的价——高客单价产品里这是最贵的一类错误（客户按错价下单，
@@ -474,6 +476,8 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
       ctx.text = restoreProposalSuffixes(ctx.text, ctx.toolSources);
       ctx.recordGuard('proposal_suffix', beforeSuffix, ctx.text, 'patch');
     }),
+    // 06 R12：结尾句，步骤体由第 8 步填
+    replyStep('closing', 'proposal_suffix', [], [], () => {}),
     replyStep('system_note', 'final_clean', [], [], (ctx) => {
       const { session } = ctx;
       // 回复里说了「由顾问跟您确认」「我让顾问确认」（守卫换上的，或模型照 SOP 说的）却没转人工：记一条给后台，
@@ -494,5 +498,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         });
       }
     }),
+    // 06 R6：本轮回复的会话记录（reminders 等），步骤体由第 6 步填
+    replyStep('note_reply', 'system_note', [], [], () => {}),
   ];
 }

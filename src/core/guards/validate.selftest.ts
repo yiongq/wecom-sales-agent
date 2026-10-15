@@ -4,7 +4,7 @@ import type { GuardStep } from '../pack-api.js';
 import { loadGuardPipeline } from './execute.js';
 import { GuardStepValidationError, validateGuardSteps } from './validate.js';
 
-// plan「实施记录 · 第 1 步」主回复 28 行，标识与顺序逐行保留。
+// plan「实施记录 · 第 1 步」主回复 28 行，加 06 第 1 步的四个放行步骤共 32 行，标识与顺序逐行保留。
 // reads/writes 仅登记跨步骤的 flags；visible → ctx.text，calls → toolSources，
 // 会话与订单不算 flags；raw、客户原话、turnGen 等为捕获的输入。
 // customHandoff → customPromise，beforeGuards → preDropSnapshot。
@@ -24,6 +24,7 @@ const replyTable: GuardStep[] = [
   { id: 'injection', reads: ['customPromise'], writes: ['guardHit'] },
   { id: 'encyclopedia', reads: ['customPromise'] },
   { id: 'unbacked_claims', reads: ['customPromise'], writes: ['preDropSnapshot', 'saidAll'] },
+  { id: 'claim_words' },
   { id: 'price', reads: ['customPromise', 'guardHit'], writes: ['guardHit'] },
   { id: 'stranded', reads: ['preDropSnapshot', 'customPromise'] },
   { id: 'adults', reads: ['saidAll'] },
@@ -33,10 +34,13 @@ const replyTable: GuardStep[] = [
   { id: 'custom_promise-b', reads: ['customPromise'] },
   { id: 'post_handoff' },
   { id: 'proposal_suffix' },
+  { id: 'closing' },
+  { id: 'shape_check' },
   { id: 'takeover_check:post', reads: ['handedOverSelfDecided'] },
   { id: 'turn_failure', reads: ['emptyModelReply', 'guardHit'] },
   { id: 'final_clean' },
   { id: 'system_note' },
+  { id: 'note_reply' },
 ].map((row, index, rows) => ({
   ...row,
   after: index ? [rows[index - 1].id] : [],
@@ -77,7 +81,7 @@ function rejects(steps: GuardStep[], reader: string, conflict: string, reason: s
 }
 const step = (id: string, declarations: Partial<GuardStep> = {}): GuardStep => ({ id, run: () => ({ action: 'pass' }), ...declarations });
 
-assert.equal(replyTable.length, 28);
+assert.equal(replyTable.length, 32);
 validateGuardSteps(replyTable);
 accepts(replyTable);
 accepts([]);
@@ -96,6 +100,26 @@ rejects([step('turn_failure'), step('takeover_check:post')], 'turn_failure', 'ta
 rejects([step('turn_failure')], 'turn_failure', 'takeover_check:post', '后置接管');
 accepts([step('takeover_check:post'), step('turn_failure')]);
 
+// 06 R10：shape_check 必须在 takeover_check:post 之前（重写要 await，接管检查到写消息之间不能有 await）
+rejects([step('takeover_check:post'), step('shape_check')], 'shape_check', 'takeover_check:post', '形状检查');
+rejects([step('shape_check')], 'shape_check', 'takeover_check:post', '形状检查');
+accepts([step('shape_check'), step('takeover_check:post'), step('turn_failure')]);
+// 完整表：把 shape_check 整个挪到 takeover_check:post 之后
+const movedShape = replyTable
+  .filter((row) => row.id !== 'shape_check')
+  .map((row) =>
+    row.id === 'takeover_check:post'
+      ? { ...row, after: ['closing'] }
+      : row.id === 'turn_failure'
+        ? { ...row, after: ['shape_check'] }
+        : row,
+  );
+movedShape.splice(movedShape.findIndex((row) => row.id === 'takeover_check:post') + 1, 0, {
+  ...replyTable.find((row) => row.id === 'shape_check')!,
+  after: ['takeover_check:post'],
+});
+rejects(movedShape, 'shape_check', 'takeover_check:post', '形状检查');
+
 // 完整表的负例；只改夹具，不改开工表，也不靠 after 掩盖读写冲突。
 rejects(
   replyTable.map((row) => (row.id === 'markdown' ? { ...row, after: ['identity'] } : row)),
@@ -110,4 +134,4 @@ rejects(
   'flags.preDropSnapshot',
 );
 
-console.log(`guard validation selftest: ${count} 项通过（含开工主回复 28 行夹具）`);
+console.log(`guard validation selftest: ${count} 项通过（含开工主回复 32 行夹具）`);

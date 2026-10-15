@@ -94,7 +94,7 @@ export function createTravelRuntime(sources: PackSources) {
     prefetch: turnHooks.prefetch,
     contextNote: turnHooks.contextNote,
     preModel: turnHooks.preModel,
-    replyAnchors: { markdown: 'link_whitelist', dangling: 'adults', 'takeover_check:post': 'proposal_suffix' },
+    replyAnchors: { markdown: 'link_whitelist', dangling: 'adults', shape_check: 'closing', 'takeover_check:post': 'shape_check' },
     replySteps: travelReplySteps({
       helpers,
       turnHooks,
@@ -134,6 +134,8 @@ export function createTravelRuntime(sources: PackSources) {
         session.lastShownRoutes = undefined;
         session.seenRouteIds = undefined;
         session.missedDestinations = undefined;
+        session.reminders = undefined;
+        session.recommendedRoutes = undefined;
       },
       paidText: (order) =>
         `已收到您的支付，太开心啦 🎉\n《${order.routeTitle}》${order.travelers} 位出行、` +

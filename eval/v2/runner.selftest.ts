@@ -539,6 +539,35 @@ await test('池内超时只终止受影响 worker，替补继续，异常路径�
   }
   assert.deepEqual(dirs(), before);
 });
+await test('contextMatches / contextExcludes 只看本轮 contextNote：命中、不命中、回复里的字不算', async () => {
+  const run = async (expect: CaseV2['turns'][number]['expect']) => {
+    const c = structuredClone(base);
+    c.turns[0].expect = expect;
+    return runCaseV2(c);
+  };
+  const ok = await run({ contextMatches: ['^【当前会话状态】', '今天日期: 2026-10-02'], contextExcludes: ['^订单:', '已付款'] });
+  assert.equal(ok.pass, true, ok.failures.join('\n'));
+  const missing = await run({ contextMatches: ['^订单:'] });
+  assert.equal(missing.pass, false);
+  assert.match(missing.failures.join('\n'), /contextMatches \/\^订单:\//);
+  const present = await run({ contextExcludes: ['销售阶段'] });
+  assert.equal(present.pass, false);
+  assert.match(present.failures.join('\n'), /contextExcludes \/销售阶段\//);
+  // 回复文字（模型脚本里的话）不在 contextNote 里
+  const replyOnly = await run({ contextMatches: ['想去哪里玩'] });
+  assert.equal(replyOnly.pass, false);
+  const bad = structuredClone(base);
+  bad.turns[0].expect.contextMatches = ['['];
+  assert.throws(() => validateCase(bad), /turns\.0\.expect\.contextMatches\.0.*无效正则/);
+});
+await test('session 夹具认 reminders 与 recommendedRoutes，写错字段报路径', () => {
+  const c = structuredClone(base);
+  c.fixtures = { session: { reminders: { altitude: 2, proposalSent: 3 }, recommendedRoutes: [{ id: 'r-guizhou', title: '贵州' }] } };
+  assert.doesNotThrow(() => validateCase(c));
+  const typo = structuredClone(base);
+  typo.fixtures = { session: { reminders: { altitude: 2, typo: 1 } as never } };
+  assert.throws(() => validateCase(typo), /fixtures\.session\.reminders\.typo/);
+});
 console.log(`v2 runner 自测：${passed}/${passed} 通过`);
 
 if (previousTmp === undefined) delete process.env.TMPDIR;

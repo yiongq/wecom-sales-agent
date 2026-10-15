@@ -262,12 +262,13 @@ async function maybeAskConsent(sessionId: string, text: string, stillCurrent?: (
  */
 export function handleMessage(sessionId: string, text: string, channel: string, opts: HandleOpts = {}): Promise<AgentReply> {
   const rt = currentRuntime();
+  const receivedAt = Date.now();
   const work = () =>
     serialize(sessionId, async () => {
       rt.cancel.throwIfAborted();
       if (opts.stillCurrent && !opts.stillCurrent())
         return { text: '', stage: getSession(sessionId)?.stage ?? currentPack().runtime.stages[0]!.id, silent: true };
-      const reply = await pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts)));
+      const reply = await pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts, receivedAt)));
       if (currentRuntime().cancel.aborted) return reply;
       try {
         await maybeAskConsent(sessionId, text, opts.stillCurrent);
@@ -279,8 +280,14 @@ export function handleMessage(sessionId: string, text: string, channel: string, 
   return rt.kind === 'sandbox' ? rt.inflight.track(work) : work();
 }
 
-async function handleMessageInner(sessionId: string, text: string, channel: string, opts: HandleOpts): Promise<AgentReply> {
-  const state = beginTurn(sessionId, text, channel, opts);
+async function handleMessageInner(
+  sessionId: string,
+  text: string,
+  channel: string,
+  opts: HandleOpts,
+  receivedAt: number,
+): Promise<AgentReply> {
+  const state = beginTurn(sessionId, text, channel, opts, receivedAt);
   const early = preflight(state);
   if (early) return early;
   const { session, runtime, calls, answerIdentity, done } = state;
@@ -328,9 +335,11 @@ interface TurnState {
   takenOver(): boolean;
   unsentTakenOver(): AgentReply;
   calls: ToolCall[];
+  /** handleMessage 收到这条消息的时刻（06 R10：已用时的起点） */
+  receivedAt: number;
 }
 
-function beginTurn(sessionId: string, text: string, channel: string, opts: HandleOpts): TurnState {
+function beginTurn(sessionId: string, text: string, channel: string, opts: HandleOpts, receivedAt: number): TurnState {
   const binding = currentPack();
   const { runtime } = binding;
   const texts = brandTexts(runtime, binding.brand);
@@ -371,6 +380,7 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
     takenOver,
     unsentTakenOver,
     calls: [],
+    receivedAt,
   };
 }
 
@@ -788,6 +798,11 @@ async function finishTurn(
     },
     enterHandoff: (record) => enterHandoff(session, record),
     callTool: runTool,
+    elapsedMs: () => Date.now() - state.receivedAt,
+    // 06 R11：重写接线在第 10 步；此前恒为 null（关闭）
+    rewriteReply: async () => null,
+    // 本轮已转人工：流水线里走到这里的转人工只会来自本轮（已转人工的会话在 takeover_check:pre 之前就静默返回）
+    handoffThisTurn: () => session.handedOver,
     // 保留旧成单安全网的观测路径：记工具 trace，但不追加模型/补链 calls。
     async createOrder(args) {
       const name = runtime.engineHooks.createOrderTool;

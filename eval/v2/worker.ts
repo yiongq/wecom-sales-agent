@@ -136,7 +136,7 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
       if (!finished) throw new Error(`第${i + 1}轮缺少 onTurnEnd 观测`);
       observations.push(observeTurn(reply, session.handedOver, orders(), finished));
       const expect = resolveValues(t.expect, values) as typeof t.expect;
-      for (const key of ['replyMatches', 'replyExcludes'] as const) {
+      for (const key of ['replyMatches', 'replyExcludes', 'contextMatches', 'contextExcludes'] as const) {
         expect[key] = t.expect[key]?.map((pattern) => resolvePattern(pattern, values));
       }
       const check = (ok: boolean, path: string, actual: unknown) => {
@@ -147,6 +147,19 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
         check(new RegExp(normalize(pattern), 'm').test(normalize(reply.text)), `replyMatches /${pattern}/`, reply.text);
       for (const pattern of expect.replyExcludes ?? [])
         check(!new RegExp(normalize(pattern), 'm').test(normalize(reply.text)), `replyExcludes /${pattern}/`, reply.text);
+      // 本轮没有模型请求（确定性回复）时 contextNote 为空串：Matches 不命中，Excludes 通过
+      for (const pattern of expect.contextMatches ?? [])
+        check(
+          new RegExp(normalize(pattern), 'm').test(normalize(fake.contextNote() ?? '')),
+          `contextMatches /${pattern}/`,
+          fake.contextNote(),
+        );
+      for (const pattern of expect.contextExcludes ?? [])
+        check(
+          !new RegExp(normalize(pattern), 'm').test(normalize(fake.contextNote() ?? '')),
+          `contextExcludes /${pattern}/`,
+          fake.contextNote(),
+        );
       if (expect.stage !== undefined) check(reply.stage === expect.stage, 'stage', reply.stage);
       if (expect.tools !== undefined)
         check(

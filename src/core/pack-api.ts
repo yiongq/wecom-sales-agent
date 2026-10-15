@@ -509,6 +509,12 @@ export interface ReplyGuardContext extends GuardContext<GuardContextTypes & { fl
   recordGuard(guard: string, before: string, after: string, action: Exclude<StepVerdict['action'], 'pass' | 'abort'>): void;
   recordSignals(signals: import('../handoff/triggers.js').TurnSignals): void;
   appendMessage(message: import('../types.js').ChatMessage): void;
+  /** 06 R10/R11：从 handleMessage 收到这条消息起已用的毫秒数。 */
+  elapsedMs(): number;
+  /** 06 R11：超限重写一次；关闭、超预算、超时、出错都返回 null。 */
+  rewriteReply(input: { customerText: string; draft: string; maxLines: number; protected: string[] }): Promise<string | null>;
+  /** 06 R11/R12：本轮是否转人工。 */
+  handoffThisTurn(): boolean;
 }
 
 export { replyStep } from './guards/reply-step.js';

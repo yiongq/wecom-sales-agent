@@ -78,6 +78,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -114,6 +118,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -127,6 +139,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]

@@ -15,6 +15,7 @@ export async function startFakeModel(caseId: string, values: Values) {
   let turn = 0;
   let requests = 0;
   let initialWireLength = 0;
+  let contextNote: string | undefined;
   const errors: string[] = [];
   const fail = (reason: string) => errors.push(`[${caseId}] 第${turn}轮 第${requests}次请求：${reason}`);
   const server = http.createServer((req, res) => {
@@ -50,7 +51,13 @@ export async function startFakeModel(caseId: string, values: Values) {
           return;
         }
         requests++;
-        if (requests === 1) initialWireLength = body.messages?.length ?? 0;
+        if (requests === 1) {
+          initialWireLength = body.messages?.length ?? 0;
+          // 引擎把 contextNote 放成独立的 system 消息（第 0 条是 system prompt）
+          contextNote = body.messages?.find(
+            (m, index) => index > 0 && m.role === 'system' && m.content?.startsWith('【当前会话状态】'),
+          )?.content;
+        }
         // 模型下一次请求里的 tool 消息带完整结果，避免 trace 的 4KB 截断。
         const names = new Map<string, string>();
         for (const [index, message] of (body.messages ?? []).entries()) {
@@ -115,7 +122,10 @@ export async function startFakeModel(caseId: string, values: Values) {
       turn = n;
       script = steps;
       requests = 0;
+      contextNote = undefined;
     },
+    /** 本轮第一次模型请求里的 contextNote；本轮没有模型请求时是 undefined */
+    contextNote: () => contextNote,
     finish() {
       if (requests < script.length) {
         errors.push(`[${caseId}] 第${turn}轮 第${requests + 1}次请求：脚本剩余 ${script.length - requests} 项`);
