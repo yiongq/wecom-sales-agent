@@ -223,6 +223,8 @@ export { convLabel, logQuote } from '../log.js';
 export interface TurnContext {
   session: Session;
   text: string;
+  /** 品牌模板模式下的品牌（旧版模式为 null）；contextNote 里对客口径按它渲染（06 原则的三种情形） */
+  brand?: BrandProfile | null;
   /** 经本轮注册表执行预取，并返回实际执行的参数与完整结果。 */
   callTool(name: string, args: Record<string, unknown>): Promise<import('./llm/types.js').PrefetchedCall>;
 }
