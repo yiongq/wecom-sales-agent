@@ -224,7 +224,7 @@ contextNote、`preModel`、`planPrefetch` 都在 `src/packs/travel/turn.ts`，�
 
 ### 一致性车道 D（第 13 步）
 
-- [ ] 13. R21 话术、工具提示、代码模板之间的一致性检查（2.5 工程日，子 agent）
+- [x] 13. R21 话术、工具提示、代码模板之间的一致性检查（2.5 工程日，子 agent）
   - 做：
     - `PackRuntime` 加可选成员 `fixedReplies`（id 加样例）与 `consistencyRules`（`{ id, a, b, scope, why }`）。
     - 旅游包登记四类文字：全部对客固定文字（含第 6、8、11、12 步新加的）、工具结果里的提示模板、两套出口词表、渲染后的 SOP。
@@ -493,6 +493,32 @@ contextNote、`preModel`、`planPrefetch` 都在 `src/packs/travel/turn.ts`，�
 - 具名快照 `eval/baselines/v2-06-batch1.json`（827 条），`DEFAULT_BASELINE` 指向它。对 `v2-pre04` 是 28 个 case、71 处差异，与各车道报告的清单逐条吻合，没有清单外的差异。
 - 锁定的 8 个文件与 `public/chat.html` 未改，PREFIX 不变。
 
+### 第 13 步 · 一致性检查 R21（2026-10-15）
+
+Claude 子 agent 实现，协调者裁决 7 项、审查并提交。
+
+- **登记了什么**：
+  - 旅游包登记对客固定文字 93 条，每条在旧版、网页品牌、模板三种情形下各渲染一份。样例由真实代码现渲染，不抄文字。
+  - 工具提示 18 条、两套出口词表（`dropUnbackedClaims` 与 `claim_words`）、两种渲染下的 SOP。
+  - 核心的应急话术与工具往返用尽的兜底话术，登记在核心自己的清单 `src/core/core-fixed-replies.ts`。
+  - `mockOpening` 与页面 HTML 不登记。
+- **三条规则**：`quote-final`、`sop-vs-wordlist`、`fixed-vs-guards`。失败信息点名规则 id 与冲突的双方。
+  - `fixed-vs-guards` 按管线位置算：每条固定文字声明由哪个步骤产出，或者声明「不经出口护栏」并写明原因，检查只让它穿过那个步骤之后的纯文字护栏。步骤顺序取自 `packPipelines` 的真实步骤表。
+  - 纯文字护栏：`stripMarkdown`、`trimDangling`、`stripAdvisorPrefix`、`dejargon`、`cleanText`、`unassumeAdults`、`dropPostHandoffPromises`（只对转人工后的文字），外加两套词表（本轮工具调用按空算）。
+- **有期限的清单**，都标「第 16 步删除」：
+  - `quote-final` 白名单只有 `sop:stages/quote` 与 `templates.ts` 两处，自测断言两处都还命中。
+  - `FIXED_VS_GUARDS_PENDING` 2 项：`stranded.routes.high-altitude`、`recommend.deterministic`，两条线的列表共 8 行，超了 rich 的 6 行。文字没改，见 Open 4。
+- **禁说示例**：SOP 的 include 短语「还能升房型 / 加天数」本身是 SOP 点名禁说的例子，词表正要删它，所以从 `sop-vs-wordlist` 里排除。清单 `SOP_FORBIDDEN_EXAMPLES` 只有这一条，自测断言它在两种渲染里都处在禁说的上下文中，且其余 include 短语至少一半不在禁说上下文里，判法不会对所有短语放行。
+- **协调者裁决改了一处文字**：顾问草稿兜底 `insight.draft.quote` 原来写「这条线近期名额比较紧俏，如果基本满意我可以先帮您留位，随时可退」，违反 SOP 的「不说名额紧张」。改成「刚才的报价您看还合适吗？价格和名额以付款时为准，基本满意的话我帮您把订单建好～」。这是工作台给顾问的草稿，不是 AI 自动回复。
+- **契约检查**：`checkSopContract` 加 `consistency?: boolean`，默认关，没有调用方传 true。`ViolationCode` 加 `consistency`，后台补了违规说明。`SOP_CHECK_LABEL` 保持 7 项，以免 console 的「n/7 通过」断言和一项永远通过的检查，第 16 步启用时再并入 `CONSISTENCY_CHECK_LABEL`。
+- **为了渲染同一份文字的重构**，行为不变：
+  - 成单安全网与付款通知的文字原样搬进 `order-words.ts`；
+  - `runtime.ts` 把工厂串联抽成 `assemble(sources)`，检查时能换假订单和收款方式；
+  - 样例都在函数里，用到时才渲染，不拖慢租户运行时的创建。
+- **验**：
+  - 变异核对。在 `renderQuoteLine` 加回「起价，按最终行程微调」，失败并点名 `quote-final`；把「名额以付款为准」加进 `SCARCITY`，失败并点名 `sop-vs-wordlist`（同时 `fixed-vs-guards` 点名 `order.net.created.*`）。两次都在同一条命令里改、跑、还原。
+  - 回复不变：`v2-06-batch1.json` 文件与 PGlite 两条路径 827/827、0 处差异；`test:locked` 全绿，PREFIX 不变；`web.selftest` 通过；console 构建与 `check-console-dist` 通过。
+
 ## 验收记录
 
 （第 14、15、18、19、20 步填。）
@@ -520,6 +546,9 @@ contextNote、`preModel`、`planPrefetch` 都在 `src/packs/travel/turn.ts`，�
 3. **（已定：一个 PR、两个提交，锁定文件只动这三处，符合 owner 的授权范围，2026-10-15）「只改三处锁定断言」的 PR 要带一个代码提交。**
    - 新断言是「不含『起价』『微调』」，现有代码过不了，所以这个 PR 必须有出口兜底的改动；只改断言，CI 是红的。
    - 本文件照 05 第 2 步的做法：一个 PR、两个提交、merge commit，锁定文件只动这三处。如果 owner 要的是只含断言的 PR，就要和第 16 步合成一个 PR，与「R18–R20 一个 PR」冲突。
+4. **（待定：第 16 步随话术改动，由 owner 定）第 13 步查出、这一步没改的两类既有文字。**
+   - 两条线的推荐列表 8 行，超了 rich 的 6 行：`stranded.routes.high-altitude`（带长辈、高海拔时每条线多一行）与 `recommend.deterministic`。两种办法：改成每条线少一行，或者给代码整段生成的推荐列表单独定上限。在 `FIXED_VS_GUARDS_PENDING` 里，第 16 步删掉。
+   - 模板模式非网页下点名了「微信」，违反「原则」的「不点名渠道」：advisor 收款模式的文案（`order.net.*.advisor`、`order.resend.advisor`、`handoff.request.order-pending-advisor`）、`price.rewrite.handed-over`、`replace.guard.phone`。都是 06 之前就有的文字，还没做成规则；第 16 步要么改文字并加一条规则，要么记为接受。
 
 ## 交接记录
 

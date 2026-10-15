@@ -1,5 +1,6 @@
 import { renderBrandTemplate } from '../../core/pack-api.js';
 import { travelTemplates } from './templates.js';
+import { createdOrderText, existingOrderText, STRANDED_LEAD } from './order-words.js';
 import { closingLine, HAS_CLOSING, isClosingTurn } from './closing-words.js';
 // 04 R7：旅游主回复步骤，顺序由核心与本表组合；副作用仅经本轮 context。
 import { convLabel, logQuote, cleanText, replyStep, type GuardStep, type ReplyGuardContext } from '../../core/pack-api.js';
@@ -147,12 +148,16 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         if (existing) {
           session.stage = 'closing';
           const before = ctx.text;
-          // advisor 模式：这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」）；online 模式原样不变
-          const how =
-            paymentMode() === 'advisor'
-              ? `订单链接：/pay/${existing.id}\n顾问会${session.channel === 'web' ? '在这个页面里' : '在微信里'}跟您核对价格并发收款方式，想改人数或日期的话跟我说一声，我重新为您安排～`
-              : `直接点这里完成支付即可：/pay/${existing.id}\n想改人数或日期的话跟我说一声，我重新为您安排～`;
-          ctx.text = `您这单已经建好啦～《${existing.routeTitle}》${existing.travelers} 位出行、${cardDate(existing.departDate)}出发，总价 ${yuan(existing.totalPrice)}。\n${how}`;
+          // 文字在 order-words.ts（R21 要渲染同一份）：advisor 模式的链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」）
+          ctx.text = existingOrderText(
+            {
+              title: existing.routeTitle,
+              travelers: existing.travelers,
+              date: cardDate(existing.departDate),
+              total: yuan(existing.totalPrice),
+            },
+            { advisor: paymentMode() === 'advisor', web: session.channel === 'web', id: existing.id },
+          );
           ctx.recordGuard('order_net', before, ctx.text, 'replace');
           ctx.turn.flags.fixedReply = true;
         } else {
@@ -177,25 +182,26 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
                 // 报价对不上。不解释就是「上一条 6 万、下一条 6.6 万」，客户第一反应是被坑了。
                 // 原因照工具的定价说明讲（「10月为最佳出行季，价格上浮 10%」），不说含糊的「有浮动」；
                 // 只有那次报价真发到过客户眼前才提「之前报的」——C07 的 47,400 只在方案书里出现过，聊天里从没报过
-                const diff =
+                const diffed =
                   typeof quote.total === 'number' &&
                   typeof res.total === 'number' &&
                   res.total !== quote.total &&
-                  quoteShown(session, quote.total)
-                    ? `\n（之前报的是 ${yuan(quote.total)}，按 ${cardDate(departDate)}出发重新核算：${res.note ?? '按这条线的季节定价'}）`
-                    : '';
+                  quoteShown(session, quote.total);
                 const old = res.supersededOrderId ? getOrder(res.supersededOrderId) : undefined;
-                const advisor = paymentMode() === 'advisor';
-                // advisor 模式：旧单作废后不说「按这张付款」，这条链接不是点开就能付的（02 spec「收款流程」）；online 模式原样不变
-                const replaced = old
-                  ? `\n之前那张 ${old.travelers} 位、${cardDate(old.departDate)}出发的订单已作废，旧链接失效，${advisor ? '按这张的订单链接来。' : '按这张付款就行。'}`
-                  : '';
-                // 没付款不算锁定名额：此前「已为您锁定名额」和「名额以付款为准」写在同一条里，前后矛盾
-                const how = advisor
-                  ? `订单链接：${res.payUrl}\n顾问会${session.channel === 'web' ? '在这个页面里' : '在微信里'}跟您核对价格并发收款方式，不用点链接付款。`
-                  : `请点此完成支付：${res.payUrl}\n名额以付款为准，付款后顾问会与您确认行程细节～`;
                 const before = ctx.text;
-                ctx.text = `好的，订单已生成～\n《${quote.routeTitle}》${quote.travelers} 位出行、${cardDate(departDate)}出发，总价 ${yuan(res.total ?? 0)}。${diff}${replaced}\n${how}`;
+                // 文字在 order-words.ts（R21 要渲染同一份）：advisor 模式旧单作废后不说「按这张付款」，这条链接不是点开就能付的（02 spec「收款流程」）
+                ctx.text = createdOrderText(
+                  { title: quote.routeTitle, travelers: quote.travelers, date: cardDate(departDate), total: yuan(res.total ?? 0) },
+                  {
+                    diff: diffed
+                      ? { before: yuan(quote.total!), date: cardDate(departDate), note: res.note ?? '按这条线的季节定价' }
+                      : undefined,
+                    replaced: old ? { travelers: old.travelers, date: cardDate(old.departDate) } : undefined,
+                    advisor: paymentMode() === 'advisor',
+                    web: session.channel === 'web',
+                    payUrl: res.payUrl,
+                  },
+                );
                 ctx.recordGuard('order_net', before, ctx.text, 'replace');
                 ctx.turn.flags.fixedReply = true;
               }
@@ -479,7 +485,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
       const shape = ctx.turn.flags.customPromise || session.handedOver ? null : strandedShape(ctx.turn.flags.preDropSnapshot, ctx.text);
       if (shape === 'lead' && !strandedAfterDrop(ctx.turn.flags.preDropSnapshot, ctx.text)) {
         const before = ctx.text;
-        ctx.text = `给您看看这几条：\n${ctx.text}`;
+        ctx.text = `${STRANDED_LEAD}\n${ctx.text}`;
         ctx.recordGuard('stranded', before, ctx.text, 'replace');
         return;
       }

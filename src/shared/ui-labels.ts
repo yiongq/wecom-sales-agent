@@ -24,7 +24,7 @@ export const roleLabel = (role: unknown): string =>
 // ---------------- 话术检查项 ----------------
 
 /** 发布前检查的 7 项，名字固定，与 ViolationCode 一一对应，按这个顺序列（设计系统 §5.17） */
-export const SOP_CHECK_LABEL: Readonly<Record<ViolationCode, string>> = {
+export const SOP_CHECK_LABEL: Readonly<Record<Exclude<ViolationCode, 'consistency'>, string>> = {
   structure: '结构完整',
   locked_changed: '固定规则节没改',
   phrase_missing: '必备短语都在',
@@ -33,6 +33,12 @@ export const SOP_CHECK_LABEL: Readonly<Record<ViolationCode, string>> = {
   unknown_field: '字段名都存在',
   over_budget: '字数在额度内',
 };
+
+/**
+ * 06 R21 的第 8 项。第 16 步启用 `consistency` 违规码时，把它并进 SOP_CHECK_LABEL 和 SOP_CHECKS（清单从 7 项变 8 项）；
+ * 此前清单不显示它，免得出现一项永远「通过」的检查。
+ */
+export const CONSISTENCY_CHECK_LABEL = '话术与固定文字不冲突';
 
 /** 按显示顺序排好的检查项 */
 export const SOP_CHECKS = Object.entries(SOP_CHECK_LABEL) as ReadonlyArray<readonly [ViolationCode, string]>;
