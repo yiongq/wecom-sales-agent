@@ -108,7 +108,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         ctx.recordGuard('other_order', before, ctx.text, 'patch');
       }
     }),
-    replyStep('order_net', 'other_order', ['wantsOrder', 'friendsOwn'], [], async (ctx) => {
+    replyStep('order_net', 'other_order', ['wantsOrder', 'friendsOwn'], ['fixedReply'], async (ctx) => {
       const { session } = ctx;
       // 客户最近说的人数和这次报价对不上（报的 2 位，客户刚问「4个人多少钱」）：按报价的人数建单就是替客户定了人数，留给模型问
       const saidTravelers = ctx.turn.flags.wantsOrder
@@ -150,6 +150,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
               : `直接点这里完成支付即可：/pay/${existing.id}\n想改人数或日期的话跟我说一声，我重新为您安排～`;
           ctx.text = `您这单已经建好啦～《${existing.routeTitle}》${existing.travelers} 位出行、${cardDate(existing.departDate)}出发，总价 ${yuan(existing.totalPrice)}。\n${how}`;
           ctx.recordGuard('order_net', before, ctx.text, 'replace');
+          ctx.turn.flags.fixedReply = true;
         } else {
           const departDate = wantDate;
           if (departDate) {
@@ -192,6 +193,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
                 const before = ctx.text;
                 ctx.text = `好的，订单已生成～\n《${quote.routeTitle}》${quote.travelers} 位出行、${cardDate(departDate)}出发，总价 ${yuan(res.total ?? 0)}。${diff}${replaced}\n${how}`;
                 ctx.recordGuard('order_net', before, ctx.text, 'replace');
+                ctx.turn.flags.fixedReply = true;
               }
             } catch (e) {
               console.error('[engine] 成单安全网建单失败（保留模型原回复）:', e);
@@ -341,7 +343,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
       ctx.turn.flags.handedOverSelfDecided = session.handedOver;
       if (claimed) return { action: 'handoff', text: ctx.text, reason: HANDOFF_REASON.claimed };
     }),
-    replyStep('injection', 'handoff_claims', ['customPromise'], ['guardHit'], (ctx) => {
+    replyStep('injection', 'handoff_claims', ['customPromise'], ['guardHit', 'fixedReply'], (ctx) => {
       const { session } = ctx;
       // 下面几道护栏命中时通常把整条换成兜底话术，但兜底话术都在追问线路/人数/预算——
       // 这一轮已经转人工、AI 之后不再应答，追问只会让客户白等。所以改行程转人工时，
@@ -362,10 +364,11 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         const before = ctx.text;
         replaceVisible(ctx.brand ? renderBrandTemplate(travelTemplates.offTopicReply, ctx.brand) : INJECTION_REPLY);
         ctx.recordGuard('injection', before, ctx.text, 'replace');
+        ctx.turn.flags.fixedReply = true;
         ctx.turn.flags.guardHit = 'injection';
       }
     }),
-    replyStep('encyclopedia', 'injection', ['customPromise'], [], async (ctx) => {
+    replyStep('encyclopedia', 'injection', ['customPromise'], ['fixedReply'], async (ctx) => {
       const { session } = ctx;
       // 百科式回答护栏：客户提到了我们在卖的目的地，回复却像本地理教科书且不含任何产品信息
       const beforeEncyclopedia = ctx.text;
@@ -380,6 +383,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
           if (rec) {
             console.error(`[engine] ⚠️ 拦截百科式回答（会话 ${convLabel(session.id)}，目的地 ${dests[0]}）：${logQuote(ctx.text)}`);
             ctx.text = rec;
+            ctx.turn.flags.fixedReply = true;
             session.stage = ctx.advanceStage(session, {
               calls: [{ name: 'search_routes', args: { destination: dests[0] } }],
               terminal: ctx.isTerminalStage(session.stage),
@@ -437,7 +441,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         ctx.turn.flags.guardHit ??= 'price';
       }
     }),
-    replyStep('stranded', 'price', ['customPromise', 'preDropSnapshot'], [], async (ctx) => {
+    replyStep('stranded', 'price', ['customPromise', 'preDropSnapshot'], ['fixedReply'], async (ctx) => {
       const { session } = ctx;
       // 按句删完剩下的是残句（还指着删掉的那条线、宣称报价却没有数、只剩一句问话）：不发残句，整条换成有内容的兜底
       if (strandedAfterDrop(ctx.turn.flags.preDropSnapshot, ctx.text)) {
@@ -449,6 +453,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
             ? HANDED_OVER_FALLBACK
             : await strandedReply({ session, text: ctx.inputText, calls: ctx.toolSources, runTool: ctx.callTool });
         ctx.recordGuard('stranded', before, ctx.text, 'replace');
+        ctx.turn.flags.fixedReply = true;
       }
     }),
     replyStep('adults', 'stranded', ['saidAll'], [], (ctx) => {

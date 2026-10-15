@@ -484,6 +484,60 @@ export interface ReplyGuardFlags extends GuardTurnFlags {
   guardHit: 'injection' | 'price' | null;
   preDropSnapshot: string;
   saidAll: string[];
+  /** 06 R10：本轮回复整段由代码生成或替换（订单文本、兜底话术等）时由对应步骤置位，shape_check 对它只记形状、不删句 */
+  fixedReply?: boolean;
+  /** 06 R10：shape_check 算出的本轮形状，引擎在轮次结束时写进 trace */
+  replyShape?: ReplyShape;
+}
+
+/** 06 R10：每轮回复的形状（turn_traces.reply_shape）。rewrite 在 R11 推后期间固定 'off'，rewriteMs 为 null */
+export interface ReplyShape {
+  class: 'rich' | 'plain';
+  lines: number;
+  chars: number;
+  /** 本轮行数上限 */
+  limit: number;
+  /** 裁掉的句数 */
+  trimmed: number;
+  /** 最终文本仍超行数或字数上限（发的是裁剪稿，或整段由代码生成不裁剪） */
+  overLimit: boolean;
+  rewrite: 'off' | 'skipped_time' | 'skipped_budget' | 'used' | 'discarded' | 'timeout' | null;
+  rewriteMs: number | null;
+}
+
+/** 06 R10：包给 shape_check 的阈值与可删句定义，放在包的 thresholds.shape 里；包没给就不检查 */
+export interface ShapePolicy {
+  /** 推荐 / 报价类上限（行） */
+  richMaxLines: number;
+  /** 普通类上限（行） */
+  plainMaxLines: number;
+  /** 字数上限（非空白，按码点） */
+  maxChars: number;
+  /** 本轮调过其中任一工具的算推荐 / 报价类 */
+  richTools: readonly string[];
+  /** 客户这句在问价 */
+  asksPrice(inputText: string): boolean;
+  /** 客户这句是收尾（R12 同一判定） */
+  isClosingTurn(inputText: string): boolean;
+  /** 这一行是线路名行（受保护） */
+  isRouteTitleLine(line: string): boolean;
+  /** 这句是结尾句（收尾轮里受保护） */
+  isClosingLine(sentence: string): boolean;
+  /** 本会话已发过方案书 */
+  proposalSent(session: Session): boolean;
+  /** 包定义的可删句（③）：返回删它的理由，不可删返回 null */
+  droppable(
+    sentence: string,
+    info: {
+      closingTurn: boolean;
+      proposalSent: boolean;
+      askedPrice: boolean;
+      /** 这句里的金额（归一后） */
+      amounts: readonly string[];
+      /** 本会话 AI 回复里已出现过的金额（归一后） */
+      priorAmounts: ReadonlySet<string>;
+    },
+  ): string | null;
 }
 
 /** 通用主回复步骤所需的本轮能力；记录、消息追加由引擎绑定。 */

@@ -9,6 +9,7 @@ import {
   type PackSources,
   type TurnToolCall,
   type Session,
+  type ShapePolicy,
 } from '../../core/pack-api.js';
 import { createTravelTools } from './tools/index.js';
 import { createTravelPriceGuard } from './price-guard.js';
@@ -31,10 +32,11 @@ import { travelMock } from './mock.js';
 import * as legacy from './legacy.js';
 import { travelTemplates } from './templates.js';
 import { travelQuickReplyDefaults } from './quick-reply-defaults.js';
+import { createTravelShapePolicy } from './shape-words.js';
 
 const thresholds = { ...travelPriceThresholds, dates: travelDateThresholds, search: travelSearchThresholds };
 interface TravelRuntimeTypes extends PackRuntimeTypes {
-  PackThresholds: typeof thresholds;
+  PackThresholds: typeof thresholds & { shape: ShapePolicy };
 }
 
 export function createTravelRuntime(sources: PackSources) {
@@ -53,6 +55,16 @@ export function createTravelRuntime(sources: PackSources) {
       budgetLifted: priceRules.BUDGET_LIFTED,
     }).extractProfile(text, session);
   }
+  const runtimeThresholds = {
+    ...thresholds,
+    shape: createTravelShapePolicy({
+      PRICE_ASK: turnHooks.PRICE_ASK,
+      ORDER_DEFERRED: turnHooks.ORDER_DEFERRED,
+      QUOTE_ONLY: turnHooks.QUOTE_ONLY,
+      ORDER_QUESTION: turnHooks.ORDER_QUESTION,
+      PRICE_OK: turnHooks.PRICE_OK,
+    }),
+  };
   const helpers = createTravelReplyHelpers({
     ...sources,
     ...catalog,
@@ -143,7 +155,7 @@ export function createTravelRuntime(sources: PackSources) {
         `有任何想法随时跟我说～`,
     },
     vocab: { handoff: handoffVocab, dejargon: dejargonVocab },
-    thresholds,
+    thresholds: runtimeThresholds,
     retrievalText,
     retrievalItems: () =>
       catalog.loadRoutes().map((route, ord) => ({

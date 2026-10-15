@@ -410,6 +410,7 @@ const traceRows = (sid: string) =>
     duration_ms: number;
     signals: Record<string, unknown> | null;
     guard_verdicts: import('../core/pack-api.js').GuardVerdict[] | null;
+    reply_shape: import('../core/pack-api.js').ReplyShape | null;
   }>('select * from turn_traces where conversation_id = $1 order by started_at, id', [sid]);
 const guardRows = (turnId: string) =>
   su<{ ord: number; guard: string; action: string; removed: string[]; added: string[] }>(
@@ -454,6 +455,18 @@ const YUNNAN = 'r-yunnan-mid';
   check('库里有这一轮的 trace（只一条）', !!row && !more.length && row.id === turn.turn.turnId, json(row?.id));
   if (row) {
     check('04：每轮恰好一行 trace，guard_verdicts 与 FinishedTurn 完全一致', json(row.guard_verdicts) === json(turn.turn.guardVerdicts));
+    check(
+      '06 R10：reply_shape 与 FinishedTurn 一致，类别 / 行数 / 字数 / 上限 / 裁掉句数齐全，rewrite 固定 off',
+      !!turn.turn.replyShape &&
+        json(row.reply_shape) === json(turn.turn.replyShape) &&
+        row.reply_shape?.class === 'rich' &&
+        row.reply_shape?.limit === 6 &&
+        row.reply_shape?.rewrite === 'off' &&
+        row.reply_shape?.rewriteMs === null &&
+        row.reply_shape?.lines === 1 &&
+        row.reply_shape?.trimmed === 0,
+      json(row.reply_shape),
+    );
     check(
       '04：完整裁决含 32 个步骤（28 个原有加 06 的四个）与放行，旧 guard_events 仍只记一次文字改写',
       row.guard_verdicts?.length === 32 && row.guard_verdicts.some((v) => v.action === 'pass') && turn.turn.guards.length === 1,
