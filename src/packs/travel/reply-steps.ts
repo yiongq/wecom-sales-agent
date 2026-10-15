@@ -5,6 +5,7 @@ import { closingLine, HAS_CLOSING, isClosingTurn } from './closing-words.js';
 import { convLabel, logQuote, cleanText, replyStep, type GuardStep, type ReplyGuardContext } from '../../core/pack-api.js';
 import { CUSTOM_PROMISE } from './itinerary.js';
 import { noteReply } from './reply-notes.js';
+import { rewriteClaimWords } from './claim-words.js';
 import type { createTravelTurnHooks } from './turn.js';
 import type { createTravelPriceRules } from './price-rules.js';
 import type { TravelPriceGuard } from './price-guard.js';
@@ -13,11 +14,12 @@ import type { TravelReplyHelpers } from './reply-helpers.js';
 export interface TravelReplyStepSources {
   helpers: TravelReplyHelpers;
   turnHooks: ReturnType<typeof createTravelTurnHooks>;
-  priceGuard: Pick<TravelPriceGuard, 'findUnbackedPriceHits' | 'strandedAfterDrop'>;
+  priceGuard: Pick<TravelPriceGuard, 'findUnbackedPriceHits' | 'strandedAfterDrop' | 'dropSentences'>;
   priceRules: Pick<ReturnType<typeof createTravelPriceRules>, 'dropUnbackedClaims'>;
-  loadRoutes: () => import('../../core/pack-api.js').Route[];
   getOrder: (id: string) => import('../../core/pack-api.js').Order | undefined;
   paymentMode: () => import('../../core/pack-api.js').PaymentMode;
+  loadRoutes: () => import('../../core/pack-api.js').Route[];
+  isConfigNotReadyError: (error: unknown) => boolean;
   dejargon(text: string, sessionId: string): string;
   handoffReasons: { promise: string; claimed: string };
 }
@@ -78,7 +80,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
     deterministicRecommend,
     kidsHeadcountUnclear,
   } = sources.turnHooks;
-  const { findUnbackedPriceHits, strandedAfterDrop } = sources.priceGuard;
+  const { findUnbackedPriceHits, strandedAfterDrop, dropSentences } = sources.priceGuard;
   const { dropUnbackedClaims } = sources.priceRules;
   const { getOrder, paymentMode, dejargon, handoffReasons: HANDOFF_REASON, loadRoutes } = sources;
   return [
@@ -418,8 +420,35 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         ctx.recordGuard('unbacked_claims', before, ctx.text, 'drop_sentence');
       }
     }),
-    // 06 R13：词表替换，步骤体由第 11 步填
-    replyStep('claim_words', 'unbacked_claims', [], [], () => {}),
+    // 06 R13：越权说法词表。只按小句删或换，含 /pay/、/proposal/ 链接的句子整句不动；PRICE_GUARD=0 时同价格护栏一起关
+    replyStep('claim_words', 'unbacked_claims', ['customPromise'], [], (ctx) => {
+      if (process.env.PRICE_GUARD === '0') return;
+      const { session } = ctx;
+      let routes: import('../../core/pack-api.js').Route[] = [];
+      try {
+        routes = sources.loadRoutes();
+      } catch (e) {
+        // 数据文件坏了另有告警，这里不阻断对话；配置源没装载好是启动顺序出了错，照常抛
+        if (sources.isConfigNotReadyError(e)) throw e;
+      }
+      const claims = rewriteClaimWords(
+        ctx.text,
+        {
+          mode: { channel: session.channel, templateMode: !!ctx.brand },
+          orders: session.orderIds.map((id) => getOrder(id)).filter((o): o is import('../../core/pack-api.js').Order => !!o),
+          focusRouteId: session.lastQuote?.routeId,
+          routes,
+          yuan,
+        },
+        { dropSentences, hasHole: (t) => new RegExp(ANY_HOLE.source).test(t) },
+      );
+      if (claims.text === ctx.text) return;
+      console.error(`[engine] ⚠️ 越权说法已删换（会话 ${convLabel(session.id)}）：${logQuote(claims.dropped.join(' | '))}`);
+      const before = ctx.text;
+      ctx.text =
+        claims.text || (ctx.turn.flags.customPromise ? '' : session.handedOver ? HANDED_OVER_FALLBACK : ctx.fallbackReply(session.stage));
+      ctx.recordGuard('claim_words', before, ctx.text, 'drop_sentence');
+    }),
     replyStep('price', 'claim_words', ['customPromise', 'guardHit'], ['guardHit'], (ctx) => {
       const { session } = ctx;
       // 价格出口校验：回复里的金额必须能追溯到产品库定价规则、本会话报价/订单，或客户自己说过的数字。

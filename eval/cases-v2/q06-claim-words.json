@@ -1,0 +1,321 @@
+[
+  {
+    "version": 2,
+    "id": "q06-claim-words-01",
+    "desc": "R13 D 类审查原话：手续、开放、发团、协助办好、身体负担、高反，换成政策会变的口径，整条只出现一次",
+    "tags": ["q06", "claim_words"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "西藏和新疆现在去安全吗，要办什么手续吗",
+        "script": [
+          {
+            "content": "西藏和新疆都是成熟的旅游目的地，现在正常接待游客，我们今年的客人一直都在发团出行。\n边防证这类手续我们行程里会协助办好，不用担心。\n· 西藏：拉林铁路线海拔从三千六缓降至三千，身体负担小\n· 新疆：伊犁独库公路线最高海拔只有三千五，几乎无高反压力\n放心，景区和主要线路一直正常开放，带上身份证就行，不用办任何特殊手续。\n您打算什么时候出发？"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes", "search_routes"],
+          "replyExcludes": [
+            "正常接待",
+            "一直都在发团",
+            "协助办好",
+            "身体负担小",
+            "几乎无高反",
+            "一直正常开放",
+            "带上身份证就行",
+            "不用办任何特殊手续"
+          ],
+          "replyMatches": ["这块政策会变，由顾问按您的出行时间跟您确认。", "您打算什么时候出发？"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-claim-words-02",
+    "desc": "R13 D 类否定句不误伤：没有儿童价、不是所有线路都要通行证",
+    "tags": ["q06", "claim_words"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "小朋友怎么收费，去西藏要通行证吗",
+        "script": [
+          {
+            "content": "没有儿童价，小朋友和大人同价。不是所有线路都要通行证，具体看目的地。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes"],
+          "replyMatches": ["没有儿童价", "不是所有线路都要通行证"],
+          "replyExcludes": ["政策会变"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-claim-words-03",
+    "desc": "R13 付款确认：会话里没有已付款订单时，「付款已完成，订单生效」换成到账口径",
+    "tags": ["q06", "claim_words"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "closing",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913601654
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913601662
+          }
+        ],
+        "handedOver": false,
+        "seenRouteIds": ["r-yunnan-mid"]
+      },
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "我已经付款了",
+        "script": [
+          {
+            "content": "收到，付款已完成，订单生效。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyMatches": ["收到。款项到账后您会收到确认，顾问核实后会在微信上联系您。"],
+          "replyExcludes": ["付款已完成", "订单生效"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-claim-words-04",
+    "desc": "R13 付款确认：会话里有已付款订单时不拦",
+    "tags": ["q06", "claim_words"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "closing",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913601654
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913601662
+          }
+        ],
+        "handedOver": false,
+        "seenRouteIds": ["r-yunnan-mid"]
+      },
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "paid"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "谢谢",
+        "script": [
+          {
+            "content": "收到，付款已完成，订单生效。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyMatches": ["付款已完成，订单生效"],
+          "replyExcludes": ["款项到账后"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-claim-words-05",
+    "desc": "R13 旧单失效：有别的线路的待付款单时，「不用管它，直接失效」换成请顾问处理",
+    "tags": ["q06", "claim_words"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "四川",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "丽江大理两个人报个价",
+            "at": 1790913601654
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条每人 ¥16,800，2 位总价 ¥33,600。",
+            "at": 1790913601662
+          }
+        ],
+        "handedOver": false,
+        "seenRouteIds": ["r-yunnan-mid", "r-sichuan-mid"],
+        "lastQuote": {
+          "routeId": "r-sichuan-mid",
+          "routeTitle": "四川 成都熊猫·九寨黄龙 6 日亲子",
+          "travelers": 2,
+          "perPerson": 19800,
+          "total": 39600
+        }
+      },
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "pending_payment"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "改成四川吧",
+        "script": [
+          {
+            "content": "好的，改四川没问题～云南那张单您还没付款，不用管它，直接失效就行。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyMatches": ["之前那张单请先别付款，我请顾问帮您处理。"],
+          "replyExcludes": ["不用管它", "直接失效"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-claim-words-06",
+    "desc": "R13 低于全库最低价的许诺：「帮您找找 5000 以内」换成全库最低的一条",
+    "tags": ["q06", "claim_words"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "预算特别紧，五千以内有吗",
+        "script": [
+          {
+            "content": "您愿意的话，我帮您找找 5000 以内能玩得好的线路？"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyMatches": ["我们这边最实惠的一条是《西安 兵马俑·大唐不夜城 5 日》，人均 ¥12,800 起。"],
+          "replyExcludes": ["5000"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-claim-words-07",
+    "desc": "R13 单订酒店、普通发票、照片换成现有口径；锁名额类与编价格理由只删小句，国庆是四川最旺的时段保留",
+    "tags": ["q06", "claim_words"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "能单订酒店吗，发票呢，国庆去四川价格怎么样",
+        "script": [
+          {
+            "content": "可以单订，我们合作了几家酒店。发票可以开的。方案书里有酒店实拍。国庆是四川最旺的时段，定了我帮您锁档期，节后出行会低一些。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": ["search_routes"],
+          "replyMatches": [
+            "酒店我可以推荐，要订请顾问确认房态。",
+            "发票（含专票）怎么开，由顾问跟您确认。",
+            "照片和视频我这边发不了，请顾问发给您。",
+            "国庆是四川最旺的时段"
+          ],
+          "replyExcludes": ["可以单订", "发票可以开", "方案书里有酒店实拍", "锁档期", "节后出行"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-claim-words-08",
+    "desc": "R13 转人工说法：「当面」换成「在微信上」，不重复",
+    "tags": ["q06", "claim_words"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "你们顾问能详细讲讲吗",
+        "script": [
+          {
+            "content": "顾问可以当面跟您聊清楚细节。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyMatches": ["在微信上跟您聊清楚细节"],
+          "replyExcludes": ["当面"]
+        }
+      }
+    ]
+  }
+]
