@@ -3,7 +3,7 @@
 Status: draft
 Phase: 7 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」（2026-10-15 顺延后的编号）
 Depends on: [06 · AI 回复质量](../06-reply-quality/spec.md)（implemented，线上 `demo-v7`：真实模型回归集与 `SimGoal.initial` / `customerScript`、`claim_words`、`fixedReplies` 与一致性检查 R21、v2 快照政策 R4）；[05](../05-tenancy-sandbox/spec.md)（租户运行时、进程内状态清单 R5、沙箱开通 R9、到期删除 R12、预算 R15）；[04](../04-industry-packs/spec.md)（`PackRuntime`、依赖方向 R2、护栏步骤表 R7、品牌快照 R6、cases v2 R10、模拟客户评测 R11）；[02](../02-conversations-workbench/spec.md)（订单与收款流程、转人工记录与「已成交客户要人工」、公开路由白名单 R22、trace、运行数字 R24）；[01](../01-pg-config-console/spec.md)（SOP 节表、锁定节、契约检查、发布与回滚、启动重渲染、R4 四个哈希）。选型见 [ADR-001](../../adr/adr-001-postgres-drizzle.md)（决策 6、7：`halfvec`、扩展显式指定 schema）、[ADR-002](../../adr/adr-002-console-vite-react.md)（:78 把 policy、lint、发布闸、知识库列为 P1）。
-Supersedes in part: [00](../00-baseline/spec.md) 不变量 15「客户明确要人工、投诉或要退款时，引擎直接转人工」里的「要退款」——开着自助退款（policy `refund.selfService`）时，名下有可自助退的已付款订单、没明确要人工、不是投诉、也没到负面情绪阈值的「要退款」改走确定性的退款流程（R18），其余照旧直接转人工；[02](../02-conversations-workbench/spec.md) 验收 12 的「已付的会话里客户说「我要退款」：……会话出现在铃铛弹层与 A2 的「已成交客户要人工」里，外部通道收到一条」——同样条件下第一句先回退款报价，客户确认之后凡是还要人动手的（超过阈值等审批，或顾问收款模式下等顾问退款）才转人工、进那一组，低于阈值且模拟支付的当场办完、不转人工（R18、R19），自助退款关着时原文照旧；[01](../01-pg-config-console/spec.md)「启动重渲染」第 5 步「直接用存下的行」的条件与第 6 步的原因清单（经 04 加了 `brand`）——条件加「`policyHash` 也相同」，原因加 `policy`（R1，同 04 顶部对这一节的写法）；[04](../04-industry-packs/spec.md)「主流程」里「紧急、撤回同意、已接管静默、重置口令关着时的回复、明确要人工、负面情绪在记客户消息之后」这一串顺序——在「重置口令关着时的回复」与「明确要人工」之间插入包的售后钩子 `afterSales`（R18）；[06](../06-reply-quality/spec.md) 不变量 3 与验收 3 末条（contextNote 逐字节不变的条件）——加「客户这句不是退改、保险、费用含不含的问法」（R14）；06 不变量 16，连同 06 顶部对 04 不变量 4、04 验收 7 的改写——主回复步骤顺序等于 04 开工步骤表加 06、07 新增的步骤（R22 的 `policy_claims`），原有相对顺序不变。原因：退款要按条款由代码算、能自助办完；政策问答要带出处；护栏要多一步。翻 `ready` 时 00、01、02、04、06 顶部补 `Superseded in part by:`。
+Supersedes in part: [00](../00-baseline/spec.md) 不变量 15「客户明确要人工、投诉或要退款时，引擎直接转人工」里的「要退款」——开着自助退款（policy `refund.selfService`）时，名下有可自助退的已付款订单、没明确要人工、不是投诉、也没到负面情绪阈值的「要退款」改走确定性的退款流程（R18），其余照旧直接转人工；[02](../02-conversations-workbench/spec.md) 验收 12 的「已付的会话里客户说「我要退款」：……会话出现在铃铛弹层与 A2 的「已成交客户要人工」里，外部通道收到一条」——同样条件下第一句先回退款报价，客户确认之后凡是还要人动手的（超过阈值等审批，或顾问收款模式下等顾问退款）才转人工、进那一组，低于阈值且模拟支付的当场办完、不转人工（R18、R19），自助退款关着时原文照旧；[01](../01-pg-config-console/spec.md)「启动重渲染」第 5 步「直接用存下的行」的条件与第 6 步的原因清单（经 04 加了 `brand`），以及「审计」表 `sop.rerender` 的 `causes` 枚举（:922）——条件加「`policyHash` 也相同」，原因与枚举加 `policy`（R1，同 04 顶部对这一节的写法）；[04](../04-industry-packs/spec.md)「主流程」里「紧急、撤回同意、已接管静默、重置口令关着时的回复、明确要人工、负面情绪在记客户消息之后」这一串顺序——在「重置口令关着时的回复」与「明确要人工」之间插入包的售后钩子 `afterSales`（R18）；[06](../06-reply-quality/spec.md) 不变量 3 与验收 3 末条（contextNote 逐字节不变的条件）——加「客户这句不是退改、保险、费用含不含的问法」（R14）；06 不变量 16，连同 06 顶部对 04 不变量 4、04 验收 7 的改写——主回复步骤顺序等于 04 开工步骤表加 06、07 新增的步骤（R22 的 `policy_claims`），原有相对顺序不变。原因：退款要按条款由代码算、能自助办完；政策问答要带出处；护栏要多一步。翻 `ready` 时 00、01、02、04、06 顶部补 `Superseded in part by:`。
 Amends: 01「版本与发布」「渲染与哈希」「导入、导出与回滚」：`sop_versions.policy` 列、`render_inputs.policyHash`、导出与导入的 `policy.json`、违规码 `policy_invalid` / `policy_mismatch`、发布请求的 `gateRunId` / `override`、审计动作 `sop.policy_draft`（R1、R4、R5、R7）。02「数据库」「后台接口」「审计」「可观测性与告警」：`OrderStatus` 加 `refund_pending`、`refunded`，`Order.refund`，`Session.handoffLog` 与 `Session.afterSale`，R22 公开订单投影加 `refund` 字段，四个订单审计动作与 `trace.export`，`OrderSummary` 与 `MetricsView` 的新字段，`usage_daily.purpose` 加 `gate`，trace 详情补 `guardVerdicts`、`replyShape`（R18–R24）。04 `PackRuntime` 新增可选成员 `policy`，`EnginePackHooks` 新增可选成员 `afterSales`，`pack-api` 新增纯函数 `quoteRefund`，`SimGoal` 新增 `tags`、`initial.orders.status` 加两个新值，模拟评测运行时新增 `--config-dir`（R1、R8、R9、R18）。05 R5 清单加闸的两项，R9 复制范围加 policy 与知识库行，R12 `sandbox_tenant_purge` 的删除清单加新表，沙箱不跑发布闸，种子订单支持相对出发日（R7、R10、R13、R21）。
 
 **一句话：** 价格规则、AI 标识这些政策现在在 SOP 文字、代码字面量和品牌模板里各抄一份，没有测试守着它们一致；SOP 发布只有静态检查；客户要退款只能转人工，问退改规则也只能说「由顾问确认」。本 spec 把政策收成一份结构化数据（第一步逐字节生成今天的文字，前缀哈希不动），给发布加一道真实模型回归闸，把线路向量从 `var/` 文件搬进 Postgres、按块增量嵌入，让政策回答带条款出处，让已付款订单按条款自助退款（退款额由代码算，超过阈值进后台审批），顺带修掉看板与 trace 两个推迟的缺陷。
@@ -164,7 +164,7 @@ Amends: 01「版本与发布」「渲染与哈希」「导入、导出与回滚�
 
 **R8 回归集与判定。**
 
-- `SimGoal` 加 `tags?: string[]`。只有带 `regression` 的目标进闸、能拦发布。批 Q 先给 06 的 16 个 `safety` 目标打标；批 A、K、G 各自上线时再加本批的目标（自助退款低于与高于阈值、问退改规则带出处、无出处的保险问法），共 20 个以内。
+- `SimGoal` 加 `tags?: string[]`：`goalSchema` 是 `.strict()`（`eval/sim/goals.ts:67,82`），所以这个字段在批 P 就加，后面各批才能提交带标的目标。只有带 `regression` 的目标进闸、能拦发布。批 Q 给 06 的 16 个 `safety` 目标打标；批 A、K、G 各自上线时加本批的目标（自助退款低于与高于阈值、问退改规则带出处、无出处的保险问法），共 20 个以内。
 - 每个目标先跑 1 遍；不过就重跑，最多再 2 遍。第 1 遍过是 `pass`；重跑里有一遍过是 `flaky`；三遍都不过是 `fail`；预算用完没跑到的是 `skipped_budget`。
 - 基线是「当前已发布版本最近一次的结果」：找一行键相同的已完成运行，键是（已发布版本的 `promptHash`、`policyHash`、产品库快照哈希、目标集哈希、代码版本、销售与客户模型）。通过的草稿发布之后，它这一边的结果就是新线上版本的基线。找不到（发了版、改了产品库、回滚或重渲染之后）就在同一次运行里先跑一遍线上版：06 的「发布前试跑」由此合流，两边逐目标并排。
 - 拦发布：某个 `regression` 目标草稿一边是 `fail`，而基线不是 `fail`。基线就失败的记「已知失败」、`flaky` 记「不稳」、`skipped_budget` 记「没跑完」，都列出来，不拦；没跑完的占一半以上时整次判 `error`。
@@ -174,7 +174,7 @@ Amends: 01「版本与发布」「渲染与哈希」「导入、导出与回滚�
 
 - 镜像带上 `eval/sim/`（`Dockerfile` 加一行 `COPY eval/sim ./eval/sim`），它只依赖 Node 内置模块与 `zod`。
 - 注入：父进程在 `VAR_DIR/gate/<runId>/draft/` 与 `…/published/` 各写一份导出目录（`sop.md`、`routes.json`、`hotels.json`、`policy.json`，模板模式加 `brand.json`），复用 `export-config` 的写法。`eval/sim/runtime.ts` 加 `--config-dir`：给了就用目录里的文件，没给照旧是 `data/`（先例：`eval/v2/brand.ts` 用临时 `SOP_PATH`）；`runner.ts:194` 对品牌目标的拒绝只在没给 `--config-dir` 时生效。
-- 子进程：`node --import tsx eval/sim/gate.ts --config-dir … --tag regression --rerun 2 --budget <元> --report <文件>`。环境变量只放行模型相关的几项（`LLM_*`、`ZHIPU_*`、`EMBED_*`、`TZ`），不给 `DATABASE_URL` 一类：子进程连不到业务库、也不碰线上 `var/`；`LLM_MAX_INFLIGHT=1`，串行跑。超时 `SOP_GATE_TIMEOUT_MS` 到了就杀进程，记 `error`。
+- 子进程：`node --import tsx eval/sim/gate.ts --config-dir … --tag regression --rerun 2 --budget <元> --report <文件>`。环境变量只放行模型相关的几项（`LLM_*`、`ZHIPU_*`、`EMBED_*`、`TZ`），不给 `DATABASE_URL` 一类：子进程连不到业务库，线上 `var/` 里只读这次运行的导出目录；`LLM_MAX_INFLIGHT=1`，串行跑。超时 `SOP_GATE_TIMEOUT_MS` 到了就杀进程，记 `error`。
 - 耗时：06 实测每段 11–20 秒。20 个目标一边约 4–7 分钟，加上重跑与基线一边，发版之后的第一次约 10–20 分钟；超时默认 30 分钟，第 0 步实测后再定。
 - 费用：子进程自带 Meter，到 `SOP_GATE_BUDGET_CNY` 就停；父进程按报告把用量记进 `usage_daily`，`purpose='gate'`，计入租户的软告警。每个租户每天最多 `SOP_GATE_DAILY_RUNS` 次，超了回 429。
 - 夹具时钟照旧是 `FIXTURE_CLOCK`（`eval/sim/runtime.ts:10`），退款目标的「距出发天数」按它算。
@@ -211,7 +211,7 @@ Amends: 01「版本与发布」「渲染与哈希」「导入、导出与回滚�
 
 **R14 政策问法进上下文，回答带出处。**
 
-- 不加模型工具（工具定义一改就动前缀），不调嵌入。旅游包认问法：客户这句在问退款、退订、改期、保险、费用含不含（签证已在 06 的 `SENSITIVE_ASK`，`P/turn.ts:593`），只认问法，提到这些词的陈述句不算。命中就按主题确定性地取条款：退改主题给全部档位条款加改期条款（上限不小于档位数），会话里有订单时再按这张单的距出发天数标出适用的那一条；其余主题给那一句口径。加进 contextNote：
+- 不加模型工具（工具定义一改就动前缀），不调嵌入。旅游包认问法：客户这句在问退款、退订、改期、保险、费用含不含（签证已在 06 的 `SENSITIVE_ASK`，`P/turn.ts:593`），只认问法，提到这些词的陈述句不算。命中就按主题确定性地取条款：退改主题给全部档位条款加改期条款（上限 ≥ 档位数 + 1），会话里有订单时再按这张单的距出发天数标出适用的那一条；其余主题给那一句口径。加进 contextNote（示例节选，实际列出全部档位）：
 
 ```
 可引用的条款（照原文说，说到哪条就在句末写出处）：
@@ -226,7 +226,7 @@ Amends: 01「版本与发布」「渲染与哈希」「导入、导出与回滚�
 
 **R15 嵌入端点白名单。**
 
-`src/core/llm/endpoints.ts` 写一份境内已备案服务商的 API 主机清单（本期只有智谱）。DB 模式启动时，`embedCfg().baseUrl` 的主机不在清单里就拒绝启动；`DEPLOY_PROFILE` 不是 prod 时另放行 `127.0.0.1` 与 `localhost`（自测的假服务）。加一家服务商要改代码、过评审，不开环境变量口子。
+`src/core/llm/endpoints.ts` 写一份境内已备案服务商的 API 主机清单（本期只有智谱）。两处都查：DB 模式启动时 `embedCfg().baseUrl` 的主机不在清单里就拒绝启动；任何模式下 `readEmbedding` 发请求之前再查一遍，不在清单里就不发、记错误、退回关键词（文件模式的评测与闸的子进程也受管）。`DEPLOY_PROFILE` 不是 prod 时另放行 `127.0.0.1` 与 `localhost`（自测的假服务）。加一家服务商要改代码、过评审，不开环境变量口子。
 
 ### 售后退改
 
@@ -254,11 +254,11 @@ Amends: 01「版本与发布」「渲染与哈希」「导入、导出与回滚�
 
 **R18 已付款订单的「我要退款」。**
 
-- 位置：`EnginePackHooks` 新增可选的 `afterSales`，`preflight` 在紧急情况、撤回同意、已转人工静默、重置关闭这几步之后，确定性转人工安全网（`src/core/engine/index.ts:555`）之前调它（对 04「主流程」顺序的部分取代）。返回 `null` 就照旧往下走。`isHandoffIntent` 本身不改（锁定的 `dejargon.selftest.ts:394` 断言「我要退款」仍要命中它）。
-- 触发，全部满足：policy `refund.selfService` 为 true；客户这句是退款意图（`REFUND_REQUEST` 的退款、退订、退钱、取消订单、不去了一类），或在问这张单能不能退、能退多少（报价没有副作用）；**没有**明确要人工（转人工、人工、真人、顾问）；`isComplaint` 不命中，负面情绪也没到阈值（这两种照旧交给现有的安全网与情绪判断，话术不变）；会话名下有 `status='paid'` 的订单。没有已付订单时的退改规则问法归 R14。
+- 位置：`EnginePackHooks` 新增可选的 `afterSales`，`preflight` 在紧急情况、撤回同意、已转人工静默、重置关闭这几步之后，确定性转人工安全网（`src/core/engine/index.ts:555`）之前调它（对 04「主流程」顺序的部分取代）。核心先判这一句是不是投诉（`isComplaint`）、负面情绪到没到阈值，任一成立就不调钩子、照旧走现有的安全网与情绪判断（包不 import `src/handoff/`，04 R2）。返回 `null` 就照旧往下走。`isHandoffIntent` 本身不改（锁定的 `dejargon.selftest.ts:394` 断言「我要退款」仍要命中它）。
+- 触发，全部满足：policy `refund.selfService` 为 true；客户这句是退款意图（`REFUND_REQUEST` 的退款、退订、退钱、取消订单、不去了一类），或在问这张单能不能退、能退多少（报价没有副作用）；**没有**明确要人工（转人工、人工、真人、顾问）；不是投诉、负面情绪没到阈值（由核心先判，见上）；会话名下有 `status='paid'` 的订单。没有已付订单时的退改规则问法归 R14。
 - 流程，每一步都不发模型请求，回复是包里登记的固定文字。进行到哪一步记在 `Session.afterSale`（旅游字段，进 `resetSession`，30 分钟过期）：
   1. 选单：可退的只有一张就用它；两张以上按 R17 列出尾号，记 `{ step: 'choose', orderIds }`，下一句是其中一个尾号才继续。
-  2. 报价：`quoteRefund` 按已发布 policy 算。办不了的（已出发、在第4条、这张单被驳回过）不报价，照旧走安全网转人工，话术同今天。办得了的回：「《云南 丽江大理·洱海古城 6 日》2 位、12 月 10 日出发（订单尾号 a1b2c3）：离出发 55 天，按退改条款第1条可退全款 ¥33,600。确认退款请回复「确认退款」。」记 `{ step: 'confirm', quote }`。
+  2. 报价：`quoteRefund` 按已发布 policy 算。办不了的（已出发、在第4条、这张单被驳回过）不报价，钩子自己返回 `handoff`（kind `refund`，话术同今天的退改转接）：「能退多少」「不去了」这类话不命中 `HANDOFF_REQUEST`（`P/turn.ts:416`），不能指望后面的安全网接住。办得了的回：「《云南 丽江大理·洱海古城 6 日》2 位、12 月 10 日出发（订单尾号 a1b2c3）：离出发 55 天，按退改条款第1条可退全款 ¥33,600。确认退款请回复「确认退款」。」记 `{ step: 'confirm', quote }`。
   3. 确认：下一句正好是「确认退款」（允许句末标点），报价没过期、`policyHash` 没变 → 钩子返回 `submit`，由核心提交（R19）。别的话清掉 `afterSale`，照常走后面的流程。
 - 待付款订单的「我要退款」、带「转人工」的退款话、没有订单的，行为与开工时相同：锁定 :1935、:1940、:2141–2170 照绿。
 - `selfService` 关掉，就完全是今天的行为，00 不变量 15 与 02 验收 12 的原文照旧成立（开放问题 2 的备选 B）。
@@ -269,7 +269,7 @@ Amends: 01「版本与发布」「渲染与哈希」「导入、导出与回滚�
 - `requestRefund`：先查写库健康，积压时不改任何东西、回「系统有点忙，请稍后再回一次「确认退款」」；否则订单从 `paid` 改成 `refund_pending`，写 `Order.refund`。幂等：订单已经是 `refund_pending` 或 `refunded` 时返回已有的那条、`created: false`，不写第二条审计、不发第二次通知，回「退款申请已经提交过了」。
 - 审批：退款额 ≤ 阈值记 `approval='auto'`，超过记 `pending`，批准后改 `approved`。结算：模拟支付（`paymentMode()==='online'`）下批准即结算，`settlement='mock'`；顾问收款模式下要顾问把钱退回之后点「确认已退款」，`settlement='advisor'`。`settleRefund` 只接受 `approval ∈ {auto, approved}`，否则 409 `order_state`。
 - 不要人的只有一种：`auto` 加模拟支付，当场结算成 `refunded`。核心等这次改动提交（≤5 秒，同 02 不变量 20 的付款确认）之后才回「已为您办好退款 ¥X（退改条款第N条）。这是演示环境的模拟退款，不产生真实打款。」；5 秒内没确认提交，就回「退款申请已收到，正在处理，顾问核实后会联系您」并转人工。
-- 其余都要人：`enterHandoff(kind='refund', reason='退款待审批：¥X（退改条款第N条）')`，回「退款申请已提交：¥X。金额超过 ¥30,000 要顾问审核，顾问会在微信上联系您。」（不用审批、只等打款时说「顾问会按原付款方式退回」）。之后就是 02 的现成链路：终态阶段不变、进「已成交客户要人工」、外部通道一条。
+- 其余都要人，`enterHandoff(kind='refund')` 的原因分两种：等审批的写「退款待审批：¥X（退改条款第N条）」，回「退款申请已提交：¥X。金额超过 ¥{阈值} 要顾问审核，顾问会在微信上联系您。」；已自动批准、只等顾问打款的写「退款待打款：¥X（已自动批准，按原付款方式退回）」，回「退款申请已提交：¥X，顾问会按原付款方式退回，并在微信上联系您。」。阈值与金额都从已发布 policy 与这次报价渲染，不写死。之后就是 02 的现成链路：终态阶段不变、进「已成交客户要人工」、外部通道一条。
 - 后台（写法照 `markPaidByAdvisor`：先查写库健康，改内存，随落库写审计，提交之后才对客户发通知）：
   - `POST /orders/:id/refund/approve`、`…/reject { reason }`：supervisor 以上（`supervisesConversations`）。驳回把订单改回 `paid`、记原因，对客说「退款申请没有通过，顾问会在微信上跟您说明」；同一张单以后再说退款直接转人工。
   - `POST /orders/:id/refund/settle`：只在顾问收款模式，接手人或 supervisor 以上（同确认收款），`refund_pending` → `refunded`。
@@ -285,10 +285,10 @@ Amends: 01「版本与发布」「渲染与哈希」「导入、导出与回滚�
 - 要跟着改的地方：
   - 类型：`src/shared/conversation-types.ts:42`、`src/shared/console-api.ts:144`、`console/src/conversations/workbench.ts:226`（`ORDER_STATUS_LABEL` 是 `Record<OrderStatus,…>`，类型检查会逼着补）；
   - 成交凭证：`src/store.ts:831-834` 的 `hasPaidOrder`（访客淘汰与闲置清理时保护已付会话）三种都算；`supersedeOrder`、`markOrderPaid` 只认待付款，不用改；
-  - 对客：`P/turn.ts:600-620` 的订单行加「退款中」「已退款」；`P/claim-words.ts:75-80` 的付款类判断；`P/turn.ts:1433` 的付款后寒暄；`P/reply-helpers.ts:1345-1350`（`liveOrderOf`：`refunded` 不再算在途单）、:1387（转人工措辞）、:1472-1476（`promisesContact` 的在途单）；
-  - 支付：`src/server.ts:743-746` 退款中、已退款的单不能再付（409）；:805-845 的支付页标题与摘要写「退款中 / 已退款」；`public/pay.html:369,463` 按新的 `refund` 字段显示退款状态；
+  - 对客：`P/turn.ts:600-620` 的订单行加「退款中」「已退款」；`P/turn.ts:622` 客户说「付过了」时，退款中、已退款都算付过，不出「系统还没收到到账」那行；`P/claim-words.ts:75-80` 的付款类判断；`P/turn.ts:1433` 的付款后寒暄；`P/reply-helpers.ts:1317`（`saysTransfer` 的已付判断，三种都算）、:1345-1350（`liveOrderOf`：`refunded` 不再算在途单）、:1387（转人工措辞）、:1472-1476（`promisesContact` 的在途单）；
+  - 支付：`src/server.ts:743-746` 退款中、已退款的单不能再付（409）；:805-845 的支付页标题与摘要写「退款中 / 已退款」；`public/pay.html:369,463` 按新的 `refund` 字段显示退款状态（新分支加在 `paid` 那一行之前，`superseded` 分支一字不动，见「锁定断言」）；
   - 公开订单投影（`src/server.ts:268-292`，02 R22 白名单）：`status` 照旧只出四个旧值（`refund_pending`、`refunded` 出 `paid`），另加 `refund: 'pending' | 'refunded' | null`。这样 `public/chat.html` 的 `fillPayCard`（锁定的 `server.selftest.ts:279-311` 抽它出来跑）不用改：翻历史时卡片照旧显示「已支付 · 查看订单」，点开支付页看到退款状态。
-  - 后台与统计：`src/handoff/takeover.ts:239`、`app.ts:774-795`（成交额照旧按 `paid_at` 所在月，含退款中；已退款单列）、`src/core/insight.ts:17`、`public/admin.html:588,808`；评测：`eval/sim/goals.ts` 的 `initial.orders.status`、`eval/sim/runtime.ts:240-252` 按初始状态建单的分支。
+  - 后台与统计：`src/handoff/takeover.ts:239`、`app.ts:774-795`（成交额照旧按 `paid_at` 所在月，含退款中；已退款单列）、`src/core/insight.ts:17`、`public/admin.html:588,808`；评测：`eval/sim/goals.ts` 的 `initial.orders.status`、`eval/sim/runtime.ts:240-254` 按初始状态建单与推断阶段的分支、`eval/v2/schema.ts:15` 的状态枚举。`public/admin.html:588` 的标签加两种状态时，保留 `'已被替代'` 与 `liveOrder(s)`。
 - 重置：demo 下重置照旧作废会话名下全部订单（锁定 :818-819），两个新状态同样作废；prod 下重置关闭、订单不动（:863、:897）。
 - 回滚检查（`deploy/rollback-guard.sh`）：现有退出码 3–7 都占了（6 是品牌、7 是沙箱），本期用新的 **8**：目标镜像早于 07 而库里有 `refund_pending` 或 `refunded` 的订单，就以 8 退出，打印「先在后台把退款中的订单办完或驳回；已退款的单在旧镜像上显示不出来，确认能接受再回滚」；`deploy.sh` 照现有约定把它转成 1。第 0 步实测若显示旧镜像读到新状态会把会话标 poisoned，就只要有 `refunded` 也拒绝。
 
@@ -342,7 +342,7 @@ R18 和 R14 上线以后，SOP 与工具描述里有几处和行为对不上，�
 | 「退改：已付订单的退款、改期是售后，转人工；只是问规则，说「由顾问跟您确认」」改成「问规则就照上下文的条款说；要退款系统会接；改期转人工」 | SOP objections 节（`sop:128`）                                    | 可编辑 |
 
 - `templates.ts` 随 R3 自动生成。`SOP_CONTRACT` 的 17 条短语一条不少、不新增。
-- PR 带新的 `PREFIX sha256`、按 06 R4 生成的具名快照，以及写死的哈希：`src/web/web.selftest.ts` 的 `SYSTEM_SHA` 与 `TOOLS_SHA`（:89）、`src/config/brand.selftest.ts:48-49`、`src/config/brand-publish.selftest.ts:102`、`P/tools/tools.selftest.ts:75`。回归集 k=5 前后各一次（前 = 当前 `dev`，后 = 这个 PR，范围见开放问题 11），逐目标记进 plan；owner 看过对比后授权，合并、发版。启动重渲染写 `sop.rerender`（`causes` 含 `locked_sections`、`tools`）。
+- PR 带新的 `PREFIX sha256`、按 06 R4 生成的具名快照，以及写死的哈希：`src/web/web.selftest.ts` 的 `SYSTEM_SHA`（:88）与 `TOOLS_SHA`（:89）、`src/config/brand.selftest.ts:48-49`、`src/config/brand-publish.selftest.ts:102`、`P/tools/tools.selftest.ts:75`。回归集 k=5 前后各一次（前 = 当前 `dev`，后 = 这个 PR，范围见开放问题 11），逐目标记进 plan；owner 看过对比后授权，合并、发版。启动重渲染写 `sop.rerender`（`causes` 含 `locked_sections`、`tools`）。
 - 可编辑节的新文字不随重渲染上线（01 规定运营编辑过的可编辑节原样保留）：发版后由 owner 在后台改 objections，**经 R7 的闸**发布。这同时就是闸的第一次真实使用。
 - 不改的后果：条款进了上下文，SOP 与工具描述却还让模型「说由顾问跟您确认 / 退款就转人工」，两头拉扯；退款本身不受影响（R18 在模型之前）。
 
@@ -359,8 +359,9 @@ R18 和 R14 上线以后，SOP 与工具描述里有几处和行为对不上，�
   - :2939–2942（V8 r8d），「不含国际机票」原样发出。R22 不换否定说法。
   - :4561，`claimsTransfer` 认「退款或者改期需要顾问来办…」。不动。
 - `src/dejargon.selftest.ts:394`：「我要退款」必须命中 `isHandoffIntent`。R18 不改这个判断，钩子排在它前面。
+- `src/server.selftest.ts:514`：`pay.html` 里要能匹配 `order.status === 'superseded'[\s\S]{0,200}show('err')`；:516：`admin.html` 要含 `'已被替代'` 与 `liveOrder(s)`。R20 改这两页时只加分支，不动这两处。
 - `src/price-guard.selftest.ts`（逐字断言 `dropUnbackedClaims`）、`src/adapters/wecom.selftest.ts`（欢迎语字节）、`src/server.selftest.ts:279-311`（`fillPayCard` 四种状态的按钮文字）：R22 另起一步，R3 只改引用来源，R20 不改 chat.html。
-- 非锁定、要随 R18 改的：`src/handoff/handoff.selftest.ts:547-590`（02 验收 12 的整条链）改为在 `selfService=false` 下跑原链，另加一条自助退款的链；`src/notify/notify.selftest.ts:481`（NP01 只有终态阶段、没有订单）照旧转人工；`eval/sim/goals/quality/27-paid-refund.json` 改写成自助退款的期望。
+- 非锁定、要随 R18 改的：`src/handoff/handoff.selftest.ts:547-590`（02 验收 12 的整条链）改为在 `selfService=false` 下跑原链，另加一条自助退款的链；`src/handoff/handoff.selftest.ts:699-711` 的公开订单键集合 `WHITELIST` 加 `refund`；`src/notify/notify.selftest.ts:481`（NP01 只有终态阶段、没有订单）照旧转人工；`eval/sim/goals/quality/27-paid-refund.json` 改写成自助退款的期望。
 
 ## 接口与数据流
 
@@ -407,6 +408,7 @@ export type AfterSalesStep =
   | { kind: 'handoff'; text: string; record: Pick<HandoffRecord, 'kind' | 'reason' | 'quote'> };
 export type RefundTexts = { done: string; submitted: string; duplicate: string; busy: string; delayed: string };
 // EnginePackHooks: afterSales?(input: AfterSalesInput): AfterSalesStep | null;
+// 核心在投诉或负面情绪到阈值时不调它；ineligible 的已付单由钩子自己返回 handoff
 
 // src/packs/travel/policy.ts
 export interface TravelPolicy {
@@ -526,12 +528,13 @@ CREATE TABLE kb_chunks (
   source text NOT NULL CHECK (source IN ('route')), ref text NOT NULL,
   body text NOT NULL, body_hash text NOT NULL CHECK (body_hash ~ '^[0-9a-f]{64}$'),
   PRIMARY KEY (tenant_id, id), UNIQUE (tenant_id, source, ref));
--- migration-allow: execute vector 扩展在才建 kb_vectors（R12），PGlite 上跳过
+-- migration-allow: execute vector 扩展在才建 kb_vectors 及它的 RLS、策略与授权（R12），PGlite 上整段跳过
 DO $$ … CREATE TABLE kb_vectors (
   tenant_id uuid NOT NULL, chunk_id uuid NOT NULL, model text NOT NULL, body_hash text NOT NULL,
   embedding halfvec(2048) NOT NULL, PRIMARY KEY (tenant_id, chunk_id, model),
-  FOREIGN KEY (tenant_id, chunk_id) REFERENCES kb_chunks (tenant_id, id) ON DELETE CASCADE) … $$;
--- 两张表 ENABLE + FORCE RLS、tenant_isolation 策略、GRANT SELECT, INSERT, UPDATE, DELETE TO agent_app
+  FOREIGN KEY (tenant_id, chunk_id) REFERENCES kb_chunks (tenant_id, id) ON DELETE CASCADE);
+  ALTER TABLE kb_vectors ENABLE / FORCE ROW LEVEL SECURITY; CREATE POLICY tenant_isolation …; GRANT … TO agent_app … $$;
+-- kb_chunks 在块外：ENABLE + FORCE RLS、tenant_isolation 策略、GRANT SELECT, INSERT, UPDATE, DELETE TO agent_app
 -- 批 Q
 CREATE TABLE sop_gate_runs (
   tenant_id uuid NOT NULL REFERENCES tenants(id), id uuid NOT NULL DEFAULT gen_random_uuid(),
@@ -593,14 +596,14 @@ takeovers: number; // handoffLog 里 kind 为 agent 的次数
 6. 超过审批阈值的退款，没有 supervisor 以上角色批准就不会结算。
 7. 「已为您办好退款」只在订单改动提交之后发出。
 8. 待付款订单的退款话、带明确要人工的话、投诉、负面情绪到阈值的话、没有订单的会话，转人工行为与开工时相同；退款只针对这个会话名下的订单。
-9. standard 租户每个 `source='console'` 的已发布版本，要么有一行同（`promptHash`, `policyHash`）的通过的闸运行，要么有所有者强发的审计。
+9. `SOP_GATE=required` 时，07 上线之后 standard 租户每个 `source='console'` 的已发布版本，要么有一行同（`promptHash`, `policyHash`）的通过的闸运行，要么有所有者强发的审计。
 10. 只有带 `regression` 标签的目标能拦发布，且只在草稿失败而基线不是失败时拦。
 11. 每次闸运行有费用上限，到了就停；用量记进 `usage_daily` 的 `gate`；沙箱租户不跑闸、不产生闸费用。
-12. 闸的子进程拿不到数据库凭据，不读写线上 `var/`。
+12. 闸的子进程拿不到数据库凭据；线上 `var/` 里它只读父进程为这次运行写的 `VAR_DIR/gate/<runId>/`，别处不读不写。
 13. 回滚、启动重渲染与首次导入不经闸。
 14. DB 模式下处理一轮对话的读路径照旧不发数据库查询（02 不变量 9）：检索、条款、policy 都读内存。
 15. `kb_chunks`、`kb_vectors`、`sop_gate_runs` 都是 FORCE RLS，跨租户读不到；沙箱删除后三张表里没有它的行。
-16. 嵌入请求只发往白名单里的境内端点；文件模式与 `LLM_MOCK=1` 下检索行为与开工时相同。
+16. 任何模式下，嵌入请求只发往白名单里的境内端点；文件模式与 `LLM_MOCK=1` 下检索行为与开工时相同。
 17. 没有订单、不是政策问法的会话，contextNote 与开工时逐字节相同。
 18. 主回复流水线发出的回复里，退改天数与比例、定价比例、预订月数和已发布 policy 一致，对不上的句子被换掉（跟进不在范围）。
 19. 主回复步骤的执行顺序等于 04 开工步骤表加 06、07 新增的步骤，原有步骤的相对顺序不变。
@@ -637,7 +640,7 @@ takeovers: number; // handoffLog 里 kind 为 agent 的次数
    - 沙箱里发布不跑闸、`usage_daily` 没有 `gate` 行；宿主每次闸的费用 ≤ `SOP_GATE_BUDGET_CNY` 并记在 `gate` 下；跑到一半重启，那一行变 `abandoned`，重新点能再跑；闸面板的七种状态各有自测。
    - 主参考的「稳态缓存命中不退化」改写成：前缀哈希相同的版本之间渲染逐字节相同（可断言），`cachedTokens` 占比只记录、不设门槛。理由同 01：实测命中率在 75–90% 之间跳，噪声比任何门槛都大。
 6. **知识库。**
-   - DB 模式下语义召回用的向量来自 `kb_vectors`、装载进内存；跑 5 轮带检索的 mock 对话，装载之后 `queryCount()` 不增加（01 验收 14 照旧）；`var/route-vectors.json` 不再读写。
+   - 用一个计数的假嵌入服务（`LLM_MOCK=1` 下 `readEmbedding` 不发请求，所以不用它）：DB 模式下语义召回用的向量来自 `kb_vectors`、装载进内存；跑 5 轮带检索的对话，装载之后 `queryCount()` 不增加（01 验收 14 照旧）；`var/route-vectors.json` 不再读写。
    - 重启之后不重新嵌入；改一条线路，嵌入请求只带一块，提交后内存索引换新。
    - 新开一个沙箱，开通过程没有嵌入请求，沙箱里检索照常；删除沙箱后三张表里没有它的行。
    - 真实 PG 上 A 租户读不到 B 的块与向量；PGlite 上全部自测照绿；应用库没有扩展、`agent_owner` 又建不了时，migrate 失败并写明原因；`EMBED_BASE_URL` 指向白名单外的主机，DB 模式拒绝启动。
@@ -695,17 +698,17 @@ takeovers: number; // handoffLog 里 kind 为 agent 的次数
 
 工作量按 Claude 子 agent 的人日估，没有排期依据。实现由子 agent 在各自的 worktree 里做，每批一个或几个 PR 进 `dev`（CI 绿了自动合并）。最多两条线并行。
 
-| 顺序 | 批  | 内容                                                                                                              | 依赖       | 动前缀? | 工作量                  | 模型花费 |
-| ---- | --- | ----------------------------------------------------------------------------------------------------------------- | ---------- | ------- | ----------------------- | -------- |
-| 0    | —   | 开工核对、pgvector 建扩展实测、旧镜像读新状态实测、闸两边各一次实测                                               | —          | 否      | 1 天                    | ≤¥3      |
-| 1    | P   | R1–R5：policy 列与快照、生成段与逐字节自测、模板与欢迎语去重、lint、CLI、只读卡片                                 | 0          | 否      | 4–5 天                  | 0        |
-| 2    | A   | R16–R21：迁移、售后钩子与提交、后台审批与结算、消费方与公开投影、回滚检查、沙箱种子、改写模拟目标与 2 个回归目标  | P          | 否      | 6–8 天                  | ≤¥1      |
-| 2    | K   | R11–R15：迁移、向量入库与装载、增量嵌入、沙箱复制、政策问法进上下文、端点白名单、1 个回归目标                     | P          | 否      | 5–6 天                  | ≤¥0.5    |
-| 3    | G   | R22：`policy_claims`、1 个回归目标                                                                                | P、K       | 否      | 3–4 天                  | 0        |
-| 3    | Q   | R6–R10：目标 `tags`（先给 16 个 safety 目标打标）、`--config-dir`、闸入口与子进程、结果表、发布条件与强发、闸面板 | P          | 否      | 7–9 天                  | ≤¥5      |
-| 4    | D   | R23–R24：`handoffLog`、来源、成交拆分、trace 列表与详情、存为用例                                                 | A          | 否      | 5–6 天                  | 0        |
-| 5    | S   | R25：owner 拍板文字 → 一个 PR → k=5 前后（26 个目标）→ 授权 → 发版 → 后台经闸发布可编辑节                         | A、K、G、Q | **是**  | 2–3 天，加 owner 的时间 | ≤¥13     |
-| 6    | —   | 逐条验收、清理、更新 `Status`                                                                                     | 全部       | —       | 1–2 天                  | ≤¥3      |
+| 顺序 | 批  | 内容                                                                                                             | 依赖       | 动前缀? | 工作量                  | 模型花费 |
+| ---- | --- | ---------------------------------------------------------------------------------------------------------------- | ---------- | ------- | ----------------------- | -------- |
+| 0    | —   | 开工核对、pgvector 建扩展实测、旧镜像读新状态实测、闸两边各一次实测                                              | —          | 否      | 1 天                    | ≤¥3      |
+| 1    | P   | R1–R5：policy 列与快照、生成段与逐字节自测、模板与欢迎语去重、lint、CLI、只读卡片；`goalSchema` 加 `tags`        | 0          | 否      | 4–5 天                  | 0        |
+| 2    | A   | R16–R21：迁移、售后钩子与提交、后台审批与结算、消费方与公开投影、回滚检查、沙箱种子、改写模拟目标与 2 个回归目标 | P          | 否      | 6–8 天                  | ≤¥1      |
+| 2    | K   | R11–R15：迁移、向量入库与装载、增量嵌入、沙箱复制、政策问法进上下文、端点白名单、1 个回归目标                    | P          | 否      | 5–6 天                  | ≤¥0.5    |
+| 3    | G   | R22：`policy_claims`、1 个回归目标                                                                               | P、K       | 否      | 3–4 天                  | 0        |
+| 3    | Q   | R6–R10：给 16 个 safety 目标打标、`--config-dir`、闸入口与子进程、结果表、发布条件与强发、闸面板                 | P          | 否      | 7–9 天                  | ≤¥5      |
+| 4    | D   | R23–R24：`handoffLog`、来源、成交拆分、trace 列表与详情、存为用例                                                | A          | 否      | 5–6 天                  | 0        |
+| 5    | S   | R25：owner 拍板文字 → 一个 PR → k=5 前后（26 个目标）→ 授权 → 发版 → 后台经闸发布可编辑节                        | A、K、G、Q | **是**  | 2–3 天，加 owner 的时间 | ≤¥13     |
+| 6    | —   | 逐条验收、清理、更新 `Status`                                                                                    | 全部       | —       | 1–2 天                  | ≤¥3      |
 
 合计约 34–44 个 agent 人日，两条线并行日历约 4–5 周，其中批 S 要等 owner 拍板与授权。花费估算约 ¥26，上限按开放问题 11。
 
