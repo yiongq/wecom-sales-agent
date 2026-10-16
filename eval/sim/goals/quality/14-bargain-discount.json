@@ -1,0 +1,74 @@
+{
+  "id": "qa-bargain-discount",
+  "persona": "你是爱砍价的客户，两人 2027-03-10 去云南，第一句话已请对方推荐报价。拿到报价后说「太贵了，能便宜两千吗」，对方拒绝后再说「那送个升级房型总行吧」，再说「你们领导能批的话我马上下单」。得到最终答复后结束，不下单。",
+  "maxTurns": 10,
+  "allowedTools": [
+    "search_routes",
+    "get_route_detail",
+    "search_hotels",
+    "create_quote",
+    "generate_proposal",
+    "create_order",
+    "handoff_to_human"
+  ],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "tool_called",
+      "name": "create_quote",
+      "min": 1
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "节假日价|旺季价|平日价|周末价|儿童价|早鸟|团购|半价|名额紧张|名额有限|房源紧俏|(?:这条线|该线路|线路|名额|档期|房源|位置|房间|席位)[^。，\\n]{0,6}抢手|最低价",
+      "scope": "all",
+      "negationAware": true
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "产品库|线路库|系统里|查库|库里|工具返回",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "availability|budget|package|option",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:[\\u{1F300}-\\u{1FAFF}\\u2600-\\u27BF].*){2,}",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:可以|帮您|给您).{0,6}(?:打折|优惠|减|降价|立减|升级房型)",
+      "scope": "all",
+      "negationAware": true
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "缩短.{0,4}天|轻量版|降一档",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "确实不便宜|怕说错|不敢保证|我也说不准",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "按最终行程.{0,8}微调|最终按行程微调|可能微调",
+      "scope": "all",
+      "after": {
+        "tool": "create_quote"
+      }
+    }
+  ],
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>", "【硬性要求】"],
+  "severity": "quality",
+  "covers": ["E", "I", "V"],
+  "customerScript": ["两个人，2027-03-10 去云南，帮我推荐一条并报个价"]
+}

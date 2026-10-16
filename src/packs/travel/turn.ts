@@ -17,6 +17,7 @@ import {
   saysDay,
   spokenDepartDate as parseSpokenDate,
   statedPastDate as parseStatedPastDate,
+  type BrandProfile,
   type CustomerProfile,
   type Order,
   type Route,
@@ -45,6 +46,8 @@ import {
   travellingText,
 } from './progress.js';
 import { holidayIn, travelDatePolicy } from './dates.js';
+import { advisorCheck, paymentPendingReply } from './contact-words.js';
+import { isPureChitchat, paidChitchatReply, reminderLines } from './reply-notes.js';
 import { TARGET_DAYS, requestedDays, customHandoffReply } from './itinerary.js';
 
 export interface TravelTurnTypes extends PackRuntimeTypes {
@@ -79,6 +82,75 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     /就订|就定|下单|购买|确定就|成交|去付款|可以下单|帮我订|预订吧|(?:就这个|就它|就要这个)(?:吧|啦|了)?(?=$|[，,。！!？?~～\s])/;
   // 安全网只认短促的下单指令，长段叙述交给模型自行判断，减少正则误伤
   const PURCHASE_INTENT_MAX_LEN = 40;
+
+  // 成单安全网的「下单意图」比 PURCHASE_INTENT 更严：它命中后引擎会整段换掉模型回复并发支付链接，
+  // 误判一次就是一张几万元的待付款单（实测 88 段里 3 次）。所以否定 / 推迟 / 只要报价 / 疑问一律不兜，留给模型自己回
+  // 否定：先不下单、暂时不订、不急着下单、别急着订
+  const ORDER_NEGATED =
+    /(?:不|别|没|未)(?:要|想|打算|准备|急着?|着急|用|必|太想|敢|能|会|先|马上|现在|立刻|立即|就|再)*(?:下单|订|定|买|购买|付款|成交|预订)|(?:先|暂时|暂且)不(?![错用])|还没(?:想好|考虑好|决定|定|商量好)|不确定|没决定/;
+  // 推迟 / 犹豫：考虑考虑、回去商量、回头再说、等等再定；「考虑好了」「商量好了」是已经定了，不算
+  const ORDER_DEFERRED =
+    /考虑(?!好|完|清楚|过了)|再(?:商量|想想|想一想|想一下|看看|比较|比一比|斟酌|等等|观望|研究)|(?:回头|回去|晚点|晚些|以后|之后|改天|下次|过两天|过几天|稍后|等等|等会)再?(?:说|定|订|想|看|商量|联系|下单|聊|决定)|商量(?!好|完|过|妥)|犹豫|拿不定|不好定|没想好|想想|想一想|想一下|看看再|再说吧/;
+  // 只要报价 / 方案（哪怕同句有「就它了」）：出报价、报个价、发方案、给我准确价格
+  const QUOTE_ONLY =
+    /(?:出|报|发|给|来|要|做|看|看看|给我|发我|发给我|帮我出|帮我报)(?:一?个|一下|下|一份|份|张|套)?(?:准确|详细|正式|最终|具体|完整|精确|确切)?(?:的)?(?:报价单?|方案书?|价格)|报个?价|算个?价|出个?价/;
+  // 疑问 / 问流程：可以下单吗、怎么下单、能不能订
+  const ORDER_QUESTION = /[？?]|吗|怎么|怎样|如何|咋|是否|能否|可否|能不能|可不可以|行不行|好不好|要不要|是不是|有没有|流程|呢$/;
+  /** 成单安全网认不认这句是「下单指令」。比 PURCHASE_INTENT 多排除：否定、推迟、只要报价、疑问 */
+  function netOrderIntent(text: string): boolean {
+    if (!PURCHASE_INTENT.test(text)) return false;
+    // 「不用再看看了，就订这个」「别家都比过了」这类夸价 / 说比过了的说法不是推迟：先去掉再判
+    const said = text.replace(PRICE_OK, '');
+    return !ORDER_NEGATED.test(said) && !ORDER_DEFERRED.test(said) && !QUOTE_ONLY.test(said) && !ORDER_QUESTION.test(said);
+  }
+  const CN_ORDINAL: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4 };
+  /** 客户说的序号：第一个、第2条、2号线、前者 / 后者、只回一个数字。认不出返回 undefined（-1 表示最后一个） */
+  function spokenOrdinal(text: string): number | undefined {
+    const m =
+      /第\s*([一二两三四1-4])\s*(?:个|条|款|种|线|号|套|项)?/.exec(text) ??
+      /(?<![\d月日.])([1-4])\s*(?:号线?|条|款|线)(?![\d出走去到月日])/.exec(text) ??
+      /^[\s选要订就定]*([1-4一二两三四])[\s吧啦了。！!]*$/.exec(text);
+    if (m) {
+      const n = CN_ORDINAL[m[1]] ?? Number(m[1]);
+      return n;
+    }
+    if (/前者|前面那|上面那|先报的|第一次报/.test(text)) return 1;
+    if (/后者|后面那|下面那|后报的|最后那/.test(text)) return -1;
+    return undefined;
+  }
+  /**
+   * 安全网该按哪次报价建单；认不出（有未决的多选一而客户没点名）返回 undefined，安全网不兜底。
+   * 最近几次报价里有两条及以上不同线路就是多选一：客户点了线路（名称 / 别名 / 天数）或给了序号才按他选的那条，
+   * 否则 lastQuote 只是「最后一次报的」，不是客户选的。只有一条线路时就是 lastQuote
+   */
+  function netQuoteFor(session: Session, text: string): NonNullable<Session['lastQuote']> | undefined {
+    const last = session.lastQuote;
+    if (!last) return undefined;
+    const recent = (session.quoteHistory ?? []).slice(-4);
+    const ids = [...new Set(recent.map((q) => q.routeId))];
+    if (ids.length < 2) return last;
+    const routes = loadRoutes();
+    const pool = ids.map((id) => routes.find((r) => r.id === id)).filter((r): r is Route => !!r);
+    if (pool.length < 2) return last;
+    let pick: Route | undefined;
+    const named = pool.filter((r) => routeMentioned(text, r, pool));
+    if (named.length === 1) pick = named[0];
+    else if (named.length === 0) {
+      const n = spokenOrdinal(text);
+      if (n !== undefined) pick = n < 0 ? pool[pool.length - 1] : pool[n - 1];
+    }
+    if (!pick) return undefined;
+    if (pick.id === last.routeId) return last;
+    const q = recent.toReversed().find((h) => h.routeId === pick!.id)!;
+    return {
+      routeId: pick.id,
+      routeTitle: pick.title,
+      travelers: q.travelers,
+      perPerson: q.perPerson,
+      total: q.total,
+      departDate: q.departDate,
+    };
+  }
 
   // 还价不是下单。B01 实测「给个实在价 1万5一个人，我今天就定」命中「就定」，模型原稿已经回了「1 万 5 这个价我真批不下来」、
   // 也没调 create_order，引擎却按原价兜底建了一张 43,560 的待付款单，回复被换成「好的，已为您锁定名额」——
@@ -162,7 +234,7 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
   const RESEND_CLAUSE = /(?:再|重新)(?:发|给)|重发|发(?:我|一下)/;
 
   /** 客户要重发支付链接时的确定性回复；不是这种情况返回 undefined，照常交给模型 */
-  function resendPayReply(session: Session, text: string): string | undefined {
+  function resendPayReply(session: Session, text: string, brand?: BrandProfile | null): string | undefined {
     if (text.length > RESEND_MAX_LEN || !RESEND_ASK.test(text) || /方案|行程/.test(text)) return undefined;
     if (OTHER_ORDER.test(text) || CHANGE_REQUEST.test(text) || REFUND_REQUEST.test(text)) return undefined;
     if (BARGAIN_WORDS.test(text) || /发票|收据|行程单|确认单|合同/.test(text)) return undefined;
@@ -177,7 +249,7 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     const orderLine = `/pay/${o.id}\n《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发，合计 ${yuan(o.totalPrice)}。`;
     // advisor 模式：这条链接不能点开就付，同一意思换一种说法（02 spec「收款流程」）；online 模式原样不变
     if (paymentMode() === 'advisor') {
-      return `好的，订单链接给您重新发一次：\n${orderLine}${o.confirmedAt != null ? '请按顾问发的方式付款。' : session.channel === 'web' ? '顾问会在这个页面里跟您核对价格并发收款方式。' : '顾问会在微信里跟您核对价格并发收款方式。'}`;
+      return `好的，订单链接给您重新发一次：\n${orderLine}${o.confirmedAt != null ? '请按顾问发的方式付款。' : `${advisorCheck({ channel: session.channel, templateMode: !!brand }, '跟您核对价格并发收款方式')}。`}`;
     }
     return `好的，支付链接给您重新发一次：\n${orderLine}`;
   }
@@ -512,7 +584,24 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     return undefined;
   }
 
-  function contextNote({ session, text }: TurnContext): string[] {
+  /** R5：客户这句在说自己已经付了款（「已付」「付完了」「付好了」「转账了」「打款了」）；「还没付好」「没转账」不算 */
+  const PAID_CLAIM = /已(?:经)?(?:付|转账|打款)|付(?:完|好)了|转账了|打款了/;
+  const PAID_CLAIM_NEGATED = /[没未不]\s*(?:有)?\s*(?:已(?:经)?)?(?:付|转账|打款)/;
+  /**
+   * R6：只按问法触发，不认地名：问安全、开放、手续、证件。「想去西藏」「新疆几月去好」不触发
+   */
+  const SENSITIVE_ASK =
+    /(?:安全|开放|能去|可以去|让去|允许去?)(?:吗|么|嘛|不)|安不安全|开不开放|能不能去|边防证|通行证|入藏函|签证|出入境|(?:办|要办|需要办|得办|什么|哪些|啥).{0,4}手续|手续.{0,3}(?:怎么|多久|复杂)|(?:证件|身份证).{0,4}(?:够|要|需)/;
+
+  /** R5：最近 3 张没作废的订单（待付款 / 已付款），不给金额 */
+  function liveOrders(session: Session) {
+    return session.orderIds
+      .map((id) => getOrder(id))
+      .filter((o): o is NonNullable<typeof o> => !!o && (o.status === 'pending_payment' || o.status === 'paid'))
+      .slice(-3);
+  }
+
+  function contextNote({ session, text, brand }: TurnContext): string[] {
     const lines: string[] = [];
     // 线路 id 跨轮带着走：历史里只有文本，没有这一行，客户说「第二条报个价」时模型得先重查一遍库
     const shown = session.lastShownRoutes ?? [];
@@ -522,6 +611,38 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     const q = session.lastQuote;
     // 只给参数不给金额：人数或日期一变价格就得重算，给了旧金额模型会顺手沿用
     if (q) lines.push(`最近报价: ${q.routeId}《${q.routeTitle}》${q.travelers} 人${q.departDate ? `，${q.departDate} 出发` : ''}`);
+    // 06 R5：订单与付款状态。没有订单、客户这句也不是在说已付款时一个字节都不加
+    const live = liveOrders(session);
+    if (live.length) {
+      lines.push(
+        `订单: ${live.map((o) => `《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发，${o.status === 'paid' ? '已付款' : '待付款'}`).join('；')}`,
+      );
+      if (live.some((o) => o.status === 'paid')) lines.push('已付款的单：顾问会发行程确认书、拉服务群；说过就别再说');
+    }
+    if (PAID_CLAIM.test(text) && !PAID_CLAIM_NEGATED.test(text) && !session.orderIds.some((id) => getOrder(id)?.status === 'paid')) {
+      lines.push(
+        '客户说已付款，但系统还没收到到账：不要说已到账、订单生效、订单已确认；' +
+          `要说就说「${paymentPendingReply({ channel: session.channel, templateMode: !!brand })}」`,
+      );
+    }
+    // 06 R6：敏感地区与证件手续的口径（第二批定稿，与 SOP capabilities 节、词表的替换句同一说法）
+    if (SENSITIVE_ASK.test(text)) {
+      lines.push(
+        '客户问到敏感地区、安全或证件手续：统一说「这块政策会变，由顾问按您的出行时间确认」，不转人工；通行证只照线路的「含 / 不含」说；' +
+          '不给签证时长和费用；不说「正常开放」「不用办手续」「会协助办好」「身体负担小」',
+      );
+    }
+    // 06 R8：换目的地。旧的待付款单不会因为聊新目的地自动作废
+    const sw = destinationSwitch(session, text);
+    if (sw) {
+      lines.push(
+        `客户这轮问到${sw.dest}；会话里还有${sw.old.join('、')}的待付款订单，它不会因为聊${sw.dest}而自动作废：照实回答${sw.dest}；` +
+          '说到那张单，就照「订单」一行说：旧单仍然有效，「之前那张单请先别付款，我请顾问帮您处理」，不说「不冲突」「自动失效」，继续聊' +
+          sw.dest,
+      );
+    }
+    // 06 R7：已对客户说过的提醒与本会话推荐过的线路。没有记录时不加
+    lines.push(...reminderLines(session));
     lines.push(quoteTimingNote(session, text) ?? '', headcountAskNote(session, text) ?? '');
     return lines;
   }
@@ -585,7 +706,7 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
   // 不带的话，模型自己减出来的「比您预算多 6,800 元」会被当成编价整条拦下。
   // 说了钱却认不出是不是「每人」（「预算5万」可能是两个人的总数）就不预取，交给模型自己理解。
   const PER_PERSON_BUDGET =
-    /(?:每人|人均)\s*(?:预算)?\s*(?:大概|大约|差不多|在)?\s*(\d+(?:\.\d+)?|[一二两三四五六七八九十]+)\s*(万|千|元|块)?(?:\s*([一二两三四五六七八九]|\d)(?![\d.])\s*千?)?/;
+    /(?:每人|每个人|每一位|每位|人均)\s*(?:预算)?\s*(?:大概|大约|差不多|在)?\s*(\d+(?:\.\d+)?|[一二两三四五六七八九十]+)\s*(万|千|元|块)?(?:\s*([一二两三四五六七八九]|\d)(?![\d.])\s*千?)?/;
   const MENTIONS_MONEY = /预算|\d\s*(?:万|千|元|块)|[一二两三四五六七八九十]\s*(?:万|千(?!米))/;
   // 预算数后面接区间或下限（「一万到两万」「8000-12000」「3万以上」「5万起」），或前面带「至少/起码」，
   // 这个数就不是每人上限。当成上限的代价：「每人一万到两万」按 1 万查，工具对预算内的 16,800 算出
@@ -683,6 +804,41 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
       .toSorted((a, b) => a.at - b.at)
       .slice(0, 2)
       .map((c) => c.args);
+  }
+
+  /**
+   * 06 R8：会话里有待付款订单、客户这句点了产品库里另一个目的地、阶段不在 paid——三样都满足才算「换目的地」。
+   * 目的地认法用 destinationMentions（不用 switchesTo：它遇到句末的「呢」返回 false，认不出「四川呢」）。
+   * 同一句里也点了订单那处（「云南还是四川」）、点了不止一处、说了认不出上限的钱（「两个人预算5万」）都不算。
+   * 不在 paid：paid 阶段预取会让 advanceStage 把阶段推回问需，跟进与 R14 的条件都会失效。
+   */
+  function destinationSwitch(
+    session: Session,
+    text: string,
+  ): { dest: string; kw: string; old: string[]; args: Record<string, unknown> } | undefined {
+    if (session.stage === 'paid') return undefined;
+    const routes = loadRoutes();
+    const old = new Set<string>();
+    for (const id of session.orderIds) {
+      const o = getOrder(id);
+      const dest = o?.status === 'pending_payment' ? routes.find((r) => r.id === o.routeId)?.destination : undefined;
+      if (dest) old.add(dest);
+    }
+    if (!old.size) return undefined;
+    const budget = perPersonBudget(text);
+    if (budget === undefined && (MENTIONS_MONEY.test(text) || PER_PERSON_BUDGET.test(text))) return undefined;
+    const said = withoutNegatedPlaces(text);
+    const picks = [...destinationMentions(said)].filter(([, kw]) => !isOriginMention(said, kw));
+    if (picks.length !== 1 || old.has(picks[0][0])) return undefined;
+    const [dest, kw] = picks[0];
+    const segment = detectSegment(text);
+    const maxBudgetPerPerson = budget ?? (liftsBudget(text) ? undefined : perPersonBudget(session.profile.budget));
+    return {
+      dest,
+      kw,
+      old: [...old],
+      args: { destination: kw, ...(segment ? { segment } : {}), ...(maxBudgetPerPerson ? { maxBudgetPerPerson } : {}) },
+    };
   }
 
   /**
@@ -1112,6 +1268,12 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
         out.departDate = iso;
         fixed.push(`补出发日期 ${iso}`);
       }
+      // 06 R17：方案书缺日期、客户这句也没给日期时，沿用最近一次报价的出发日，方案书上的价才和报价一致（修 K）
+      const quotedDate = session.lastQuote?.departDate;
+      if (name === 'generate_proposal' && !out.departDate && quotedDate && quotedDate >= todayIso()) {
+        out.departDate = quotedDate;
+        fixed.push(`沿用最近报价的出发日期 ${quotedDate}`);
+      }
       // 客户只说了节假日（「国庆」）：按那天定季节价，回复里只说「国庆出发」——和只说到月份的一样（见下面 departNote）
       if (
         name !== 'create_order' &&
@@ -1264,15 +1426,26 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
 
   const hooks: Pick<PackRuntime<TravelTurnTypes>, 'contextNote' | 'preModel' | 'prefetch' | 'beforeTool' | 'afterTool'> = {
     contextNote,
-    preModel({ session, text }): DeterministicReply | null {
-      const reply = resendPayReply(session, text);
-      return reply ? { text: reply } : null;
+    preModel({ session, text, brand }): DeterministicReply | null {
+      const reply = resendPayReply(session, text, brand);
+      if (reply) return { text: reply };
+      // 06 R14：付款后的纯寒暄不调模型。已转人工的会话在核心的静默判断里就不会走到这里
+      const paid = session.stage === 'paid' || session.orderIds.some((id) => getOrder(id)?.status === 'paid');
+      if (paid && isPureChitchat(text)) return { text: paidChitchatReply(session, { channel: session.channel, templateMode: !!brand }) };
+      return null;
     },
     async prefetch(ctx): Promise<PrefetchResult> {
       const calls: PrefetchResult['calls'] = [];
       const timings: string[] = [];
       try {
-        for (const args of planPrefetch(ctx.session, ctx.text)) {
+        // 06 R8：planPrefetch 不预取（过了推荐阶段）时，换目的地的条件满足就替模型查一次新目的地；已在聊的目的地不重查
+        let plan = planPrefetch(ctx.session, ctx.text);
+        if (!plan.length) {
+          const sw = destinationSwitch(ctx.session, ctx.text);
+          const known = ctx.session.profile.destinationInterest;
+          if (sw && !(known && (known === sw.dest || known === sw.kw || destinationsInText(known).includes(sw.dest)))) plan = [sw.args];
+        }
+        for (const args of plan) {
           const t = Date.now();
           const call = await ctx.callTool('search_routes', args);
           timings.push(`search_routes ${Date.now() - t}ms`);
@@ -1339,10 +1512,16 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     isMonthOnly: (args: object) => MONTH_ONLY_ARGS.has(args),
     PURCHASE_INTENT,
     PURCHASE_INTENT_MAX_LEN,
+    netOrderIntent,
+    netQuoteFor,
     OTHER_ORDER,
     REFUND_REQUEST,
     CHANGE_REQUEST,
     PRICE_ASK,
+    ORDER_DEFERRED,
+    QUOTE_ONLY,
+    ORDER_QUESTION,
+    PRICE_OK,
     WANTS_PERSON,
     DEMANDS_EXCEPTION,
     titleWordHit,

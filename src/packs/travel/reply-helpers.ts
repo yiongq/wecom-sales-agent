@@ -1,4 +1,6 @@
-import { identityAnswer, offTopicReply } from './legacy.js';
+import { identityAnswer, identityHandoffHead, offTopicReply } from './legacy.js';
+import { identityHandoffHeadTemplate } from './templates.js';
+import { advisorCheck, advisorContact, handoffHead } from './contact-words.js';
 // 04 第 16 步：旅游回复/跟进共用的护栏判断与修补；读能力显式注入。
 import {
   convLabel,
@@ -13,23 +15,28 @@ import {
   type CustomerProfile,
   type GuardToolSource,
   type TravelTurnSources,
+  type BrandProfile,
+  renderBrandTemplate,
 } from '../../core/pack-api.js';
 import { CUSTOM_PROMISE, CUSTOM_FOLLOWUP, looksLikeItinerary } from './itinerary.js';
 import { advanceStage } from './progress.js';
 import { travelPriceThresholds } from './thresholds.js';
+import { holidayIn } from './dates.js';
+import { excludesRoundTripTransport, renderQuoteLine } from './quote-template.js';
 import type { createTravelTurnHooks } from './turn.js';
 import type { TravelPriceGuard, PriceHit } from './price-guard.js';
 
 type ToolCall = GuardToolSource;
 export interface TravelReplySources extends Pick<TravelTurnSources, 'loadRoutes' | 'getOrder' | 'paymentMode' | 'mentionsPlace'> {
   isConfigNotReadyError(error: unknown): boolean;
+  createQuote(args: { routeId: string; travelers: number; departDate?: string }): { note: string };
   turnHooks: ReturnType<typeof createTravelTurnHooks>;
   priceGuard: Pick<TravelPriceGuard, 'priceMentions' | 'saidBefore' | 'dropSentences'>;
   extractProfile(session: Session, calls: ToolCall[], text: string): CustomerProfile;
   isTerminalStage(stage: SalesStage): boolean;
 }
 export function createTravelReplyHelpers(sources: TravelReplySources) {
-  const { loadRoutes, getOrder, paymentMode, extractProfile, isTerminalStage, isConfigNotReadyError } = sources;
+  const { loadRoutes, getOrder, paymentMode, extractProfile, isTerminalStage, isConfigNotReadyError, createQuote } = sources;
   const { priceMentions, saidBefore, dropSentences } = sources.priceGuard;
   const {
     destinationsInText,
@@ -595,20 +602,87 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
    *   · 已经转人工的只留模型原文里没问题的部分，删空了就交代已转顾问——兜底里「告诉我线路和人数」之后没人应。
    * 兜底话术不说「系统」：客户听着像在看后台（同 dejargon 的道理）。
    */
+  /**
+   * 兜底报价句里的出发时间（06 R9）：具体哪天写「10 月 12 日出发」；客户只说了节日或月份，按原话写「国庆出发」「11 月出发」，
+   * 不写某一天（报价按月份的季节价算，参数里的日子只是个代表）；都没说就不写，由模板补「出发日期定了我按日期实报」
+   */
+  function departPhrase(session: Session, iso?: string): string | undefined {
+    const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
+    const latest = latestDepart(said);
+    const pick = latest?.pick;
+    const day = (d: string): string | undefined => {
+      const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(d);
+      if (!m) return undefined;
+      const md = `${Number(m[2])} 月 ${Number(m[3])} 日`;
+      return `${m[1] === todayIso().slice(0, 4) ? '' : `${m[1]} 年 `}${md}出发`;
+    };
+    if (pick?.kind === 'date' && pick.exact) return day(iso ?? pick.iso ?? '');
+    if (pick?.kind === 'date') {
+      const holiday = pick.iso ? holidayIn(latest!.text, pick.iso) : undefined;
+      if (holiday) return `${holiday}出发`;
+      const mo = monthSaid(latest!.text)?.mo ?? (pick.iso ? Number(pick.iso.slice(5, 7)) : undefined);
+      return mo ? `${mo} 月出发` : undefined;
+    }
+    if (pick?.kind === 'vague') {
+      const mo = monthSaid(latest!.text)?.mo;
+      return mo ? `${mo} 月出发` : undefined;
+    }
+    return iso ? day(iso) : undefined;
+  }
+
+  /** 兜底报价句（06 R9）：rewriteUnbackedPrices 与 strandedReply 共用一个模板；定价说明取 create_quote 的原话 */
+  function fallbackQuoteLine(
+    session: Session,
+    q: { routeId?: string; title: string; travelers: number; perPerson: number; total: number; departDate?: string; note?: string },
+  ): string {
+    let routes: Route[] = [];
+    try {
+      routes = loadRoutes();
+    } catch (e) {
+      if (isConfigNotReadyError(e)) throw e;
+    }
+    const route = routes.find((r) => (q.routeId ? r.id === q.routeId : r.title === q.title));
+    let note = q.note;
+    if (note === undefined && route) {
+      try {
+        note = createQuote({ routeId: route.id, travelers: q.travelers, departDate: q.departDate }).note;
+      } catch {
+        note = undefined;
+      }
+    }
+    return renderQuoteLine({
+      title: q.title,
+      travelers: q.travelers,
+      perPerson: q.perPerson,
+      total: q.total,
+      note,
+      when: departPhrase(session, q.departDate),
+      excludesTransport: excludesRoundTripTransport(route?.exclusions),
+      yuan,
+    });
+  }
+
   /** 催下单、催付款的收尾句（「要不要我帮您下单？」） */
   const ORDER_NUDGE = /下单|付款|支付|预订|订下|锁定|定下来/;
 
   function rewriteUnbackedPrices(
     visible: string,
     hits: PriceHit[],
-    ctx: { session: Session; text: string; calls: ToolCall[]; customHandoff: boolean },
+    ctx: { session: Session; text: string; calls: ToolCall[]; customHandoff: boolean; templateMode?: boolean },
   ): string {
     const { session, text, calls } = ctx;
     const q = session.lastQuote;
     // 只在确定这轮说的就是那条线、那个人数时才报：客户问「换成西藏 4 个人多少钱」，接云南 2 人的价读起来就是在答西藏
     const onQuote = !!(q?.perPerson && q.total && quotedRouteForTurn(session, text, visible, calls));
     const quoteLine = onQuote
-      ? `《${q!.routeTitle}》${q!.travelers} 位出行，每人 ${yuan(q!.perPerson!)}，总价 ${yuan(q!.total!)}（起价，按最终行程微调）。`
+      ? fallbackQuoteLine(session, {
+          routeId: q!.routeId,
+          title: q!.routeTitle,
+          travelers: q!.travelers,
+          perPerson: q!.perPerson!,
+          total: q!.total!,
+          departDate: q!.departDate,
+        })
       : '';
     const hasQuote = (t: string) => !!q?.total && t.replace(/[,，\s]/g, '').includes(String(q.total));
     const quotedNow = calls.some((c) => c.name === 'create_quote' || c.name === 'generate_proposal');
@@ -629,9 +703,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
     if (session.handedOver)
       return substantive
         ? kept
-        : session.channel === 'web'
-          ? '具体价格由资深顾问为您核准，已为您转接，顾问会在这个页面里回复您，请稍候～'
-          : '具体价格由资深顾问为您核准，已为您转接，顾问会在微信上联系您，请稍候～';
+        : `具体价格由资深顾问为您核准，已为您转接，${advisorContact({ channel: session.channel, templateMode: !!ctx.templateMode })}，请稍候～`;
     const sorry = '不好意思，刚才的价格说得不准，以这次核准的为准：';
     if (substantive) {
       if (!wrongBefore) return kept;
@@ -681,22 +753,37 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
    */
   async function strandedReply(ctx: LinkRepairCtx): Promise<string> {
     const { session, text, calls, runTool } = ctx;
-    const quoteLine = (q: Record<string, unknown>, travelers: unknown): string =>
-      `《${String(q.routeTitle)}》${Number(travelers)} 位出行，每人 ${yuan(Number(q.perPerson))}，总价 ${yuan(Number(q.total))}` +
-      `${q.note ? `（${String(q.note)}）` : ''}`;
+    const quoteLine = (q: Record<string, unknown>, travelers: unknown, args: Record<string, unknown> = {}): string =>
+      fallbackQuoteLine(session, {
+        routeId: typeof args.routeId === 'string' ? args.routeId : undefined,
+        title: String(q.routeTitle),
+        travelers: Number(travelers),
+        perPerson: Number(q.perPerson),
+        total: Number(q.total),
+        departDate: typeof args.departDate === 'string' ? args.departDate : session.lastQuote?.departDate,
+        note: q.note ? String(q.note) : undefined,
+      });
     const said = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
     const n = travelersKnown(session, said);
     const depart = latestDepart(said)?.pick;
     // 客户说过具体哪天就不再问日子（B02 说的是「10月15号」）；只说了节假日、月份的，下单前还得问
     const exactDay = depart?.kind === 'date' && !!depart.exact;
-    const tail =
-      '\n起价，按最终行程微调。' + (exactDay ? '您看合适的话，跟我说一声就给您安排下单～' : '您看合适的话，告诉我具体哪天出发就能安排～');
+    // 报价句里没写日期的，已经带了「出发日期定了我按日期实报」，这里不再催日子
+    const dated = !!departPhrase(session, session.lastQuote?.departDate);
+    const tail = exactDay
+      ? '您看合适的话，跟我说一声就给您安排下单～'
+      : dated
+        ? '您看合适的话，告诉我具体哪天出发就能安排～'
+        : '您看合适的话，跟我说一声就行～';
     // ① 本轮报过的价
     const quotes = calls
       .filter((c) => c.name === 'create_quote' || c.name === 'generate_proposal')
-      .map((c) => ({ q: toolJson(c.result), n: c.args.travelers }))
-      .filter((x): x is { q: Record<string, unknown>; n: unknown } => !!x.q && !Array.isArray(x.q) && typeof x.q.total === 'number');
-    if (quotes.length) return `给您报好了：\n${quotes.map(({ q, n: k }) => quoteLine(q, k)).join('\n')}${tail}`;
+      .map((c) => ({ q: toolJson(c.result), n: c.args.travelers, args: c.args as Record<string, unknown> }))
+      .filter(
+        (x): x is { q: Record<string, unknown>; n: unknown; args: Record<string, unknown> } =>
+          !!x.q && !Array.isArray(x.q) && typeof x.q.total === 'number',
+      );
+    if (quotes.length) return `给您报好了：\n${quotes.map(({ q, n: k, args }) => quoteLine(q, k, args)).join('\n')}\n${tail}`;
     // 这一轮已经下了单：照订单说，不再另报价、另查线路（另报一次会写 lastQuote，成单安全网可能照着再建一单）
     const order = calls
       .filter((c) => c.name === 'create_order')
@@ -707,7 +794,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
       // advisor 模式：这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」）；online 模式原样不变
       const how =
         paymentMode() === 'advisor'
-          ? `订单链接：${payUrl}\n顾问会${session.channel === 'web' ? '在这个页面里' : '在微信里'}跟您核对价格并发收款方式，不用点链接付款。`
+          ? `订单链接：${payUrl}\n${advisorCheck({ channel: session.channel, templateMode: !!ctx.templateMode }, '跟您核对价格并发收款方式')}，不用点链接付款。`
           : `请点此完成支付：${payUrl}\n名额以付款为准～`;
       return `订单已生成，总价 ${yuan(Number(order.total))}。\n${how}`;
     }
@@ -724,7 +811,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
       const q = toolJson(await runTool('create_quote', args));
       if (q && !Array.isArray(q) && typeof q.total === 'number') {
         session.stage = advanceStage(session, { calls: [{ name: 'create_quote', args }], terminal: isTerminalStage(session.stage) });
-        return `按 ${n} 位给您报好了：\n${quoteLine(q, n)}${tail}`;
+        return `按 ${n} 位给您报好了：\n${quoteLine(q, n, args)}\n${tail}`;
       }
     }
     // ③ 查到的线路：本轮最后一次有结果的查询；没查过就按客户这句点的目的地查一次
@@ -918,6 +1005,8 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
     calls: ToolCall[];
     /** 与模型同一个工具入口（记 calls、通知观测者、过日期拦截） */
     runTool: (name: string, args: Record<string, unknown>) => Promise<string>;
+    /** 品牌模板模式（非网页时联系方式不点名渠道） */
+    templateMode?: boolean;
   }
 
   /**
@@ -1014,7 +1103,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
       // 客户在问靠不靠谱（「不会是骗子吧」「有营业执照吗」），手里又没有待付款的单：只删那句承诺，不追加下单问句——
       // 此前答完资质末尾接一句「确认好我马上给您下单」，读着像在催一个还在疑虑的人掏钱（B04）
       const ask = kind === 'pay' ? (TRUST_TALK.test(text) ? '' : askToOrder(session, text)) : askForProposal(target ?? {}, session);
-      out = [rest, kind === 'proposal' && alreadyAsks(rest, target ?? {}) ? '' : ask].filter(Boolean).join('\n\n');
+      out = [rest, alreadyAsks(rest, target ?? {}) ? '' : ask].filter(Boolean).join('\n\n');
     }
     // 抹掉的无关网址留下的空位连同前面的空格一起去掉，「官网 https://… 预约」不留成「官网  预约」
     // oxlint-disable-next-line no-control-regex -- \u0001–\u0003 是链接空位记号（见 HOLE），不是要匹配的客户输入
@@ -1078,14 +1167,17 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
     return tidyLinkText(out.join(''));
   }
 
-  /** 模型自己的最后一句已经在问引擎要问的那样（「您几位出行？」），就不再追问一遍 */
+  /**
+   * 正文已经在问了（最后一句是问句）：不再追加第二个问题（06 R15）。此前只认「问的正是引擎要问的那样」（线路 + 人数），
+   * 模型问「您大概几号出发？」时仍追加一句选择题，一条回复里两个问句。要在「按 2 位还是 3 位」之间选的追问除外
+   */
   function alreadyAsks(rest: string, t: ProposalTarget): boolean {
     const last =
       splitSentences(rest.trim())
         .filter((s) => s.trim())
         .pop() ?? '';
     if (!/[？?]\s*$/.test(last) || t.headcounts || t.delta) return false;
-    return (!!t.route || /哪条|哪一条|哪个/.test(last)) && (!!t.travelers || /几位|几个人|多少人|人数/.test(last));
+    return true;
   }
 
   // 客户明写了一个过去的完整日期（「2020年1月1号出发」）。模型会自作主张把年份滚到未来
@@ -1263,14 +1355,31 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
     return REFUND_REQUEST.test(text) || (liveOrderOf(session) && CHANGE_REQUEST.test(text)) ? 'refund' : 'request';
   }
 
-  function handoffReply(session: Session, text: string, kind: 'complaint' | 'refund' | 'request'): string {
+  /**
+   * 转人工话术。06 R16：退改与普通转人工两种开头带上联系方式（按渠道与模板模式渲染，见 contact-words）；
+   * 投诉开头已有「顾问会尽快与您联系」，不重复。客户同时在问身份（opts.identity）时，退改与普通转人工合并成一句
+   * 「我是〔品牌〕的 AI 顾问，马上为您转接资深顾问，〔联系方式〕。」，首行含「AI」，引擎的身份句就不再前置
+   */
+  function handoffReply(
+    session: Session,
+    text: string,
+    kind: 'complaint' | 'refund' | 'request',
+    opts: { brand?: BrandProfile | null; identity?: boolean; identityOnly?: boolean } = {},
+  ): string {
     // 会话里有订单就把它一并交代给顾问
     const order = liveOrderOf(session);
-    const head = {
-      complaint: '非常抱歉给您带来不好的体验 🙏 我马上为您转接资深顾问处理，请稍候，顾问会尽快与您联系～',
-      refund: '退改由资深顾问为您处理，马上为您转接，请稍候～',
-      request: '好的，马上为您转接资深顾问，请稍候～',
-    }[kind];
+    const mode = { channel: session.channel, templateMode: !!opts.brand };
+    const identityHead = opts.identity
+      ? opts.brand
+        ? renderBrandTemplate(identityHandoffHeadTemplate, opts.brand)
+        : identityHandoffHead
+      : undefined;
+    // 后面的正文已经在讲转接和联系方式：开头只放一句身份承认
+    if (opts.identityOnly && identityHead) return `${identityHead}。`;
+    const head =
+      kind === 'complaint'
+        ? '非常抱歉给您带来不好的体验 🙏 我马上为您转接资深顾问处理，请稍候，顾问会尽快与您联系～'
+        : handoffHead(kind, mode, identityHead);
     if (!order) return head;
     const title = `《${order.routeTitle}》`;
     if (kind === 'refund') return `${head}\n${title}这笔订单顾问会一并为您处理。`;
@@ -1279,7 +1388,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
     // 客户只是想找真人问问，不等于不买了：告诉他付款入口还在，别让这单悬着。企微里付款链接是以卡片发的；
     // advisor 模式下这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」，第 15 步审查第 5 条）
     if (paymentMode() === 'advisor') {
-      return `${head}\n您刚下的${title}订单顾问会一并跟进，之前发您的订单链接仍然有效，顾问会${session.channel === 'web' ? '在这个页面里' : '在微信里'}核对价格、发收款方式。`;
+      return `${head}\n您刚下的${title}订单顾问会一并跟进，之前发您的订单链接仍然有效，${advisorCheck(mode, '核对价格、发收款方式')}。`;
     }
     const payEntry = session.channel === 'wecom' ? '付款卡片' : '付款链接';
     return `${head}\n您刚下的${title}订单顾问会一并跟进，之前发您的${payEntry}仍然有效。`;
@@ -1417,6 +1526,9 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
     whitelistLinks,
     DEFER_TO_CONSULTANT,
     promisesContact,
+    // R21 一致性检查要渲染这两句固定的追问
+    askToOrder,
+    askForProposal,
   };
 }
 export type TravelReplyHelpers = ReturnType<typeof createTravelReplyHelpers>;

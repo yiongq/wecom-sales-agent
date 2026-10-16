@@ -1,0 +1,70 @@
+{
+  "id": "qa-switch-yunnan-sichuan-guizhou",
+  "persona": "你是客户，两人，第一句话已说想去云南（2027-04-10 出发）。对方推荐报价后说「还是想去四川」，拿到四川推荐后又说「算了，贵州吧」。你每次换都要明确说「不去上一个了」。你特别留意对方是否记得你最新选的目的地、是否还在说被你放弃的目的地。最后让对方只总结贵州这条线的价格，然后结束，不下单。",
+  "maxTurns": 12,
+  "allowedTools": [
+    "search_routes",
+    "get_route_detail",
+    "search_hotels",
+    "create_quote",
+    "generate_proposal",
+    "create_order",
+    "handoff_to_human"
+  ],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "tool_called",
+      "name": "search_routes",
+      "min": 2
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "节假日价|旺季价|平日价|周末价|儿童价|早鸟|团购|半价|名额紧张|名额有限|房源紧俏|(?:这条线|该线路|线路|名额|档期|房源|位置|房间|席位)[^。，\\n]{0,6}抢手|最低价",
+      "scope": "all",
+      "negationAware": true
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "产品库|线路库|系统里|查库|库里|工具返回",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "availability|budget|package|option",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:[\\u{1F300}-\\u{1FAFF}\\u2600-\\u27BF].*){2,}",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "云南.{0,10}(?:已经|已)(?:定|订)了|不冲突",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "贵州",
+      "scope": "last"
+    },
+    {
+      "kind": "shape",
+      "richMax": 6,
+      "plainMax": 3,
+      "minShare": 0.7
+    }
+  ],
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>", "【硬性要求】"],
+  "severity": "quality",
+  "covers": ["C", "P"],
+  "customerScript": ["两个人，想去云南，2027-04-10 出发，推荐一下"]
+}

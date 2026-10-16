@@ -1,0 +1,520 @@
+[
+  {
+    "version": 2,
+    "id": "q06-closing-01",
+    "desc": "R12：回去商量商量是收尾轮，代码加固定结尾",
+    "tags": ["engine", "06", "closing"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605032
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605041
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "我回去商量商量",
+        "script": [
+          {
+            "content": "好的，您先和家人商量，报价我这边给您留着。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyMatches": ["^好的，您先和家人商量，报价我这边给您留着。\\n\\n有问题随时在微信上问我～$"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-closing-02",
+    "desc": "R12：d8c 那句带「报个价」，QUOTE_ONLY 命中不算收尾",
+    "tags": ["engine", "06", "closing"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605032
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605041
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "先去云南，明年再考虑日本，报个价吧",
+        "script": [
+          {
+            "content": "好的，云南这条报价我已经给您出好了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyExcludes": ["随时"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-closing-03",
+    "desc": "R12：「别的不考虑」是坚持，不算收尾",
+    "tags": ["engine", "06", "closing"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605032
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605041
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "就看云南这条，别的不考虑",
+        "script": [
+          {
+            "content": "好的，那我们就围绕云南这条把细节定下来。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyExcludes": ["随时"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-closing-04",
+    "desc": "R12：收尾轮但这一轮转人工，不加结尾句",
+    "tags": ["engine", "06", "closing"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605032
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605041
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "我回去商量商量，另外想投诉上次的服务",
+        "expect": {
+          "stage": "handoff",
+          "silent": false,
+          "handoff": true,
+          "tools": [],
+          "replyExcludes": ["随时"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-closing-05",
+    "desc": "R12：回复里已经有同类结尾，不重复加",
+    "tags": ["engine", "06", "closing"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605032
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605041
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "我回去商量商量",
+        "script": [
+          {
+            "content": "好的，您先商量，有问题随时问我～"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyMatches": ["^好的，您先商量，有问题随时问我～$"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-closing-06",
+    "desc": "R12：谢谢，先这样 是收尾轮",
+    "tags": ["engine", "06", "closing"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605032
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605041
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "谢谢，先这样",
+        "script": [
+          {
+            "content": "不客气，报价我这边先给您留着。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyMatches": ["^不客气，报价我这边先给您留着。\\n\\n有问题随时在微信上问我～$"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-closing-07",
+    "desc": "R12：问句不算收尾（含「考虑」）",
+    "tags": ["engine", "06", "closing"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605032
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605041
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "我再考虑考虑，你们有没有更便宜的？",
+        "script": [
+          {
+            "content": "这条已经是同档里比较实在的价格了。"
+          }
+        ],
+        "expect": {
+          "stage": "quote",
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyExcludes": ["随时"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-closing-08",
+    "desc": "R12：「不用再看看了，就订这个」去掉 PRICE_OK 后不算收尾，建单",
+    "tags": ["engine", "06", "closing"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "destinationInterest": "云南",
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "messages": [
+          {
+            "role": "customer",
+            "content": "12月10号出发，丽江大理两个人报个价",
+            "at": 1790913605032
+          },
+          {
+            "role": "agent",
+            "content": "丽江大理这条报价给您出好了。",
+            "at": 1790913605041
+          }
+        ],
+        "handedOver": false,
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 16800,
+          "total": 33600,
+          "departDate": "2026-12-10"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 16800,
+            "total": 33600,
+            "departDate": "2026-12-10"
+          }
+        ],
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "不用再看看了，就订这个",
+        "script": [
+          {
+            "content": "好的～"
+          }
+        ],
+        "expect": {
+          "stage": "closing",
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_order"],
+          "orders": {
+            "count": 1
+          },
+          "replyExcludes": ["随时"]
+        }
+      }
+    ]
+  }
+]

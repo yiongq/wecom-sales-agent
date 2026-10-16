@@ -18,7 +18,7 @@ import {
   queueJobs,
   saveSession,
 } from '../../store.js';
-import { chat } from '../llm/client.js';
+import { chat, isContentFiltered } from '../llm/client.js';
 import type { PrefetchedCall } from '../llm/types.js';
 import { createToolRegistry } from '../tools/registry.js';
 import type {
@@ -29,7 +29,7 @@ import type {
   PackBinding,
   TurnToolCall as ToolCall,
 } from '../pack-api.js';
-import { answerIdentity as coreAnswerIdentity } from '../guards/text.js';
+import { answerIdentity as coreAnswerIdentity, IDENTITY_QUESTION } from '../guards/text.js';
 import { tryReserveVisitorLLM } from '../../budget.js';
 import { BudgetExhausted } from '../../llm-gate.js';
 import { numEnv, todayIso } from '../../env.js';
@@ -59,6 +59,7 @@ import {
   noteDraft,
   noteGuard,
   noteGuardVerdict,
+  noteReplyShape,
   notePrefix,
   noteSignals,
   noteToolError,
@@ -262,12 +263,13 @@ async function maybeAskConsent(sessionId: string, text: string, stillCurrent?: (
  */
 export function handleMessage(sessionId: string, text: string, channel: string, opts: HandleOpts = {}): Promise<AgentReply> {
   const rt = currentRuntime();
+  const receivedAt = Date.now();
   const work = () =>
     serialize(sessionId, async () => {
       rt.cancel.throwIfAborted();
       if (opts.stillCurrent && !opts.stillCurrent())
         return { text: '', stage: getSession(sessionId)?.stage ?? currentPack().runtime.stages[0]!.id, silent: true };
-      const reply = await pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts)));
+      const reply = await pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts, receivedAt)));
       if (currentRuntime().cancel.aborted) return reply;
       try {
         await maybeAskConsent(sessionId, text, opts.stillCurrent);
@@ -279,8 +281,14 @@ export function handleMessage(sessionId: string, text: string, channel: string, 
   return rt.kind === 'sandbox' ? rt.inflight.track(work) : work();
 }
 
-async function handleMessageInner(sessionId: string, text: string, channel: string, opts: HandleOpts): Promise<AgentReply> {
-  const state = beginTurn(sessionId, text, channel, opts);
+async function handleMessageInner(
+  sessionId: string,
+  text: string,
+  channel: string,
+  opts: HandleOpts,
+  receivedAt: number,
+): Promise<AgentReply> {
+  const state = beginTurn(sessionId, text, channel, opts, receivedAt);
   const early = preflight(state);
   if (early) return early;
   const { session, runtime, calls, answerIdentity, done } = state;
@@ -288,6 +296,7 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
   const turnContext: TurnContext = {
     session,
     text: state.text,
+    brand: state.binding.brand,
     callTool: async (name, args) => {
       const result = await tools.runTool(name, args, { prefetch: true });
       return { name, args: calls[calls.length - 1]?.args ?? args, result };
@@ -308,6 +317,15 @@ async function handleMessageInner(sessionId: string, text: string, channel: stri
     model = await callModel(state, turnContext, tools.runTool);
   } catch (error) {
     if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent())) return state.unsentTakenOver();
+    // 供应商内容审核拦截：重试也是同样结果，回包里的离题话术兜住，不抛给渠道（06 第 14 步验收）
+    if (isContentFiltered(error)) {
+      console.warn(`[engine] 模型供应商的内容审核拦下了这一轮，已回固定话术（会话 ${convLabel(sessionId)}）`);
+      const reply = cleanText(brandTexts(runtime, state.binding.brand).offTopicReply);
+      const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+      session.messages.push(msg);
+      saveSession(session);
+      return done('deterministic', { text: reply, stage: session.stage }, msg);
+    }
     throw error;
   }
   if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent())) return state.unsentTakenOver();
@@ -328,9 +346,11 @@ interface TurnState {
   takenOver(): boolean;
   unsentTakenOver(): AgentReply;
   calls: ToolCall[];
+  /** handleMessage 收到这条消息的时刻（06 R10：已用时的起点） */
+  receivedAt: number;
 }
 
-function beginTurn(sessionId: string, text: string, channel: string, opts: HandleOpts): TurnState {
+function beginTurn(sessionId: string, text: string, channel: string, opts: HandleOpts, receivedAt: number): TurnState {
   const binding = currentPack();
   const { runtime } = binding;
   const texts = brandTexts(runtime, binding.brand);
@@ -371,6 +391,7 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
     takenOver,
     unsentTakenOver,
     calls: [],
+    receivedAt,
   };
 }
 
@@ -378,6 +399,8 @@ function preflight(state: TurnState): AgentReply | null {
   const { text, opts, session, runtime, triggers, answerIdentity, done } = state;
   const { isComplaint, isHandoffIntent, departNoteForHandoff, safetyNetKind, handoffReply } = runtime.engineHooks;
   const { negativeLevel, pushWindow, SENTIMENT_WINDOW, emergencyOf, consentWithdrawalOf, sentimentThresholdReached } = triggers;
+  // 06 R16：转人工话术按品牌快照渲染联系方式；客户同时在问身份时合并成一句
+  const handoffOpts = (t: string) => ({ brand: state.binding.brand, identity: IDENTITY_QUESTION.test(t) });
   // 重置口令（演示/测试便利）：清空会话并解除转人工，从头开始。网页与企微都生效——
   // 这是演示项目，拿手机微信反复走流程是主要用法（2026-09 曾限定为仅网页，被要求改回）。
   // 代价是接真实客户后，客户发一句「重新开始」就会绕过人工、清空聊天记录、连已支付订单一起删掉，
@@ -539,7 +562,7 @@ function preflight(state: TurnState): AgentReply | null {
       quote: cleanText(text, 200),
       ...(departNote ? { departNote } : {}),
     });
-    const reply = cleanText(answerIdentity(text, handoffReply(session, text, kind)));
+    const reply = cleanText(answerIdentity(text, handoffReply(session, text, kind, handoffOpts(text))));
     const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
     session.messages.push(msg);
     saveSession(session);
@@ -558,7 +581,7 @@ function preflight(state: TurnState): AgentReply | null {
       ...(departNote ? { departNote } : {}),
     });
     delete session.negativeHits;
-    const reply = cleanText(answerIdentity(text, handoffReply(session, text, 'complaint')));
+    const reply = cleanText(answerIdentity(text, handoffReply(session, text, 'complaint', handoffOpts(text))));
     const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
     session.messages.push(msg);
     saveSession(session);
@@ -772,7 +795,7 @@ async function finishTurn(
     extractProfile: (session, calls, text) => ({ ...session.profile, ...runtime.extractProfile(text, session, calls) }),
     fallbackReply,
     answerIdentity,
-    handoffReply,
+    handoffReply: (s, t, k, o) => handoffReply(s, t, k, { brand: binding.brand, identity: IDENTITY_QUESTION.test(t), ...o }),
     departNoteForHandoff,
     failureReason: HANDOFF_REASON.failure,
     handoffFallback: runtime.legacy.handoffFallback,
@@ -788,6 +811,11 @@ async function finishTurn(
     },
     enterHandoff: (record) => enterHandoff(session, record),
     callTool: runTool,
+    elapsedMs: () => Date.now() - state.receivedAt,
+    // 06 R11：重写接线在第 10 步；此前恒为 null（关闭）
+    rewriteReply: async () => null,
+    // 本轮已转人工：流水线里走到这里的转人工只会来自本轮（已转人工的会话在 takeover_check:pre 之前就静默返回）
+    handoffThisTurn: () => session.handedOver,
     // 保留旧成单安全网的观测路径：记工具 trace，但不追加模型/补链 calls。
     async createOrder(args) {
       const name = runtime.engineHooks.createOrderTool;
@@ -821,6 +849,7 @@ async function finishTurn(
       saveSession(session);
       logSlowTurn(session.id, Date.now() - turnStart, { prefetchMs: modelStart - turnStart, prefetchTimes, modelMs, tag: turn.tag });
       if (configMode() === 'db') console.log(`[engine] 本轮完成（会话 ${convLabel(session.id)}）· ${turn.tag()}`);
+      if (ctx.turn.flags.replyShape) noteReplyShape(ctx.turn.flags.replyShape);
       const reply: AgentReply = { text: ctx.text, stage: session.stage };
       if (session.handedOver) reply.handoff = true;
       if (session.orderIds.length > ordersBefore) reply.orderId = session.orderIds[session.orderIds.length - 1];
@@ -831,7 +860,7 @@ async function finishTurn(
 }
 
 /** 紧急情况的固定应急话术（02 spec「确定性转人工触发」） */
-const EMERGENCY_REPLY =
+export const EMERGENCY_REPLY =
   '您的安全最要紧。如果有生命危险，请马上拨打 120（在境外请拨当地的急救电话）；证件丢了先到就近的派出所或我国使领馆求助。我已经通知顾问，会尽快联系您。';
 
 /** 失败与情绪的窗口：pushWindow 全 0 时返回 undefined，会话上就不留这个键 */

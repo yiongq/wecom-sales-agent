@@ -1,0 +1,77 @@
+{
+  "id": "qa-altitude-journey",
+  "persona": "你是带 68 岁母亲、怕高反、在西藏和川西之间比较的客户。你的每一句话都已由脚本给出，说完即结束。",
+  "maxTurns": 4,
+  "allowedTools": [
+    "search_routes",
+    "get_route_detail",
+    "search_hotels",
+    "create_quote",
+    "generate_proposal",
+    "create_order",
+    "handoff_to_human"
+  ],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "tool_called",
+      "name": "get_route_detail",
+      "min": 1
+    },
+    {
+      "kind": "no_repeat",
+      "pattern": "(?:温馨提示|提醒您|请注意|提醒一下)[^。\\n]{0,30}(?:高反|高原反应|海拔)|(?:高反|高原反应|海拔)[^。\\n]{0,20}(?:提醒|注意)",
+      "unlessCustomer": "高反|海拔|高原|缺氧|氧气"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:推荐|首选|建议|选).{0,10}(?:稻城亚丁|珠峰大本营|拉萨林芝纳木错)",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "保证.{0,6}(?:不会高反|没问题)|完全没问题",
+      "scope": "all",
+      "negationAware": true
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "节假日价|旺季价|平日价|周末价|儿童价|早鸟|团购|半价|名额紧张|名额有限|房源紧俏|(?:这条线|该线路|线路|名额|档期|房源|位置|房间|席位)[^。，\\n]{0,6}抢手|最低价",
+      "scope": "all",
+      "negationAware": true
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "产品库|线路库|系统里|查库|库里|工具返回",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "availability|budget|package|option",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:[\\u{1F300}-\\u{1FAFF}\\u2600-\\u27BF].*){2,}",
+      "scope": "all"
+    },
+    {
+      "kind": "shape",
+      "richMax": 6,
+      "plainMax": 3,
+      "minShare": 0.7
+    }
+  ],
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>", "【硬性要求】"],
+  "severity": "quality",
+  "covers": ["G", "J"],
+  "customerScript": [
+    "两个人，2027年6月10号想去西藏，我妈 68 岁，有点怕高反，推荐哪条线路",
+    "那四川川西呢，价格多少",
+    "西藏那条的酒店住哪几家",
+    "所以你综合起来，推荐哪条？说下理由"
+  ]
+}

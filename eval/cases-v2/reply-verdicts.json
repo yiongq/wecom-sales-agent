@@ -91,6 +91,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -127,6 +131,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -140,6 +152,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -215,7 +231,7 @@
         ],
         "expect": {
           "replyMatches": [
-            "^报价出来了：\n\n· 云南 丽江大理·洱海古城 6 日\n· 每人 16800 起\n· 2 人总价 33600\n· 起价，按最终行程微调\n\n完整方案书也给您生成好了，逐日行程、住宿、含餐和费用明细都在链接里，您先看看～\n/proposal/r-yunnan-mid/2$(?![\\s\\S])"
+            "^报价出来了：\n\n· 云南 丽江大理·洱海古城 6 日\n· 每人 16800 起\n· 2 人总价 33600\n\n完整方案书也给您生成好了，逐日行程、住宿、含餐和费用明细都在链接里，您先看看～\n/proposal/r-yunnan-mid/2$(?![\\s\\S])"
           ],
           "stage": "quote",
           "silent": false,
@@ -286,6 +302,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "patch"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -322,6 +342,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -335,6 +363,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -429,6 +461,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -465,6 +501,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -478,6 +522,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -608,6 +656,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -644,6 +696,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -657,6 +717,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -750,6 +814,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -786,6 +854,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -799,6 +875,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -929,6 +1009,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "drop_sentence"
             },
@@ -965,6 +1049,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -978,6 +1070,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -1003,7 +1099,7 @@
         ],
         "expect": {
           "replyMatches": [
-            "^我是云途定制旅行的 AI 旅行顾问，7×24 在线为您服务～\n\n这条线的天数和行程是固定发班的，改天数要重新配车导和酒店档期，我这边直接调整不了。\n我已经把您的需求转给资深顾问了，他能按 5 天重排并给您准确报价，稍后会联系您～\n顾问联系您时，也可以请他一并对比我们其他天数更短的现成线路。$(?![\\s\\S])"
+            "^我是云途定制旅行的 AI 旅行顾问。\n\n这条线的天数和行程是固定发班的，改天数要重新配车导和酒店档期，我这边直接调整不了。\n我已经把您的需求转给资深顾问了，他能按 5 天重排并给您准确报价，稍后会联系您～\n顾问联系您时，也可以请他一并对比我们其他天数更短的现成线路。$(?![\\s\\S])"
           ],
           "stage": "handoff",
           "silent": false,
@@ -1074,6 +1170,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "drop_sentence"
             },
@@ -1110,6 +1210,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -1123,6 +1231,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -1219,6 +1331,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -1255,6 +1371,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -1268,6 +1392,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -1362,6 +1490,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -1398,6 +1530,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -1411,6 +1551,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -1563,6 +1707,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -1599,6 +1747,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -1612,6 +1768,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -1677,7 +1837,7 @@
         ],
         "expect": {
           "replyMatches": [
-            "^按 4 位、10 月 3 日出发给您报好了：\n每人 16,511 元\n4 位总价 66,044 元\n10 月是最佳出行季上浮 10%，4 人及以上享 95 折。\n\n这是起价，按最终行程微调。$(?![\\s\\S])"
+            "^按 4 位、10 月 3 日出发给您报好了：\n每人 16,511 元\n4 位总价 66,044 元\n10 月是最佳出行季上浮 10%，4 人及以上享 95 折。$(?![\\s\\S])"
           ],
           "stage": "quote",
           "silent": false,
@@ -1748,6 +1908,10 @@
               "action": "drop_sentence"
             },
             {
+              "id": "claim_words",
+              "action": "patch"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -1784,6 +1948,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -1797,6 +1969,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -1891,6 +2067,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -1927,6 +2107,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -1940,6 +2128,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -2034,6 +2226,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -2070,6 +2266,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -2083,6 +2287,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -2176,6 +2384,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -2212,6 +2424,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -2225,6 +2445,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -2331,6 +2555,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -2367,6 +2595,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -2380,6 +2616,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -2483,6 +2723,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -2519,6 +2763,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -2532,6 +2784,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -2635,6 +2891,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -2671,6 +2931,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -2684,6 +2952,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -2777,6 +3049,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -2813,6 +3089,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -2826,6 +3110,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -2933,6 +3221,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "drop_sentence"
             },
@@ -2969,6 +3261,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -2982,6 +3282,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -3113,6 +3417,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -3149,6 +3457,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -3162,6 +3478,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -3252,6 +3572,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -3288,6 +3612,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -3301,6 +3633,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -3390,6 +3726,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -3426,6 +3766,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -3439,6 +3787,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -3539,6 +3891,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -3575,6 +3931,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -3588,6 +3952,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]
@@ -3677,6 +4045,10 @@
               "action": "pass"
             },
             {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },
@@ -3713,6 +4085,14 @@
               "action": "pass"
             },
             {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
               "id": "takeover_check:post",
               "action": "pass"
             },
@@ -3726,6 +4106,10 @@
             },
             {
               "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
               "action": "pass"
             }
           ]

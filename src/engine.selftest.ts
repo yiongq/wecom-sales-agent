@@ -1277,7 +1277,7 @@ const searchYunnan: Step[] = [
   // 线路定不下来时：答已发链接的提问不是新承诺；删承诺不能带走正文，也不重复问人数
   const q4r = '链接里的价格是起价，按最终行程和出发日期微调，大头不会变。您更倾向哪条？';
   const rq4 = await fakeSay(await quoted('link-q4'), '方案里的价格是最终价吗', [{ content: q4r }]);
-  check(rq4.text === q4r, 'q4 原样发出', rq4.text);
+  check(!rq4.text.includes('微调') && rq4.text === q4r.replace('，按最终行程和出发日期微调', ''), 'q4 除「微调」半句外原样发出', rq4.text);
   const q7 = newSid('link-q7');
   await fakeSay(q7, '想去四川玩', [{ content: '四川这边有熊猫·九寨和稻城亚丁两条线，您几位出行？' }]);
   const rq7 = await fakeSay(q7, '九寨那边酒店有泳池吗', [
@@ -2788,7 +2788,11 @@ const searchYunnan: Step[] = [
     },
   ]);
   check(
-    !r2.text.includes('5,200') && r2.text.includes('2027 年 4 月 5 日出发') && r2.text.includes('47,400') && r2.text.includes('这是起价'),
+    !r2.text.includes('5,200') &&
+      r2.text.includes('2027 年 4 月 5 日出发') &&
+      r2.text.includes('47,400') &&
+      !r2.text.includes('起价') &&
+      !r2.text.includes('微调'),
     'V2 只删编了差额的那一句',
     r2.text,
   );
@@ -2852,7 +2856,7 @@ const searchYunnan: Step[] = [
     },
   ]);
   check(
-    !/儿童价|紧俏/.test(r5.text) && r5.text.includes('66,044') && r5.text.includes('这是起价'),
+    !/儿童价|紧俏/.test(r5.text) && r5.text.includes('66,044') && !r5.text.includes('起价') && !r5.text.includes('微调'),
     'V5 儿童价 / 编造稀缺的句子删掉',
     r5.text,
   );

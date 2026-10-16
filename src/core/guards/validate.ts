@@ -48,4 +48,10 @@ export function validateGuardSteps<Context extends GuardContext>(steps: readonly
   if (failure !== undefined && (takeover === undefined || takeover >= failure)) {
     throw new GuardStepValidationError('turn_failure', 'takeover_check:post', '后置接管检查必须排在交互失败判定之前');
   }
+
+  // 06 R10：形状检查可能 await 重写，必须在后置接管检查之前，接管检查到写消息之间不能有 await。
+  const shape = positions.get('shape_check');
+  if (shape !== undefined && (takeover === undefined || takeover <= shape)) {
+    throw new GuardStepValidationError('shape_check', 'takeover_check:post', '形状检查必须排在后置接管检查之前');
+  }
 }

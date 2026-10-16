@@ -298,12 +298,13 @@ export function sopProblemText(v: ContractViolation, pack: IndustryPack, sop: Pi
     unknown_tool: `${where}有个工具名写错了`,
     unknown_field: `${where}有个字段名写错了`,
     over_budget: '字数超出了额度',
+    consistency: `${where}有和固定对客文字矛盾的话`,
   };
   return Object.hasOwn(text, v.code) ? text[v.code] : `${where}有个问题`;
 }
 
 /**
- * 话术草稿这一行：「改了2节：话术原则（+44字）、异议处理（+9字）」；上下文是检查的问题（danger）和「发布前检查6/7通过」。
+ * 话术草稿这一行：「改了2节：话术原则（+44字）、异议处理（+9字）」；上下文是检查的问题（danger）和「发布前检查7/8通过」。
  * 不写保存时间：接口里没有草稿的最后保存时间（设计系统 §10.0 修正 8，spec 开放问题 6）。check 没取到时只写第一行
  */
 export function sopTodo(sop: SopOverview, check: DraftCheck | undefined, pack: IndustryPack): TodoRow | null {

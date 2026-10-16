@@ -1,6 +1,16 @@
-# v2 抽取前快照
+# v2 具名快照与更新政策（06 R4）
 
-`v2-pre04.json` 固定 04 第 5 步时的黑盒行为。由未改生产代码的评测树生成；文件配置与 PGlite 配置共用一份。后续搬家默认比对它，不应随实现改动自动更新。
+快照固定某一时刻的黑盒行为，文件配置与 PGlite 配置共用一份。当前默认比对的是 `eval/v2/snapshot.ts` 里常量 `DEFAULT_BASELINE` 指向的文件，现在是 `v2-06-step17.json`（06 第 17 步，出口兜底删「这是起价」与非报价轮的「微调」半句）；`v2-06-step16.json`（06 第 16 步，第二批话术与工具配套）留作第 16 步的凭证；`v2-06-batch1.json`（06 第一批合并后生成）留作第一批的凭证。`v2-pre04.json`（04 第 5 步，由未改生产代码的评测树生成）留作 04 的凭证，永远不删。
+
+## 政策
+
+- 快照不随实现自动更新，更新是显式动作。每个**有意改变行为**的 PR 生成一份新的具名快照 `v2-06-step<N>.json`（N 是 06 plan 的步骤号），并把 `DEFAULT_BASELINE` 改成它；写完用文件与 PGlite 两条路径各比对一次。旧快照一份都不删。
+- 新快照与上一份逐条 diff，每条差异写明是哪条 R 引起的、为什么是对的，记进 plan；说不清的差异就是回归，修代码，不写进快照。`eval/cases-v2/reply-verdicts.json` 一类断言裁决序列的用例，同一个 PR 里按新步骤表更新，同样逐条说明。
+- **没有改变行为**的 PR 不生成快照：默认基线不重生成照样全绿，就是行为没变的证据。
+- 两个 PR 并行时，后合并的那个在合并前基于最新的 `dev` 重新生成快照、重审差异，不能沿用在旧 `dev` 上审过的结论。
+- 默认文件不存在时保留旧 runner 行为（不比对）。
+
+## 快照内容
 
 每个 case 按轮保存：客户回复的 SHA-256 与前 40 个 Unicode 字符、`silent`、会话是否已转人工、回复阶段、本轮工具名序列（trace 的全部调用，含预取与护栏补调）、订单数量及最后一张订单的业务字段、按顺序排列的 `guard_events`。
 
@@ -17,11 +27,11 @@
 文件按 case id 排序，对象键递归排序，轮次/工具/事件/摘要数组顺序保留。序列化使用仓库固定版本的 oxfmt，宽度 140、两空格缩进、LF 换行，无生成时间。
 
 ```sh
-# 只跑 v2，全部通过才写文件；写模式不比对旧基线
+# 只跑 v2，全部通过才写文件；写模式不比对旧基线（N 换成 plan 的步骤号）
 CONFIG_SOURCE=file LLM_MOCK=1 pnpm exec tsx eval/run.ts \
-  --cases-v2 eval/cases-v2 --v2-snapshot-write eval/baselines/v2-pre04.json
+  --cases-v2 eval/cases-v2 --v2-snapshot-write eval/baselines/v2-06-stepN.json
 
-# 默认先 v1 后 v2；两种配置都自动比对同一份快照
+# 默认先 v1 后 v2；两种配置都自动比对默认快照
 CONFIG_SOURCE=file LLM_MOCK=1 pnpm exec tsx eval/run.ts
 CONFIG_SOURCE=file CONFIG_TEST_DB=pglite LLM_MOCK=1 pnpm exec tsx eval/run.ts
 ```

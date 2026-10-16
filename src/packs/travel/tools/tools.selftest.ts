@@ -126,6 +126,39 @@ assert.equal(typeof (await run('create_quote', { routeId: route.id, travelers: 5
 assert.equal(typeof (await run('generate_proposal', { routeId: route.id, travelers: 2, departDate: '2026-02-30' })).error, 'string');
 assert.equal(typeof (await run('create_order', { routeId: route.id, travelers: 2, departDate: '2026-10-09' })).error, 'string');
 assert.equal(saved, before, '非法参数不落库');
+// 06 R20：出发日期超过 12 个月（按日历月数，今天 2026-10-10，2027-10-31 还在范围内）不出确定价，也不下单
+{
+  const edge = await run('create_quote', { routeId: route.id, travelers: 2, departDate: '2027-10-31' });
+  assert.equal(edge.farFuture, undefined, '12 个月整的最后一天照常报价');
+  assert.equal(edge.perPerson, 11001);
+  const edgeQuote = JSON.stringify(session.lastQuote);
+  const far = await run('create_quote', { routeId: route.id, travelers: 2, departDate: '2027-11-01' });
+  assert.equal(far.farFuture, true);
+  assert.equal(far.perPerson, undefined, 'farFuture 不带确定价');
+  assert.equal(far.total, undefined);
+  assert.equal(far.priceFrom, route.priceFrom, '参考价只给线路起价');
+  assert.ok(/12 个月/.test(far.note) && /不出确定价/.test(far.note) && /不要调 create_order/.test(far.note), far.note);
+  assert.equal(JSON.stringify(session.lastQuote), edgeQuote, 'farFuture 不改最近报价（成单安全网据它建单）');
+  assert.ok(session.seenRouteIds?.includes(route.id), '参考价的线路记为本会话出现过（价格护栏认它的起价）');
+  const ordersBefore = orders.size;
+  const refused = await run('create_order', { routeId: route.id, travelers: 2, departDate: '2027-11-01' });
+  assert.ok(typeof refused.error === 'string' && /不下单/.test(refused.error), JSON.stringify(refused));
+  assert.equal(orders.size, ordersBefore, '太远的出发日期不建单');
+  assert.equal(typeof (await run('create_order', { routeId: route.id, travelers: 2, departDate: '2027-10-31' })).orderId, 'string');
+}
+// 06 R20：search_routes 的 overBudget 结果附 cheapestOverall（全库最低起价那一条）；够得着预算的不带
+{
+  const over = await run('search_routes', { destination: '测试地', maxBudgetPerPerson: 5000 });
+  assert.equal(over.length, 1);
+  assert.ok(typeof over[0].overBudget === 'string');
+  assert.deepEqual(over[0].cheapestOverall, { id: route.id, title: route.title, priceFrom: route.priceFrom });
+  const fine = await run('search_routes', { destination: '测试地', maxBudgetPerPerson: 20000 });
+  assert.equal(fine[0].overBudget, undefined);
+  assert.equal(fine[0].cheapestOverall, undefined);
+  const replay = { ...session, seenRouteIds: [] as string[] };
+  byName.get('search_routes')!.onReuse!(JSON.stringify(over), { ...ctx, session: replay });
+  assert.deepEqual(replay.seenRouteIds, [route.id], '复用时也把 cheapestOverall 的线路记为出现过');
+}
 ctx.hints.handoff = { quote: '请顾问处理', departNote: '明年出行' };
 assert.equal((await run('handoff_to_human', { reason: '请顾问处理' })).ok, true);
 assert.equal(session.handoff?.quote, '请顾问处理');

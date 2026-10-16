@@ -15,6 +15,7 @@ import {
 
 import type { BrandProfile, SopContractRule } from '../core/pack-api.js';
 import { SOP_CONTRACT } from '../packs/travel/sop.js';
+import { sopConsistencyViolations } from '../packs/travel/consistency-sop.js';
 export { SOP_CONTRACT, SOP_KNOWN_FIELDS, KNOWN_FIELD_SOURCES } from '../packs/travel/sop.js';
 export type { SopContractRule as ContractRule } from '../core/pack-api.js';
 
@@ -44,6 +45,11 @@ export function checkSopContract(input: {
   rules?: readonly SopContractRule[];
   brand?: BrandProfile | null;
   hardRequirements?: string;
+  /**
+   * 06 R21：检查话术与包登记的对客固定文字有没有互相矛盾，违规码 `consistency`。默认开（发布、回滚、启动重渲染、导出都查）；
+   * 只有自测要单独看别的检查项时才传 false。
+   */
+  consistency?: boolean;
 }): ContractViolation[] {
   const spec = input.spec ?? TRAVEL_SOP_SECTIONS;
   const out: ContractViolation[] = [];
@@ -134,6 +140,11 @@ export function checkSopContract(input: {
       seen.add(name);
       add('unknown_field', section.key, `「${name}」不是工具参数或结果里的字段`, name);
     }
+  }
+
+  // 话术与固定文字不矛盾（R21，默认开）：点名冲突的另一方（代码里的报价模板）
+  if (input.consistency !== false) {
+    for (const v of sopConsistencyViolations(input.sections)) add('consistency', v.sectionKey, v.detail, v.match);
   }
 
   // 预算只管运营能控制的部分：可编辑节的正文

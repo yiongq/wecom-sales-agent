@@ -1,0 +1,92 @@
+[
+  {
+    "version": 2,
+    "id": "q06-shape-01",
+    "desc": "R10：普通类 6 行裁到 3 行，先删末尾的祝福 / 期待 / 随时，身份句与最后问句保留",
+    "tags": ["engine", "06", "shape"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "你们好",
+        "script": [
+          {
+            "content": "您好呀，欢迎来到这里～\n我是 AI 旅行顾问，可以帮您规划行程。\n想去哪儿玩？\n祝您生活愉快！\n期待您的消息～\n有问题随时问我～"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "replyMatches": ["^您好呀，欢迎来到这里～\n我是 AI 旅行顾问，可以帮您规划行程。\n想去哪儿玩？$"],
+          "stage": "discovery",
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-shape-02",
+    "desc": "R10：推荐类 7 行裁到 6 行，金额首现句与线路名行保留",
+    "tags": ["engine", "06", "shape"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想去马尔代夫蜜月",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "search_routes",
+                "args": {
+                  "destination": "马尔代夫"
+                }
+              }
+            ]
+          },
+          {
+            "content": "马尔代夫选得好呀～\n《马尔代夫 中央格兰德·一价全包海岛5日》每人 ¥28,800 起\n《马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日》每人 ¥35,800 起\n祝您旅途愉快～\n期待您的消息～\n有问题随时问我～\n方便告诉我几位出行吗？"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "replyMatches": [
+            "^马尔代夫选得好呀～\n《马尔代夫 中央格兰德·一价全包海岛5日》每人 ¥28,800 起\n《马尔代夫 满月岛·芙花芬双岛浮潜蜜月6日》每人 ¥35,800 起\n祝您旅途愉快～\n期待您的消息～\n方便告诉我几位出行吗？$"
+          ],
+          "stage": "recommend",
+          "tools": ["search_routes", "search_routes"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-shape-03",
+    "desc": "R10：没超限的回复一个字节不变（含「有问题随时问我」）",
+    "tags": ["engine", "06", "shape"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "你们好",
+        "script": [
+          {
+            "content": "您好呀～\n想去哪儿玩？\n有问题随时问我～"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "replyMatches": ["^您好呀～\n想去哪儿玩？\n有问题随时问我～$"],
+          "stage": "discovery",
+          "tools": []
+        }
+      }
+    ]
+  }
+]

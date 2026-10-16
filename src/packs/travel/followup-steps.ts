@@ -152,6 +152,7 @@ export function travelFollowupSteps(sources: TravelFollowupStepSources): GuardSt
         ctx.turn.flags.saidAll = saidAll;
         const claims = priceRules.dropUnbackedClaims(ctx.text, ctx.session, [], {
           travelers: turnHooks.travelersKnown(ctx.session, saidAll),
+          templateMode: !!ctx.brand,
         });
         if (claims.text !== ctx.text) {
           ctx.recordGuard('unbacked_claims', ctx.text, claims.text, 'drop_sentence');

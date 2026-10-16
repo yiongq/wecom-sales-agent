@@ -20,6 +20,7 @@ export function createTravelTools(sources: TravelToolSources) {
     advisorPayNote,
     parseTravelers,
     pastDateError,
+    farFutureNote,
   } = catalog;
   const {
     budgetVerdict,
@@ -33,6 +34,15 @@ export function createTravelTools(sources: TravelToolSources) {
     enterHandoff,
   } = sources;
   const toolError = (msg: string): string => JSON.stringify({ error: msg });
+  /** search_routes 结果里 cheapestOverall 指的线路 id（06 R20） */
+  const cheapestIdsOf = (rows: readonly unknown[]): string[] => [
+    ...new Set(
+      rows.flatMap((r) => {
+        const id = (r as { cheapestOverall?: { id?: unknown } } | null)?.cheapestOverall?.id;
+        return typeof id === 'string' ? [id] : [];
+      }),
+    ),
+  ];
   const tools: ToolSpec[] = [
     {
       def: toolDefs[0]!,
@@ -43,6 +53,7 @@ export function createTravelTools(sources: TravelToolSources) {
         // 与旧 engine.onReuse 相同：仅重放可识别的展示行，不重放预算差额或调用记录。
         try {
           const rows: unknown = JSON.parse(result);
+          if (Array.isArray(rows)) rememberSeenRoutes(session, cheapestIdsOf(rows));
           if (Array.isArray(rows))
             rememberShownRoutes(
               session,
@@ -82,6 +93,8 @@ export function createTravelTools(sources: TravelToolSources) {
         if (typeof a.maxBudgetPerPerson === 'number' && a.maxBudgetPerPerson > 0) gaps.push(a.maxBudgetPerPerson);
         if (gaps.length) session.budgetGaps = [...new Set([...(session.budgetGaps ?? []), ...gaps])].slice(-9);
         rememberShownRoutes(session, found);
+        // 06 R20：全库最低起价那一条也交给模型说，价格护栏要认它的起价
+        rememberSeenRoutes(session, cheapestIdsOf(found));
         return JSON.stringify(found);
       },
     },
@@ -126,6 +139,22 @@ export function createTravelTools(sources: TravelToolSources) {
           if (!isValidIsoDate(args.departDate)) return toolError('departDate 需为真实存在的 YYYY-MM-DD 日期');
           const past = pastDateError(args.departDate);
           if (past) return toolError(past);
+        }
+        // 06 R20：出发日期太远不出确定价，也不写 lastQuote（成单安全网据它建单）；参考价是线路的 priceFrom
+        const far = typeof args.departDate === 'string' ? farFutureNote(args.departDate) : null;
+        if (far) {
+          const route = loadRoutes().find((r) => r.id === args.routeId);
+          if (!route) return toolError(`线路不存在: ${args.routeId}`);
+          rememberSeenRoutes(session, [route.id]);
+          saveSession(session);
+          return JSON.stringify({
+            farFuture: true,
+            routeTitle: route.title,
+            travelers,
+            departDate: args.departDate,
+            priceFrom: route.priceFrom,
+            note: far,
+          });
         }
         const q = createQuote({ routeId: args.routeId, travelers, departDate: args.departDate as string | undefined });
         // 记住报价上下文，供成单安全网兜底下单；金额同时是价格护栏的白名单来源
@@ -199,6 +228,9 @@ export function createTravelTools(sources: TravelToolSources) {
         {
           const past = pastDateError(args.departDate);
           if (past) return toolError(past);
+          // 06 R20：太远的出发日期不下单
+          const far = farFutureNote(args.departDate);
+          if (far) return toolError(far);
         }
         // 幂等防护：同参数的待支付订单已存在时直接复用（企微消息重放、客户复述
         // 「就订」都会再触发一次 create_order，不能每次都真建一单）

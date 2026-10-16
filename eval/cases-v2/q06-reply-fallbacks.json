@@ -1,0 +1,379 @@
+[
+  {
+    "version": 2,
+    "id": "q06-fallback-quote-01",
+    "desc": "R9 兜底报价句：客户只说了节日，写「国庆出发」，不写某一天；不含「起价」「微调」，有「总价 ¥」千分位，线路不含里有往返大交通就加一句",
+    "tags": ["q06", "reply_fallback"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "国庆去云南 两位",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "seenRouteIds": ["r-yunnan-mid"],
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-01"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-01"
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "单房差 3,400 元。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "tools": [],
+          "replyMatches": [
+            "《云南 丽江大理·洱海古城 6 日》2 位、国庆出发，每人 ¥18,480，总价 ¥36,960（10 月为最佳出行季，上浮 10%）。不含往返大交通。"
+          ],
+          "replyExcludes": ["起价", "微调", "1 日", "哪天出发"],
+          "handoff": false
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-fallback-quote-02",
+    "desc": "R9 兜底报价句：客户只说了月份，写「11 月出发」",
+    "tags": ["q06", "reply_fallback"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "11月去云南 两位",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "seenRouteIds": ["r-yunnan-mid"],
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-11-15"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-11-15"
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "单房差 3,400 元。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "tools": [],
+          "replyMatches": [
+            "《云南 丽江大理·洱海古城 6 日》2 位、11 月出发，每人 ¥18,480，总价 ¥36,960（11 月为最佳出行季，上浮 10%）。不含往返大交通。"
+          ],
+          "replyExcludes": ["起价", "微调", "15"],
+          "handoff": false
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-fallback-quote-03",
+    "desc": "R9 兜底报价句：客户说了具体哪天，写「10 月 24 日出发」，有出发日期",
+    "tags": ["q06", "reply_fallback"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "10月24号出发 两位",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "seenRouteIds": ["r-yunnan-mid"],
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960,
+          "departDate": "2026-10-24"
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960,
+            "departDate": "2026-10-24"
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "单房差 3,400 元。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "tools": [],
+          "replyMatches": [
+            "《云南 丽江大理·洱海古城 6 日》2 位、10 月 24 日出发，每人 ¥18,480，总价 ¥36,960（10 月为最佳出行季，上浮 10%）。不含往返大交通。"
+          ],
+          "replyExcludes": ["起价", "微调"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-fallback-quote-04",
+    "desc": "R9 兜底报价句：没有出发日期时写标准价，加「出发日期定了我按日期实报」",
+    "tags": ["q06", "reply_fallback"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "云南两位",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "seenRouteIds": ["r-yunnan-mid"],
+        "lastQuote": {
+          "routeId": "r-yunnan-mid",
+          "routeTitle": "云南 丽江大理·洱海古城 6 日",
+          "travelers": 2,
+          "perPerson": 18480,
+          "total": 36960
+        },
+        "quoteHistory": [
+          {
+            "routeId": "r-yunnan-mid",
+            "travelers": 2,
+            "perPerson": 18480,
+            "total": 36960
+          }
+        ]
+      }
+    },
+    "turns": [
+      {
+        "say": "好的，请继续介绍。",
+        "script": [
+          {
+            "content": "单房差 3,400 元。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "tools": [],
+          "replyMatches": [
+            "《云南 丽江大理·洱海古城 6 日》2 位，每人 ¥18,480，总价 ¥36,960（标准价）。出发日期定了我按日期实报。不含往返大交通。"
+          ],
+          "replyExcludes": ["起价", "微调", "哪天出发"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-fallback-ask-01",
+    "desc": "R15 补链接：正文最后一句已经在问，不再追加选择题",
+    "tags": ["q06", "reply_fallback"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "想看看云南",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "发我详细方案",
+        "script": [
+          {
+            "content": "好的，详细方案我这就发您。您大概几号出发？"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "tools": [],
+          "replyMatches": ["您大概几号出发？"],
+          "replyExcludes": ["还是", "哪条线"],
+          "handoff": false
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-fallback-stranded-01",
+    "desc": "R15 残句：删完只剩「亮点」条目、没有线路名，整条换成兜底（冰岛这类库外目的地）",
+    "tags": ["q06", "reply_fallback"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [
+          {
+            "role": "customer",
+            "content": "冰岛极光怎么样",
+            "at": 0
+          }
+        ],
+        "handedOver": false,
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "冰岛极光怎么样",
+        "script": [
+          {
+            "content": "冰岛有一条极光线路，每人 38,000 元起：\n· 亮点：蓝湖温泉\n· 亮点：极光猎人"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "tools": [],
+          "replyExcludes": ["38,000", "亮点"],
+          "handoff": false
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-handoff-01",
+    "desc": "R16 转人工且问身份：一句合并的话，首行含 AI，含转接资深顾问，没有 7×24",
+    "tags": ["q06", "reply_fallback"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "你是机器人吗？转人工",
+        "script": [],
+        "expect": {
+          "silent": false,
+          "tools": [],
+          "replyMatches": ["^我是云途定制旅行的 AI 旅行顾问，马上为您转接资深顾问，顾问会在微信上联系您。$(?![\\s\\S])"],
+          "replyExcludes": ["7×24"],
+          "handoff": true
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-handoff-02",
+    "desc": "R16 退改转人工带联系方式",
+    "tags": ["q06", "reply_fallback"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "messages": [],
+        "handedOver": false,
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "我要退款",
+        "script": [],
+        "expect": {
+          "silent": false,
+          "tools": [],
+          "replyMatches": ["^退改由资深顾问为您处理，马上为您转接，顾问会在微信上联系您，请稍候～"],
+          "handoff": true
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-handoff-03",
+    "desc": "R16 投诉开头已有联系说法，不重复",
+    "tags": ["q06", "reply_fallback"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "你们这个是骗人的吧，我要投诉",
+        "script": [],
+        "expect": {
+          "silent": false,
+          "tools": [],
+          "replyMatches": ["顾问会尽快与您联系"],
+          "replyExcludes": ["顾问会在微信上联系您"],
+          "handoff": true
+        }
+      }
+    ]
+  }
+]

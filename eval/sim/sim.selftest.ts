@@ -147,6 +147,44 @@ const sample = JSON.parse(
   (await fs.readFile('docs/architecture/04-industry-packs/plan.md', 'utf8')).match(/## SimGoal 样例[\s\S]*?```json\n([\s\S]*?)\n```/)![1]!,
 );
 check('plan 样例原样', JSON.stringify(goals[0]) === JSON.stringify(sample));
+// 06 R1 回归集：eval/sim/goals/quality
+const quality = await loadGoals('eval/sim/goals/quality');
+check('回归集不少于 30 个目标', quality.length >= 30);
+const issueIds = [...'ABCDEFGHIJKLMNOPQRSTUVW'];
+const covered = new Set(quality.flatMap((g) => g.covers ?? []));
+check(
+  'covers 覆盖问题表全部 ID（X、Y、Z 除外）',
+  issueIds.every((id) => covered.has(id)),
+);
+check(
+  'covers 里只有问题表的 ID，没有 X、Y、Z',
+  [...covered].every((id) => issueIds.includes(id)),
+);
+check(
+  '每个目标都标了 severity 与 covers（缺口场景的 covers 为空数组）',
+  quality.every((g) => (g.severity === 'safety' || g.severity === 'quality') && Array.isArray(g.covers)),
+);
+check(
+  '至少一个种子订单是 paid',
+  quality.some((g) => g.initial?.orders?.some((o) => o.status === 'paid')),
+);
+check(
+  '种子订单有待付款也有已付款',
+  quality.some((g) => g.initial?.orders?.some((o) => o.status === 'pending_payment')),
+);
+check(
+  '固定客户话术不超过 maxTurns',
+  quality.every((g) => (g.customerScript?.length ?? 0) <= (g.maxTurns ?? 12)),
+);
+check(
+  '种子订单的出发日期都在夹具时钟之后',
+  quality.every((g) => (g.initial?.orders ?? []).every((o) => o.departDate > '2026-10-10')),
+);
+check(
+  'shape 谓词的 minShare 是 owner 定的 P1 = 0.70',
+  quality.every((g) => g.predicates.every((p) => p.kind !== 'shape' || p.minShare === 0.7)),
+);
+check('回归集不带本机路径', !JSON.stringify(quality).includes('/Users/'));
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-goals-test-'));
 try {
   await fs.writeFile(path.join(temp, 'one.json'), JSON.stringify(goal()));
@@ -202,13 +240,50 @@ try {
     '{"say":"你好","done":false,"extra":1}',
     '{"say":"","done":false}',
   ]) {
-    customer.script.push({ content: bad }, { content: bad });
+    // 第一遍两次都坏，整遍重跑一次，重跑的两次也坏：才算 customer_protocol
+    customer.script.push({ content: bad }, { content: bad }, { content: bad }, { content: bad });
     report = await execute();
     check(
       '协议错误单列',
-      report.customer_protocol === 1 && report.summary[0]!.failed === 0 && report.runs[0]!.reasons.join() === 'customer_protocol',
+      report.customer_protocol === 1 &&
+        report.summary[0]!.failed === 0 &&
+        report.runs[0]!.reasons.join() === 'customer_protocol' &&
+        report.runs[0]!.rerun,
+    );
+    check(
+      '协议错误不计入分母、整个目标要改脚本',
+      report.summary[0]!.denominator === 0 && !report.summary[0]!.passK && report.summary[0]!.needsScriptFix,
     );
   }
+  // 第一遍协议失败、重跑一遍成功：照常计入
+  customer.script.push({ content: '坏 JSON' }, { content: '坏 JSON' }, say('你好', true));
+  sales.script.push({ content: '您好，您想去哪旅行？' });
+  report = await execute();
+  check(
+    '协议失败重跑一遍后通过',
+    report.runs[0]!.rerun &&
+      report.runs[0]!.status === 'passed' &&
+      report.customer_protocol === 0 &&
+      report.summary[0]!.denominator === 1 &&
+      report.summary[0]!.passK &&
+      !report.summary[0]!.needsScriptFix,
+  );
+  check('重跑的费用并进同一遍', report.runs[0]!.charges.length >= 3);
+  // k=2：一遍通过、一遍两次协议失败：分母 1、通过 1，pass^k 达标，但协议失败占 50%，标客户脚本要改
+  customer.script.push(say('你好', true), ...Array.from({ length: 4 }, () => ({ content: '坏 JSON' })));
+  sales.script.push({ content: '您好，您想去哪旅行？' });
+  report = await execute(goal(), 2);
+  check(
+    '协议失败不计入 pass^k 的分母，单列',
+    report.summary[0]!.passed === 1 &&
+      report.summary[0]!.denominator === 1 &&
+      report.summary[0]!.customer_protocol === 1 &&
+      report.summary[0]!.passK &&
+      report.summary[0]!.needsScriptFix,
+  );
+  // 超过 20% 才标：5 遍里 1 遍 = 20%，不标
+  const share = (protocol: number, k: number) => (protocol / k > 0.2 ? 1 : 0);
+  check('20% 的边界', share(1, 5) === 0 && share(1, 4) === 1);
   customer.script.push(say('你好', true), say('你好', true));
   sales.script.push({ content: '您好，您想去哪旅行？' }, { content: '您好，您想去哪旅行？' });
   report = await execute(goal(), 2);
@@ -231,6 +306,95 @@ try {
     '工具结果与轨迹',
     report.runs[0]!.turns[0]!.trace.turn.calls.some((c) => c.name === 'search_routes' && c.resultBytes > 0 && c.resultHead.length > 0),
   );
+  // customerScript：前几轮客户原话固定，不调客户模型；之后才交给客户模型
+  const requestsBefore = customer.requests.length;
+  customer.script.push(say('先这样', true));
+  sales.script.push({ content: '您好，您想去哪旅行？' }, { content: '不客气。' }, { content: '好的。' });
+  report = await execute({ ...goal(), customerScript: ['你好', '谢谢'] });
+  check(
+    'customerScript 固定前几轮，之后交给客户模型',
+    report.runs[0]!.turns.map((t) => t.customer.say).join('|') === '你好|谢谢|先这样' && customer.requests.length === requestsBefore + 1,
+  );
+  check(
+    '客户模型看得到固定的前几轮',
+    customer.requests.at(-1)!.messages.some((m) => m.role === 'assistant' && m.content === '你好') &&
+      customer.requests.at(-1)!.messages.some((m) => m.role === 'user' && m.content === '您好，您想去哪旅行？'),
+  );
+  // 脚本把 maxTurns 用完：一次客户模型也不调
+  const requestsBeforeFull = customer.requests.length;
+  sales.script.push({ content: '您好。' }, { content: '好的。' });
+  report = await execute({ ...goal(), maxTurns: 2, customerScript: ['你好', '谢谢'] });
+  check('脚本占满轮数，不调客户模型', customer.requests.length === requestsBeforeFull && report.runs[0]!.turns.length === 2);
+  // initial：订单走真实的订单状态，已付款的单是真的 paid
+  const seeded: SimGoal = {
+    ...goal([{ kind: 'order', count: 1, fields: { status: 'paid' } }]),
+    initial: {
+      orders: [{ routeId: 'r-sichuan-mid', travelers: 2, departDate: '2027-03-10', status: 'paid' }],
+      history: [
+        { role: 'customer', content: '我们要订四川那条' },
+        { role: 'ai', content: '好的，已为您生成订单' },
+      ],
+    },
+  };
+  customer.script.push(say('行程怎么安排', true));
+  sales.script.push({ content: '您好，订单已收到付款。' });
+  report = await execute(seeded);
+  const seed = report.runs[0]!.initial;
+  check(
+    '种子订单是真的 paid，阶段随之为 paid',
+    seed.orders.length === 1 && seed.orders[0]!.status === 'paid' && seed.orders[0]!.paidAt !== undefined && seed.stage === 'paid',
+  );
+  check('种子订单金额由真实报价算出', seed.orders[0]!.totalPrice > 0 && seed.orders[0]!.routeTitle.includes('熊猫'));
+  check('种子订单参与 order 谓词', report.summary[0]!.passK);
+  check(
+    '种子对话进客户模型的视角',
+    customer.requests.at(-1)!.messages.some((m) => m.role === 'assistant' && m.content === '我们要订四川那条') &&
+      customer.requests.at(-1)!.messages.some((m) => m.role === 'user' && m.content === '好的，已为您生成订单'),
+  );
+  check(
+    '种子对话进会话',
+    sales.requests.at(-1)!.messages.some((m) => m.content === '我们要订四川那条') &&
+      sales.requests.at(-1)!.messages.some((m) => m.content === '好的，已为您生成订单'),
+  );
+  customer.script.push(say('你好', true));
+  sales.script.push({ content: '您好。' });
+  report = await execute({
+    ...goal([{ kind: 'order', count: 1, fields: { status: 'pending_payment' } }]),
+    initial: { orders: [{ routeId: 'r-sichuan-mid', travelers: 2, departDate: '2027-03-10', status: 'pending_payment' }] },
+  });
+  check('待付款种子订单与阶段缺省', report.summary[0]!.passK && report.runs[0]!.initial.stage === 'greeting');
+  const probe = runtime.deps.start();
+  check('每遍结束清掉种子订单', report.runs[0]!.initial.orders.length === 1 && probe.initial.orders.length === 0);
+  await runtime.deps.end(probe.id);
+  // 回归集的种子都能起：真实订单状态、阶段与对话落进会话，脚本不超轮数（不调模型）
+  for (const g of quality.filter((q) => q.initial)) {
+    const started = runtime.deps.start(g.initial);
+    const want = g.initial!.orders ?? [];
+    check(
+      `${g.id} 种子能起，订单与状态一致`,
+      started.initial.orders.length === want.length &&
+        want.every((o, i) => started.initial.orders[i]!.status === o.status) &&
+        started.initial.orders.filter((o) => o.status === 'paid').every((o) => o.paidAt !== undefined),
+    );
+    check(
+      `${g.id} 阶段随种子`,
+      started.initial.stage === (g.initial!.stage ?? (want.some((o) => o.status === 'paid') ? 'paid' : 'greeting')),
+    );
+    await runtime.deps.end(started.id);
+  }
+  // 假模型冒烟：每个目标的固定客户话术都能读完，按序进引擎（不花钱，回复内容不看）
+  for (const g of quality) {
+    sales.script.length = 0;
+    customer.script.length = 0;
+    const scripted = g.customerScript ?? [];
+    sales.script.push(...Array.from({ length: g.maxTurns ?? 12 }, () => ({ content: '好的。' })));
+    if (scripted.length < (g.maxTurns ?? 12)) customer.script.push(say('', true));
+    const smoke = await simulate([g], 1, meter, runtime.deps);
+    const said = smoke.runs[0]!.turns.map((t) => t.customer.say);
+    check(`${g.id} 固定话术读完`, scripted.every((line, i) => said[i] === line) && smoke.runs[0]!.status !== 'customer_protocol');
+  }
+  sales.script.length = 0;
+  customer.script.length = 0;
   // 最后一个销售回包到点：后续同轮工具往返不能再发 HTTP，新的一遍也不开始。
   const beforeSales = sales.requests.length;
   customer.script.push(say('你好'));
@@ -260,6 +424,10 @@ try {
   check('客户到点不发销售', calledSales === 0 && report.budget_stop === 1 && report.summary[0]!.unrun === 1);
   const token = { promptTokens: 100, completionTokens: 50, cachedTokens: 80, reasoningTokens: 40 };
   check('缓存按子集、思考不重复计价', Math.abs(runtime.deps.price('sim-fake-customer', token) - 0.00016) < 1e-12);
+  check(
+    '报告带汇总数',
+    typeof report.metrics.shape.total === 'number' && report.runs.every((r) => r.turnMetrics.length === r.turns.length),
+  );
   console.log(
     `SIM SELFTEST PASS: ${assertions} 项断言全通（全部谓词正反例 / 禁用短语 / 越权工具 / 结束协议 / JSON 一次重试 / 两边预算 / pass^k / 真实引擎观察口）`,
   );

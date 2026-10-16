@@ -1,0 +1,385 @@
+[
+  {
+    "version": 2,
+    "id": "q06-reminders-altitude",
+    "desc": "R7：第 2 轮提醒过海拔，第 3、4 轮有「已对客户说过」，之前没有。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "先随便聊聊",
+        "expect": {
+          "contextExcludes": ["^已对客户说过", "^本会话推荐过"]
+        },
+        "script": [
+          {
+            "content": "好的，您想去哪儿玩？"
+          }
+        ]
+      },
+      {
+        "say": "想看高原的风景",
+        "expect": {
+          "contextExcludes": ["^已对客户说过", "^本会话推荐过"]
+        },
+        "script": [
+          {
+            "content": "高原线路海拔在 3600 米左右，要留意高反。"
+          }
+        ]
+      },
+      {
+        "say": "还有别的吗",
+        "expect": {
+          "contextMatches": ["^已对客户说过：海拔提醒（第 2 轮）——客户没再问就别重复$"]
+        },
+        "script": [
+          {
+            "content": "还有别的方向可以看。"
+          }
+        ]
+      },
+      {
+        "say": "好的",
+        "expect": {
+          "contextMatches": ["^已对客户说过：海拔提醒（第 2 轮）——客户没再问就别重复$"]
+        },
+        "script": [
+          {
+            "content": "嗯嗯。"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-reminders-elder-proposal-paidnext",
+    "desc": "R7：问长辈年龄、发方案书、说付款后安排各记第一次出现的轮次。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "带爸妈出去玩",
+        "expect": {
+          "contextExcludes": ["^已对客户说过", "^本会话推荐过"]
+        },
+        "script": [
+          {
+            "content": "爸妈今年多大了？身体怎么样？"
+          }
+        ]
+      },
+      {
+        "say": "六十出头，身体不错",
+        "expect": {
+          "contextMatches": ["^已对客户说过：问过长辈年龄（第 1 轮）——客户没再问就别重复$"]
+        },
+        "script": [
+          {
+            "content": "好的，我先记下。"
+          }
+        ]
+      },
+      {
+        "say": "继续",
+        "expect": {
+          "contextMatches": ["^已对客户说过：问过长辈年龄（第 1 轮）——"]
+        },
+        "script": [
+          {
+            "content": "付款后顾问会发行程确认书、拉服务群。"
+          }
+        ]
+      },
+      {
+        "say": "再说一遍",
+        "expect": {
+          "contextMatches": ["^已对客户说过：问过长辈年龄（第 1 轮）、说过付款后安排（第 3 轮）——客户没再问就别重复$"]
+        },
+        "script": [
+          {
+            "content": "好的。"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-reminders-routes",
+    "desc": "R7：点了名的线路进「本会话推荐过」，重复点名不重复列。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "有什么线路",
+        "expect": {
+          "contextExcludes": ["^已对客户说过", "^本会话推荐过"]
+        },
+        "script": [
+          {
+            "content": "推荐《云南 丽江大理·洱海古城 6 日》，行程很舒服。"
+          }
+        ]
+      },
+      {
+        "say": "再讲讲",
+        "expect": {
+          "contextMatches": ["^本会话推荐过：《云南 丽江大理·洱海古城 6 日》；做对比或总结时把这些都算上$"]
+        },
+        "script": [
+          {
+            "content": "《云南 丽江大理·洱海古城 6 日》住得也不错。"
+          }
+        ]
+      },
+      {
+        "say": "好的",
+        "expect": {
+          "contextMatches": ["^本会话推荐过：《云南 丽江大理·洱海古城 6 日》；做对比或总结时把这些都算上$"],
+          "contextExcludes": ["《云南 丽江大理·洱海古城 6 日》、《"]
+        },
+        "script": [
+          {
+            "content": "嗯嗯。"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-reminders-reset",
+    "desc": "R7：重置后已提醒项与已推荐线路都清空。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "想看高原的风景",
+        "expect": {},
+        "script": [
+          {
+            "content": "海拔 3600 米，要留意高反；也可以看《云南 丽江大理·洱海古城 6 日》。"
+          }
+        ]
+      },
+      {
+        "say": "嗯嗯",
+        "expect": {
+          "contextMatches": ["^已对客户说过：海拔提醒（第 1 轮）", "^本会话推荐过："]
+        },
+        "script": [
+          {
+            "content": "好的。"
+          }
+        ]
+      },
+      {
+        "say": "重置",
+        "expect": {},
+        "script": []
+      },
+      {
+        "say": "你好呀",
+        "expect": {
+          "contextExcludes": ["^已对客户说过", "^本会话推荐过"]
+        },
+        "script": [
+          {
+            "content": "您好～想去哪儿玩？"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-paid-chitchat-skips-model",
+    "desc": "R14：已付款 + 纯寒暄，不发模型请求（script 为空），一行，不含确认书与拉群。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "paid"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "你好",
+        "expect": {
+          "replyMatches": ["^[^\\n]+$"],
+          "replyExcludes": ["确认书", "拉群", "服务群", "云途"],
+          "tools": []
+        },
+        "script": []
+      },
+      {
+        "say": "谢谢",
+        "expect": {
+          "replyMatches": ["^[^\\n]+$"],
+          "replyExcludes": ["确认书", "拉群", "服务群"],
+          "tools": []
+        },
+        "script": []
+      },
+      {
+        "say": "好的😊",
+        "expect": {
+          "replyMatches": ["^[^\\n]+$"],
+          "replyExcludes": ["确认书", "拉群", "服务群"],
+          "tools": []
+        },
+        "script": []
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-paid-substantive-goes-model",
+    "desc": "R14：已付款 + 实质问题照常走模型。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "paid"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "酒店是哪几家",
+        "expect": {
+          "replyMatches": ["^酒店我帮您核对一下。$"],
+          "contextMatches": ["^订单: .*已付款$"]
+        },
+        "script": [
+          {
+            "content": "酒店我帮您核对一下。"
+          }
+        ]
+      },
+      {
+        "say": "在吗，酒店是哪几家",
+        "expect": {
+          "replyMatches": ["^酒店我帮您核对一下。$"]
+        },
+        "script": [
+          {
+            "content": "酒店我帮您核对一下。"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-not-paid-chitchat-goes-model",
+    "desc": "R14：没有已付款订单时，寒暄照常走模型。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "你好",
+        "expect": {
+          "replyMatches": ["^您好～想去哪儿玩？"]
+        },
+        "script": [
+          {
+            "content": "您好～想去哪儿玩？"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-paid-handed-over-stays-silent",
+    "desc": "R14：已转人工的会话，付款后寒暄照旧静默。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "paid"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "转人工，我要投诉",
+        "expect": {
+          "handoff": true
+        },
+        "script": []
+      },
+      {
+        "say": "你好",
+        "expect": {
+          "replyMatches": ["^$(?![\\s\\S])"],
+          "silent": true
+        },
+        "script": []
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q06-paid-paidnext-no-repeat",
+    "desc": "R14：说过付款后安排的，寒暄回复不再提顾问后续安排。",
+    "tags": ["q06", "context"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-12-10",
+          "status": "paid"
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "付款后怎么安排",
+        "expect": {},
+        "script": [
+          {
+            "content": "付款后顾问会发行程确认书、拉服务群。"
+          }
+        ]
+      },
+      {
+        "say": "好的",
+        "expect": {
+          "replyMatches": ["^[^\\n]+$"],
+          "replyExcludes": ["确认书", "拉群", "服务群", "后续安排", "联系您"],
+          "tools": []
+        },
+        "script": []
+      }
+    ]
+  }
+]

@@ -133,9 +133,19 @@ export async function serializeSnapshot(snapshot: V2Snapshot): Promise<string> {
   return code;
 }
 
-export function readBaseline(setting = process.env.EVAL_V2_BASELINE): V2Snapshot | undefined {
+/**
+ * 默认比对的具名快照（06 R4）：每个有意改变行为的 PR 把它改成自己生成的 `eval/baselines/v2-06-step<N>.json`。
+ * 旧快照不删；`EVAL_V2_BASELINE=<文件>` 临时换，`off` 关闭比对。
+ */
+export const DEFAULT_BASELINE = 'v2-06-step17.json';
+
+export function readBaseline(
+  setting = process.env.EVAL_V2_BASELINE,
+  defaultFile = DEFAULT_BASELINE,
+  dir: URL = new URL('../baselines/', import.meta.url),
+): V2Snapshot | undefined {
   if (setting === 'off') return undefined;
-  const target = setting ?? new URL('../baselines/v2-pre04.json', import.meta.url);
+  const target = setting ?? new URL(defaultFile, dir);
   if (setting === undefined && !fs.existsSync(target)) return undefined;
   const data = JSON.parse(fs.readFileSync(target, 'utf8')) as V2Snapshot;
   if (data.version !== 1 || !Array.isArray(data.cases)) throw new Error('v2 快照格式错误（需要 version: 1 与 cases 数组）');

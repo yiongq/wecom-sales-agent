@@ -49,7 +49,7 @@ export function createTravelPriceRules(
 
   const BUDGET_TALK = /预算|budget|以内|之内|以下|不超过|控制在|封顶|顶多|最多/i;
   const BUDGET_FLOOR_WORD = /至少|起码|最少|不低于|不少于|以上|往上|打底/;
-  const PER_PERSON_WORD = /每人|人均|每位|单人|一个人|一人|[/／]\s*人|per\s*person|\bpp\b|each/i;
+  const PER_PERSON_WORD = /每人|每个人|每一位|人均|每位|单人|一个人|一人|[/／]\s*人|per\s*person|\bpp\b|each/i;
   const TOTAL_WORD = /一共|总共|总预算|合计|加起来|总价|总计|全家|全部/;
   /**
    * 客户把预算放开了：「预算不是问题」「不设上限」「钱不是问题」「不差钱」。这句没带数时就是最新的说法，之前说的数不再是上限——
@@ -394,13 +394,17 @@ export function createTravelPriceRules(
       replace: '具体档期和余位由顾问跟您确认。',
     },
   ];
-  /** 企微拿不到客户手机号：顾问只能在微信上联系，「电话联系您」是一句兑现不了的话。第三项是网页会话的说法（03 R15） */
-  const PHONE_PROMISE: [RegExp, string, string][] = [
-    [/(?:通过|用)?(?:电话(?:或|和|、)微信|微信(?:或|和|、)电话)/g, '在微信上', '在这个页面里'],
+  /**
+   * 企微拿不到客户手机号：顾问只能在微信上联系，「电话联系您」是一句兑现不了的话。
+   * 第三项是网页会话的说法（03 R15），第四项是模板模式（非网页）的说法：不点名渠道，沿用 contact-words 的「联系您」。
+   */
+  const PHONE_PROMISE: [RegExp, string, string, string][] = [
+    [/(?:通过|用)?(?:电话(?:或|和|、)微信|微信(?:或|和|、)电话)/g, '在微信上', '在这个页面里', ''],
     [
       /(?:打)?电话(?:联系|联络|沟通|回访|回复)(?:您|你)|给(?:您|你)(?:打|回)(?:个)?电话|致电(?:您|你)/g,
       '在微信上联系您',
       '在这个页面里回复您',
+      '联系您',
     ],
   ];
 
@@ -507,11 +511,12 @@ export function createTravelPriceRules(
     visible: string,
     session: Session,
     calls: TurnToolCall[] = [],
-    hints: { travelers?: number } = {},
+    hints: { travelers?: number; templateMode?: boolean } = {},
   ): { text: string; dropped: string[] } {
     if (process.env.PRICE_GUARD === '0') return { text: visible, dropped: [] };
     let text = visible;
-    for (const [re, wecom, web] of PHONE_PROMISE) text = text.replace(re, session.channel === 'web' ? web : wecom);
+    for (const [re, wecom, web, template] of PHONE_PROMISE)
+      text = text.replace(re, session.channel === 'web' ? web : hints.templateMode ? template : wecom);
     let routes: Route[] = [];
     try {
       routes = loadRoutes();

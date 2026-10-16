@@ -60,6 +60,13 @@ const session = z
     lastShownRoutes: z.array(record),
     seenRouteIds: strings,
     missedDestinations: z.array(record),
+    reminders: z.strictObject({
+      altitude: z.number().optional(),
+      elderAge: z.number().optional(),
+      proposalSent: z.number().optional(),
+      paidNext: z.number().optional(),
+    }),
+    recommendedRoutes: z.array(z.strictObject({ id: z.string(), title: z.string() })),
     handoff: record,
     firstHandoffAt: z.number(),
     handoffCount: z.number(),
@@ -104,6 +111,9 @@ export const caseSchema = z.strictObject({
         expect: z.strictObject({
           replyMatches: patterns.optional(),
           replyExcludes: patterns.optional(),
+          // 06：只看本轮 contextNote 那条 system 消息（第一次模型请求里以【当前会话状态】开头的那条）
+          contextMatches: patterns.optional(),
+          contextExcludes: patterns.optional(),
           stage: z.string().optional(),
           tools: strings.optional(),
           orders: z.strictObject({ count: z.number().int().nonnegative(), last: record.optional() }).optional(),

@@ -1,6 +1,7 @@
 # 04 · 行业包抽取
 
 Status: implemented
+Superseded in part by: [06 · AI 回复质量](../06-reply-quality/spec.md) — 不变量 4 与验收 7 的「执行顺序 / 标识顺序等于开工步骤表」改为等于开工步骤表加 06 新增的步骤，原有步骤的相对顺序不变（06 R10–R13、R7）。
 Amended by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md)（R2 的 bindPack 绑定归租户运行时，R14 的回滚检查新增 pre-05，见 05 R3、R18）。
 Phase: 4 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」（2026-10-10 拆分之后的编号）
 Depends on: [03 · 渠道层 v2](../03-channels-v2/spec.md)（开工时须已 implemented）；[01](../01-pg-config-console/spec.md) 的 SOP 节表、锁定节、发布与启动重渲染；[02](../02-conversations-workbench/spec.md) 的 trace 与护栏事件（R16）；[00](../00-baseline/spec.md) 的前缀稳定检查。

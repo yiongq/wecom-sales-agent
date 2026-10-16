@@ -7,7 +7,8 @@ import { validateCase, type CaseV2 } from './schema.js';
 import { normalize, resolveValues, resolvePattern } from './values.js';
 import { startFakeModel } from './fake-model.js';
 import { resetCaseState, resetModuleNames } from './isolation.js';
-import { compareCaseSnapshot, createSnapshot, observeTurn, readBaseline, serializeSnapshot } from './snapshot.js';
+import { compareCaseSnapshot, createSnapshot, DEFAULT_BASELINE, observeTurn, readBaseline, serializeSnapshot } from './snapshot.js';
+import { pathToFileURL } from 'node:url';
 import type { FinishedTurn } from '../../src/trace/recorder.js';
 import type { Order } from '../../src/types.js';
 
@@ -367,6 +368,38 @@ await test('运行入口支持自定义基线、差异判失败、off 跳过比�
     else process.env.CONFIG_TEST_DB = previousDb;
   }
 });
+await test('readBaseline：默认常量、off、指定文件三种（R4）', async () => {
+  const previous = process.env.EVAL_V2_BASELINE;
+  delete process.env.EVAL_V2_BASELINE;
+  try {
+    // 默认：常量指向仓库里真实存在的具名快照，读出来与直接读文件一致
+    const file = new URL(`../baselines/${DEFAULT_BASELINE}`, import.meta.url);
+    assert.ok(fs.existsSync(file), '默认常量必须指向存在的文件');
+    assert.deepEqual(readBaseline(), JSON.parse(fs.readFileSync(file, 'utf8')));
+    // 换一个默认文件名与目录：读的是常量参数，不是写死的 v2-pre04
+    const dir = path.join(selftestDir, 'baselines');
+    fs.mkdirSync(dir, { recursive: true });
+    const named = { version: 1, cases: [{ id: 'x', turns: [] }] };
+    fs.writeFileSync(path.join(dir, 'v2-06-step9.json'), JSON.stringify(named));
+    const dirUrl = pathToFileURL(dir + path.sep);
+    assert.deepEqual(readBaseline(undefined, 'v2-06-step9.json', dirUrl), named);
+    // 默认文件不存在：保留旧行为，不比对
+    assert.equal(readBaseline(undefined, 'missing.json', dirUrl), undefined);
+    // off 关闭
+    assert.equal(readBaseline('off'), undefined);
+    // 指定文件：覆盖默认，文件不存在或格式错误则失败
+    assert.deepEqual(readBaseline(path.join(dir, 'v2-06-step9.json')), named);
+    assert.throws(() => readBaseline(path.join(dir, 'missing.json')));
+    fs.writeFileSync(path.join(dir, 'bad.json'), '{"version":2,"cases":[]}');
+    assert.throws(() => readBaseline(path.join(dir, 'bad.json')), /格式错误/);
+    // 环境变量与参数等价
+    process.env.EVAL_V2_BASELINE = path.join(dir, 'v2-06-step9.json');
+    assert.deepEqual(readBaseline(), named);
+  } finally {
+    if (previous === undefined) delete process.env.EVAL_V2_BASELINE;
+    else process.env.EVAL_V2_BASELINE = previous;
+  }
+});
 for (const missing of [false, true]) {
   await test(missing ? '快照已有 case 被删掉时完整回归失败' : '新增 case 不在快照时通过，自己的裁决与其他断言仍严格检查', async () => {
     const previous = process.env.EVAL_V2_BASELINE;
@@ -538,6 +571,35 @@ await test('池内超时只终止受影响 worker，替补继续，异常路径�
     await Promise.all([broken.close(), healthy.close()]);
   }
   assert.deepEqual(dirs(), before);
+});
+await test('contextMatches / contextExcludes 只看本轮 contextNote：命中、不命中、回复里的字不算', async () => {
+  const run = async (expect: CaseV2['turns'][number]['expect']) => {
+    const c = structuredClone(base);
+    c.turns[0].expect = expect;
+    return runCaseV2(c);
+  };
+  const ok = await run({ contextMatches: ['^【当前会话状态】', '今天日期: 2026-10-02'], contextExcludes: ['^订单:', '已付款'] });
+  assert.equal(ok.pass, true, ok.failures.join('\n'));
+  const missing = await run({ contextMatches: ['^订单:'] });
+  assert.equal(missing.pass, false);
+  assert.match(missing.failures.join('\n'), /contextMatches \/\^订单:\//);
+  const present = await run({ contextExcludes: ['销售阶段'] });
+  assert.equal(present.pass, false);
+  assert.match(present.failures.join('\n'), /contextExcludes \/销售阶段\//);
+  // 回复文字（模型脚本里的话）不在 contextNote 里
+  const replyOnly = await run({ contextMatches: ['想去哪里玩'] });
+  assert.equal(replyOnly.pass, false);
+  const bad = structuredClone(base);
+  bad.turns[0].expect.contextMatches = ['['];
+  assert.throws(() => validateCase(bad), /turns\.0\.expect\.contextMatches\.0.*无效正则/);
+});
+await test('session 夹具认 reminders 与 recommendedRoutes，写错字段报路径', () => {
+  const c = structuredClone(base);
+  c.fixtures = { session: { reminders: { altitude: 2, proposalSent: 3 }, recommendedRoutes: [{ id: 'r-guizhou', title: '贵州' }] } };
+  assert.doesNotThrow(() => validateCase(c));
+  const typo = structuredClone(base);
+  typo.fixtures = { session: { reminders: { altitude: 2, typo: 1 } as never } };
+  assert.throws(() => validateCase(typo), /fixtures\.session\.reminders\.typo/);
 });
 console.log(`v2 runner 自测：${passed}/${passed} 通过`);
 

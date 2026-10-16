@@ -223,6 +223,8 @@ export { convLabel, logQuote } from '../log.js';
 export interface TurnContext {
   session: Session;
   text: string;
+  /** 品牌模板模式下的品牌（旧版模式为 null）；contextNote 里对客口径按它渲染（06 原则的三种情形） */
+  brand?: BrandProfile | null;
   /** 经本轮注册表执行预取，并返回实际执行的参数与完整结果。 */
   callTool(name: string, args: Record<string, unknown>): Promise<import('./llm/types.js').PrefetchedCall>;
 }
@@ -484,6 +486,64 @@ export interface ReplyGuardFlags extends GuardTurnFlags {
   guardHit: 'injection' | 'price' | null;
   preDropSnapshot: string;
   saidAll: string[];
+  /** 06 R10：本轮回复整段由代码生成或替换（订单文本、兜底话术等）时由对应步骤置位，shape_check 对它只记形状、不删句 */
+  fixedReply?: boolean;
+  /** 06 R10：shape_check 算出的本轮形状，引擎在轮次结束时写进 trace */
+  replyShape?: ReplyShape;
+}
+
+/** 06 R10：每轮回复的形状（turn_traces.reply_shape）。rewrite 在 R11 推后期间固定 'off'，rewriteMs 为 null */
+export interface ReplyShape {
+  class: 'rich' | 'plain';
+  lines: number;
+  chars: number;
+  /** 本轮行数上限 */
+  limit: number;
+  /** 整段由代码生成的推荐 / 线路列表（rich 类且 flags.fixedReply）：limit 用 generatedListMaxLines，只记形状不裁；不是这类时不写这个字段 */
+  generatedList?: true;
+  /** 裁掉的句数 */
+  trimmed: number;
+  /** 最终文本仍超行数或字数上限（发的是裁剪稿，或整段由代码生成不裁剪） */
+  overLimit: boolean;
+  rewrite: 'off' | 'skipped_time' | 'skipped_budget' | 'used' | 'discarded' | 'timeout' | null;
+  rewriteMs: number | null;
+}
+
+/** 06 R10：包给 shape_check 的阈值与可删句定义，放在包的 thresholds.shape 里；包没给就不检查 */
+export interface ShapePolicy {
+  /** 推荐 / 报价类上限（行） */
+  richMaxLines: number;
+  /** 普通类上限（行） */
+  plainMaxLines: number;
+  /** 整段由代码生成的推荐 / 线路列表（rich 类、flags.fixedReply）的上限（行）；包没给就按 richMaxLines */
+  generatedListMaxLines?: number;
+  /** 字数上限（非空白，按码点） */
+  maxChars: number;
+  /** 本轮调过其中任一工具的算推荐 / 报价类 */
+  richTools: readonly string[];
+  /** 客户这句在问价 */
+  asksPrice(inputText: string): boolean;
+  /** 客户这句是收尾（R12 同一判定） */
+  isClosingTurn(inputText: string): boolean;
+  /** 这一行是线路名行（受保护） */
+  isRouteTitleLine(line: string): boolean;
+  /** 这句是结尾句（收尾轮里受保护） */
+  isClosingLine(sentence: string): boolean;
+  /** 本会话已发过方案书 */
+  proposalSent(session: Session): boolean;
+  /** 包定义的可删句（③）：返回删它的理由，不可删返回 null */
+  droppable(
+    sentence: string,
+    info: {
+      closingTurn: boolean;
+      proposalSent: boolean;
+      askedPrice: boolean;
+      /** 这句里的金额（归一后） */
+      amounts: readonly string[];
+      /** 本会话 AI 回复里已出现过的金额（归一后） */
+      priorAmounts: ReadonlySet<string>;
+    },
+  ): string | null;
 }
 
 /** 通用主回复步骤所需的本轮能力；记录、消息追加由引擎绑定。 */
@@ -502,16 +562,47 @@ export interface ReplyGuardContext extends GuardContext<GuardContextTypes & { fl
   extractProfile(session: Session, calls: GuardToolSource[], text: string): CustomerProfile;
   fallbackReply(stage: SalesStage): string;
   answerIdentity(text: string, reply: string): string;
-  handoffReply(session: Session, text: string, kind: 'complaint' | 'refund' | 'request'): string;
+  /** identityOnly：只要一句不带转接与联系方式的身份承认（后面的正文已经在讲转接，06 R16） */
+  handoffReply(session: Session, text: string, kind: 'complaint' | 'refund' | 'request', opts?: { identityOnly?: boolean }): string;
   departNoteForHandoff(session: Session): string | undefined;
   failureReason: string;
   handoffFallback: string;
   recordGuard(guard: string, before: string, after: string, action: Exclude<StepVerdict['action'], 'pass' | 'abort'>): void;
   recordSignals(signals: import('../handoff/triggers.js').TurnSignals): void;
   appendMessage(message: import('../types.js').ChatMessage): void;
+  /** 06 R10/R11：从 handleMessage 收到这条消息起已用的毫秒数。 */
+  elapsedMs(): number;
+  /** 06 R11：超限重写一次；关闭、超预算、超时、出错都返回 null。 */
+  rewriteReply(input: { customerText: string; draft: string; maxLines: number; protected: string[] }): Promise<string | null>;
+  /** 06 R11/R12：本轮是否转人工。 */
+  handoffThisTurn(): boolean;
 }
 
 export { replyStep } from './guards/reply-step.js';
+
+/** 06 R21：一致性检查的登记类型；通用的检查函数在 core/consistency.ts，包只登记文字和规则 */
+export type {
+  ConsistencyConflict,
+  ConsistencyException,
+  ConsistencyGroup,
+  ConsistencyRule,
+  ConsistencyText,
+  FixedReply,
+  FixedReplyMode,
+  FixedReplyOrigin,
+  PipelineOrder,
+  FixedReplySample,
+  TextTransform,
+} from './consistency.js';
+export {
+  hedgeConflicts,
+  passThroughConflicts,
+  lineCapConflicts,
+  resolveConflicts,
+  formatConflict,
+  originProblems,
+  FIXED_REPLY_MODES,
+} from './consistency.js';
 
 /** R15：最终文本的站内链接部件，只用于渠道投影，不写入 ChatMessage。 */
 export type { MessagePart } from '../shared/channel-types.js';
@@ -592,6 +683,10 @@ export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   followupTemplates: T['FollowupTemplates'];
   insightPrompts: T['InsightPrompts'];
   mock: T['MockPolicy'];
+  /** 06 R21：全部对客固定文字（id 加样例）。没登记的包，一致性检查什么都不查 */
+  fixedReplies?: readonly import('./consistency.js').FixedReply[];
+  /** 06 R21：这个包要守的一致性规则 */
+  consistencyRules?: readonly import('./consistency.js').ConsistencyRule[];
 }
 
 export interface PackBinding<T extends PackRuntimeTypes = PackRuntimeTypes> {
@@ -616,7 +711,16 @@ export interface EnginePackHooks {
   isComplaint(text: string): boolean;
   isHandoffIntent(text: string): boolean;
   safetyNetKind(session: Session, text: string): 'complaint' | 'refund' | 'request';
-  handoffReply(session: Session, text: string, kind: 'complaint' | 'refund' | 'request'): string;
+  /**
+   * opts 由引擎带上（品牌快照、客户这句是不是在问身份），旧调用不传也行：
+   * 06 R16 的合并句与联系方式渲染按它选文字
+   */
+  handoffReply(
+    session: Session,
+    text: string,
+    kind: 'complaint' | 'refund' | 'request',
+    opts?: { brand?: BrandProfile | null; identity?: boolean; identityOnly?: boolean },
+  ): string;
   departNoteForHandoff(session: Session): string | undefined;
   fallbackReply(stage: SalesStage): string;
   hintsFor(name: string, ctx: TurnToolContext): ToolHints;

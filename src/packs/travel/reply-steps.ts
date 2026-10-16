@@ -1,8 +1,13 @@
 import { renderBrandTemplate } from '../../core/pack-api.js';
 import { travelTemplates } from './templates.js';
+import { createdOrderText, existingOrderText, STRANDED_LEAD } from './order-words.js';
+import { closingLine, HAS_CLOSING, isClosingTurn } from './closing-words.js';
 // 04 R7：旅游主回复步骤，顺序由核心与本表组合；副作用仅经本轮 context。
 import { convLabel, logQuote, cleanText, replyStep, type GuardStep, type ReplyGuardContext } from '../../core/pack-api.js';
 import { CUSTOM_PROMISE } from './itinerary.js';
+import { noteReply } from './reply-notes.js';
+import { rewriteClaimWords } from './claim-words.js';
+import { dropQuoteHedge, isQuoteRound } from './quote-hedge.js';
 import type { createTravelTurnHooks } from './turn.js';
 import type { createTravelPriceRules } from './price-rules.js';
 import type { TravelPriceGuard } from './price-guard.js';
@@ -11,10 +16,12 @@ import type { TravelReplyHelpers } from './reply-helpers.js';
 export interface TravelReplyStepSources {
   helpers: TravelReplyHelpers;
   turnHooks: ReturnType<typeof createTravelTurnHooks>;
-  priceGuard: Pick<TravelPriceGuard, 'findUnbackedPriceHits' | 'strandedAfterDrop'>;
+  priceGuard: Pick<TravelPriceGuard, 'findUnbackedPriceHits' | 'strandedAfterDrop' | 'strandedShape' | 'dropSentences'>;
   priceRules: Pick<ReturnType<typeof createTravelPriceRules>, 'dropUnbackedClaims'>;
   getOrder: (id: string) => import('../../core/pack-api.js').Order | undefined;
   paymentMode: () => import('../../core/pack-api.js').PaymentMode;
+  loadRoutes: () => import('../../core/pack-api.js').Route[];
+  isConfigNotReadyError: (error: unknown) => boolean;
   dejargon(text: string, sessionId: string): string;
   handoffReasons: { promise: string; claimed: string };
 }
@@ -51,7 +58,12 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
     promisesContact,
   } = sources.helpers;
   const {
-    PURCHASE_INTENT,
+    netOrderIntent,
+    ORDER_DEFERRED,
+    QUOTE_ONLY,
+    ORDER_QUESTION,
+    PRICE_OK,
+    netQuoteFor,
     PURCHASE_INTENT_MAX_LEN,
     OTHER_ORDER,
     WANTS_PERSON,
@@ -70,9 +82,9 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
     deterministicRecommend,
     kidsHeadcountUnclear,
   } = sources.turnHooks;
-  const { findUnbackedPriceHits, strandedAfterDrop } = sources.priceGuard;
+  const { findUnbackedPriceHits, strandedAfterDrop, strandedShape, dropSentences } = sources.priceGuard;
   const { dropUnbackedClaims } = sources.priceRules;
-  const { getOrder, paymentMode, dejargon, handoffReasons: HANDOFF_REASON } = sources;
+  const { getOrder, paymentMode, dejargon, handoffReasons: HANDOFF_REASON, loadRoutes } = sources;
   return [
     replyStep('other_order', 'stage_advance', [], ['wantsOrder', 'friendsOwn'], (ctx) => {
       const { session } = ctx;
@@ -82,12 +94,14 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         !orderedThisTurn &&
         !!session.lastQuote &&
         ctx.inputText.length <= PURCHASE_INTENT_MAX_LEN &&
-        PURCHASE_INTENT.test(ctx.inputText) &&
-        !haggling(session, ctx.inputText, ctx.text);
+        netOrderIntent(ctx.inputText) &&
+        !haggling(session, ctx.inputText, ctx.text) &&
+        // 最近报过两条以上线路、客户没点名也没给序号：不替他挑，留给模型问
+        !!netQuoteFor(session, ctx.inputText);
       // 给别人另订一份（「闺蜜她们也想去…帮她们报个价」→「行，那就订这个」）：和模型调 create_order 同一个判断（见 otherPartyPending）。
       // 此前安全网只看这一句，照 3 人的报价建了单，把客户本人那张 2 人的待付款单作废了
       ctx.turn.flags.friendsOwn = ctx.turn.flags.wantsOrder
-        ? otherPartyPending(session, session.lastQuote!.routeId, session.lastQuote!.travelers)
+        ? otherPartyPending(session, netQuoteFor(session, ctx.inputText)!.routeId, netQuoteFor(session, ctx.inputText)!.travelers)
         : undefined;
       if (ctx.turn.flags.friendsOwn) {
         console.warn(`[engine] 客户在说给别人另订，安全网不兜底建单（会话 ${convLabel(session.id)}）：${logQuote(ctx.inputText)}`);
@@ -100,7 +114,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         ctx.recordGuard('other_order', before, ctx.text, 'patch');
       }
     }),
-    replyStep('order_net', 'other_order', ['wantsOrder', 'friendsOwn'], [], async (ctx) => {
+    replyStep('order_net', 'other_order', ['wantsOrder', 'friendsOwn'], ['fixedReply'], async (ctx) => {
       const { session } = ctx;
       // 客户最近说的人数和这次报价对不上（报的 2 位，客户刚问「4个人多少钱」）：按报价的人数建单就是替客户定了人数，留给模型问
       const saidTravelers = ctx.turn.flags.wantsOrder
@@ -113,9 +127,9 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         ctx.turn.flags.wantsOrder &&
         !ctx.turn.flags.friendsOwn &&
         !OTHER_ORDER.test(ctx.inputText) &&
-        (saidTravelers === undefined || saidTravelers === session.lastQuote!.travelers)
+        (saidTravelers === undefined || saidTravelers === netQuoteFor(session, ctx.inputText)?.travelers)
       ) {
-        const quote = session.lastQuote!;
+        const quote = netQuoteFor(session, ctx.inputText)!;
         // 已有完全同参（线路+人数+日期）的待支付订单才重发原链接，否则重新建单。
         // 只按线路匹配会让「改了出发日期再说就订」的客户拿回旧单的旧日期。客户最近说的是「国庆」这种
         // 下不了单的日子时（wantDate 为空），按最近那次报价的日期找：「10月5号」改成「国庆」后再说「就订这个」，
@@ -135,13 +149,18 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         if (existing) {
           session.stage = 'closing';
           const before = ctx.text;
-          // advisor 模式：这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」）；online 模式原样不变
-          const how =
-            paymentMode() === 'advisor'
-              ? `订单链接：/pay/${existing.id}\n顾问会${session.channel === 'web' ? '在这个页面里' : '在微信里'}跟您核对价格并发收款方式，想改人数或日期的话跟我说一声，我重新为您安排～`
-              : `直接点这里完成支付即可：/pay/${existing.id}\n想改人数或日期的话跟我说一声，我重新为您安排～`;
-          ctx.text = `您这单已经建好啦～《${existing.routeTitle}》${existing.travelers} 位出行、${cardDate(existing.departDate)}出发，总价 ${yuan(existing.totalPrice)}。\n${how}`;
+          // 文字在 order-words.ts（R21 要渲染同一份）：advisor 模式的链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」）
+          ctx.text = existingOrderText(
+            {
+              title: existing.routeTitle,
+              travelers: existing.travelers,
+              date: cardDate(existing.departDate),
+              total: yuan(existing.totalPrice),
+            },
+            { advisor: paymentMode() === 'advisor', web: session.channel === 'web', templateMode: !!ctx.brand, id: existing.id },
+          );
           ctx.recordGuard('order_net', before, ctx.text, 'replace');
+          ctx.turn.flags.fixedReply = true;
         } else {
           const departDate = wantDate;
           if (departDate) {
@@ -164,26 +183,29 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
                 // 报价对不上。不解释就是「上一条 6 万、下一条 6.6 万」，客户第一反应是被坑了。
                 // 原因照工具的定价说明讲（「10月为最佳出行季，价格上浮 10%」），不说含糊的「有浮动」；
                 // 只有那次报价真发到过客户眼前才提「之前报的」——C07 的 47,400 只在方案书里出现过，聊天里从没报过
-                const diff =
+                const diffed =
                   typeof quote.total === 'number' &&
                   typeof res.total === 'number' &&
                   res.total !== quote.total &&
-                  quoteShown(session, quote.total)
-                    ? `\n（之前报的是 ${yuan(quote.total)}，按 ${cardDate(departDate)}出发重新核算：${res.note ?? '按这条线的季节定价'}）`
-                    : '';
+                  quoteShown(session, quote.total);
                 const old = res.supersededOrderId ? getOrder(res.supersededOrderId) : undefined;
-                const advisor = paymentMode() === 'advisor';
-                // advisor 模式：旧单作废后不说「按这张付款」，这条链接不是点开就能付的（02 spec「收款流程」）；online 模式原样不变
-                const replaced = old
-                  ? `\n之前那张 ${old.travelers} 位、${cardDate(old.departDate)}出发的订单已作废，旧链接失效，${advisor ? '按这张的订单链接来。' : '按这张付款就行。'}`
-                  : '';
-                // 没付款不算锁定名额：此前「已为您锁定名额」和「名额以付款为准」写在同一条里，前后矛盾
-                const how = advisor
-                  ? `订单链接：${res.payUrl}\n顾问会${session.channel === 'web' ? '在这个页面里' : '在微信里'}跟您核对价格并发收款方式，不用点链接付款。`
-                  : `请点此完成支付：${res.payUrl}\n名额以付款为准，付款后顾问会与您确认行程细节～`;
                 const before = ctx.text;
-                ctx.text = `好的，订单已生成～\n《${quote.routeTitle}》${quote.travelers} 位出行、${cardDate(departDate)}出发，总价 ${yuan(res.total ?? 0)}。${diff}${replaced}\n${how}`;
+                // 文字在 order-words.ts（R21 要渲染同一份）：advisor 模式旧单作废后不说「按这张付款」，这条链接不是点开就能付的（02 spec「收款流程」）
+                ctx.text = createdOrderText(
+                  { title: quote.routeTitle, travelers: quote.travelers, date: cardDate(departDate), total: yuan(res.total ?? 0) },
+                  {
+                    diff: diffed
+                      ? { before: yuan(quote.total!), date: cardDate(departDate), note: res.note ?? '按这条线的季节定价' }
+                      : undefined,
+                    replaced: old ? { travelers: old.travelers, date: cardDate(old.departDate) } : undefined,
+                    advisor: paymentMode() === 'advisor',
+                    web: session.channel === 'web',
+                    templateMode: !!ctx.brand,
+                    payUrl: res.payUrl,
+                  },
+                );
                 ctx.recordGuard('order_net', before, ctx.text, 'replace');
+                ctx.turn.flags.fixedReply = true;
               }
             } catch (e) {
               console.error('[engine] 成单安全网建单失败（保留模型原回复）:', e);
@@ -333,7 +355,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
       ctx.turn.flags.handedOverSelfDecided = session.handedOver;
       if (claimed) return { action: 'handoff', text: ctx.text, reason: HANDOFF_REASON.claimed };
     }),
-    replyStep('injection', 'handoff_claims', ['customPromise'], ['guardHit'], (ctx) => {
+    replyStep('injection', 'handoff_claims', ['customPromise'], ['guardHit', 'fixedReply'], (ctx) => {
       const { session } = ctx;
       // 下面几道护栏命中时通常把整条换成兜底话术，但兜底话术都在追问线路/人数/预算——
       // 这一轮已经转人工、AI 之后不再应答，追问只会让客户白等。所以改行程转人工时，
@@ -354,10 +376,11 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         const before = ctx.text;
         replaceVisible(ctx.brand ? renderBrandTemplate(travelTemplates.offTopicReply, ctx.brand) : INJECTION_REPLY);
         ctx.recordGuard('injection', before, ctx.text, 'replace');
+        ctx.turn.flags.fixedReply = true;
         ctx.turn.flags.guardHit = 'injection';
       }
     }),
-    replyStep('encyclopedia', 'injection', ['customPromise'], [], async (ctx) => {
+    replyStep('encyclopedia', 'injection', ['customPromise'], ['fixedReply'], async (ctx) => {
       const { session } = ctx;
       // 百科式回答护栏：客户提到了我们在卖的目的地，回复却像本地理教科书且不含任何产品信息
       const beforeEncyclopedia = ctx.text;
@@ -372,6 +395,7 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
           if (rec) {
             console.error(`[engine] ⚠️ 拦截百科式回答（会话 ${convLabel(session.id)}，目的地 ${dests[0]}）：${logQuote(ctx.text)}`);
             ctx.text = rec;
+            ctx.turn.flags.fixedReply = true;
             session.stage = ctx.advanceStage(session, {
               calls: [{ name: 'search_routes', args: { destination: dests[0] } }],
               terminal: ctx.isTerminalStage(session.stage),
@@ -391,7 +415,10 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
       ctx.turn.flags.preDropSnapshot = ctx.text;
       ctx.turn.flags.saidAll = session.messages.filter((m) => m.role === 'customer').map((m) => m.content);
       // 人数按客户原话认一份交给规则词守卫：还没报价时它自己认不出几位，「两位一共 3 万」没法折成每人去核「在预算内」
-      const claims = dropUnbackedClaims(ctx.text, session, ctx.toolSources, { travelers: travelersKnown(session, ctx.turn.flags.saidAll) });
+      const claims = dropUnbackedClaims(ctx.text, session, ctx.toolSources, {
+        travelers: travelersKnown(session, ctx.turn.flags.saidAll),
+        templateMode: !!ctx.brand,
+      });
       if (claims.dropped.length) {
         console.error(
           `[engine] ⚠️ 删掉对不上的价格规则 / 服务承诺（会话 ${convLabel(session.id)}）：${logQuote(claims.dropped.join(' | '))}`,
@@ -404,7 +431,47 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         ctx.recordGuard('unbacked_claims', before, ctx.text, 'drop_sentence');
       }
     }),
-    replyStep('price', 'unbacked_claims', ['customPromise', 'guardHit'], ['guardHit'], (ctx) => {
+    // 06 R13：越权说法词表。只按小句删或换，含 /pay/、/proposal/ 链接的句子整句不动；PRICE_GUARD=0 时同价格护栏一起关
+    replyStep('claim_words', 'unbacked_claims', ['customPromise'], [], (ctx) => {
+      // 06 R19：删掉模型照旧写的「按最终行程微调」那半句；报价轮里连「这是起价」一起删（owner 已授权，第 17 步）。
+      // 报价是工具算的确定价，这半句让价格不作数。非报价轮（答已发链接的提问等）只删这半句，其余原样。
+      // 和下面的词表是两件事，所以单独记一条
+      {
+        const unhedged = dropQuoteHedge(ctx.text, isQuoteRound(ctx.toolSources ?? []));
+        if (unhedged !== ctx.text) {
+          const before = ctx.text;
+          ctx.text = unhedged;
+          ctx.recordGuard('claim_words', before, ctx.text, 'patch');
+        }
+      }
+      if (process.env.PRICE_GUARD === '0') return;
+      const { session } = ctx;
+      let routes: import('../../core/pack-api.js').Route[] = [];
+      try {
+        routes = sources.loadRoutes();
+      } catch (e) {
+        // 数据文件坏了另有告警，这里不阻断对话；配置源没装载好是启动顺序出了错，照常抛
+        if (sources.isConfigNotReadyError(e)) throw e;
+      }
+      const claims = rewriteClaimWords(
+        ctx.text,
+        {
+          mode: { channel: session.channel, templateMode: !!ctx.brand },
+          orders: session.orderIds.map((id) => getOrder(id)).filter((o): o is import('../../core/pack-api.js').Order => !!o),
+          focusRouteId: session.lastQuote?.routeId,
+          routes,
+          yuan,
+        },
+        { dropSentences, hasHole: (t) => new RegExp(ANY_HOLE.source).test(t) },
+      );
+      if (claims.text === ctx.text) return;
+      console.error(`[engine] ⚠️ 越权说法已删换（会话 ${convLabel(session.id)}）：${logQuote(claims.dropped.join(' | '))}`);
+      const before = ctx.text;
+      ctx.text =
+        claims.text || (ctx.turn.flags.customPromise ? '' : session.handedOver ? HANDED_OVER_FALLBACK : ctx.fallbackReply(session.stage));
+      ctx.recordGuard('claim_words', before, ctx.text, 'drop_sentence');
+    }),
+    replyStep('price', 'claim_words', ['customPromise', 'guardHit'], ['guardHit'], (ctx) => {
       const { session } = ctx;
       // 价格出口校验：回复里的金额必须能追溯到产品库定价规则、本会话报价/订单，或客户自己说过的数字。
       // 追溯不到就是模型自己编的价——高客单价产品里这是最贵的一类错误（客户按错价下单，
@@ -422,23 +489,39 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
           text: ctx.inputText,
           calls: ctx.toolSources,
           customHandoff: !!ctx.turn.flags.customPromise,
+          templateMode: !!ctx.brand,
         });
         ctx.recordGuard('price', before, ctx.text, 'drop_sentence');
         ctx.turn.flags.guardHit ??= 'price';
       }
     }),
-    replyStep('stranded', 'price', ['customPromise', 'preDropSnapshot'], [], async (ctx) => {
+    replyStep('stranded', 'price', ['customPromise', 'preDropSnapshot'], ['fixedReply'], async (ctx) => {
       const { session } = ctx;
       // 按句删完剩下的是残句（还指着删掉的那条线、宣称报价却没有数、只剩一句问话）：不发残句，整条换成有内容的兜底
-      if (strandedAfterDrop(ctx.turn.flags.preDropSnapshot, ctx.text)) {
+      // 06 R15：strandedAfterDrop 之外的残句形态（开头是分点、「亮点」没有线路名、引导句后面不是线路）
+      const shape = ctx.turn.flags.customPromise || session.handedOver ? null : strandedShape(ctx.turn.flags.preDropSnapshot, ctx.text);
+      if (shape === 'lead' && !strandedAfterDrop(ctx.turn.flags.preDropSnapshot, ctx.text)) {
+        const before = ctx.text;
+        ctx.text = `${STRANDED_LEAD}\n${ctx.text}`;
+        ctx.recordGuard('stranded', before, ctx.text, 'replace');
+        return;
+      }
+      if (strandedAfterDrop(ctx.turn.flags.preDropSnapshot, ctx.text) || shape === 'replace') {
         console.error(`[engine] ⚠️ 按句删除后只剩残句，改用兜底（会话 ${convLabel(session.id)}）：${logQuote(ctx.text)}`);
         const before = ctx.text;
         ctx.text = ctx.turn.flags.customPromise
           ? ''
           : session.handedOver
             ? HANDED_OVER_FALLBACK
-            : await strandedReply({ session, text: ctx.inputText, calls: ctx.toolSources, runTool: ctx.callTool });
+            : await strandedReply({
+                session,
+                text: ctx.inputText,
+                calls: ctx.toolSources,
+                runTool: ctx.callTool,
+                templateMode: !!ctx.brand,
+              });
         ctx.recordGuard('stranded', before, ctx.text, 'replace');
+        ctx.turn.flags.fixedReply = true;
       }
     }),
     replyStep('adults', 'stranded', ['saidAll'], [], (ctx) => {
@@ -471,6 +554,18 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
       ctx.text = restoreProposalSuffixes(ctx.text, ctx.toolSources);
       ctx.recordGuard('proposal_suffix', beforeSuffix, ctx.text, 'patch');
     }),
+    // 06 R12：收尾轮（客户说回去商量、谢谢、先这样）、本轮没转人工、没建单、回复里没有同类结尾时，代码加一句固定结尾
+    replyStep('closing', 'proposal_suffix', [], [], (ctx) => {
+      const { session } = ctx;
+      if (ctx.handoffThisTurn() || session.handedOver) return;
+      if (session.orderIds.length > ctx.ordersBefore) return;
+      if (!ctx.text.trim() || HAS_CLOSING.test(ctx.text)) return;
+      if (netOrderIntent(ctx.inputText)) return;
+      if (!isClosingTurn(ctx.inputText, { ORDER_DEFERRED, QUOTE_ONLY, ORDER_QUESTION, PRICE_OK })) return;
+      const before = ctx.text;
+      ctx.text = `${ctx.text.trimEnd()}\n\n${closingLine({ channel: session.channel, templateMode: !!ctx.brand })}`;
+      ctx.recordGuard('closing', before, ctx.text, 'append');
+    }),
     replyStep('system_note', 'final_clean', [], [], (ctx) => {
       const { session } = ctx;
       // 回复里说了「由顾问跟您确认」「我让顾问确认」（守卫换上的，或模型照 SOP 说的）却没转人工：记一条给后台，
@@ -490,6 +585,10 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
           at: Date.now(),
         });
       }
+    }),
+    // 06 R7：本轮回复的会话记录（已提醒项、已推荐线路）。从最终文本里用确定性规则认；被中止的轮走不到这里；不往会话追加消息
+    replyStep('note_reply', 'system_note', [], [], (ctx) => {
+      noteReply(ctx.session, ctx.text, loadRoutes());
     }),
   ];
 }

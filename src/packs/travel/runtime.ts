@@ -9,6 +9,7 @@ import {
   type PackSources,
   type TurnToolCall,
   type Session,
+  type ShapePolicy,
 } from '../../core/pack-api.js';
 import { createTravelTools } from './tools/index.js';
 import { createTravelPriceGuard } from './price-guard.js';
@@ -31,14 +32,17 @@ import { travelMock } from './mock.js';
 import * as legacy from './legacy.js';
 import { travelTemplates } from './templates.js';
 import { travelQuickReplyDefaults } from './quick-reply-defaults.js';
+import { createTravelShapePolicy } from './shape-words.js';
+import { createTravelConsistency } from './consistency.js';
+import { paidOrderText } from './order-words.js';
 
 const thresholds = { ...travelPriceThresholds, dates: travelDateThresholds, search: travelSearchThresholds };
 interface TravelRuntimeTypes extends PackRuntimeTypes {
-  PackThresholds: typeof thresholds;
+  PackThresholds: typeof thresholds & { shape: ShapePolicy };
 }
 
-export function createTravelRuntime(sources: PackSources) {
-  // tools → rules → guard → tools：只注入延后调用的能力，不在装载时读目录或预算。
+/** 把工厂串起来：tools → rules → guard → tools 只注入延后调用的能力，不在装载时读目录或预算。一致性检查用换了订单和收款方式的来源再串一份 */
+function assemble(sources: PackSources) {
   const catalog = createTravelTools({ ...sources, budgetVerdict: (...args) => priceRules.budgetVerdict(...args) });
   const priceGuard = createTravelPriceGuard({ ...sources, ...catalog });
   const priceRules = createTravelPriceRules({ ...sources, ...catalog }, priceGuard);
@@ -53,6 +57,16 @@ export function createTravelRuntime(sources: PackSources) {
       budgetLifted: priceRules.BUDGET_LIFTED,
     }).extractProfile(text, session);
   }
+  const runtimeThresholds = {
+    ...thresholds,
+    shape: createTravelShapePolicy({
+      PRICE_ASK: turnHooks.PRICE_ASK,
+      ORDER_DEFERRED: turnHooks.ORDER_DEFERRED,
+      QUOTE_ONLY: turnHooks.QUOTE_ONLY,
+      ORDER_QUESTION: turnHooks.ORDER_QUESTION,
+      PRICE_OK: turnHooks.PRICE_OK,
+    }),
+  };
   const helpers = createTravelReplyHelpers({
     ...sources,
     ...catalog,
@@ -61,6 +75,15 @@ export function createTravelRuntime(sources: PackSources) {
     extractProfile: (session, calls, text) => ({ ...session.profile, ...extractProfile(text, session, calls) }),
   });
   const dejargon = (text: string, sessionId: string) => cleanJargon(text, sessionId, dejargonVocab);
+  return { catalog, priceGuard, priceRules, turnHooks, extractProfile, runtimeThresholds, helpers, dejargon };
+}
+
+export type TravelParts = ReturnType<typeof assemble>;
+
+export function createTravelRuntime(sources: PackSources) {
+  const { catalog, priceGuard, priceRules, turnHooks, extractProfile, runtimeThresholds, helpers, dejargon } = assemble(sources);
+  // R21：样例要在假订单、另一种收款方式下渲染，所以每次按换过的来源再串一份
+  const consistency = createTravelConsistency((over) => assemble({ ...sources, ...over }));
   const runtime: PackRuntime<TravelRuntimeTypes> = {
     id: 'travel',
     defaultBrand: {
@@ -94,14 +117,16 @@ export function createTravelRuntime(sources: PackSources) {
     prefetch: turnHooks.prefetch,
     contextNote: turnHooks.contextNote,
     preModel: turnHooks.preModel,
-    replyAnchors: { markdown: 'link_whitelist', dangling: 'adults', 'takeover_check:post': 'proposal_suffix' },
+    replyAnchors: { markdown: 'link_whitelist', dangling: 'adults', shape_check: 'closing', 'takeover_check:post': 'shape_check' },
     replySteps: travelReplySteps({
       helpers,
       turnHooks,
       priceGuard,
       priceRules,
+      loadRoutes: catalog.loadRoutes,
       getOrder: sources.getOrder,
       paymentMode: sources.paymentMode,
+      isConfigNotReadyError: sources.isConfigNotReadyError,
       dejargon,
       handoffReasons: sources.handoffReasons,
     }),
@@ -134,14 +159,13 @@ export function createTravelRuntime(sources: PackSources) {
         session.lastShownRoutes = undefined;
         session.seenRouteIds = undefined;
         session.missedDestinations = undefined;
+        session.reminders = undefined;
+        session.recommendedRoutes = undefined;
       },
-      paidText: (order) =>
-        `已收到您的支付，太开心啦 🎉\n《${order.routeTitle}》${order.travelers} 位出行、` +
-        `${order.departDate} 出发已确认预订。\n专属旅行顾问稍后会与您对接行程细节和出行准备，` +
-        `有任何想法随时跟我说～`,
+      paidText: paidOrderText,
     },
     vocab: { handoff: handoffVocab, dejargon: dejargonVocab },
-    thresholds,
+    thresholds: runtimeThresholds,
     retrievalText,
     retrievalItems: () =>
       catalog.loadRoutes().map((route, ord) => ({
@@ -158,6 +182,8 @@ export function createTravelRuntime(sources: PackSources) {
     followupTemplates,
     insightPrompts,
     mock: travelMock,
+    fixedReplies: consistency.fixedReplies,
+    consistencyRules: consistency.rules,
   };
-  return { runtime, catalog, priceGuard, priceRules, turnHooks, helpers };
+  return { runtime, catalog, priceGuard, priceRules, turnHooks, helpers, consistency };
 }
