@@ -24,7 +24,7 @@ wecom-sales-agent is an AI sales agent for WeCom Customer Service (微信客服)
 - Secrets live only in env files on the server, outside the repo (split per compose service from phase 01 on), and never appear in logs. The one planned exception: per-tenant channel credentials (phase 03, the channel layer v2, after the 2026-10-09 roadmap reorder) may be stored in the database encrypted at rest, with the encryption key kept in an env file.
 - From phase 01 on, every tenant-scoped table carries `tenant_id` under FORCE row-level security (the login tables are exempt, see ADR-001). Once conversations move into Postgres (phase 02), messages are append-only.
 - Customer-facing WeChat text never contains markdown.
-- No code from license-incompatible or proprietary sources; copied third-party code keeps its header and is listed in `NOTICE` (create it on the first such copy).
+- Learning from other products is encouraged; copying is limited by license. Open-source projects: adopt their designs freely, but copy code only under an MIT-compatible license (MIT, BSD, ISC, Apache-2.0), keeping its header and listing it in `NOTICE`; GPL, AGPL and source-available code with extra conditions is read-only. Closed-source products: mechanisms and practices learned from their public material or from our own analysis (within applicable law) may be reimplemented independently in our own code; never copy their code, prompts, copy text or assets.
 
 ## Development
 
