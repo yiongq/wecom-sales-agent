@@ -1,6 +1,8 @@
 # 02 · 会话入库 + 坐席工作台
 
 Status: implemented
+Superseded in part by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md) — 验收 12 里已付会话「我要退款」那一段：开着自助退款时第一句先回退款报价，客户确认之后要人动手的（超过阈值等审批，或顾问收款模式下等顾问退款）才转人工、进「已成交客户要人工」，低于阈值且模拟支付的当场办完、不转人工；自助退款关着时原文照旧（07 R18、R19）。
+Amended by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md)（只做新增，全文见该 spec 顶部 `Amends:`：`OrderStatus` 加 `refund_pending`、`refunded`，`Order.refund`，`Session.handoffLog` 与 `Session.afterSale`，R22 公开订单投影加 `refund`，四个订单审计动作与 `trace.export`，`OrderSummary` 与 `MetricsView` 的新字段，`usage_daily.purpose` 加 `gate`，trace 详情补 `guardVerdicts`、`replyShape`，见 07 R18–R24）。
 Superseded in part by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md) — 不变量 6、13 的到期沙箱整租户删除与不写 spill 例外（05 R6、R12）。
 Amended by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md)（R6 新增沙箱会话类，R22 公开路由新增沙箱进程一组，/healthz 加 role，见 05 R4、R8、R10、R19–R21）。
 Superseded in part by: [03 · 渠道层 v2](../03-channels-v2/spec.md) — R7「企微 cursor：留在 `var/wecom-cursor.json`（开放问题 5），同时做三条缓解……」那一句与「推迟」格的 `channel_inbox`（04）；「identity map 与写入 · 一次落库」第 6 步把账本行整体写在存档点之内；「企微：发送账本、回执与去重」里「账本行随会话的下一次落库写（存档点之内……）」一句与「去重与重放对齐」的五种情况；「identity map 与写入 · 停机」里 spill 文件「trace 与账本行不写」中的「账本行不写」。四处都只在企微状态「在库里」时（03 R1）被取代，文件存储、以及企微状态是「未导入」「已导出」的 db 存储下原文照旧。按 03 的 plan 落地，原因见 03 顶部 `Supersedes in part:`
