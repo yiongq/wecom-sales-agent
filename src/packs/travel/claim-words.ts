@@ -40,7 +40,7 @@ export interface ClaimWordsDeps {
 // ---------------- 固定话术 ----------------
 
 const POLICY_REPLY = '这块政策会变，由顾问按您的出行时间确认。';
-const VISA_REPLY = '签证怎么办、要多久，由顾问跟您确认。';
+export const VISA_REPLY = '签证怎么办、要多久，由顾问跟您确认。';
 /** 与 price-rules 的专票句同一句 */
 const INVOICE_REPLY = '发票（含专票）怎么开，由顾问跟您确认。';
 const HOTEL_REPLY = '酒店我可以推荐，要订请顾问确认房态。';

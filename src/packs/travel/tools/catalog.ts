@@ -15,6 +15,7 @@ import {
 } from '../../../core/pack-api.js';
 import { latestBookableDate } from '../dates.js';
 import { travelDateThresholds, travelPriceThresholds, travelSearchThresholds } from '../thresholds.js';
+import { defaultTravelPolicy, segments } from '../policy.js';
 import { cheapestOverall } from '../claim-words.js';
 
 export interface SearchRoutesArgs {
@@ -986,7 +987,7 @@ export function createTravelCatalog(sources: TravelToolSources) {
     const peak = peakMonths(route.bestSeason);
     if (!Number.isNaN(month) && peak.has(month)) {
       perPerson = Math.round(perPerson * travelPriceThresholds.peakMultiplier);
-      notes.push(`${month}月为最佳出行季，价格上浮 10%`);
+      notes.push(segments['note:peak'](defaultTravelPolicy).replace('{month}', String(month)));
     } else if (!Number.isNaN(month)) {
       // 不在最佳季也要写明：此前只写「当前为标准价」，模型自己给便宜找理由——「12 月中前是平日价」
       // 「避开了节日高峰」「过了春节旺季，地接价回落」，全是没有的规则。这句也显示在方案书的报价卡上
@@ -994,7 +995,7 @@ export function createTravelCatalog(sources: TravelToolSources) {
     }
     if (travelers >= travelPriceThresholds.groupMinimum) {
       perPerson = Math.round(perPerson * travelPriceThresholds.groupDiscount);
-      notes.push('4 人及以上享 95 折');
+      notes.push(segments['note:group'](defaultTravelPolicy));
     }
     return {
       routeTitle: route.title,

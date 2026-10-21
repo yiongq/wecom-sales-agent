@@ -59,6 +59,9 @@ const goal = (predicates: Predicate[] = []): SimGoal => ({
   predicates: predicates.length ? predicates : [{ kind: 'order', count: 0 }],
   forbidden: [],
 });
+check('目标支持 tags', validateGoal({ ...goal(), tags: ['regression'] }, 'test.json').tags?.[0] === 'regression');
+assert.throws(() => validateGoal({ ...goal(), tags: [''] }, 'test.json'), /tags/);
+assert.throws(() => validateGoal({ ...goal(), unknown: true }, 'test.json'), /Unrecognized key/);
 const orders = { ...initial, orders: [order] };
 const yesNo = (p: Predicate, yes: Evidence, no: Evidence): void => {
   check(`${p.kind} ${'scope' in p ? p.scope : ''} 通过`, judge(goal([p]), yes)[0]!.passed);
@@ -187,7 +190,8 @@ check(
 check('回归集不带本机路径', !JSON.stringify(quality).includes('/Users/'));
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-goals-test-'));
 try {
-  await fs.writeFile(path.join(temp, 'one.json'), JSON.stringify(goal()));
+  await fs.writeFile(path.join(temp, 'one.json'), JSON.stringify({ ...goal(), tags: ['regression'] }));
+  check('从文件读取 tags', (await loadGoals(temp))[0].tags?.[0] === 'regression');
   await fs.writeFile(path.join(temp, 'two.json'), JSON.stringify(goal()));
   await assert.rejects(loadGoals(temp), /重复目标/);
   assertions++;

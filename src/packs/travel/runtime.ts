@@ -35,6 +35,7 @@ import { travelQuickReplyDefaults } from './quick-reply-defaults.js';
 import { createTravelShapePolicy } from './shape-words.js';
 import { createTravelConsistency } from './consistency.js';
 import { paidOrderText } from './order-words.js';
+import { travelPolicy } from './policy.js';
 
 const thresholds = { ...travelPriceThresholds, dates: travelDateThresholds, search: travelSearchThresholds };
 interface TravelRuntimeTypes extends PackRuntimeTypes {
@@ -86,6 +87,7 @@ export function createTravelRuntime(sources: PackSources) {
   const consistency = createTravelConsistency((over) => assemble({ ...sources, ...over }));
   const runtime: PackRuntime<TravelRuntimeTypes> = {
     id: 'travel',
+    policy: travelPolicy,
     defaultBrand: {
       brandName: '云途定制旅行',
       advisorTitle: '旅行顾问',
