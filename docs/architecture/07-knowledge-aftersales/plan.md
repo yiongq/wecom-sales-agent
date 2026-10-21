@@ -15,7 +15,7 @@
 ## 开工须知（新会话从这里开始）
 
 - 先读 `AGENTS.md`、本 spec 全文、`docs/spec-driven-dev.md`、本文件的「Open」与「交接记录」，再看 `git log -5`。代码出处以第 0.2 步核对后的位置为准；spec 不够用就记「Open」停下，不另定架构。部署照 06 plan 第 15、19 步的做法。
-- **分工**：owner 2026-10-22 续订了 Codex，实现由 Codex 与 Claude 子 agent（默认 Sonnet）并行，各在自己的 git worktree 里做；两条车道，一条一个实现者，换一个模型交叉评审对方的 PR。派 Codex 照 `codex-dispatch` skill（它在沙箱里提交不了，一律不提交）。每份任务说明都引用 `.claude/runs/07-step-common.md`（主仓库检出目录下的本机文件，不进仓库）。协调者写任务说明、审 diff、提交、开 PR，CI 绿了开自动合并（`gh pr merge --auto --merge`），开了之后不再追加提交。碰线上、花钱、要 owner 拍板的事由协调者做。
+- **分工**：owner 2026-10-22 续订了 Codex，实现由 Codex 与 Claude 子 agent（默认 Sonnet）并行，各在自己的 git worktree 里做；两条车道，一条一个实现者，换一个模型交叉评审对方的 PR。派 Codex 照 `codex-dispatch` skill（它在沙箱里提交不了，一律不提交）。每份任务说明都引用协调者 worktree 里的 `.claude/runs/07-step-common.md`（git 忽略，不进仓库；绝对路径写在任务说明里）。协调者写任务说明、审 diff、提交、开 PR，CI 绿了开自动合并（`gh pr merge --auto --merge`），开了之后不再追加提交。碰线上、花钱、要 owner 拍板的事由协调者做。
 - **锁定的 8 个文件**：`src/engine.selftest.ts`、`src/dejargon.selftest.ts`、`src/engine-holiday.selftest.ts`、`src/price-guard.selftest.ts`、`src/llm.selftest.ts`、`src/server.selftest.ts`、`src/adapters/wecom.selftest.ts`、`eval/cases.json`，sha256 见「实施记录 · 第 0 步」。全程一字不动：本 spec 不授权改任何锁定断言，spec「锁定断言」一节点名的那些约束实现。测试红了先查本步改动；确认与 spec 冲突就记「Open」停下。`public/chat.html` 也不改（R20）。
 - **前缀**：第 0–18 步的两个 `PREFIX sha256` 都等于第 0 步记的值（验收 1）。只有第 19 步（批 S）换前缀，新值记进实施记录。
 - **共同门禁**：本机跑 `pnpm -s format:check`、`pnpm -s lint`、`pnpm -s typecheck`、`pnpm -s test:locked`；按改动文件 grep 出受影响的自测，逐个跑；v2 假模型回归跑文件与 PGlite 两条。完整 `pnpm test` 只在 CI 跑（required check 叫 `check`）。新自测串进 `test` 末尾；新的 v2 用例放本步自己的文件 `eval/cases-v2/q07-<主题>.json`。改了界面文案跑 `tsx scripts/check-fonts.ts`。
@@ -31,29 +31,29 @@
 
 ### 开工（第 0 步）
 
-- [ ] 0. 开工核对与实测（1 天，协调者 + 实现者；真实模型 ≤¥3）
+- [ ] 0. 开工核对与实测（1 天，协调者 + 实现者；真实模型 ≤¥3）——0.1–0.6 已完成（2026-10-22），0.7 等 owner 确认开放问题 10 的数
   - 次序：0.1 最先；0.2–0.6 在 0.1 之后同时开，并与第 1、2 步并行。0.3 挡第 9 步合并，0.4 挡第 4 步合并，0.5 挡第 13 步合并，0.7 挡第 18 步。
-  - [ ] 0.1 基准（协调者）
+  - [x] 0.1 基准（协调者）
     - 做：记开工提交（07 docs PR 合并后的 `dev`）、8 个锁定文件 sha256、两个 `PREFIX sha256`、线上 `/healthz` 的 `revision` 与四个哈希；核对「开工条件」第 2 条的反向引用；四个门禁在开工提交上全绿（CI `check`）。
     - 验：结果写进「实施记录 · 第 0 步」。
-  - [ ] 0.2 行号与锁定断言再核（实现者，只读）
+  - [x] 0.2 行号与锁定断言再核（实现者，只读）
     - 做：spec「背景与问题」与各 R 引用的行号、函数名、步骤名在开工提交上逐条核，对不上的记新位置。「锁定断言」一节逐条核；按批列出每条 R 可能碰到的锁定断言（8 个锁定文件，含 `eval/cases.json` 的 v1 用例），每行写断言位置、要求什么、怎么避开。
     - 验：清单写进实施记录。会变红又避不开的记「Open」。
-  - [ ] 0.3 pgvector 建扩展实测（协调者）
+  - [x] 0.3 pgvector 建扩展实测（协调者）
     - 做：起一次性 `pgvector/pgvector:pg17` 容器，跑 `deploy/db-init/roles.sql`，再以 `agent_owner` 连应用库执行 `CREATE EXTENSION vector WITH SCHEMA public`；记成功与否、报错原文、扩展版本（`halfvec` 要 ≥0.7）。用完删容器。
     - 验：结果写进实施记录，供 0.7 裁决开放问题 14。
-  - [ ] 0.4 旧镜像读到新订单状态（实现者；不调模型）
+  - [x] 0.4 旧镜像读到新订单状态（实现者；不调模型）
     - 做：在开工提交（06 的代码）上起一次性库并迁移；建一个租户、一段会话和一张已付订单；以超级用户临时放宽 `orders_status_check`（模拟 07 的迁移），把订单改成 `refunded`，再各试一次 `refund_pending`；在 DB 模式下启动，记启动是否成功、会话是否被标 poisoned、预载与后台订单、会话、统计接口是否报错、网页聊天与支付页显示什么。脚本放仓库外。
     - 验：两种状态各一行结论写进实施记录，决定 R20 回滚检查只拦 `refund_pending` 还是两种都拦。
-  - [ ] 0.5 闸两边实测（协调者，出沙箱；真实模型 ≤¥3）
+  - [x] 0.5 闸两边实测（协调者，出沙箱；真实模型 ≤¥3）
     - 做：在开工提交上用 `eval/sim/run.ts` 跑 16 个 `safety` 目标（拟定回归集里已经存在的部分）两遍，代表草稿与线上两边，各 k=1，失败的目标再重跑至多 2 次；`--budget 3` 分两次用。配置与线上一致（销售与客户模型照 06 第 18 步）。
     - 验：每边耗时、费用、需要重跑的目标数，外推 20 个目标时的单次费用与耗时，给出 `SOP_GATE_BUDGET_CNY` 与 `SOP_GATE_TIMEOUT_MS` 的建议值。记进实施记录与「费用记录」。
-  - [ ] 0.6 Codex 冒烟与通用约定（协调者）
+  - [x] 0.6 Codex 冒烟与通用约定（协调者）
     - 做：`codex exec` 跑一个只读小任务，确认登录态、模型名与 `service_tier`；照 06 的写法写 `.claude/runs/07-step-common.md`（先读、文件边界、门禁、快照、迁移改号、数据、进程、回复格式）。
     - 验：冒烟结果一句话记进交接记录。
   - [ ] 0.7 owner 确认与协调者裁决
     - 做：把 0.5 的建议值（单次预算、每天次数、超时）交 owner 确认（开放问题 10）；按 0.3 裁决开放问题 14：`agent_owner` 能建就由迁移建，不能就加 `deploy/db-init/extensions.sql`，现有线上库由 owner 用超级用户执行一次。
-    - 验：两项写进 spec 顶部下一条 `Revisions:`。
+    - 验：两项写进 spec 顶部下一条 `Revisions:`。开放问题 14 已裁决并写进 spec 第二条 `Revisions:`；开放问题 10 等 owner。
 
 ### 批 P：政策单一来源（第 1–3 步）
 
@@ -159,7 +159,7 @@
 ### 批 S：SOP 改版（第 19–20 步）
 
 - [ ] 19. 锁定节与工具描述改版（R25；1.5 天，实现者 + 协调者；真实模型 ≤¥10）
-  - 做：照 R25 表的写法（开放问题 15 已照推荐）一个 PR 改 SOP handoff、capabilities 两个锁定节与 `handoff_to_human` 的描述（保留「坚持」）；`templates.ts` 随第 2 步自动生成；更新写死的哈希（`web.selftest.ts` 的 `SYSTEM_SHA`、`TOOLS_SHA`，`brand.selftest.ts`、`brand-publish.selftest.ts`、`tools.selftest.ts`）；新 `PREFIX sha256` 与具名快照。协调者在当前 `dev` 与这个 PR 上各跑一次 k=5（回归集 20 个加报价类 6 个，开放问题 11），逐目标记录。
+  - 做：照 R25 表的写法（开放问题 15 已照推荐）一个 PR 改 SOP handoff、capabilities 两个锁定节与 `handoff_to_human` 的描述（保留「坚持」）；`templates.ts` 随第 2 步自动生成；更新写死的哈希（`web.selftest.ts` 的 `SYSTEM_SHA`、`TOOLS_SHA`，`brand.selftest.ts`、`brand-publish.selftest.ts`、`tools.selftest.ts`）；新 `PREFIX sha256` 与具名快照。协调者在当前 `dev` 与这个 PR 上各跑一次 k=5（回归集 20 个加报价类 6 个，开放问题 11），逐目标记录；另各用 `eval/run.ts` 的真实模型模式加跑 `eval/cases.json` 里守 capabilities 与 price-rules 文字的三个 realOnly 用例 talk-02b、guard-11、guard-13（第 0.2 步 S8，花费在 ¥10 以内）。
   - 验：验收 13 的本机部分；`SOP_CONTRACT` 17 条一条不少、不新增；owner 看过对比后授权合并。
   - 依赖：18。
 - [ ] 20. 第二次上线与经闸发布可编辑节（协调者，owner 当次授权；真实模型 ≤¥3）
@@ -270,22 +270,155 @@
 
 ### 第 0 步 · 开工核对与实测
 
-**预核**（2026-10-22 写本文件时在 `dev` d5e8b67 上看过，第 0.1 步复核）：`dev` 的产品代码与 spec 核行号时的 9d6b9b9 相同（之间只改了 `AGENTS.md`）；下一个迁移号是 0014；`eval/sim/goals/quality/` 46 个目标，其中 16 个 `safety`。
+**预核**（2026-10-22 写本文件时在 `dev` d5e8b67 上看过）：`dev` 的产品代码与 spec 核行号时的 9d6b9b9 相同（之间只改了 `AGENTS.md`）；下一个迁移号是 0014；`eval/sim/goals/quality/` 46 个目标，其中 16 个 `safety`。
+
+**基准**（0.1，2026-10-22，协调者）：开工提交 `61a408a`（#249 合入后的 `dev`），产品代码与 d5e8b67 相同；#249 的 CI 六项全绿（含 `check`）。`pnpm -s test:locked` 全绿：`PREFIX sha256 system=fab15319b77960b9e4dc5e398cd83a60d7ce2711eaa7c6b1a3b38d939e30fb95 tools=64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1`（等于 06 第 16 步之后的值）。线上 `revision demo-v7`，`/healthz` 的 `promptHash fab15319b779`、`toolsHash 64c16fc8f464`、`prefixHash fc416942badc`、`sopHash 885d2551052f`，SOP 版本 4。锁定文件 sha256（`src/engine.selftest.ts` 是 06 第 17 步授权修改之后的值，其余与 06 开工相同）：
+
+```
+66e9cd26464e5d71bdf945ac22d9a09b9ed354be05d31766ccf345af88369730  src/engine.selftest.ts
+166c124e28cec35a9b8b0e306bbda653e653ee5795fd186388185812e32a3941  src/dejargon.selftest.ts
+351fd745fcb65ed6f87605fe3deb4a60841598e983b44a6d91c9493571ff9cb8  src/engine-holiday.selftest.ts
+d3f11083704b51fc13bc6be93933a094c2e0abd0310da6f87021e3df4a8d92a1  src/price-guard.selftest.ts
+4a577bb23225aa54881c783ffe7bd41b1e115179a2f8b62044af21b70b07dc04  src/llm.selftest.ts
+090741c5b244dc74160647aaf9e0e7d3a45c6c534d20e008d8af96920c7b3365  src/server.selftest.ts
+d37341de95e87956b643dfd6ef5aee28011e39a7ce5391148e0157f9800c7882  src/adapters/wecom.selftest.ts
+aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.json
+```
+
+注意：锁定套件只打印 `PREFIX sha256`、不断言它的值（`engine.selftest.ts:1869-1885` 拿动态的 `promptPrefix()` 比）。前缀不变靠非锁定的 `web.selftest.ts:88-89`、`brand.selftest.ts:48-49`、`tools.selftest.ts:75` 写死的哈希，以及每步结束把打印的 `PREFIX` 行与上面的值人工比对；第 2 步合并前尤其要比。
+
+**行号核对**（0.2，2026-10-22，Claude 子 agent 只读）：spec 里 123 处代码与文档引用，对上 112，轻微偏差 4，对不上 7；`src/`、`data/`、`public/`、`console/`、`drizzle/`、`deploy/` 的行号一处没错。对不上的 7 处里 5 处是 07 docs PR 给 01、02、06 顶部加行导致的后移，已在 spec 第二条 `Revisions:` 改正；`eval/sim/goals.ts:66-79` 改为 `:68-82`；`:67,82` 两处确是 `initial` 与 `goalSchema` 的 `.strict()`，保留。轻微偏差：`db.selftest.ts` 的表清单到 :206；`runtime.ts` 的建单循环从 :236 起；`admin.html` 的 `liveOrder` 在 :586、`ordLabel` 在 :587、`ordColor` 在 :588，新状态两处都要补；「AI 自动化率」在 :825。spec「锁定断言」一节 19 条全部对上，没有一条要改锁定文件。
+
+**锁定断言风险清单**（0.2）：共 66 条，spec 已点名 17 条。R1（DB 部分）、R4、R5、R7、R8、R10、R12、R16、R17（核验）、R19、R21、R24 与锁定套件不接触。各步实现前读本步那几行；「怎么避开」就是实现约束。
+
+批 P（第 1–3 步）：
+
+| #   | 位置                                                   | 要求                                                                                  | 怎么避开                                                                                                   |
+| --- | ------------------------------------------------------ | ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| P1  | `engine.selftest.ts:1840`                              | `prefix.system` 以 `data/sop.md` 全文开头                                             | `data/sop.md` 字节不动；`renderSystemPrompt` 结构不变；policy 与生成段不进系统提示                         |
+| P2  | `engine.selftest.ts:1869-1885`                         | 每个模型请求的 system 与 tools 等于 `promptPrefix()`，prod 与 demo 相同               | 前缀不随 profile、policy、`selfService` 变；哈希值靠非锁定自测与人工比对（见上）                           |
+| P3  | `engine.selftest.ts:2960`；`eval/cases.json:440`       | 淡季 note 含「7月不在最佳季，不上浮」                                                 | `catalog.ts:993` 的非旺季 note 不在六个生成段里；要生成就逐字节相同                                        |
+| P4  | `engine.selftest.ts:3015`                              | note 含「10月为最佳出行季，价格上浮 10%」                                             | 百分数由 `peakMultiplier` 派生时要 `Math.round`（`(1.1-1)*100` 是 10.000000000000009）                     |
+| P5  | `engine.selftest.ts:555-599`                           | `createQuote` 先 `round(×1.1)` 再 `round(×0.95)`                                      | `peakMultiplier`、`groupDiscount`、`groupMinimum` 仍是字面量 1.1、0.95、4（同一个 double，不用百分数重算） |
+| P6  | `price-guard.selftest.ts`（`dropUnbackedClaims` 各组） | 「上浮 10%」按线路最佳季核                                                            | `price-rules.ts` 不改；阈值不变                                                                            |
+| P7  | `wecom.selftest.ts:745,766-784`                        | 重放对齐认得出 `WELCOME_BACK_TEXT` 与 `LEGACY_WELCOME_TEXTS`                          | `wecom.ts` 的 `__test` 照旧导出三项；`WELCOME_TEXTS`（:212）的字符串逐字节不变                             |
+| P8  | `wecom.selftest.ts:789-816`                            | 欢迎语首句含「AI 旅行顾问」、含「回复「人工」即可转真人顾问」；老客户「欢迎回来」开头 | 同 P7                                                                                                      |
+| P9  | `eval/cases.json:191,202`                              | 问身份承认是 AI；开场不提 AI                                                          | 旧版硬性要求经替换表后逐字节相同；mock 回归看不出差别，靠哈希比对                                          |
+| P10 | `engine.selftest.ts:2946-2948`                         | 系统提示含「定价只有两条规则」「没有节假日价」「顾问会在微信上联系您」                | 生成段只覆盖 `sop:104-105`、`:108`，别动 :101、:103、:107                                                  |
+| P11 | `engine.selftest.ts:4224-4226`                         | 系统提示含 `sop:97-98`、`:110` 的原句                                                 | 别用整节重写的方式生成 price-rules，`:110-111` 不在生成范围                                                |
+
+另：`engine.selftest.ts:139-143`、`engine-holiday.selftest.ts:87` 用显式 `SOP_PATH`；R1 文件模式「同目录有 `policy.json` 就用」在没有该文件时静默用包默认，不报错、不写盘。
+
+车道 1（第 4–7 步）：
+
+| #   | 位置                                            | 要求                                                          | 怎么避开                                                                                                                                                  |
+| --- | ----------------------------------------------- | ------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1  | `engine.selftest.ts:818-820`                    | demo 重置删已付订单                                           | 作废 `paid`、`refund_pending`、`refunded` 三种；`paid` 的处理一字不改                                                                                     |
+| A2  | `engine.selftest.ts:863,897`                    | 重置关闭时已付订单保留                                        | 关闭时不碰订单；R18 钩子排在「重置关闭」之后，「重置」「重新开始」不命中退款意图                                                                          |
+| A3  | `engine.selftest.ts:3102,3083`                  | 已付单不被替代；`markOrderPaid(已替代的单)` 返回原单          | `supersedeOrder`、`markOrderPaid` 只认待付款，不改                                                                                                        |
+| A4  | `engine.selftest.ts:3478-3483`                  | 付过款的会话里「顾问会在微信上联系您」不算转人工              | `saysTransfer` 三种状态都算已付，`paid` 行为不变                                                                                                          |
+| A5  | `engine.selftest.ts:2478-2521`                  | 已付会话问细节阶段仍 `paid`；再搜线路视为新旅程               | 按订单判「已付」推导阶段的地方，`paid` 结果不变                                                                                                           |
+| A6  | `engine.selftest.ts:4557-4574`                  | `claimsTransfer` 的认与不认                                   | 不改 `claimsTransfer` 与转接词表                                                                                                                          |
+| A7  | `server.selftest.ts:279-311`                    | `fillPayCard` 四种状态的按钮文字                              | 不改 `chat.html`；公开投影对新状态出 `paid`，另加 `refund`                                                                                                |
+| A8  | `server.selftest.ts:514`                        | `pay.html` 里 `'superseded'` 到 `show('err')` 不超过 200 字符 | 现在相距 95 字符；refund 分支加在 :463 `paid` 那行之前，不插进 :466-468，不加长 :467                                                                      |
+| A9  | `server.selftest.ts:516`                        | `admin.html` 含 `'已被替代'` 与 `liveOrder(s)`                | 新状态加在 :587 `ordLabel`、:588 `ordColor`，:586-587 原样                                                                                                |
+| A10 | `server.selftest.ts:632-675`                    | 已取消单 `/pay` 409；已付单再付幂等、不推送                   | 新状态的 409 是新分支，`paid` 的幂等路径不动                                                                                                              |
+| A11 | `server.selftest.ts:484-486`                    | 待付款支付页摘要逐字                                          | 只对新状态换标题与摘要                                                                                                                                    |
+| A12 | `server.selftest.ts:755-809,1328-1334`          | 有已付订单的访客会话不被清理                                  | `hasPaidOrder` 三种都算                                                                                                                                   |
+| A13 | `engine.selftest.ts:1935,1940,2141-2170`        | spec 已列的三条                                               | 只在名下有 `paid` 订单时介入；含「转人工 / 人工 / 真人 / 顾问」一律返回 `null`。这些用例出发日 2026-12-10、时钟 2026-10-02，误接管就会报「退改条款第1条」 |
+| A14 | `dejargon.selftest.ts:383-437`                  | `isHandoffIntent` 的转与不转                                  | 不改 `HANDOFF_REQUEST`、`isHandoffIntent`、投诉词表；投诉判断调现有 `isComplaint`                                                                         |
+| A15 | `eval/cases.json:213,228,240`                   | 投诉转人工后静默；「不会是骗人的吧」不转                      | 这些会话没有已付订单，钩子不介入                                                                                                                          |
+| A16 | `engine.selftest.ts:757-778`                    | 投诉后重置逐字段清理                                          | `afterSale` 进 `resetSession`；`handoffLog` 重置不清（断言逐字段，不红）                                                                                  |
+| A17 | `P/turn.ts:500` 的 `REFUND_REQUEST`（实现提示） | 实际还含「退改」「取消」「不想去」「不要了」                  | R18 不直接复用它：「退改规则怎么算」「能取消吗」会被当成退款意图；另写更窄的退款意图判断，问规则的归 R14                                                  |
+
+车道 2（第 8–11 步）：
+
+| #   | 位置                                            | 要求                                                      | 怎么避开                                                                                          |
+| --- | ----------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| K1  | `llm.selftest.ts:783-789`                       | `embedCfg()` 原样返回 `https://emb.selftest/v1`           | 白名单只放在「DB 模式启动校验」与「`readEmbedding` 发请求前」；`embedCfg()` 不抛、不过滤          |
+| K2  | `engine.selftest.ts:95-96,540-542`              | `EMBED_BASE_URL=http://127.0.0.1:<端口>` 的假服务能建索引 | 非 prod 放行回环，按调用时的 `profile()` 判断（它会被临时切 prod）；未设 `DEPLOY_PROFILE` 按 demo |
+| K3  | `engine-holiday.selftest.ts:54-55,83-84`        | 假服务返回 32 维向量                                      | 文件模式的内存索引不校验 2048 维                                                                  |
+| K4  | `llm.selftest.ts:807-817`                       | `LLM_MOCK=1` 时打「mock 模式跳过语义索引」                | mock 判断排在库、文件、白名单检查之前                                                             |
+| K5  | `llm.selftest.ts:148`；`engine.selftest.ts:151` | `src/retrieval.ts` 门面的四个导出                         | 门面导出名与签名不变                                                                              |
+| K6  | `engine.selftest.ts:536-549`                    | 召回不可用时的兜底；目的地过滤为空仍保留语义结果          | 文件模式行为一字不动，仍读写 `var/route-vectors.json`                                             |
+| K7  | `engine.selftest.ts:585-596`                    | `loadRoutes` 每次现读 `ROUTES_PATH`                       | 文件模式不在装载时缓存产品库                                                                      |
+| K8  | `eval/cases.json:669`                           | 「印度」不是「印度尼西亚」                                | `test` 里 PGlite 那遍是 DB 模式 + mock：没有 `kb_vectors`、嵌入为 null，装载不得抛                |
+| K9  | `engine.selftest.ts:2442-2458`                  | 保险问法预取恰为 `get_route_detail(r-tibet-mid)`          | 政策问法只往 contextNote 加条款，不改 `planDetailPrefetch`                                        |
+| K10 | `engine.selftest.ts:2459-2470`                  | 「机票包含吗」预取方案书那条                              | 同 K9                                                                                             |
+| K11 | `engine.selftest.ts:3629,3644-3650`             | 「保险起见」不算保险问法；「报价时机」行仍在              | 问法识别认问句；条款是追加行，不顶掉已有行                                                        |
+| K12 | `engine.selftest.ts:1812-1814,2440,4217-4218`   | contextNote 已有行的文字与顺序                            | 只追加；不是政策问法时逐字节不变                                                                  |
+| K13 | `llm.selftest.ts:375-376,388-392`               | contextNote 是独立 system 消息、紧挨最新 user             | 条款并进同一条，不新增消息                                                                        |
+| K14 | `engine.selftest.ts:2939-2942`（V8 r8d）        | 「不含国际机票」原样保留                                  | R22 肯定断言检测要识别否定                                                                        |
+| K15 | `price-guard.selftest.ts`                       | `dropUnbackedClaims` 逐字                                 | `dropUnbackedClaims`、`claim_words` 不改，`policy_claims` 另起一步                                |
+| K16 | `engine.selftest.ts:2923-2932`（V8 r8b）        | 「退改条款都写明」那句照旧                                | 规则 1 只认带数字的「N 天 / N%」                                                                  |
+| K17 | `engine.selftest.ts:3206-3234`                  | 签证类的转接认定                                          | 换句用 `VISA_REPLY`；新口径句、新备注不含「转接」「稍候」                                         |
+| K18 | `engine.selftest.ts:4359-4361`（V6）            | 「付完款之后呢」那轮 `sysNotes` 为空                      | 「待顾问确认」备注只在规则 3 命中时写                                                             |
+| K19 | `engine.selftest.ts:2854,4182-4183,4449`        | 「上浮 10%」「上浮了10%」「4 人 95 折」等变体             | 与默认 policy 相等的变体一律视为对得上，不改                                                      |
+| K20 | `engine.selftest.ts:3543-3546`（W8）            | 待付款会话「再发支付链接 顺便问含保险吗」交给模型         | 无肯定断言不动；不抢「重发链接」的确定性回复                                                      |
+| K21 | `eval/cases.json:509`（guard-13，realOnly）     | 专票、监管、电话不承诺                                    | 口径句沿用「由顾问跟您确认」                                                                      |
+| K22 | `eval/cases.json:637`                           | 「走路多不多」调 `get_route_detail`                       | 走路爬山不是政策问法                                                                              |
+
+闸、看板与批 S：
+
+| #   | 位置                                                      | 要求                                                                 | 怎么避开                                                                                                         |
+| --- | --------------------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| G1  | `server.selftest.ts:955-1010`                             | 起 `src/server.ts` 时配置错误恰一行 `[profile] …`，正常恰一行摘要    | `gate_unavailable` 与嵌入白名单的拒绝只在 DB 模式发生、排在 profile-boot 之后，不加日志行；`SOP_GATE` 默认 `off` |
+| G2  | `llm.selftest.ts:42-43,386-391,809-816`                   | 进程内切换 `LLM_MOCK`、`LLM_MAX_INFLIGHT=8`                          | 闸的环境白名单只作用于子进程                                                                                     |
+| G3  | `engine.selftest.ts:139`；`engine-holiday.selftest.ts:87` | 显式 `SOP_PATH`                                                      | `eval/sim/runtime.ts:62` 改成「没给 `--config-dir` 才用 `data/`」                                                |
+| D1  | `server.selftest.ts:516,252-256`                          | `admin.html` 的 `'已被替代'`、`liveOrder(s)`、会话 id 存储键与请求头 | 改 KPI 口径只动文案那几行                                                                                        |
+| D2  | `server.selftest.ts:183-184`                              | `/api/insights` 未登录 401                                           | 只换口径，路由与鉴权不动                                                                                         |
+| D3  | `engine.selftest.ts:757-778`                              | 同 A16                                                               | `handoffLog` 不进 `resetSession` 的清理名单                                                                      |
+| D4  | `engine.selftest.ts:647,674-704`                          | 各条转人工路径都记 `stageBeforeHandoff`                              | 在 `enterHandoff` 内部追加，不改原有字段与顺序                                                                   |
+| D5  | `server.selftest.ts:819-879`                              | 种子平移 `*At`                                                       | `originOf` 只读；种子前缀沿用 `wecom:cust_`                                                                      |
+| S1  | `engine.selftest.ts:1980`                                 | `handoff_to_human` 描述含「坚持」                                    | 保留那句                                                                                                         |
+| S2  | `engine.selftest.ts:1975-1977`                            | 不含「明显超出我们现有线路的范围」，含「明确坚持只要原目的地」       | 只改 `sop:173` 与 capabilities 加一句，no-destinations 节不动                                                    |
+| S3  | `engine.selftest.ts:2347-2349`                            | 含 `sop:167`、`:41` 的原句                                           | 同上                                                                                                             |
+| S4  | `engine.selftest.ts:2729-2730`                            | 含 stages 节 `sop:33-44` 的几句                                      | capabilities 加的一句不放进 stages 节                                                                            |
+| S5  | `engine.selftest.ts:2946-2948`                            | 同 P10                                                               | 保留 `sop:158`、`:185`                                                                                           |
+| S6  | `engine.selftest.ts:4224-4226`                            | 同 P11                                                               | 改 objections 节时别动 :97-98、:110                                                                              |
+| S7  | `engine.selftest.ts:1840,1869-1885`                       | 同 P1、P2                                                            | 更新非锁定的写死哈希（R25 已列）                                                                                 |
+| S8  | `eval/cases.json:457,476,509`（realOnly）                 | talk-02b、guard-11、guard-13 守 capabilities 与 price-rules 的文字   | 第 19 步前后加跑这三个（已写进第 19 步）                                                                         |
+
+**pgvector 建扩展**（0.3，2026-10-22，协调者）：`pgvector/pgvector:pg17` 带的 vector 是 0.8.6，`trusted = false`。按 `roles.sql` 建好角色与应用库后，`agent_owner` 执行 `CREATE EXTENSION vector WITH SCHEMA public` 报「permission denied to create extension "vector"，Must be superuser」。超级用户在应用库建好扩展之后，`agent_owner` 能建 `halfvec(2048)` 的表、写入并做 `<=>` 运算。开放问题 14 据此裁决（spec 第二条 `Revisions:`）：迁移在扩展可用但没装时 `RAISE EXCEPTION`，加 `deploy/db-init/extensions.sql`，线上库由 owner 在第 18 步之前用超级用户执行一次。容器已删。
+
+**旧代码读到新订单状态**（0.4，2026-10-22，Codex 实测，报告另存协调者本机）：在开工代码上起 DB 模式，经 `import-sessions` 导入一段 `web:` 会话与一张已付订单，超级用户只放宽 `orders_status_check`，订单的列与 `data.status` 同时改（`rowToOrder` 只读 `data`）。两种状态结果相同：
+
+- 照常：启动、预载、`/healthz`（poisoned 0、conflict false、dirty 0）、会话列表与详情、`/metrics`、网页历史；同一会话再发一条消息照常落库，停机无 spill。
+- 不兼容：后台 `GET /orders?status=<新状态>` 回 400（旧枚举）；`/orders/summary` 漏算（`paidCount` 0）；工作台状态标签缺失；公开订单投影原样吐出新状态；支付页脚本走**待付款**分支（显示付款按钮）。
+- 改回 `paid` 后全部恢复。结论：两种状态都拦（R20 原文即如此），提示语按实测改写（spec 第二条 `Revisions:`）。
+
+**闸两边实测**（0.5，2026-10-22，协调者出沙箱）：开工代码，销售 `glm-5.3-flashx`、客户 `glm-5.2`，16 个 `safety` 目标各 k=1，两遍代表草稿与线上。
+
+| 一边 | 通过  | 轮数 | 整轮 p90 | 超 8 秒 |   用时 |   花费 |
+| ---- | ----- | ---: | -------: | ------: | -----: | -----: |
+| 草稿 | 16/16 |   39 |  7797 ms |    7.7% | 191 秒 | ¥0.288 |
+| 线上 | 16/16 |   39 |  7832 ms |    7.7% | 176 秒 | ¥0.257 |
+
+没有失败目标，没触发重跑。目标是串行跑的（每轮约 5 秒）。外推到 20 个目标：一边约 4 分钟、¥0.36；连线上一边一起跑（每次发版之后的第一次）约 8 分钟、¥0.75；每个失败目标每重跑一遍约多 15 秒、¥0.02。建议值（交 owner 确认，开放问题 10）：`SOP_GATE_BUDGET_CNY=2`（实测最坏约 ¥0.8，留两倍多余量给接口慢、重跑多的时候）、`SOP_GATE_DAILY_RUNS=3`、`SOP_GATE_TIMEOUT_MS=1800000`（接口慢一倍加重跑也在 20 分钟内）。owner 每次发布的等待：基线能复用约 4 分钟，发版后第一次约 8 分钟，比 spec 估的 5–10 / 10–20 分钟短一半。
+
+**Codex 冒烟与通用约定**（0.6）：Codex CLI 0.162.0，ChatGPT 登录有效，模型 `gpt-6.1-sol`、`service_tier` priority；0.4 就是第一单，5 分钟一次过。通用约定写在协调者 worktree 的 `.claude/runs/07-step-common.md`。派活时在沙箱里 `git worktree add` 要加 `--no-track`（写不了 `.git/config`）。
 
 ## 验收记录
 
 ## 费用记录
 
-| 日期 | 步骤 | 内容 | 金额 |
-| ---- | ---- | ---- | ---: |
+| 日期       | 步骤 | 内容                                 |   金额 |
+| ---------- | ---- | ------------------------------------ | -----: |
+| 2026-10-22 | 0.5  | 16 个 safety 目标 k=1 两遍（无重跑） | ¥0.545 |
 
-合计 ¥0 / 上限 ¥35。
+合计 ¥0.545 / 上限 ¥35。
 
 ## Open
+
+1. **开放问题 10 的数**（0.7，等 owner）：建议维持 spec 的默认值——单次 ≤¥2、每租户每天 ≤3 次、超时 30 分钟，依据见「实施记录 · 第 0 步」0.5。owner 确认后写进 spec `Revisions:`。只挡第 13 步合并与第 18 步。
 
 ## 交接记录
 
 ### 交接（2026-10-22，plan 起草）
 
-- spec 翻 ready、反向引用与本文件随 docs PR `docs/07-ready` 进 `dev`。旧的本地草稿分支 `docs/07-spec`（及其 worktree）内容已全部包含在内，没推过，可以删。
-- 下一步：第 0 步。0.1 等 docs PR 合并后的 `dev`；0.3、0.5、0.6 由协调者做，0.2、0.4 派实现者。
+- spec 翻 ready、反向引用与本文件随 #249 进 `dev`。旧的本地草稿分支 `docs/07-spec`（及其 worktree）内容已全部包含在内，没推过，可以删。
+
+### 交接（2026-10-22，第 0 步）
+
+- 0.1–0.6 完成，结果见实施记录；只差 0.7 里开放问题 10 的 owner 确认（Open 1），不挡第 1–12 步开工。
+- 下一步：第 1、2 步同时开（第 1 步派 Codex、第 2 步派 Claude 子 agent），第 8 步可以一起开。
