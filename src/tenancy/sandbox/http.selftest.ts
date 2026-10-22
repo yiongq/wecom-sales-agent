@@ -257,8 +257,8 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
     }),
   );
   withTenantScope(a, () => {
-    check(() => assert.equal(listSessions().length, 5));
-    check(() => assert.equal(listOrders().length, 2));
+    check(() => assert.equal(listSessions().length, 6));
+    check(() => assert.equal(listOrders().length, 3));
   });
   // 与宿主相同的 IP 桶：有效会话退回名额；无效 cookie 并发也最多查 60 次。
   const goodIp = { 'x-forwarded-for': '198.51.100.151' };

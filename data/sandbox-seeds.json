@@ -1,5 +1,5 @@
 {
-  "$comment": "由 scripts/seed-demo.py --fixture 生成；sessions 与 orders 沿用默认场景字段。沿用既有沙箱夹具的旧线路修正：B01 的 r-bali-lux 改为目录 r-bali，正文、标题与金额按目录对应。各会话 updatedAt 等于最后一条消息时间。沙箱是默认场景的5段会话、2个对应订单子集。所有 at、createdAt、updatedAt、paidAt 均为相对最新消息的毫秒偏移（整数，<=0，最新消息为0）；开通时加上开通时刻减5分钟。profile.dates 与 departDate 是行程日期文本，不是时间戳。会话 id、channel 与订单引用在开通时重映射。",
+  "$comment": "由 scripts/seed-demo.py --fixture 生成；sessions 与 orders 沿用默认场景字段。沿用既有沙箱夹具的旧线路修正：B01 的 r-bali-lux 改为目录 r-bali，正文、标题与金额按目录对应。各会话 updatedAt 等于最后一条消息时间。沙箱是默认场景的5段会话、2个对应订单子集，另加沙箱专有的 G01（退款待审批，不在宿主默认种子里）。订单的 departOffsetDays 是出发日相对开通日的天数，开通时算出 departDate；G01 订单的 refundSeed 开通时按已发布 policy 补全退款记录。G01 里 {refund_quote}、{refund_submitted}、{refund_reason} 是占位，开通时用行业包的退款文字和原因现算，日期、天数、金额随开通日变。所有 at、createdAt、updatedAt、paidAt 均为相对最新消息的毫秒偏移（整数，<=0，最新消息为0）；开通时加上开通时刻减5分钟。profile.dates 与 departDate 是行程日期文本，不是时间戳。会话 id、channel 与订单引用在开通时重映射。",
   "sessions": [
     {
       "id": "wecom:cust_A01",
@@ -182,6 +182,98 @@
         "reason": "客户投诉价格太贵",
         "quote": "这个太贵了，我要投诉"
       }
+    },
+    {
+      "id": "wecom:cust_G01",
+      "channel": "wecom",
+      "stage": "paid",
+      "profile": {
+        "nickname": "周婷",
+        "destinationInterest": "云南",
+        "travelers": "2人",
+        "budget": "每人2万"
+      },
+      "messages": [
+        {
+          "role": "customer",
+          "content": "想带爸妈去云南，两位，推荐个轻松点的",
+          "at": -180000000
+        },
+        {
+          "role": "agent",
+          "content": "推荐云南 丽江大理·洱海古城 6 日，古城慢游、行程轻松，适合带长辈～大概什么时候出发？",
+          "at": -179940000
+        },
+        {
+          "role": "customer",
+          "content": "一个多月以后吧，报个价",
+          "at": -179880000
+        },
+        {
+          "role": "agent",
+          "content": "给您报个价：云南 丽江大理·洱海古城 6 日，每人 16,800，2 人共 33,600 元。可以吗？",
+          "at": -179820000
+        },
+        {
+          "role": "customer",
+          "content": "就订这个",
+          "at": -179760000
+        },
+        {
+          "role": "agent",
+          "content": "已为您锁定名额，请点链接完成支付～",
+          "at": -179700000
+        },
+        {
+          "role": "agent",
+          "content": "已收到您的支付，太开心啦！顾问稍后对接行程细节～",
+          "at": -179220000
+        },
+        {
+          "role": "customer",
+          "content": "我要退款",
+          "at": -1800000
+        },
+        {
+          "role": "agent",
+          "content": "{refund_quote}",
+          "at": -1770000
+        },
+        {
+          "role": "customer",
+          "content": "确认退款",
+          "at": -1500000
+        },
+        {
+          "role": "agent",
+          "content": "{refund_submitted}",
+          "at": -1470000
+        }
+      ],
+      "orderIds": ["ord_seed_7c41a9"],
+      "handedOver": true,
+      "createdAt": -180000000,
+      "updatedAt": -1470000,
+      "afterSale": {
+        "step": "confirm",
+        "at": -1780000
+      },
+      "stageBeforeHandoff": "paid",
+      "firstHandoffAt": -1490000,
+      "handoffCount": 1,
+      "handoffLog": [
+        {
+          "kind": "refund",
+          "at": -1490000
+        }
+      ],
+      "assignee": null,
+      "handoff": {
+        "kind": "refund",
+        "at": -1490000,
+        "reason": "{refund_reason}",
+        "quote": "确认退款"
+      }
     }
   ],
   "orders": [
@@ -207,6 +299,22 @@
       "totalPrice": 45600,
       "status": "pending_payment",
       "createdAt": -180000
+    },
+    {
+      "id": "ord_seed_7c41a9",
+      "sessionId": "wecom:cust_G01",
+      "routeId": "r-yunnan-mid",
+      "routeTitle": "云南 丽江大理·洱海古城 6 日",
+      "travelers": 2,
+      "departOffsetDays": 40,
+      "totalPrice": 33600,
+      "status": "refund_pending",
+      "refundSeed": {
+        "requestedAt": -1490000
+      },
+      "createdAt": -179700000,
+      "paidAt": -179220000,
+      "handoffBeforePaid": false
     }
   ]
 }
