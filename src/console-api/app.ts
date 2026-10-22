@@ -544,6 +544,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
       return c.json(anon, 200);
     }
     const body: SopOverview = await getSopOverview(ctxOf(c));
+    body.gateRequired = process.env.SOP_GATE === 'required' && currentRuntime().kind !== 'sandbox';
     return c.json(body, 200);
   })
   .get('/sop/versions', signedIn, zValidator('query', VersionsQuery, badRequest), async (c) => {
