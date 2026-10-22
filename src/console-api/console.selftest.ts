@@ -10,9 +10,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
+import { Hono } from 'hono';
 import type { ConversationCounts, ConversationDetail, ConversationRow, OrderView, SopSectionText } from '../shared/console-api.js';
 import type { ChatMessage, Session } from '../types.js';
-import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { hostRuntime, withoutTenantScope, identifyRuntime } from '../tenancy/runtime.js';
 import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
 enterTenantScopeForTest(hostRuntime());
@@ -966,6 +967,36 @@ check(
     saved.status === 200 && saved.body.status === 'draft' && saved.body.basedOn === v1.id,
     saved.text.slice(0, 200),
   );
+  const oldGate = process.env.SOP_GATE;
+  try {
+    process.env.SOP_GATE = 'off';
+    check('闸面板 HTTP：关闭时只读字段为 false', (await call('GET', '/sop', O)).body.gateRequired === false);
+    process.env.SOP_GATE = 'required';
+    check('闸面板 HTTP：standard 开启时只读字段为 true', (await call('GET', '/sop', O)).body.gateRequired === true);
+    const host = hostRuntime();
+    const identity = { id: host.id, slug: host.slug, kind: host.kind };
+    try {
+      identifyRuntime(host, { ...identity, kind: 'sandbox' });
+      // 沙箱入口先选定运行时，再进入 console；不能经只路由 standard 的宿主 Host 入口。
+      const { consoleApi } = await withoutTenantScope(() => import('./app.js'));
+      const sandboxEntry = new Hono<{ Variables: { publicHostRuntime: typeof host } }>()
+        .use('*', async (c, next) => {
+          c.set('publicHostRuntime', host);
+          await next();
+        })
+        .route('/', consoleApi);
+      const sandboxView = await sandboxEntry.request('/api/console/sop', {
+        headers: { cookie: `${session.SESSION_COOKIE}=${owner.token}` },
+      });
+      const sandboxBody = (await sandboxView.json()) as Body;
+      check('闸面板 HTTP：沙箱即使开启也不要求回归', sandboxView.status === 200 && sandboxBody.gateRequired === false);
+    } finally {
+      identifyRuntime(host, identity);
+    }
+  } finally {
+    if (oldGate === undefined) delete process.env.SOP_GATE;
+    else process.env.SOP_GATE = oldGate;
+  }
   const overview = (await call('GET', '/sop', O)).body;
   check(
     'SOP HTTP：概览里有草稿、没过期、预算在限内',

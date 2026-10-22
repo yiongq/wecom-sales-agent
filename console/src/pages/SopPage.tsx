@@ -109,6 +109,8 @@ import {
   withText,
 } from '../sop/merge.js';
 import { MergeActions, MergePane } from '../sop/MergeParts.js';
+import { gateActive, useGate } from '../sop/gate.js';
+import { ForcePublish, GatePanel } from '../sop/GatePanel.js';
 import { ChangesDrawer, PublishBar, PublishDrawer, SopDrawer } from '../sop/PublishParts.js';
 import { QuotaBar } from '../sop/QuotaBar.js';
 import { RollbackModal, rollbackNotice } from '../sop/RollbackModal.js';
@@ -241,7 +243,14 @@ export function SopPage() {
     return <SopPending member={viewer.data?.kind !== 'anon'} pending={q.isPending} error={q.error} onRetry={() => void q.refetch()} />;
   const refetchError = q.isRefetchError ? <ErrorAlert error={q.error} onRetry={() => void q.refetch()} /> : null;
   return 'spec' in q.data ? (
-    <MemberSop data={q.data} pack={pack} editable={canEdit(viewer.data)} now={q.dataUpdatedAt} refetchError={refetchError} />
+    <MemberSop
+      data={q.data}
+      pack={pack}
+      editable={canEdit(viewer.data)}
+      owner={viewer.data?.kind === 'member' && viewer.data.me.role === 'owner'}
+      now={q.dataUpdatedAt}
+      refetchError={refetchError}
+    />
   ) : (
     <AnonSop data={q.data} pack={pack} now={q.dataUpdatedAt} refetchError={refetchError} />
   );
@@ -396,18 +405,22 @@ function MemberSop({
   data,
   pack,
   editable,
+  owner,
   now,
   refetchError,
 }: {
   data: SopOverview;
   pack: IndustryPack | undefined;
   editable: boolean;
+  owner: boolean;
   now: number;
   refetchError: ReactNode;
 }) {
   const qc = useQueryClient();
   const { published, draft, spec, budget } = data;
   const current = draft ?? published;
+  const gateEnabled = editable && data.gateRequired === true;
+  const gate = useGate(gateEnabled && draft ? `${draft.id}:${draft.rev}:${published.id}` : null, draft?.rev ?? null);
   // 草稿的改动相对它算（useDraftBase）：多半是线上版本，草稿跟不上线上版本时是草稿所基于的那一版。第一次打开时等它取到再画，
   // 之后换了（回滚、载入最新草稿以后草稿跟不上了）不卸下页面：取到之前先按线上版本比，没取到在页头下就地报错
   const base = useDraftBase(data);
@@ -553,15 +566,24 @@ function MemberSop({
   // 条里照样是「已发布v3」、「发布…」不能点，不会看着像没发布出去。
   // 422（检查没过）时抽屉开着，清单换成被拒的问题；409（在你编辑期间别人发布过、合并有冲突）抽屉也开着，写撞上的节和
   // 「去合并」，同时重查一次（合并要合到那时的线上版本）；别的失败写在抽屉里，写好的说明不丢。请求在路上时抽屉关不掉（PublishDrawer）
-  const publish = async (): Promise<void> => {
-    if (!draft) return;
+  const publish = async (reason?: string): Promise<void> => {
+    if (!draft || unsaved.length > 0 || (gateEnabled && !reason && !gate.passed)) return;
     const known = [published, check.result?.online];
     setPublishing(true);
     setPublishError(null);
     setRejected(null);
     setConflict(null);
     try {
-      const v = await unwrap(api.sop.draft.publish.$post({ json: { rev: draft.rev, changeNote: note } }));
+      const v = await unwrap(
+        api.sop.draft.publish.$post({
+          json: {
+            rev: draft.rev,
+            changeNote: note,
+            ...(gateEnabled && gate.gateRunId ? { gateRunId: gate.gateRunId } : {}),
+            ...(reason ? { override: { reason } } : {}),
+          },
+        }),
+      );
       refreshSandboxProgress(qc);
       const previous = replacedIn(v.basedOn, known) ?? (await fetchReplaced(v));
       setResult({ versionNo: v.versionNo, names: publishedNames(spec, previous, v), previous });
@@ -578,7 +600,10 @@ function MemberSop({
       else if (e instanceof HttpError && e.body.error === 'sop_conflict') {
         setConflict({ keys: e.body.keys ?? [] });
         check.retry();
-      } else setPublishError(e);
+      } else {
+        setPublishError(e);
+        if (e instanceof HttpError && (e.body.error === 'gate_required' || e.body.error === 'gate_failed')) gate.reject(e);
+      }
     } finally {
       setPublishing(false);
     }
@@ -1115,6 +1140,27 @@ function MemberSop({
   const drawerConflicts = (check.running || check.error !== null) && conflict ? conflict.keys : rebaseConflicts;
   const hasNotices = error !== null || rebaseNote !== null || (!merge && (!!rejected || rolledBackNote !== null));
 
+  const gateRunBlock = !draft
+    ? '保存草稿以后才能跑回归'
+    : unsaved.length > 0 || saving
+      ? '正在保存草稿，保存后再跑回归'
+      : frozen
+        ? '载入最新草稿以后再跑回归'
+        : merge
+          ? '完成合并以后再跑回归'
+          : null;
+  const gateBlock = gateEnabled && (!gate.passed || unsaved.length > 0) ? '当前草稿的回归通过以后才能发布' : null;
+  const gatePanel = gateEnabled ? (
+    <GatePanel gate={gate} blocked={publishing ? '正在发布…' : gateRunBlock} onStart={() => void gate.start()} />
+  ) : undefined;
+  const forceAllowed =
+    gateEnabled &&
+    owner &&
+    gateRunBlock === null &&
+    !gateActive(gate.run) &&
+    !gate.starting &&
+    (gate.error !== null || gate.run?.status === 'error' || gate.run?.status === 'abandoned' || gate.run?.verdict === 'fail');
+
   // 第一次打开、草稿跟不上线上版本：取到草稿所基于的那一版以前是骨架，没取到是整块出错（同取 /sop）
   if (!shown) return <SopPending member pending={base.pending} error={base.error} onRetry={base.retry} />;
 
@@ -1300,6 +1346,7 @@ function MemberSop({
         />
       )}
 
+      {gateEnabled && !publishOpen && !merge && viewing === undefined && gatePanel}
       {editable && (
         <PublishBar
           result={shownResult}
@@ -1325,6 +1372,18 @@ function MemberSop({
       )}
       <PublishDrawer
         open={publishOpen}
+        gate={gatePanel}
+        gateBlock={gateBlock}
+        force={
+          forceAllowed ? (
+            <ForcePublish
+              key={`${draft?.id}:${draft?.rev}`}
+              busy={publishing}
+              error={publishError}
+              onPublish={(reason) => void publish(reason)}
+            />
+          ) : undefined
+        }
         onClose={() => setPublishOpen(false)}
         afterClose={() => setPublishMounted(false)}
         spec={spec}

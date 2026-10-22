@@ -1531,3 +1531,30 @@
   cursor: pointer;
   font-size: 13px;
 }
+
+/* 07：发布闸与发布抽屉共用，同一时刻只显示一处。 */
+.sop-gate {
+  margin: 16px 24px;
+  padding: 16px;
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+  border-radius: var(--r-lg);
+  overflow-wrap: anywhere;
+}
+.sop-gate h3,
+.sop-gate h4 {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+.sop-gate p {
+  margin: 8px 0;
+}
+.sop-gate-results {
+  margin-top: 16px;
+}
+.sop-gate-results ul {
+  padding-left: 20px;
+}
+.sop-publish .sop-gate {
+  margin: 0;
+}

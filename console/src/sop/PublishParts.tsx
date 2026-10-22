@@ -352,6 +352,9 @@ export interface PublishDrawerProps {
   now: number;
   changes: readonly SectionChange[];
   policy?: ReactNode;
+  gate?: ReactNode;
+  gateBlock?: string | null;
+  force?: ReactNode;
   /** 最近一次检查（或发布被拒）的问题，没跑过是 null */
   located: readonly LocatedViolation[] | null;
   budget: CheckBudget | null;
@@ -407,13 +410,13 @@ export function PublishDrawer(props: PublishDrawerProps) {
     noteReady: noteReady(p.note, p.prefill),
   });
   // 按钮旁边写的原因：请求在路上时说「取消」为什么不能点
-  const reason = p.publishing ? '正在发布…' : block?.reason;
+  const reason = p.publishing ? '正在发布…' : (block?.reason ?? p.gateBlock);
   // 点「发布」（或发布没成功时错误里的「重试」）：不能发布时不发，去原因所在的地方（没过的第一项、没检查上的「重试」、说明框）
   const submit = (): void => {
-    if (!block) p.onPublish();
-    else if (block.focus === 'note') noteRef.current?.focus({ cursor: 'end' });
-    else if (block.focus === 'checks') checksRef.current?.querySelector<HTMLElement>('button')?.focus();
-    else if (block.focus === 'merge') mergeRef.current?.focus();
+    if (!block && !p.gateBlock) p.onPublish();
+    else if (block?.focus === 'note') noteRef.current?.focus({ cursor: 'end' });
+    else if (block?.focus === 'checks') checksRef.current?.querySelector<HTMLElement>('button')?.focus();
+    else if (block?.focus === 'merge') mergeRef.current?.focus();
   };
   return (
     <SopDrawer
@@ -429,10 +432,16 @@ export function PublishDrawer(props: PublishDrawerProps) {
               {cjk(reason)}
             </span>
           )}
+          {!block && p.force}
           <Button disabled={p.publishing} onClick={p.onClose}>
             取消
           </Button>
-          <PrimaryButton blocked={!!block} loading={p.publishing} aria-describedby={block ? reasonId : undefined} onClick={submit}>
+          <PrimaryButton
+            blocked={!!block || !!p.gateBlock}
+            loading={p.publishing}
+            aria-describedby={reason ? reasonId : undefined}
+            onClick={submit}
+          >
             发布
           </PrimaryButton>
         </>
@@ -470,6 +479,7 @@ export function PublishDrawer(props: PublishDrawerProps) {
           <Icon of={Info} />
           <span>{cjk(replaceLine(p.replacing, p.now))}</span>
         </p>
+        {p.gate}
         {p.policy}
         {(p.changes.length > 0 || !p.policy) && (
           <section className="sop-publish-changes" aria-labelledby={`${noteId}-changes`}>

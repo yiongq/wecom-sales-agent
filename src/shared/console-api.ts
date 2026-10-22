@@ -392,6 +392,8 @@ export interface Status {
 }
 
 export interface SopOverview {
+  /** 07：发布是否需要回归；沙箱始终为 false。 */
+  gateRequired?: boolean;
   preambleWarning?: boolean;
   published: SopVersion;
   /** stale：basedOn 已不是当前发布版本 */
