@@ -7,6 +7,7 @@ import type { ChannelKind, ChannelAccountStatus } from './channel-types.js';
 import type { Hotel, Route } from './catalog-types.js';
 import type { CatalogKind } from './catalog.js';
 import type { DeliveryView, HandoffKind, MessageAuthor, OrderStatus, PaymentMode, SendWindow } from './conversation-types.js';
+import type { Origin } from './origin.js';
 
 export type Role = 'owner' | 'admin' | 'supervisor' | 'agent' | 'viewer';
 
@@ -461,6 +462,41 @@ export interface MetricsView {
   costTodayYuan: number;
   /** 窗口内之和 / 1000 */
   costRangeYuan: number;
+  /**
+   * 07 R23：窗口内付过款的订单（paid_at 在窗口内、状态是已付、退款中或已退款）按来源和有没有转过人工拆开。
+   * 从内存里的全部订单算（含 demo 类会话），所以宿主的种子与访客也有数；金额是元，已退款单按原成交额算在里面
+   */
+  deals: Record<Origin, DealsPart>;
+  /**
+   * 07 R23：按原因的转人工率（0–1），全部来源合计：窗口内 handoffLog 里有这类记录的会话 / 窗口内有轮次的会话，
+   * 只算进库的会话（宿主的种子与 sim- 访客永不进库）；这个窗口没发生过的原因不出现
+   */
+  handoffByKind: Partial<Record<HandoffKind, number>>;
+  /** 07 R23：窗口内 handoffLog 里 kind 为 agent 的次数（顾问主动接手；接手本来就在转人工中的会话不算），全部来源合计 */
+  takeovers: number;
+  /** 07 R23：上面两项按来源拆开（看板四个视图里三个来源视图用）；宿主的 visitor、seed 结构上是空的 */
+  handoffByOrigin: Record<Origin, HandoffPart>;
+}
+
+/**
+ * 一类来源在窗口内的成交拆分：aiOnly 是没转过人工就付款的（Order.handoffBeforePaid=false），assisted 是转过人工的；
+ * 两类之和等于窗口内付过款的订单数。*Refunded 是各自里面已退款的（其中），refunded 是两者之和
+ */
+export interface DealsPart {
+  aiOnly: number;
+  aiOnlyAmount: number;
+  aiOnlyRefunded: number;
+  assisted: number;
+  assistedAmount: number;
+  assistedRefunded: number;
+  refunded: number;
+}
+
+/** 一类来源的转人工：sessions 是窗口内有轮次的会话数（分母），byKind 是各原因的比率（0–1） */
+export interface HandoffPart {
+  sessions: number;
+  byKind: Partial<Record<HandoffKind, number>>;
+  takeovers: number;
 }
 
 // ---------------- 02：会话工作台、订单、快捷回复、事件流的响应 ----------------
@@ -621,10 +657,8 @@ export interface OrderPage {
   paymentMode: PaymentMode;
 }
 
-/** GET /orders/summary：本月（服务器时区的自然月）的成交额与待付款 */
-export interface OrderSummary {
-  /** 如 2026-10 */
-  month: string;
+/** 一类来源（或全部）的本月成交额与待付款；口径同 OrderSummary 顶层的字段 */
+export interface OrderSummaryPart {
   paidTotal: number;
   paidCount: number;
   /** 原付款发生在本月的已退款订单，金额为原成交额 */
@@ -635,6 +669,16 @@ export interface OrderSummary {
   /** 现在待付款（pending_payment）的订单，不限月份 */
   pendingTotal: number;
   pendingCount: number;
+}
+
+/**
+ * GET /orders/summary：本月（服务器时区的自然月）的成交额与待付款。顶层的数是全部来源的合计（口径不变）；
+ * byOrigin 是同一口径按来源拆开（07 R23，src/shared/origin.ts 判），三类之和等于顶层
+ */
+export interface OrderSummary extends OrderSummaryPart {
+  /** 如 2026-10 */
+  month: string;
+  byOrigin: Record<Origin, OrderSummaryPart>;
 }
 
 export interface QuickReply {

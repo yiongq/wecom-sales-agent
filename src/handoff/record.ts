@@ -6,9 +6,11 @@ import { configMode, currentTenant, currentPack } from '../config/source.js';
 import { packById } from '../packs/registry.js';
 import { terminalStages } from '../shared/conversation.js';
 import type { IndustryPack } from '../shared/pack.js';
+import { HANDOFF_LOG_MAX } from '../shared/conversation-types.js';
 import { handoffNotifyOps } from '../jobs/notify.js';
 import { sendWindow } from '../quota/ledger.js';
 import { emitAfterCommit, queueJobs } from '../store.js';
+import { currentTurnId } from '../trace/recorder.js';
 import type { HandoffRecord, SalesStage, Session } from '../types.js';
 import type { EmergencyKind } from './triggers.js';
 
@@ -50,11 +52,20 @@ export function terminalStageKey(): SalesStage {
   return first.key as SalesStage;
 }
 
+/** 07 R23：逐次转人工的记录追加一条（最多 HANDOFF_LOG_MAX 条，满了丢最旧的）；在轮次里触发的带上这一轮的 trace id */
+function appendHandoffLog(session: Session, record: HandoffRecord): void {
+  const turnId = currentTurnId(session.id);
+  const log = session.handoffLog ?? [];
+  log.push({ kind: record.kind, at: record.at, ...(turnId ? { turnId } : {}) });
+  session.handoffLog = log.length > HANDOFF_LOG_MAX ? log.slice(-HANDOFF_LOG_MAX) : log;
+}
+
 /**
  * 进入转人工。已在转人工中：record 只在 kind 为 emergency 而原记录不是时覆盖（升级），其余保留第一次的记录，计数不加。
  * 从「未转人工」进入时：assignee = null；首次进入时 firstHandoffAt = record.at；handoffCount + 1。
  * stageBeforeHandoff 的写法与 02 之前相同：已在转人工中不覆盖，否则记下的会是 handoff 本身，原阶段永久丢失。
  * 阶段是行业包终态时保留终态（R9，开放问题 12 选 A：成交统计不变），否则改成 handoff。
+ * 每次进入或升级（不含上面「已在转人工、这次不是 emergency」那条沉默规则）追加一条 handoffLog（07 R23，同 handoffCount 永不清）。
  * 每次进入或升级都 emitAfterCommit({ type: 'handoff.started', … })，事件随这个会话的下一次落盘（落库）发出；
  * db 存储下同时排 handoff_notify 任务（src/jobs/notify.ts），随同一次落库提交
  */
@@ -74,9 +85,11 @@ export function enterHandoff(
     session.handoff = record;
     session.firstHandoffAt ??= record.at;
     session.handoffCount = (session.handoffCount ?? 0) + 1;
+    appendHandoffLog(session, record);
   } else if (record.kind === 'emergency' && session.handoff?.kind !== 'emergency') {
     session.handoff = record;
     escalated = true;
+    appendHandoffLog(session, record);
   } else {
     // 已经转人工、这次不是 emergency：不覆盖现有的转人工记录（02 spec「转人工记录与四种状态」只许 emergency 覆盖）。
     // 但 consent（点「不同意」、撤回同意或删除）是客户的行权请求，不能被这条「已转人工就不再记」的沉默规则原样吞掉——

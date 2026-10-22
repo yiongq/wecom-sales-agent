@@ -309,6 +309,19 @@ a.ov-todo:hover .ov-todo-action {
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 12px;
 }
+/* 07 R23「成交与转人工」：两格并排（窄屏下面的断点照旧改成一列）；来源视图的切换在区块头右侧，窄屏可换行 */
+.ov-kpis-two {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.ov-deals-block {
+  margin-top: 28px;
+}
+.ov-deals-block .ov-head {
+  flex-wrap: wrap;
+}
+.ov-view-switch {
+  margin-left: auto;
+}
 .ov-kpi {
   position: relative;
   display: flex;
@@ -356,6 +369,32 @@ a.ov-kpi:hover {
 }
 .ov-kpi-caption {
   margin-top: 2px;
+  color: var(--text-3);
+}
+/* 几行「名称 → 数」（07 R23）：线的画法同明细行；从属行（其中已退款）缩进、字色淡一级 */
+.ov-kpi-rows {
+  margin: 12px 0 0;
+  padding: 11px 0 0;
+  box-shadow: inset 0 1px 0 var(--divider);
+}
+.ov-kpi-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.ov-kpi-row dt,
+.ov-kpi-row dd {
+  margin: 0;
+}
+.ov-kpi-row dd {
+  flex: none;
+  white-space: nowrap;
+}
+.ov-kpi-row.is-sub {
+  padding-left: 12px;
   color: var(--text-3);
 }
 /* 明细行：上面 12 处一条 1px --divider（左右贴格内边距），线下 11 */

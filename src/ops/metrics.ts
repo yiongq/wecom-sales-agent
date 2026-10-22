@@ -7,11 +7,15 @@ import { registerTenantState } from '../tenancy/state.js';
 // 窗口受 trace 保留期限制：实际天数 = min(请求的 days, 这个租户的 retention_trace_days)，trace 的三项与两项费用都按它算
 // （usage_daily 不归保留期清理，不截的话费用会比比率多算几天），MetricsView.days 返回它。
 // 后台接口，不在轮次里：对话的读路径不经这里（不变量 9）。
+// 07 R23 加了成交拆分（deals：内存里的全部订单，含 demo 类）与按原因的转人工率（handoffByKind、takeovers、handoffByOrigin：
+// 库里会话 state 的 handoffLog，SQL 在 readHandoffRows），都按来源分，来源只在 src/shared/origin.ts 判，聚合在 ./board.ts；
+// 窗口起点与上面的数同一个，一起进 60 秒缓存。
 import { configRuntime } from '../config/source.js';
 import { withTenant, type TenantCtx } from '../db/client.js';
-import { readMetrics, readTraceRetentionDays } from '../db/repo/metrics.js';
+import { readHandoffRows, readMetrics, readTraceRetentionDays } from '../db/repo/metrics.js';
 import { todayIso } from '../env.js';
 import type { MetricsView } from '../shared/console-api.js';
+import { liveDeals, handoffStats } from './board.js';
 
 const TTL_MS = 60_000;
 
@@ -24,7 +28,15 @@ export function metricsWindow(now: number, days: number): { since: Date; sinceDa
 }
 
 async function compute(ctx: TenantCtx, days: number, now: number): Promise<MetricsView> {
-  const m = await withTenant(configRuntime().db, ctx, (tx) => readMetrics(tx, metricsWindow(now, days)), { readOnly: true });
+  const w = metricsWindow(now, days);
+  const [m, rows] = await withTenant(
+    configRuntime().db,
+    ctx,
+    async (tx) => [await readMetrics(tx, w), await readHandoffRows(tx, w)] as const,
+    { readOnly: true },
+  );
+  // 07 R23：成交数从内存里的全部订单算（含 demo 类），转人工从库里的会话算；窗口起点同一个
+  const handoff = handoffStats(rows, currentRuntime().kind);
   return {
     days,
     turns: m.turns,
@@ -33,6 +45,10 @@ async function compute(ctx: TenantCtx, days: number, now: number): Promise<Metri
     aiErrorRate: m.aiErrorRate,
     costTodayYuan: m.costTodayMilliCny / 1000,
     costRangeYuan: m.costRangeMilliCny / 1000,
+    deals: liveDeals(w.since.getTime()),
+    handoffByKind: handoff.all.byKind,
+    takeovers: handoff.all.takeovers,
+    handoffByOrigin: handoff.byOrigin,
   };
 }
 

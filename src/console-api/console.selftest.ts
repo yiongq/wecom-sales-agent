@@ -4137,6 +4137,17 @@ async function workbenchSuite(): Promise<void> {
         refunds.body.refundPendingCount === Number(prior.refundPendingCount) + 2,
       refunds.text,
     );
+    // 07 R23：同一口径按来源拆开，三类（customer / visitor / seed）之和等于顶层（来源的判定与数的细节在 ops.selftest.ts、board.selftest.ts）
+    const byOrigin = refunds.body.byOrigin as Record<string, Record<string, number>> | undefined;
+    check(
+      '07 R23：/orders/summary 带 byOrigin，三类来源逐项之和等于顶层（顶层口径不变）',
+      !!byOrigin &&
+        Object.keys(byOrigin).join() === 'customer,visitor,seed' &&
+        ['paidTotal', 'paidCount', 'refundedTotal', 'refundedCount', 'refundPendingCount', 'pendingTotal', 'pendingCount'].every(
+          (k) => Object.values(byOrigin).reduce((n, part) => n + (part[k] ?? Number.NaN), 0) === refunds.body[k],
+        ),
+      refunds.text,
+    );
     for (const status of ['refund_pending', 'refunded']) {
       const filtered = await call('GET', `/orders?status=${status}`, O);
       check(`07：后台接受 ${status} 筛选`, filtered.status === 200 && filtered.text.includes(status), filtered.text);

@@ -1,23 +1,24 @@
 // 总览（spec「逐页设计 · 总览（A 页）」与 02 spec「后台页面 · 总览 A2」「可观测性与告警 · 运行数字」，
 // 设计系统 §5.10、§5.11、§6.7、§10.2 A 页与「02 后端到位后 · A2」）：回答两个问题，现在要处理什么，业务怎么样。
-// 从上到下：需要你处理（含 A2 的等人接手/已成交客户要人工/待付款 + 本月成交额）→ 运行数字 → 系统状态 → 业务数 →
-// 最近变更 / 客户停在哪一步。
+// 从上到下：需要你处理（含 A2 的等人接手/已成交客户要人工/待付款 + 本月成交额）→ 运行数字 → 成交与转人工（07 R23，带来源视图，
+// 本月成交额也跟着它）→ 系统状态 → 业务数 → 最近变更 / 客户停在哪一步。
 // - 只调现有接口和 spec 新增的只读接口；各块自己加载、自己出错，一块失败只有这一块写「没取到 · 重试」，其余照常。
 //   会话计数、各实体列表与外壳（侧栏徽标、铃铛、条目数）共用同一份缓存，页面可见时一起每 30 秒刷新；等人接手取的是
 //   最后动静最早的一页（与铃铛的首页不同），「需要你处理」与「等人接手」格共用它。
 // - 谁看得到什么：等人接手、已成交客户要人工、待付款、系统状态、业务数、客户停在哪一步给成员；话术草稿、待上架、
 //   最近变更、本月成交额、运行数字只给所有者、管理员（canEdit 同一条件，没有「最近变更」时右栏挪到左栏的位置，
-//   宽度不变）；运行数字文件存储下整块不画（503 store_file_mode）；demo 匿名只有页头下的横幅和「在售」一格。
+//   宽度不变）；运行数字与成交与转人工文件存储下整块不画（503 store_file_mode）；demo 匿名只有页头下的横幅和「在售」一格。
 // - 「接手」按钮只给能处理会话的角色画（CAN_HANDLE_ROLES，与 J 页同一套）；viewer 看得到行但没有按钮。
 // - 界面不认行业：实体、阶段、话术节、叫法都取自行业包（model.ts）。
 import { type UseQueryResult, useMutation, useQueries, useQuery } from '@tanstack/react-query';
 import { Link, useNavigate } from '@tanstack/react-router';
-import { Alert, Button } from 'antd';
+import { Alert, Button, Segmented } from 'antd';
 import { ArrowUpRight, ChevronRight, CircleAlert, CircleCheck, Clock, SquareTerminal, X } from 'lucide-react';
 import { Fragment, type ReactNode, useCallback, useEffect, useLayoutEffect, useState } from 'react';
 import type { CatalogItem, ConversationRow, Status as SystemStatus } from '../../../src/shared/console-api.js';
 import { shortIdOf } from '../../../src/shared/conversation.js';
 import { dateWithWeekday, digits } from '../../../src/shared/format.js';
+import type { OriginView } from '../../../src/shared/origin.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { api, catalogKind, HttpError, unwrap } from '../api.js';
 import { OwnConversationTag } from '../sandbox/Sandbox.js';
@@ -37,13 +38,17 @@ import {
   attentionTodos,
   catalogCounts,
   catalogTodos,
+  dealsKpi,
+  defaultOriginView,
   type EntityList,
+  handoffKpi,
   inSaleKpi,
   itemTitle,
   type Kpi,
   memberKpis,
   metricsKpis,
   monthlyRevenueKpi,
+  ORIGIN_VIEWS,
   type Segment,
   type StaticKpi,
   sopTodo,
@@ -348,12 +353,15 @@ function TodoBlock({
   editor,
   canHandle,
   now,
+  view,
   onSettled,
 }: {
   pack: IndustryPack;
   editor: boolean;
   canHandle: boolean;
   now: number;
+  /** 07 R23：本月成交额跟着来源视图走 */
+  view: OriginView;
   onSettled(): void;
 }) {
   const navigate = useNavigate();
@@ -468,15 +476,23 @@ function TodoBlock({
             </>
           )}
         </div>
-        {editor && <MonthlyRevenueTile />}
+        {editor && <MonthlyRevenueTile view={view} />}
       </div>
     </section>
   );
 }
 
-/** 「本月成交额（元）」KPI 格（02 spec「总览 A2」）：只给所有者、管理员，自己的加载/出错状态，不挡「需要你处理」落定 */
-function MonthlyRevenueTile() {
+/** /metrics 回 503 store_file_mode：文件存储，运行数字与「成交与转人工」整块不画（也就没有来源视图的切换） */
+const isFileMode = (error: unknown): boolean => error instanceof HttpError && error.body.error === 'store_file_mode';
+
+/**
+ * 「本月成交额（元）」KPI 格（02 spec「总览 A2」）：只给所有者、管理员，自己的加载/出错状态，不挡「需要你处理」落定。
+ * 07 R23：跟着「成交与转人工」的来源视图走；文件存储下那一块不画、没法切换，这时看全部（同原来）
+ */
+function MonthlyRevenueTile({ view }: { view: OriginView }) {
   const q = useQuery({ ...ordersSummaryQuery, ...POLL });
+  const metrics = useQuery({ ...metricsQuery, ...SHARED });
+  const shown = isFileMode(metrics.error) ? 'all' : view;
   return (
     <div className="ov-todos-kpi">
       {q.isError ? (
@@ -487,7 +503,7 @@ function MonthlyRevenueTile() {
           <span className="skeleton-bar" />
         </div>
       ) : (
-        <StaticKpiTile kpi={monthlyRevenueKpi(q.data)} />
+        <StaticKpiTile kpi={monthlyRevenueKpi(q.data, shown)} />
       )}
     </div>
   );
@@ -579,7 +595,7 @@ function KpiTile({ kpi }: { kpi: Kpi }) {
 
 function KpiSkeleton({ n }: { n: number }) {
   return (
-    <div className="ov-kpis state-skeleton" role="status" aria-label="正在载入">
+    <div className={n === 2 ? 'ov-kpis ov-kpis-two state-skeleton' : 'ov-kpis state-skeleton'} role="status" aria-label="正在载入">
       {Array.from({ length: n }, (_, i) => (
         <div key={i} className="ov-kpi ov-kpi-skeleton">
           <span className="skeleton-bar" />
@@ -610,6 +626,16 @@ function StaticKpiTile({ kpi }: { kpi: StaticKpi }) {
       <span className="ov-kpi-label">{kpi.label}</span>
       <span className="ov-kpi-value">{kpi.value}</span>
       <span className="ov-kpi-caption">{cjk(kpi.caption)}</span>
+      {kpi.rows && (
+        <dl className="ov-kpi-rows">
+          {kpi.rows.map((r, i) => (
+            <div key={i} className={r.sub ? 'ov-kpi-row is-sub' : 'ov-kpi-row'}>
+              <dt>{cjk(r.label)}</dt>
+              <dd>{cjk(r.value)}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
       {kpi.breakdown && <span className="ov-kpi-detail">{cjk(kpi.breakdown)}</span>}
     </div>
   );
@@ -623,8 +649,7 @@ function StaticKpiTile({ kpi }: { kpi: StaticKpi }) {
 function MetricsBlock({ editor }: { editor: boolean }) {
   const q = useQuery({ ...metricsQuery, ...SHARED, enabled: editor });
   if (!editor) return null;
-  const fileMode = q.error instanceof HttpError && q.error.body.error === 'store_file_mode';
-  if (fileMode) return null;
+  if (isFileMode(q.error)) return null;
   return (
     <section className="ov-block ov-kpi-block ov-metrics-block" aria-label="运行数字">
       {q.isError ? (
@@ -636,6 +661,46 @@ function MetricsBlock({ editor }: { editor: boolean }) {
           {metricsKpis(q.data).map((k) => (
             <StaticKpiTile key={k.key} kpi={k} />
           ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * 「成交与转人工」（07 R23）：成交拆分、按原因的转人工率两格，加四个来源视图（真实客户、访客、种子、全部，默认真实客户）。
+ * 同运行数字：只给所有者、管理员；文件存储下（/metrics 503）整块不画；加载用格子骨架；出错就地重试。
+ * 视图切换在页面一级（本月成交额那一格也跟着它）
+ */
+function DealsBlock({ editor, view, onView }: { editor: boolean; view: OriginView; onView(v: OriginView): void }) {
+  const q = useQuery({ ...metricsQuery, ...SHARED, enabled: editor });
+  if (!editor || isFileMode(q.error)) return null;
+  return (
+    <section className="ov-block ov-deals-block" aria-labelledby="ov-deals">
+      <BlockHead
+        id="ov-deals"
+        title="成交与转人工"
+        link={
+          <div className="ov-view-switch">
+            {/* tabIndex -1：rc-segmented 给整条轨道也放了 tabIndex 0，那一站方向键不起作用（同审计页的筛选） */}
+            <Segmented<OriginView>
+              aria-label="看哪一类来源"
+              tabIndex={-1}
+              options={ORIGIN_VIEWS.map((v) => ({ value: v.key, label: v.label }))}
+              value={view}
+              onChange={onView}
+            />
+          </div>
+        }
+      />
+      {q.isError ? (
+        <StateView error={q.error} onRetry={() => void q.refetch()} />
+      ) : !q.data ? (
+        <KpiSkeleton n={2} />
+      ) : (
+        <div className="ov-kpis ov-kpis-two">
+          <StaticKpiTile kpi={dealsKpi(q.data, view)} />
+          <StaticKpiTile kpi={handoffKpi(q.data, view)} />
         </div>
       )}
     </section>
@@ -839,6 +904,9 @@ export function OverviewPage() {
   // 行数定了就显示（之后不再收起），这时还在等的发布前检查由按行数画的骨架占位；过了 TODO_WAIT_MS 还没定也显示，一块慢不拖住别的块
   const [below, setBelow] = useState(false);
   const showBelow = useCallback(() => setBelow(true), []);
+  // 07 R23：成交与转人工的来源视图。没选过就用默认：standard 租户是真实客户（不含种子与访客），沙箱里没有真实客户，是访客
+  const [picked, setView] = useState<OriginView | null>(null);
+  const view = picked ?? defaultOriginView(viewer?.kind === 'member' && viewer.me.sandbox != null);
   useEffect(() => {
     const t = setTimeout(showBelow, TODO_WAIT_MS);
     return () => clearTimeout(t);
@@ -860,8 +928,9 @@ export function OverviewPage() {
     <>
       {/* 状态句包成一段：页头的状态行是 flex，Sep 拆成单独的项会多出 8 的间隔 */}
       <PageHeader title="总览" status={<span>{cjk([viewer.me.sandbox ? 'AI销售工作台' : viewer.me.tenantName, date])}</span>} />
-      <TodoBlock pack={pack} editor={editor} canHandle={canHandle} now={now} onSettled={showBelow} />
+      <TodoBlock pack={pack} editor={editor} canHandle={canHandle} now={now} view={view} onSettled={showBelow} />
       <MetricsBlock editor={editor} />
+      <DealsBlock editor={editor} view={view} onView={setView} />
       <div className={below ? 'ov-below' : 'ov-below is-waiting'}>
         <SystemBlock pack={pack} />
         <MemberKpis pack={pack} editor={editor} now={now} />

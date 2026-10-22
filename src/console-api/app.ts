@@ -103,6 +103,7 @@ import {
 } from '../handoff/takeover.js';
 import { clientKey, isCrossSite, lookupLimit } from '../http-guards.js';
 import { requestLogContext } from '../log.js';
+import { liveOrderSummary } from '../ops/board.js';
 import { readMetricsView } from '../ops/metrics.js';
 import { defaultQuickRepliesOf } from '../packs/registry.js';
 import { paymentMode } from '../payment/mode.js';
@@ -780,34 +781,18 @@ export const consoleApi = new Hono<ConsoleEnv>()
     const body: OrderPage = { items: all.slice(0, limit).map(orderView), total: all.length, paymentMode: paymentMode() };
     return c.json(body, 200);
   })
-  // 本月成交额：服务器时区的自然月里付了款的订单（作废的已不在内存里）；待付款是现在所有 pending_payment 的
+  // 本月成交额：服务器时区的自然月里付了款的订单（作废的已不在内存里）；待付款是现在所有 pending_payment 的。
+  // 顶层是全部来源的合计，byOrigin 是同一口径按来源拆开（07 R23，来源在 src/shared/origin.ts 判）
   .get('/orders/summary', canSeeMoney, (c) => {
     const now = new Date(clock());
     const from = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
     const to = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime();
+    const { total, byOrigin } = liveOrderSummary(from, to);
     const body: OrderSummary = {
       month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
-      paidTotal: 0,
-      paidCount: 0,
-      refundedTotal: 0,
-      refundedCount: 0,
-      refundPendingCount: 0,
-      pendingTotal: 0,
-      pendingCount: 0,
+      ...total,
+      byOrigin,
     };
-    for (const o of listOrders()) {
-      if (o.status === 'refund_pending') body.refundPendingCount += 1;
-      if (o.status === 'refunded' && o.paidAt != null && o.paidAt >= from && o.paidAt < to) {
-        body.refundedTotal += o.totalPrice;
-        body.refundedCount += 1;
-      } else if ((o.status === 'paid' || o.status === 'refund_pending') && o.paidAt != null && o.paidAt >= from && o.paidAt < to) {
-        body.paidTotal += o.totalPrice;
-        body.paidCount += 1;
-      } else if (o.status === 'pending_payment') {
-        body.pendingTotal += o.totalPrice;
-        body.pendingCount += 1;
-      }
-    }
     return c.json(body, 200);
   })
   // 确认价格、确认收款、取消订单：坐席只限订单所属会话的接手人本人（409 not_assignee），每次一行审计（不变量 39）

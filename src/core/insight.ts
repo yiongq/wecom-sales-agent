@@ -10,7 +10,8 @@ import { completeText } from './llm/client.js';
 import { currentPack } from '../config/source.js';
 const prompts = () => currentPack().runtime.insightPrompts;
 
-function aggregate(sessions: Session[], orders: Order[]) {
+/** 纯函数，导出供自测直接核（07 R23 把转人工贡献的成交额改按 handoffBeforePaid 算） */
+export function aggregate(sessions: Session[], orders: Order[]) {
   const active = sessions.filter((s) => s.stage !== 'handoff');
   const names = prompts().funnelNames;
   const cnt = [1, 2, 3, 4, 5].map((min) => active.filter((s) => (prompts().reach[s.stage] ?? -1) >= min).length);
@@ -19,7 +20,9 @@ function aggregate(sessions: Session[], orders: Order[]) {
   const paidSids = new Set(paid.map((o) => o.sessionId));
   const handoff = sessions.filter((s) => s.handedOver);
   const gmv = paid.reduce((a, o) => a + o.totalPrice, 0);
-  const hoGmv = paid.filter((o) => sessions.find((s) => s.id === o.sessionId)?.handedOver).reduce((a, o) => a + o.totalPrice, 0);
+  // 07 R23：转人工贡献的成交额按付款时有没有转过人工（Order.handoffBeforePaid，持久）算；原先看会话现在是不是还在转人工
+  //（handedOver，交还时会清掉），交还之后的人机协同单会被算成 AI 独立成交
+  const hoGmv = paid.filter((o) => o.handoffBeforePaid === true).reduce((a, o) => a + o.totalPrice, 0);
   const stuck = sessions.filter((s) => prompts().stuckStages.includes(s.stage) && Date.now() - s.updatedAt >= 10 * 60000).length;
   return {
     total: sessions.length,
