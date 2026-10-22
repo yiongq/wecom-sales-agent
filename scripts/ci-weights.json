@@ -23,6 +23,7 @@
   "strict:eval/run.ts": 34,
   "eval/run.ts": 32,
   "scripts/check-boundaries.selftest.ts": 31,
+  "eval/sim/gate.selftest.ts": 30,
   "scripts/check-tenant-state.selftest.ts": 29,
   "strict:src/db/db.selftest.ts": 29,
   "src/db/db.selftest.ts": 28,
