@@ -31,6 +31,12 @@ import { SandboxProcess } from './process.js';
 import { provisionSandbox, SandboxProvisionError, type ProvisionOptions } from './provision.js';
 import { loadSandboxRuntime } from './load.js';
 import { runTenantBrand } from '../../cli/tenant-brand.js';
+import { runSopPolicy } from '../../cli/sop-policy.js';
+import { defaultTravelPolicy } from '../../packs/travel/policy.js';
+import { initConfig, __configTest, currentPolicy } from '../../config/source.js';
+import { readDraft } from '../../db/repo/sop.js';
+import { withTenant } from '../../db/client.js';
+import { publishSopDraft } from '../../config/sop.js';
 import { shanhaiBrand } from '../../packs/travel/brand-fixture.js';
 
 type Query = <R = Record<string, unknown>>(text: string, values?: unknown[]) => Promise<R[]>;
@@ -97,6 +103,22 @@ async function suite(
     }),
   );
   check(() => assert.equal(imported.code, 0, imported.message));
+  const templatePolicy = structuredClone(defaultTravelPolicy);
+  templatePolicy.refund.approvalThresholdYuan = 25000;
+  const policyFile = path.join(temp, 'template-policy.json');
+  fs.writeFileSync(policyFile, JSON.stringify(templatePolicy));
+  await withTenantScope(inputRuntime, async () => {
+    const code = await runSopPolicy(['set', '--tenant', 'template', '--policy-file', policyFile], {
+      connect: async () => ({ db, close: async () => {} }),
+    });
+    check(() => assert.equal(code, 0));
+    await initConfig(deps);
+    const ctx = { tenantId: hostId, actor: { kind: 'system' as const, userId: null, name: '政策自测', ip: null } };
+    const draft = await withTenant(db, ctx, readDraft);
+    await publishSopDraft(ctx, { rev: draft!.rev, changeNote: '沙箱复制政策自测' });
+    await closeConfig();
+    __configTest.reset();
+  });
   // 模板 active 的 ord 有空洞，历史版本与草稿不得混进副本。
   await q(
     "insert into catalog_items(tenant_id,kind,code,ord,status,payload) select tenant_id,kind,'extra-route',123,'active',jsonb_set(payload::jsonb,'{id}',to_jsonb('extra-route'::text))::json from catalog_items where tenant_id=$1 and kind='route' limit 1",
@@ -188,6 +210,8 @@ async function suite(
       for (const key of ['promptHash', 'toolsHash', 'prefixHash', 'sopHash'] as const)
         check(() => assert.equal(currentSop()[key], template.pub[key]));
       check(() => assert.deepEqual(currentSop().brand, shanhaiBrand));
+      check(() => assert.deepEqual(currentPolicy().policy, templatePolicy));
+      check(() => assert.equal(currentPolicy().policyHash, template.pub.renderInputs!.policyHash));
       check(() => assert.equal(currentCatalog().routes.length + currentCatalog().hotels.length, template.items.length));
       check(() => assert.deepEqual(currentPrivacyNotice(), { version: 1, body: template.privacy!.body }));
     });

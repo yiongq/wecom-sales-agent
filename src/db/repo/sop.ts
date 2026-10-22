@@ -19,6 +19,7 @@ export interface SopVersionRow {
   toolsHash: string | null;
   prefixHash: string | null;
   sopHash: string | null;
+  policy: unknown;
   renderInputs: RenderInputs | null;
   changeNote: string | null;
   createdByName: string | null;
@@ -41,6 +42,7 @@ const columns = {
   toolsHash: sopVersions.toolsHash,
   prefixHash: sopVersions.prefixHash,
   sopHash: sopVersions.sopHash,
+  policy: sopVersions.policy,
   renderInputs: sopVersions.renderInputs,
   changeNote: sopVersions.changeNote,
   createdByName: sopVersions.createdByName,
@@ -71,6 +73,7 @@ export interface NewPublishedSop {
   toolsHash: string;
   prefixHash: string;
   sopHash: string;
+  policy?: unknown;
   renderInputs: RenderInputs;
   changeNote: string | null;
   createdBy: string | null;
@@ -146,6 +149,7 @@ export async function insertDraft(
     tenantId: string;
     packId: string;
     sections: SopSectionRow[];
+    policy?: unknown;
     basedOn: string;
     rev: number;
     createdBy: string | null;
@@ -169,10 +173,11 @@ export async function updateDraftSections(
   rev: number,
   sections: SopSectionRow[],
   basedOn?: string,
+  policy?: unknown,
 ): Promise<SopVersionRow | null> {
   const [row] = await tx
     .update(sopVersions)
-    .set(basedOn === undefined ? { sections } : { sections, basedOn })
+    .set({ sections, ...(basedOn === undefined ? {} : { basedOn }), ...(policy === undefined ? {} : { policy }) })
     .where(and(eq(sopVersions.id, id), eq(sopVersions.rev, rev), eq(sopVersions.status, 'draft')))
     .returning(columns);
   return row ?? null;
@@ -194,6 +199,7 @@ export interface ReleaseFields {
   toolsHash: string;
   prefixHash: string;
   sopHash: string;
+  policy?: unknown;
   renderInputs: RenderInputs;
   changeNote: string;
   publishedBy: string | null;

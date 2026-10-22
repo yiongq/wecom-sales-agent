@@ -192,6 +192,8 @@ function single(entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups
         ...(to === null ? {} : { tail: `，生成v${to}`, summary: `生成v${to}` }),
       };
     }
+    case 'sop.policy_draft':
+      return { parts: [plain('修改了退改条款草稿')] };
     case 'sop.discard':
       return { parts: [plain('丢弃了话术草稿')] };
     case 'sop.rerender': {

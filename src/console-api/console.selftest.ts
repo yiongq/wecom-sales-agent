@@ -850,6 +850,37 @@ check(
   `${owner.status} ${admin.text} ${reader.text}`,
 );
 
+// 07 R4：同一保存入口接收 policy；可编辑角色、校验、只读投影与发布前隔离。
+{
+  const { defaultTravelPolicy } = await import('../packs/travel/policy.js');
+  const before = cfg.currentSop();
+  const policy = structuredClone(defaultTravelPolicy);
+  policy.refund.approvalThresholdYuan = 25000;
+  const input = { basedOn: before.versionId, rev: null, edits: [], policy };
+  const denied = await call('PUT', '/sop/draft', { as: reader, json: input });
+  check('policy HTTP：viewer 写 policy 草稿 → 403', denied.status === 403);
+  const invalid = await call('PUT', '/sop/draft', {
+    ...O,
+    json: { ...input, policy: { ...policy, pricing: { ...policy.pricing, peakMultiplier: 1.15 } } },
+  });
+  check(
+    'policy HTTP：只读定价字段 → 422 policy_invalid',
+    invalid.status === 422 && invalid.body.violations?.some((v: Body) => v.code === 'policy_invalid'),
+  );
+  const saved = await call('PUT', '/sop/draft', { ...O, json: input });
+  check('policy HTTP：owner 保存整份 policy → 200', saved.status === 200 && saved.body.policy?.approvalThresholdYuan === 25000, saved.text);
+  check('policy HTTP：写草稿不改变已发布 policy', cfg.currentSop().policyHash === before.policyHash);
+  const view = (await call('GET', '/sop', { as: reader })).body;
+  check(
+    'policy HTTP：只读成员看到草稿与已发布差异',
+    view.published.policy?.approvalThresholdYuan === 30000 && view.draft.policy?.approvalThresholdYuan === 25000,
+  );
+  const updated = await call('PUT', '/sop/draft', { as: admin, json: { ...input, rev: saved.body.rev, policy: defaultTravelPolicy } });
+  check('policy HTTP：admin 保存 policy 草稿 → 200', updated.status === 200, updated.text);
+  const discarded = await call('POST', '/sop/draft/discard', { ...O, json: { rev: updated.body.rev } });
+  check('policy HTTP：清理草稿成功', discarded.status === 200);
+}
+
 // 验收 15：CSRF
 {
   const noCsrf = keep(await call('POST', '/sop/draft/check', { as: owner, noCsrf: true }));

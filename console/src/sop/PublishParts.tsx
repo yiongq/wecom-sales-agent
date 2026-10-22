@@ -351,6 +351,7 @@ export interface PublishDrawerProps {
   replacing: PublishedHead;
   now: number;
   changes: readonly SectionChange[];
+  policy?: ReactNode;
   /** 最近一次检查（或发布被拒）的问题，没跑过是 null */
   located: readonly LocatedViolation[] | null;
   budget: CheckBudget | null;
@@ -469,18 +470,21 @@ export function PublishDrawer(props: PublishDrawerProps) {
           <Icon of={Info} />
           <span>{cjk(replaceLine(p.replacing, p.now))}</span>
         </p>
-        <section className="sop-publish-changes" aria-labelledby={`${noteId}-changes`}>
-          <ChangesBlock
-            head={
-              <h3 id={`${noteId}-changes`} className="sop-publish-title">
-                {cjk('逐节改动')}
-              </h3>
-            }
-            changes={p.changes}
-            base={p.published}
-            online={p.replacing}
-          />
-        </section>
+        {p.policy}
+        {(p.changes.length > 0 || !p.policy) && (
+          <section className="sop-publish-changes" aria-labelledby={`${noteId}-changes`}>
+            <ChangesBlock
+              head={
+                <h3 id={`${noteId}-changes`} className="sop-publish-title">
+                  {cjk('逐节改动')}
+                </h3>
+              }
+              changes={p.changes}
+              base={p.published}
+              online={p.replacing}
+            />
+          </section>
+        )}
         <div className="sop-publish-note">
           <label htmlFor={noteId} className="sop-publish-label">
             {cjk('这次改了什么、为什么')}

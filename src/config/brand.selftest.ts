@@ -266,7 +266,7 @@ try {
         versionNo: config.currentSop().versionNo + 1,
         renderedPrompt: system,
         ...promptHashes(system, baseline.tools, fs.readFileSync('data/sop.md', 'utf8')),
-        renderInputs: { ...emptyInputs, ...brandSnapshot(brand) },
+        renderInputs: { ...emptyInputs, ...brandSnapshot(brand), policyHash: row.renderInputs!.policyHash },
       },
       initial.sections,
     );

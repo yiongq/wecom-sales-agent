@@ -192,6 +192,7 @@ export interface RenderInputs {
   /** 04 R6：旧发布行可缺省（等同旧版）；新行总是写完整快照。 */
   brand?: BrandProfile | null;
   brandHash?: string;
+  policyHash?: string;
 }
 
 export const sopVersions = pgTable(
@@ -217,6 +218,7 @@ export const sopVersions = pgTable(
     toolsHash: text('tools_hash'),
     prefixHash: text('prefix_hash'),
     sopHash: text('sop_hash'),
+    policy: json('policy').$type<unknown>(),
     renderInputs: jsonb('render_inputs').$type<RenderInputs>(),
     changeNote: text('change_note'),
     createdBy: uuid('created_by').references(() => users.id),

@@ -53,10 +53,11 @@ import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { ConfigDrift } from '../shared/console-api.js';
 import { deepFreeze } from '../shared/freeze.js';
 import type { IndustryPack } from '../shared/pack.js';
+import { policyViolations as checkSopContractPolicy } from '../packs/travel/policy-lint.js';
 import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
 import { decodeSopFile, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
 import { tenantImage, tenantRenderer, switchPreamble, preambleWarning } from './brand.js';
-import { promptHashes, renderInputsFor, sha256, publishedBrand } from './hashes.js';
+import { promptHashes, renderInputsFor, sha256, publishedBrand, policySnapshot, publishedPolicy } from './hashes.js';
 
 export type { TenantLock } from '../db/client.js';
 export type ConfigMode = 'file' | 'db';
@@ -79,6 +80,8 @@ export interface PublishedSop {
   /** 04 R6：来自 render_inputs，绝不从 tenants.brand 现读。 */
   brand: BrandProfile | null;
   brandHash: string;
+  policy: unknown;
+  policyHash: string;
 }
 
 export interface CatalogSnapshot {
@@ -496,8 +499,9 @@ const systemCtx = (tenantId: string): TenantCtx => ({ tenantId, actor: { kind: '
 function assertIntegrity(row: SopVersionRow): void {
   try {
     publishedBrand(row.renderInputs);
+    publishedPolicy(runtimeById(row.packId, packSources())?.policy, row);
   } catch {
-    throw startup('integrity', `已发布版本 v${row.versionNo} 的品牌快照或哈希不合规`);
+    throw startup('integrity', `已发布版本 v${row.versionNo} 的品牌、政策快照或哈希不合规`);
   }
   if (!row.renderedPrompt || !row.promptHash || !row.sopHash) throw startup('integrity', `已发布版本 v${row.versionNo} 缺少渲染结果或哈希`);
   if (sha256(row.renderedPrompt) !== row.promptHash)
@@ -567,6 +571,7 @@ export function toPublishedSop(tenantId: string, row: SopVersionRow, sections: r
     prefixHash: row.prefixHash!,
     sopHash: row.sopHash!,
     ...publishedBrand(row.renderInputs),
+    ...publishedPolicy(runtimeById(row.packId, packSources())?.policy, row),
   });
 }
 
@@ -576,6 +581,7 @@ const CAUSE: Record<Exclude<keyof RenderInputs, 'brand'>, string> = {
   sectionTableHash: 'section_table',
   toolsHash: 'tools',
   brandHash: 'brand',
+  policyHash: 'policy',
 };
 
 /**
@@ -590,6 +596,8 @@ function resolvePublished(
 ): { merged: SopSection[]; rendered: string; causes: string[] } | null {
   const changedBrand =
     publishedBrand(row.renderInputs).brandHash !== renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null).brandHash;
+  const policy = publishedPolicy(d.runtime?.policy, row);
+  const changedPolicy = (d.runtime?.policy !== undefined && row.policy == null) || row.renderInputs?.policyHash !== policy.policyHash;
   const stored = changedBrand ? switchPreamble(row.sections, previousImage, imageSections) : row.sections;
   const merged = mergeWithImage(stored, imageSections);
   const rendered = d.render(joinSop(merged));
@@ -604,6 +612,7 @@ function resolvePublished(
     rules: d.runtime?.contractRules(d.brand ? { brand: d.brand } : 'legacy'),
     brand: d.brand,
     hardRequirements: d.render(''),
+    policy: policy.policy,
   });
   if (violations.length) {
     throw startup(
@@ -612,11 +621,11 @@ function resolvePublished(
     );
   }
   const toolsHash = sha256(d.toolsJson);
-  if (rendered === row.renderedPrompt && toolsHash === row.toolsHash && !changedBrand) return null;
-  const now = renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null);
+  if (rendered === row.renderedPrompt && toolsHash === row.toolsHash && !changedBrand && !changedPolicy) return null;
+  const now = renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null, policy.policyHash);
   const before = row.renderInputs;
   const causes = (Object.keys(CAUSE) as (keyof typeof CAUSE)[])
-    .filter((k) => (k === 'brandHash' ? changedBrand : !before || before[k] !== now[k]))
+    .filter((k) => (k === 'brandHash' ? changedBrand : k === 'policyHash' ? changedPolicy : !before || before[k] !== now[k]))
     .map((k) => CAUSE[k]);
   if (!causes.length) throw startup('renderer_nondeterministic', `渲染的输入与 v${row.versionNo} 发布时完全相同，结果却不同`);
   return { merged, rendered, causes };
@@ -719,7 +728,8 @@ export async function checkConfigDatabase(d: ConfigDeps): Promise<void> {
 async function loadConfig(deps: ConfigDeps | null): Promise<void> {
   const state = configState();
   if (!deps) {
-    installPack('travel', readFileBrand());
+    const binding = installPack('travel', readFileBrand());
+    readFilePolicy(binding.runtime.policy);
     return;
   }
   let d = deps;
@@ -849,6 +859,7 @@ async function writeRerender(
   r: { merged: SopSection[]; rendered: string; causes: string[] },
 ): Promise<SopVersionRow> {
   const hashes = promptHashes(r.rendered, d.toolsJson, joinSop(r.merged));
+  const policy = publishedPolicy(d.runtime?.policy, row);
   const next = await withTenant(d.db, systemCtx(tenantId), async (tx) => {
     await lockTenantConfig(tx);
     await archivePublished(tx, row.id);
@@ -861,7 +872,8 @@ async function writeRerender(
       basedOn: row.id,
       renderedPrompt: r.rendered,
       ...hashes,
-      renderInputs: renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null),
+      policy: policy.policy,
+      renderInputs: renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null, policy.policyHash),
       changeNote: `启动重渲染：${r.causes.join('、')} 变了`,
       createdBy: null,
       createdByName: 'system',
@@ -1165,6 +1177,23 @@ export function currentPack(): PackBinding {
   return state.loaded ? { ...binding, brand: state.loaded.sop.brand } : binding;
 }
 
+/** 每轮开始捕获一次并保留返回值：与已发布 SOP 同步，DB 读路径不查询草稿或数据库。 */
+export function currentPolicy(): ReturnType<typeof policySnapshot> {
+  const state = configState();
+  if (state.loaded) return { policy: state.loaded.sop.policy, policyHash: state.loaded.sop.policyHash };
+  if (configMode() === 'db') throw new ConfigNotReadyError();
+  return readFilePolicy(currentPack().runtime.policy);
+}
+
+function readFilePolicy(pack: import('../core/pack-api.js').PackPolicy | undefined): ReturnType<typeof policySnapshot> {
+  const file = path.join(path.dirname(fileSopPath()), 'policy.json');
+  const value = fs.existsSync(file) ? JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file))) : pack?.defaults;
+  const snapshot = policySnapshot(pack, value);
+  const violations = pack ? checkSopContractPolicy(snapshot.policy) : [];
+  if (violations.length) throw new Error(`policy_invalid: ${violations.map((v) => v.detail).join('；')}`);
+  return deepFreeze(snapshot);
+}
+
 /** 与引擎共用有效路径，品牌不会误读 cwd/data 或产品库所在目录。 */
 export function fileSopPath(): string {
   return process.env.SOP_PATH ?? path.join(process.cwd(), 'data', 'sop.md');
@@ -1183,7 +1212,9 @@ export function renderFileSop(sop: string): string {
   const { runtime, brand } = currentPack();
   if (brand === null) return renderSystemPrompt(sop, runtime.legacy.hardRequirements);
   const image = tenantImage(runtime, sop, brand);
-  return tenantRenderer(runtime, brand)(joinSop(mergeWithImage(splitSop(sop, runtime.sopSections), image)));
+  const legacyImage = splitSop(decodeSopFile(fs.readFileSync(path.join(process.cwd(), 'data', 'sop.md'))), runtime.sopSections);
+  const stored = switchPreamble(splitSop(sop, runtime.sopSections), legacyImage, image);
+  return tenantRenderer(runtime, brand)(joinSop(mergeWithImage(stored, image)));
 }
 
 function installPack(id: string, brand: BrandProfile | null = null): PackBinding {

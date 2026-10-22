@@ -219,7 +219,7 @@ import {
 import { MergeEditor, REVERT_LABEL } from './MergeParts.js';
 import { ChangesDrawer, PublishDrawer, type PublishDrawerProps, useShownWhileClosing } from './PublishParts.js';
 import { QuotaBar } from './QuotaBar.js';
-import { checkItems } from './SideCards.js';
+import { checkItems, PolicyCard } from './SideCards.js';
 import { cmPhrases, SectionPane, SopEditor } from './SopEditor.js';
 import { SopSkeleton } from './SopSkeleton.js';
 import { sopSearch } from './search.js';
@@ -1238,6 +1238,7 @@ const version = (versionNo: number | null, secs: SopSectionText[], extra: Partia
   sections: secs,
   basedOn: null,
   rev: 0,
+  policyHash: null,
   promptHash: 'a'.repeat(64),
   toolsHash: null,
   prefixHash: null,
@@ -2642,7 +2643,11 @@ function fakeServer(start: SopOverview, defs: readonly SopSectionDef[] = TRAVEL)
       if (srv.publishFails) return json(422, { error: 'contract', detail: '没过', violations: srv.publishFails.contract });
       const no = (srv.state.published.versionNo ?? 0) + 1;
       // basedOn 是被替换下来的线上版本（同 src/config/sop.ts 的 publishSopDraft）
-      const v = version(no, rebased(srv.state.draft!), { basedOn: srv.state.published.id, publishedAt: '2026-09-26T06:31:00Z' });
+      const v = version(no, rebased(srv.state.draft!), {
+        basedOn: srv.state.published.id,
+        publishedAt: '2026-09-26T06:31:00Z',
+        policy: srv.state.draft!.policy,
+      });
       srv.state = { ...srv.state, draft: null };
       return json(200, release(v));
     }
@@ -2977,7 +2982,7 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     [true, 'false', ['草稿刚被别人改过', '服务暂时连不上'], null],
   );
   srv.getFails = false;
-  eq('409 停住时：检查结果还在（还是存上的那份草稿）', text(m.box.querySelector('.sop-col-check .check-list-summary')), '7/8通过');
+  eq('409 停住时：检查结果还在（还是存上的那份草稿）', text(m.box.querySelector('.sop-col-check .check-list-summary')), '9/10通过');
   const gets = calls.filter((c) => c.method === 'GET' && c.path === '/api/console/sop').length;
   await clickEv(banner?.querySelector('.ant-alert-actions button'));
   await waitFor(() => !!m.box.querySelector('.sop-lost'));
@@ -3358,9 +3363,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     'sop-col-tools',
   ]);
   eq(
-    '检查清单在右栏那一格：没有草稿时不检查，8 项都是「还没跑」，没有通过数',
+    '检查清单在右栏那一格：没有草稿时不检查，10 项都是「还没跑」，没有通过数',
     [all(m.box, '.sop-col-check .check-item-pending').length, m.box.querySelector('.sop-col-check .check-list-summary'), srv.checks()],
-    [8, null, 0],
+    [10, null, 0],
   );
   eq(
     '工具卡片：标题、每行一个芯片（中文名、原名取行业包）、卡底说明',
@@ -3387,9 +3392,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   const again = await mountPage('/console/sop?section=tone', owner, MEMBER_SOP, FAST);
   await waitFor(() => !!again.box.querySelector('.sop-col-check .check-list-summary'));
   eq(
-    '打开时已有草稿：自动检查，结果列在右栏的清单里（7/8通过，没过的写几处、哪一节）',
+    '打开时已有草稿：自动检查，结果列在右栏的清单里（9/10通过，没过的写几处、哪一节）',
     [text(again.box.querySelector('.sop-col-check .check-list-summary')), text(again.box.querySelector('.sop-col-check .check-item-fail'))],
-    ['7/8通过', '工具名都存在1处·话术原则'],
+    ['9/10通过', '工具名都存在1处·话术原则'],
   );
   await again.unmount();
   const agent: Viewer = { ...owner, me: { ...(owner as Extract<Viewer, { kind: 'member' }>).me, role: 'agent' } };
@@ -3597,6 +3602,8 @@ respond = null;
       ['unknown_tool', 'fail', ['2处', '话术原则'], 'function'],
       ['unknown_field', 'fail', ['1处', '异议处理'], 'function'],
       ['consistency', 'pass', null, 'undefined'],
+      ['policy_invalid', 'pass', null, 'undefined'],
+      ['policy_mismatch', 'pass', null, 'undefined'],
       ['over_budget', 'fail', ['1处'], 'function'],
     ],
   );
@@ -3619,13 +3626,13 @@ respond = null;
   eq(
     '全过：只有「字数在额度内」写百分比（B 页的 87%）',
     passed.map((i) => [i.state, i.note ?? null]),
-    [...Array.from({ length: 7 }, () => ['pass', null]), ['pass', '87%']],
+    [...Array.from({ length: 9 }, () => ['pass', null]), ['pass', '87%']],
   );
   eq('没有字数：百分比不写', checkItems(SPEC, [], null).at(-1)?.note, undefined);
   eq(
-    '还没跑：8 项都是「还没跑」，没有说明、不能点',
+    '还没跑：10 项都是「还没跑」，没有说明、不能点',
     checkItems(SPEC, null, null, noop).map((i) => [i.state, i.note, i.onClick]),
-    Array.from({ length: 8 }, () => ['pending', undefined, undefined]),
+    Array.from({ length: 10 }, () => ['pending', undefined, undefined]),
   );
   eq('不给 onLocate：没过的项不能点', checkItems(SPEC, located, null).filter((i) => i.onClick).length, 0);
   const nowhere = checkItems(SPEC, locateViolations([vs[1]!], []), null, noop)[0]!;
@@ -3926,9 +3933,9 @@ function recordScroll(): { calls: string[]; restore(): void } {
   const m = await mountPage('/console/sop?section=preamble', travelOwner, BAD_SOP, { ...FAST, debounce: 60_000, now: () => clock });
   await waitFor(() => summaryOf(m) !== '');
   eq(
-    '打开时已有草稿：检查一次，5/8通过，下一行「每次自动保存都会跑 · 上次14:30」',
+    '打开时已有草稿：检查一次，7/10通过，下一行「每次自动保存都会跑 · 上次14:30」',
     [srv.checks(), summaryOf(m), metaOf(m)],
-    [1, '5/8通过', '每次自动保存都会跑·上次14:30'],
+    [1, '7/10通过', '每次自动保存都会跑·上次14:30'],
   );
   eq(
     '没过的项写处数和节（必需说法落在线上版本里含这句的节）；没过的整行是按钮，通过的不是',
@@ -4034,11 +4041,11 @@ function recordScroll(): { calls: string[]; restore(): void } {
     [all(m.box, '.sop-hint-wrap').length, all(m.box, '.sop-bad').map((e) => e.textContent), document.activeElement === cmOf(m)],
     [0, ['缩短天数重新报价'], true],
   );
-  await waitFor(() => summaryOf(m) === '6/8通过');
+  await waitFor(() => summaryOf(m) === '8/10通过');
   eq(
     '存上以后再检查一次：工具名都存在通过了，「上次」跟着更新',
     [srv.checks(), summaryOf(m), itemOf(m, '工具名都存在')?.classList.contains('check-item-pass'), metaOf(m)],
-    [2, '6/8通过', true, '每次自动保存都会跑·上次14:31'],
+    [2, '8/10通过', true, '每次自动保存都会跑·上次14:31'],
   );
   scroll.restore();
   await m.unmount();
@@ -4049,7 +4056,7 @@ function recordScroll(): { calls: string[]; restore(): void } {
   const scroll2 = recordScroll();
   const o = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, FAST);
   await waitFor(() => summaryOf(o) !== '');
-  eq('超了额度：写「超出42字」', [summaryOf(o), noteOf(o, '字数在额度内')], ['4/8通过', '超出42字']);
+  eq('超了额度：写「超出42字」', [summaryOf(o), noteOf(o, '字数在额度内')], ['6/10通过', '超出42字']);
   await clickEv(itemOf(o, '字数在额度内'));
   await settle();
   const quota = o.box.querySelector('.sop-quota');
@@ -4070,21 +4077,21 @@ function recordScroll(): { calls: string[]; restore(): void } {
   const m = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, FAST);
   await waitFor(() => metaOf(m).includes('没检查上'));
   eq(
-    '打开时没跑成：8 项还没跑，下一行写 danger 的「没检查上 · 重试」',
+    '打开时没跑成：10 项还没跑，下一行写 danger 的「没检查上 · 重试」',
     [all(checkCard(m), '.check-item-pending').length, metaOf(m), !!checkCard(m).querySelector('.sop-check-failed button')],
-    [8, '每次自动保存都会跑·没检查上·重试', true],
+    [10, '每次自动保存都会跑·没检查上·重试', true],
   );
   srv.checkFails = false;
   await clickEv(checkCard(m).querySelector('.sop-check-failed button'));
   await waitFor(() => summaryOf(m) !== '');
-  eq('点「重试」：再跑一次，跑成了', [srv.checks(), summaryOf(m), metaOf(m)], [2, '5/8通过', '每次自动保存都会跑·上次14:30']);
+  eq('点「重试」：再跑一次，跑成了', [srv.checks(), summaryOf(m), metaOf(m)], [2, '7/10通过', '每次自动保存都会跑·上次14:30']);
   srv.checkFails = true;
   await typeAtEnd(m, '甲');
   await waitFor(() => metaOf(m).includes('没检查上'));
   eq(
     '存上以后没跑成：上一次的结果留着，写「没检查上」',
     [srv.checks(), summaryOf(m), metaOf(m)],
-    [3, '5/8通过', '每次自动保存都会跑·没检查上·重试'],
+    [3, '7/10通过', '每次自动保存都会跑·没检查上·重试'],
   );
 
   srv.checkFails = false;
@@ -4097,13 +4104,13 @@ function recordScroll(): { calls: string[]; restore(): void } {
   await waitFor(() => srv.checks() === 5);
   srv.checkHold = false;
   await act(async () => srv.checkHeld[1]?.resolve());
-  await waitFor(() => summaryOf(m) === '6/8通过');
+  await waitFor(() => summaryOf(m) === '8/10通过');
   await act(async () => srv.checkHeld[0]?.resolve());
   await rest(60);
   eq(
     '两次检查都在路上：后发的（改好以后的草稿）先回来就用它，先发的晚回来也不认',
     [summaryOf(m), itemOf(m, '工具名都存在')?.classList.contains('check-item-pass'), metaOf(m)],
-    ['6/8通过', true, '每次自动保存都会跑·上次14:30'],
+    ['8/10通过', true, '每次自动保存都会跑·上次14:30'],
   );
   await m.unmount();
 }
@@ -4116,16 +4123,16 @@ function recordScroll(): { calls: string[]; restore(): void } {
   const m = await mountPage('/console/sop?section=tone', travelOwner, noDraft, FAST);
   await rest(100);
   eq(
-    '没有草稿：不检查，8 项还没跑',
+    '没有草稿：不检查，10 项还没跑',
     [srv.checks(), all(checkCard(m), '.check-item-pending').length, metaOf(m)],
-    [0, 8, '每次自动保存都会跑'],
+    [0, 10, '每次自动保存都会跑'],
   );
   await typeAtEnd(m, '甲');
   await waitFor(() => summaryOf(m) !== '');
   eq(
     '第一次存上（新建了草稿）以后检查；线上版本里也没有那句必需说法：不落在节上，只写处数',
     [srv.checks(), summaryOf(m), noteOf(m, '必备短语都在'), all(m.box, '.sop-hint-wrap').length],
-    [1, '5/8通过', '1处', 1],
+    [1, '7/10通过', '1处', 1],
   );
   eq('这一项没有去处：整行不是按钮', itemOf(m, '必备短语都在')?.tagName, 'DIV');
   await discardVia(m);
@@ -4140,7 +4147,7 @@ function recordScroll(): { calls: string[]; restore(): void } {
       all(m.box, '.sop-hint-wrap').length,
       srv.checks(),
     ],
-    ['', 8, 0, 0, 1],
+    ['', 10, 0, 0, 1],
   );
   await m.unmount();
 
@@ -4212,7 +4219,7 @@ function recordScroll(): { calls: string[]; restore(): void } {
   eq(
     '后发的先跑成，先发的晚回来没跑成：不认，不写「没检查上」',
     [metaOf(l), summaryOf(l), !!checkCard(l).querySelector('.sop-check-failed')],
-    ['每次自动保存都会跑·上次14:31', '5/8通过', false],
+    ['每次自动保存都会跑·上次14:31', '7/10通过', false],
   );
   await l.unmount();
 
@@ -4226,9 +4233,9 @@ function recordScroll(): { calls: string[]; restore(): void } {
   await act(async () => gone.checkHeld[0]?.resolve());
   await rest(60);
   eq(
-    '丢弃时还在路上的检查：回来了也不认，清单仍是 8 个还没跑，没有波浪线',
+    '丢弃时还在路上的检查：回来了也不认，清单仍是 10 个还没跑，没有波浪线',
     [summaryOf(g), all(checkCard(g), '.check-item-pending').length, all(g.box, '.sop-bad').length, gone.checks()],
-    ['', 8, 0, 1],
+    ['', 10, 0, 1],
   );
   await g.unmount();
 }
@@ -4825,7 +4832,7 @@ for (const sandbox of [true, false]) {
   const m = await mountPage('/console/sop?section=tone', v, CLEAN_SOP, FAST);
   try {
     const url = m.router.state.location.href;
-    await waitFor(() => summaryOf(m) === '8/8通过');
+    await waitFor(() => summaryOf(m) === '10/10通过');
     await clickEv(barButton(m, '发布…'));
     await waitFor(() => !!drawerOf('发布草稿'));
     const d = drawerOf('发布草稿')!;
@@ -4858,7 +4865,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   eq(
     '发布条：改了哪几节、字数；没有问题时「发布…」能点，旁边不写原因；页头没有「发布」',
     [barText(m), barBlocked(m), !!publishBar(m)?.querySelector('.sop-bar-icon.is-warning'), headerButton(m, '发布')],
@@ -4874,7 +4881,7 @@ for (const sandbox of [true, false]) {
     [0, 1, '检查于14:30'],
   );
   eq(
-    '抽屉：检查清单（8 项）、替换说明、逐节改动只列改过的节、默认行内',
+    '抽屉：检查清单（10 项）、替换说明、逐节改动只列改过的节、默认行内',
     [
       text(d.querySelector('.check-list-summary')),
       all(d, '.check-item').length,
@@ -4884,7 +4891,7 @@ for (const sandbox of [true, false]) {
       all(d, '.sop-diff-view.is-inline').length,
       docsIn(d).map((x) => x.includes('search_routes 查线路') || x.includes('先问预算上限')),
     ],
-    ['8/8通过', 8, '将替换线上v2（老板·9月25日 18:30发布）', ['话术原则', '异议处理'], '行内', 2, [true, true]],
+    ['10/10通过', 10, '将替换线上v2（老板·9月25日 18:30发布）', ['话术原则', '异议处理'], '行内', 2, [true, true]],
   );
   // 第 16 步（axe heading-order、landmark-unique）：节名在「逐节改动」h3 下面是 h4；抽屉里的清单只是一组，页面右栏的才是地标
   const pageList = m.box.querySelector('.sop-col-check .check-list');
@@ -4998,7 +5005,7 @@ for (const sandbox of [true, false]) {
   srv.check = (s) => scan(s);
   srv.rollbackSameHash = false;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => barText(m).summary.startsWith('已发布'));
   await clickEv(barButton(m, '回滚到v2'));
@@ -5028,7 +5035,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => barText(m).summary.startsWith('已发布v3'));
   await settle();
@@ -5049,7 +5056,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, debounce: 60_000 });
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   const checks0 = srv.checks();
   await typeAtEnd(m, '乙');
   srv.mode = 'hold';
@@ -5083,7 +5090,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=preamble', travelOwner, CLEAN_SOP, { ...FAST, debounce: 60_000 });
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   const open = async (): Promise<HTMLTextAreaElement> => {
     await clickEv(barButton(m, '发布…'));
     await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea'));
@@ -5111,7 +5118,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => barText(m).summary.startsWith('已发布'));
   const now = m.qc.getQueryData(['sop']) as SopOverview;
@@ -5132,7 +5139,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, debounce: 60_000, backoff: [60_000] });
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await typeAtEnd(m, '丙');
   srv.mode = 'network';
   await clickEv(barButton(m, '发布…'));
@@ -5157,14 +5164,14 @@ for (const sandbox of [true, false]) {
   srv.check = (s) => scan(s);
   srv.publishFails = { contract: [{ code: 'unknown_tool', sectionKey: 'tone', detail: 'x', match: 'search_routes' }] };
   const m = await mountPage('/console/sop?section=preamble', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => text(drawerOf('发布草稿')?.querySelector('.sop-drawer-reason')) === '改完1个问题即可发布');
   const d = drawerOf('发布草稿')!;
   eq(
-    '发布被拒：抽屉开着，清单 6/7，说明还在',
+    '发布被拒：抽屉开着，清单 9/10，说明还在',
     [text(d.querySelector('.check-list-summary')), d.querySelector('textarea')?.value.endsWith('先问预算')],
-    ['7/8通过', true],
+    ['9/10通过', true],
   );
   await clickEv(all<HTMLElement>(d, 'button.check-item').find((b) => text(b.querySelector('.check-item-label')) === '工具名都存在'));
   await until(() => m.section() === 'tone' && selected(m) === 'search_routes');
@@ -5183,7 +5190,7 @@ for (const sandbox of [true, false]) {
   srv.check = (s) => scan(s);
   srv.publishFails = { contract: [{ code: 'unknown_tool', sectionKey: 'tone', detail: 'x', match: 'search_routes' }] };
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => text(drawerOf('发布草稿')?.querySelector('.sop-drawer-reason')) === '改完1个问题即可发布');
   const d = drawerOf('发布草稿')!;
@@ -5203,7 +5210,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, backoff: [60_000] });
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.mode = 'invalid';
   await typeAtEnd(m, '丙');
   await waitFor(() => saveNow(m).includes('没保存上'));
@@ -5237,7 +5244,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => barText(m).summary.startsWith('已发布v3'));
   await typeAtEnd(m, '甲');
@@ -5258,7 +5265,7 @@ for (const sandbox of [true, false]) {
   srv.check = (s) => scan(s);
   srv.publishFails = 'error';
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   const scrolls = recordScroll();
   await publishVia(m, '先问预算');
   await waitFor(() => !!drawerOf('发布草稿')?.querySelector('.sop-publish .ant-alert-error'));
@@ -5309,7 +5316,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.checkHold = true;
   await clickEv(barButton(m, '发布…'));
   await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea') && srv.checkHeld.length === 1);
@@ -5346,7 +5353,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=preamble', travelOwner, CLEAN_SOP, { ...FAST, debounce: 60_000 });
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   const link = (): HTMLButtonElement | null => m.box.querySelector<HTMLButtonElement>('.sop-pane-meta .sop-text-btn');
   eq('没改过的节（前言）：说明行没有「查看本节改动」', link(), null);
   await typeAtEnd(m, '丁');
@@ -5487,7 +5494,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.mode = 'conflict';
   await typeAtEnd(m, '戊');
   await waitFor(() => editorEditable(m) === 'false');
@@ -5513,7 +5520,7 @@ const lookups = (): Record<string, string>[] =>
   const srv = fakeServer(CLEAN_SOP);
   srv.check = scanRebase;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长', publishedAt: '2026-09-25T12:00:00Z' });
   srv.getFails = true;
   await clickEv(barButton(m, '发布…'));
@@ -5575,7 +5582,7 @@ for (const lookupFails of [false, true, 'other'] as const) {
   srv.check = scanRebase;
   srv.versionsFail = lookupFails;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await clickEv(barButton(m, '发布…'));
   await waitFor(() => text(drawerOf('发布草稿')?.querySelector('.check-list-meta')) === '检查于14:30');
   const d = drawerOf('发布草稿')!;
@@ -5613,7 +5620,7 @@ for (const lookupFails of [false, true, 'other'] as const) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = scanRebase;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长', publishedAt: '2026-09-25T12:00:00Z' });
   await clickEv(barButton(m, '发布…'));
   await waitFor(() => text(drawerOf('发布草稿')?.querySelector('.check-list-meta')) === '检查于14:30');
@@ -5649,7 +5656,7 @@ for (const lookupFails of [false, true, 'other'] as const) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.getFails = true;
   await publishVia(m, '先问预算');
   await waitFor(() => !!m.box.querySelector('.sop-banners .ant-alert'));
@@ -5691,7 +5698,7 @@ for (const lookupFails of [false, true, 'other'] as const) {
   srv.publishHold = true;
   srv.publishFails = 'error';
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => srv.publishHeld.length === 1);
   const d = drawerOf('发布草稿')!;
@@ -5736,7 +5743,7 @@ for (const lookupFails of [false, true, 'other'] as const) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, debounce: 60_000 });
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await typeAtEnd(m, '辛');
   srv.mode = 'conflict';
   await clickEv(barButton(m, '发布…'));
@@ -5776,7 +5783,7 @@ for (const lookupFails of [false, true, 'other'] as const) {
   const srv2 = fakeServer(CLEAN_SOP);
   srv2.check = (s) => scan(s);
   const m2 = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m2) === '8/8通过');
+  await waitFor(() => summaryOf(m2) === '10/10通过');
   await clickEv(barButton(m2, '发布…'));
   await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea'));
   const d = drawerOf('发布草稿')!;
@@ -6842,7 +6849,7 @@ async function openHistory(m: PageBox): Promise<void> {
   const bsrv = fakeServer(CLEAN_SOP);
   bsrv.check = (s) => scan(s);
   const b = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(b) === '8/8通过');
+  await waitFor(() => summaryOf(b) === '10/10通过');
   await publishVia(b, '先问预算');
   await waitFor(() => barText(b).summary.startsWith('已发布'));
   await clickEv(barButton(b, '回滚到v2'));
@@ -7987,7 +7994,7 @@ const byIdCalls = (id?: string): number =>
   srv.check = () => FIXED_CHECK();
   // 退避放长：断言时还没自动重试，条上的「重试」是唯一马上存的路
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, backoff: [10_000] });
-  await waitFor(() => summaryOf(m) === '7/8通过');
+  await waitFor(() => summaryOf(m) === '9/10通过');
   const normal = barText(m).summary;
   srv.mode = 'network';
   await typeAtEnd(m, '加一句。');
@@ -8170,7 +8177,7 @@ const byIdCalls = (id?: string): number =>
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   eq('草稿基于线上 v2：不按 id 取版本，目录照旧两节', [byIdCalls(), dotted(m)], [0, ['tone', 'objections']]);
   await m.unmount();
 }
@@ -8181,7 +8188,7 @@ const byIdCalls = (id?: string): number =>
   const srv = fakeServer(CLEAN_SOP);
   srv.check = scanRebase;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长' });
   srv.mode = 'conflict';
   await typeAtEnd(m, '我写的');
@@ -8203,7 +8210,7 @@ const byIdCalls = (id?: string): number =>
   const srv = fakeServer(CLEAN_SOP);
   srv.check = scanRebase;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长' });
   const d = srv.state.draft!;
   srv.state = {
@@ -8264,7 +8271,7 @@ const byIdCalls = (id?: string): number =>
   srv.released = many;
   srv.check = (s) => ({ ...FIXED_CHECK(), violations: [], rebase: { needed: s.draft!.basedOn !== s.published.id, conflicts: [] } });
   const m = await mountPage('/console/sop?section=tone', historyOwner, sop, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.state = {
     ...srv.state,
     draft: {
@@ -8346,7 +8353,7 @@ const byIdCalls = (id?: string): number =>
   const srv = fakeServer(CLEAN_SOP);
   srv.check = scanRebase;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长' });
   const d = srv.state.draft!;
   srv.state = {
@@ -8523,6 +8530,64 @@ const byIdCalls = (id?: string): number =>
   const guest = await mountPage('/console/sop?section=preamble', { kind: 'anon', pack: packOf(TRAVEL) }, anon);
   check('匿名 SOP 页显示旧品牌前言提示', text(guest.box).includes('前言节里可能还有旧品牌名'));
   await guest.unmount();
+}
+
+// 07 R4：政策卡只读；出处、原句、金额单位与草稿差异完整呈现。
+{
+  const published = {
+    clauses: [{ id: 'd30', title: '退改条款第1条', text: '出发前30天及以上取消，退全款' }],
+    approvalThresholdYuan: 30000,
+    selfService: true,
+  };
+  const draft = {
+    clauses: [{ id: 'd15', title: '退改条款第1条', text: '出发前15天及以上取消，退80%' }],
+    approvalThresholdYuan: 25000,
+    selfService: false,
+  };
+  const m = await rootFor(<PolicyCard published={published} draft={draft} />);
+  check('政策卡：出处与原句完整展示', text(m.box).includes('退改条款第1条') && text(m.box).includes(published.clauses[0]!.text));
+  check('政策卡：金额用千分位与元，不使用货币符号', text(m.box).includes('30,000 元') && !text(m.box).includes('¥'));
+  check(
+    '政策卡：草稿的档位、阈值、开关差异可展开查看',
+    !!m.box.querySelector('details') &&
+      text(m.box).includes(draft.clauses[0]!.text) &&
+      text(m.box).includes('25,000 元') &&
+      text(m.box).includes('未开启'),
+  );
+  check('政策卡：没有编辑表单', !m.box.querySelector('input,select,textarea,form'));
+  await m.render(<PolicyCard published={published} draft={published} />);
+  check('政策卡：相同草稿显示一致', text(m.box).includes('草稿与已发布一致') && !m.box.querySelector('details'));
+  await m.unmount();
+}
+
+// 07 R4：CLI 只改 policy 时，正文完全相同也能在后台发布，抽屉里有可复核条款。
+{
+  const publishedPolicy = {
+    clauses: [{ id: 'd30', title: '退改条款第1条', text: '出发前30天及以上取消，退全款' }],
+    approvalThresholdYuan: 30000,
+    selfService: true,
+  };
+  const draftPolicy = { ...publishedPolicy, approvalThresholdYuan: 25000 };
+  const state: SopOverview = {
+    ...CLEAN_SOP,
+    published: { ...CLEAN_SOP.published, policy: publishedPolicy },
+    draft: { ...CLEAN_SOP.draft!, sections: CLEAN_SOP.published.sections, policy: draftPolicy },
+  };
+  const srv = fakeServer(state);
+  srv.check = () => ({ ...FIXED_CHECK(), violations: [] });
+  const m = await mountPage('/console/sop?section=tone', travelOwner, state, FAST);
+  await waitFor(() => summaryOf(m) === '10/10通过');
+  check('仅改 policy：发布条识别为可发布改动', !barBlocked(m) && barText(m).summary === '草稿修改了退改条款');
+  await clickEv(barButton(m, '发布…'));
+  await waitFor(() => !!drawerOf('发布草稿'));
+  const d = drawerOf('发布草稿')!;
+  check('仅改 policy：发布抽屉里有条款差异', text(d).includes('25,000 元') && !text(d).includes('草稿和线上一样'));
+  await setText(d.querySelector<HTMLTextAreaElement>('textarea')!, '调整退改条款审批金额');
+  await clickEv(drawerButton(d, '发布'));
+  await waitFor(() => srv.state.draft === null);
+  check('仅改 policy：可以提交后台发布请求', posted('/draft/publish').length === 1);
+  check('仅改 policy：发布后的视图保留政策快照', srv.state.published.policy?.approvalThresholdYuan === 25000);
+  await m.unmount();
 }
 
 respond = null;

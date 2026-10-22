@@ -3,7 +3,7 @@
 //    实体名、字段名、话术节名取自传进来的行业包：同样的记录换一个包，句子跟着换；对象名依次取 diff、产品库缓存、编号；
 //    表里没有的动作兜底，动作编码不上句子；diff 形状不对也不抛；
 // 2. auditRuns：同一操作者、同一动作、同一实体、相邻不超过 5 分钟的产品库记录合成一句，别的不合；
-// 3. ui-labels：类别与「显示登录记录」换算成的 actions 过得了 AuditQuery；角色、动作只认自有属性；话术检查项 7 个。
+// 3. ui-labels：类别与「显示登录记录」换算成的 actions 过得了 AuditQuery；角色、动作只认自有属性；话术检查项 10 个。
 // 行业包用本文件里的夹具（src/shared 不 import src/packs）；用真实旅游包对真实审计记录的核对在 console.selftest.ts。
 // 用法：npx tsx src/shared/audit-text.selftest.ts
 import { auditActor, auditFieldLabels, auditRuns, describeAudit, type AuditText } from './audit-text.js';
@@ -272,6 +272,17 @@ eq(
     describeAudit({ ...publish, diff: { versionNo: 4, changedKeys: [] } }, TRAVEL).summary,
   ],
   ['老板 发布了话术v4', null],
+);
+
+eq(
+  '政策草稿审计：动作翻成中文',
+  line(describeAudit({ ...publish, action: 'sop.policy_draft', diff: {} }, TRAVEL)),
+  '老板 修改了退改条款草稿',
+);
+eq(
+  '政策重渲染审计：原因翻成中文',
+  line(describeAudit({ ...publish, action: 'sop.rerender', diff: { causes: ['policy'], toVersionNo: 4 } }, TRAVEL)),
+  '老板 重新生成了话术v4（退改条款变了）',
 );
 
 // ---------------- 其余动作 ----------------
@@ -582,7 +593,7 @@ eq(
     .filter((a) => a.startsWith('auth.')),
   ['auth.login', 'auth.logout'],
 );
-eq('actions：销售话术', auditActionsParam('sop', false), 'sop.publish,sop.rollback,sop.discard,sop.rerender');
+eq('actions：销售话术', auditActionsParam('sop', false), 'sop.policy_draft,sop.publish,sop.rollback,sop.discard,sop.rerender');
 const combos = groups.flatMap((g) => [true, false].map((l) => auditActionsParam(g, l)));
 check(
   'actions：每种组合都过得了 AuditQuery（至多 64 个），且每个都在 AUDIT_ACTIONS 里',
@@ -597,9 +608,20 @@ eq('角色：中文名；认不出的写「其他角色」', ['owner', 'agent', 
   '其他角色',
 ]);
 eq(
-  '话术检查项：8 个，按设计系统 §5.17 的顺序',
+  '话术检查项：10 个，按设计系统 §5.17 的顺序',
   SOP_CHECKS.map(([, label]) => label),
-  ['结构完整', '固定规则节没改', '必备短语都在', '没有禁用短语', '工具名都存在', '字段名都存在', '话术与固定文字不冲突', '字数在额度内'],
+  [
+    '结构完整',
+    '固定规则节没改',
+    '必备短语都在',
+    '没有禁用短语',
+    '工具名都存在',
+    '字段名都存在',
+    '话术与固定文字不冲突',
+    '退改条款有效',
+    '话术与退改条款一致',
+    '字数在额度内',
+  ],
 );
 
 if (fails.length) {
