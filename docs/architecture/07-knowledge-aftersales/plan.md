@@ -95,7 +95,7 @@
   - 做：`EnginePackHooks.afterSales`；`preflight` 里的位置与核心先判投诉、负面情绪；旅游包的选单、报价、确认与固定文字（登记进 `fixedReplies`，过 06 R21 一致性检查）；`Session.afterSale` 进 `resetSession`；核心 `submit`：调 `requestRefund`、等提交 ≤5 秒、选文字、要人时 `enterHandoff(kind='refund')`。`handoff.selftest.ts:547-590` 改为在 `selfService=false` 下跑原链、另加自助链；`27-paid-refund.json` 改写；新增两个 `regression` 目标（低于、高于阈值）。
   - 验：验收 8 第一、二、四、五条；锁定 :1935、:1940、:2141–2170 与 `dejargon.selftest.ts:394` 照绿；退款那几轮不发模型请求（计数断言）；新快照逐条归因。两个新目标用 sim 假模型冒烟，协调者另跑一次真实模型 k=1（≤¥1）。
   - 依赖：5。
-- [ ] 7. 沙箱种子（R21；1 天）
+- [x] 7. 沙箱种子（R21；1 天）——#272
   - 做：`departOffsetDays`、开通时打 `seed: true`；新增 G01（已付、开通后 40 天、`refund_pending`、超过阈值、在「已成交客户要人工」里）；A01 不动。
   - 验：`seed-fixture.selftest.ts`；新开沙箱 G01 出发日正确、点批准后变已退款（验收 10 前半，自测加第 21 步手动）。
   - 依赖：6。
@@ -125,11 +125,11 @@
   - 做：`eval/sim/runtime.ts` 的 `--config-dir`，`runner.ts:194` 的拒绝只在没给时生效；`run.ts` 加 `--tag`、`--rerun`；新入口 `eval/sim/gate.ts`（只输出机器读的报告，逐目标追加）；06 的 16 个 `safety` 目标打 `regression` 标；`Dockerfile` 带 `eval/sim/`（`initial.orders.status` 的两个新值由第 4 步加）。
   - 验：sim 自测覆盖 `--config-dir`（含品牌目标）、`--tag` 过滤、重跑判定 `pass` / `flaky` / `fail` / `skipped_budget`；镜像构建后 `eval/sim/gate.ts` 能用假模型跑通。
   - 依赖：P 合并；第 6 步之后合并（状态枚举）。
-- [ ] 13. 闸服务端（R7、R9、R10；3.5 天）
+- [x] 13. 闸服务端（R7、R9、R10；3.5 天）——#271
   - 做：迁移（`sop_gate_runs`、部分唯一索引、RLS 与授权、`usage_daily.purpose` 加 `gate`、`sandbox_tenant_purge` 加 `sop_gate_runs`，见「开工须知 · 迁移」）；`src/config/gate.ts`（静态检查、建行、单槽、子进程与环境白名单、超时、报告解析、基线复用与同次跑线上版、判定、用量入账、每天次数）；装载租户时把 `queued` / `running` 改 `abandoned`；`publishSopDraft` 的发布条件、`override`（只有所有者）、四个新错误；回滚、重渲染、导入、沙箱不经闸；四个环境变量、`gate_unavailable`；05 R5 清单登记。
   - 验：验收 5 中不花钱的部分全用假模型（静态拦截照旧、语义拦截的假模型版、不稳与已知失败不拦、强发与 403、回滚不跑闸、沙箱不跑闸、重启变 `abandoned`、超预算与超时记 `error`、429）；不变量 9–13；子进程环境里没有数据库凭据的断言。
   - 依赖：12；合并等 0.5、0.7（预算与超时的默认值）。
-- [ ] 14. 闸面板（R7 界面；1.5 天）
+- [x] 14. 闸面板（R7 界面；1.5 天）——#273
   - 做：后台 SOP 页「跑回归」与七种状态，3 秒轮询，强发对话框只对所有者出现。
   - 验：七种状态各一条自测；`check-fonts` 过；console 构建与 `check-console-dist`。
   - 依赖：13。
@@ -485,6 +485,22 @@ aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.jso
 
 另：派第 16 步提交时协调者误带了 `--no-verify`，被权限拦下，改为正常走钩子提交。
 
+### 第 13 步 · 发布闸服务端（2026-10-22，Codex，#271）
+
+- 迁移 `0017_sop_gate.sql`（`sop_gate_runs`、`usage_daily.purpose` 加 `gate`、`sandbox_tenant_purge` 在 0016 的版本上加 `sop_gate_runs`）；`src/config/gate.ts`、`src/config/gate-errors.ts`、`src/db/repo/gate.ts`。子进程环境只放行 `LLM_*`、`ZHIPU_*`、`EMBED_*`、`TZ`，另给 `LLM_MAX_INFLIGHT=1` 与指向本次运行目录的 `TMPDIR`；超时 `SIGKILL`；运行错误值 `budget_stop`、`timeout`、`child_exit`、`child_spawn`、`report_invalid`、`cancelled`、`gate_error`，重启放弃为 `restart`。客户模型与销售模型相同（子进程不放行 `SIM_CUSTOMER_*`）。
+- Codex 先就两处停下提问：预算不是硬上限、子进程在系统临时目录写文件。协调者裁决（spec 第七条 `Revisions:`）：预算到上限即停、最后一笔如实记；`TMPDIR` 指到本次运行目录。
+- CI 发现漏跑的一套：`console/src/parts/errors.selftest.ts` 照抄 spec 的错误表逐条比对，新错误码要在那张表里补行；协调者补了六行并把它加进通用约定的必跑项。字体子集补「队」「沙」。
+
+### 第 7 步 · 沙箱种子（2026-10-22，Claude 子 agent，#272）
+
+- `departOffsetDays`、开通打 `seed: true`、G01（《云南 丽江大理·洱海古城 6 日》2 位 ¥33,600，开通后 40 天，退款中、待审批）。对客句开通时用第 5 步的文字函数现算；转人工原因的格式在 `seeds.ts` 里另写一份（引擎里是内联的），由 `refund-seed.selftest.ts` 与真实引擎走出来的结果逐项比对防漂移。夹具由 `scripts/seed-demo.py` 生成。
+- 协调者要求的两处：G01 订单号改成 `ord_seed_7c41a9`（报价里的尾号原先显示成「ed_G01」）；看板成交数不进缓存（批准后「其中已退款」立刻变）。
+
+### 第 14 步 · 发布闸面板（2026-10-22，Codex，#273）
+
+- `console/src/sop/gate.ts`、`GatePanel.tsx`；SOP 视图加只读 `gateRequired`。七种状态的文案见 PR 描述。字体子集补「稳」「久」「止」。
+- Codex 沙箱里起不了 Chromium，没做实浏览器走查，**第 17 步补**（闸面板七种状态、「AI记录」页、工作台退款按钮各看一遍）。
+
 ## 验收记录
 
 ## 费用记录
@@ -535,3 +551,8 @@ aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.jso
 
 - 第 6 步 #267、第 12 步 #268 已合入；第 16 步 #269 开了自动合并。至此第 0–6、8–12、15、16 步完成。
 - 下一步，都已可开工：车道 1 第 7 步（沙箱种子：`departOffsetDays`、开通打 `seed: true`、G01）与第 13 步（闸服务端：迁移 `sop_gate_runs`、`src/config/gate.ts` 起 `gate.ts` 子进程、发布条件与强发、`sandbox_tenant_purge` 在第 9 步版本上加 `sop_gate_runs`），第 14 步（闸面板）在第 13 步之后。第 13 步的真实模型实跑放到第 17 步。
+
+### 交接（2026-10-22，第 1–16 步开发全部完成）
+
+- 第 7 步 #272、第 13 步 #271 已合入；第 14 步 #273 开了自动合并。至此第 0–16 步全部完成，开发部分结束。
+- 下一步是第 17 步中期验收（协调者做，真实模型 ≤¥5）：逐条核验收 1–12 中不依赖线上的部分；验收 5 的手动付费一次（tone 节加「一说目的地就直接下单」，闸拦下并点名目标）；本机构建一次镜像核对 `eval/sim/` 在里面、`gate.ts` 能起；用浏览器把闸面板、「AI记录」页、工作台退款按钮、沙箱 G01 各走一遍。然后第 18 步第一次上线（要 owner 当次授权；先确认线上应用库有 vector 扩展、嵌入地址在清单内、写好四个 `SOP_GATE*` 变量）。
