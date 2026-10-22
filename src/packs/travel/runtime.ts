@@ -30,6 +30,7 @@ import { retrievalText } from './retrieval.js';
 import { retrievalEmpty } from './retrieval-empty.js';
 import { travelMock } from './mock.js';
 import * as legacy from './legacy.js';
+import { demoBrand } from './demo-brand.js';
 import { travelTemplates } from './templates.js';
 import { travelQuickReplyDefaults } from './quick-reply-defaults.js';
 import { createTravelShapePolicy } from './shape-words.js';
@@ -88,13 +89,7 @@ export function createTravelRuntime(sources: PackSources) {
   const runtime: PackRuntime<TravelRuntimeTypes> = {
     id: 'travel',
     policy: travelPolicy,
-    defaultBrand: {
-      brandName: '云途定制旅行',
-      advisorTitle: '旅行顾问',
-      aiTitle: 'AI 旅行顾问',
-      scopeNoun: '旅行',
-      identityLine: helpers.IDENTITY_ANSWER.replace(/～$/, ''),
-    },
+    defaultBrand: demoBrand,
     legacy: {
       ...legacy,
       quickReplies: travelQuickReplyDefaults,

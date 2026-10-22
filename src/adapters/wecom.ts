@@ -15,6 +15,7 @@ import {
 } from '../tenancy/runtime.js';
 import { currentPack } from '../config/source.js';
 import { brandTexts } from '../core/brand.js';
+import { welcomeText as legacyWelcomeText, welcomeBackText as legacyWelcomeBackText } from '../packs/travel/legacy.js';
 // 企业微信「微信客服」（kf）适配器：回调驱动 + 兜底轮询。
 //
 // 接入步骤（真实联调时按此走）：
@@ -190,17 +191,13 @@ function tokenFailed(rt: WecomRuntime, e: unknown): void {
 
 // 客户进入会话时的欢迎语（本账号 API 托管，微信自带欢迎语不生效，须由此发）。
 // AI 显式标识（00 spec「AI 显式标识」）：第一句写明「AI 旅行顾问」，正文写明人工入口；账号名在企微后台另改。
-// 身份只在这里说一次：system prompt 仍是「主动自我介绍不提 AI、被问就承认」，对话中不反复自称
-const WELCOME_TEXT =
-  '您好呀～欢迎来到云途定制旅行，我是您的 AI 旅行顾问 🌿\n' +
-  '想去哪玩直接跟我说，比如「想去西藏，两个人，预算每人3万」，我马上帮您推荐线路、报价，还能在线下单～\n' +
-  '川西藏地 / 云南雪山 / 新疆南北疆 / 贵州山水 / 西安北京人文，都能聊！需要真人服务时，回复「人工」即可转真人顾问。';
+// 身份只在这里说一次：system prompt 仍是「主动自我介绍不提 AI、被问就承认」，对话中不反复自称。
+// 两段现行欢迎语的文字只在行业包里有一份（07 R3：packs/travel/legacy.ts 的旧版文字），这里引用，字节不变
+const WELCOME_TEXT = legacyWelcomeText;
 
 // 老客户（48h 会话窗口内）再次扫码进入时，企微不下发 welcome_code——用普通消息补一条。
 // 不承诺「之前聊的都记得」：每轮只带最近 30–39 条历史，长会话会被裁剪，「重置」还会清空
-const WELCOME_BACK_TEXT =
-  '欢迎回来～我是云途定制旅行的 AI 旅行顾问。\n' +
-  '想继续看线路、调整行程，或者换个方向看看，直接说就行～需要真人服务时，回复「人工」即可转真人顾问。';
+const WELCOME_BACK_TEXT = legacyWelcomeBackText;
 
 // 改版前的两段欢迎语。已存的会话里还留着它们：上线当次重启正好是在途重放发生的时候，重放对齐要认得出来
 const LEGACY_WELCOME_TEXTS = [

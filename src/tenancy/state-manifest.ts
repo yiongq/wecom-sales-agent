@@ -387,6 +387,7 @@ export const STATE_MANIFEST: Record<
   'src/packs/travel/dejargon-vocab.ts:EN_JARGON': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/packs/travel/dejargon-vocab.ts:INTERNAL_TERMS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/packs/travel/dejargon-vocab.ts:dejargonVocab': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
+  'src/packs/travel/demo-brand.ts:demoBrand': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/packs/travel/reply-notes.ts:REMINDER_LABELS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/packs/travel/reply-notes.ts:REMINDER_RULES': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/packs/travel/reply-notes.ts:CHITCHAT_TOKENS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
@@ -427,6 +428,10 @@ export const STATE_MANIFEST: Record<
   'src/packs/travel/handoff-vocab.ts:TRAD_RE': { kind: 'instance', why: '固定解析规则；lastIndex 仅在同步解析调用中使用，不存租户数据' },
   'src/packs/travel/handoff-vocab.ts:WITHDRAW': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/packs/travel/handoff-vocab.ts:handoffVocab': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
+  'src/packs/travel/hard-requirements.ts:hardRequirementsTemplate': {
+    kind: 'instance',
+    why: '固定模板、解析词表或序列化规则；不保存按租户变化的业务状态。',
+  },
   'src/packs/travel/insight.ts:DRAFT_FALLBACK': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/packs/travel/insight.ts:REACH': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/packs/travel/insight.ts:insightPrompts': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
