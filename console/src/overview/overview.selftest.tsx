@@ -502,7 +502,16 @@ eq(
 }
 
 // 「本月成交额」「运行数字」KPI 格（都不是链接）
-const SUMMARY: OrderSummary = { month: '2026-09', paidTotal: 207_440, paidCount: 2, pendingTotal: 85_600, pendingCount: 1 };
+const SUMMARY: OrderSummary = {
+  month: '2026-09',
+  paidTotal: 207_440,
+  paidCount: 2,
+  refundedTotal: 0,
+  refundedCount: 0,
+  refundPendingCount: 0,
+  pendingTotal: 85_600,
+  pendingCount: 1,
+};
 eq('本月成交额：数字不带单位（标签已经写了「元」），明细写另有待付', monthlyRevenueKpi(SUMMARY), {
   key: 'monthlyRevenue',
   label: '本月成交额（元）',
@@ -974,7 +983,16 @@ let requests: string[] = [];
 const json = (status: number, b: unknown): Response =>
   new Response(JSON.stringify(b), { status, headers: { 'Content-Type': 'application/json' } });
 
-const DEFAULT_SUMMARY: OrderSummary = { month: '2026-09', paidTotal: 207_440, paidCount: 2, pendingTotal: 85_600, pendingCount: 1 };
+const DEFAULT_SUMMARY: OrderSummary = {
+  month: '2026-09',
+  paidTotal: 207_440,
+  paidCount: 2,
+  refundedTotal: 0,
+  refundedCount: 0,
+  refundPendingCount: 0,
+  pendingTotal: 85_600,
+  pendingCount: 1,
+};
 
 function respond(method: string, url: URL): Response {
   const p = url.pathname.replace(/^\/api\/console/, '');

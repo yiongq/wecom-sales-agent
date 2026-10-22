@@ -141,7 +141,7 @@ export const CancelOrderBody = z.strictObject({ reason: str.min(1).max(200) });
 /** 更早的消息：seq 小于 beforeSeq 的最近 limit 条（默认 50） */
 export const MessagesQuery = z.object({ beforeSeq: intParam(INT4_MAX), limit: intParam(100).optional() });
 export const OrdersQuery = z.object({
-  status: z.enum(['pending_payment', 'paid', 'cancelled', 'superseded']).optional(),
+  status: z.enum(['pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending', 'refunded']).optional(),
   limit: intParam(100).optional(),
 });
 /**
@@ -622,6 +622,11 @@ export interface OrderSummary {
   month: string;
   paidTotal: number;
   paidCount: number;
+  /** 原付款发生在本月的已退款订单，金额为原成交额 */
+  refundedTotal: number;
+  refundedCount: number;
+  /** 现在退款中的订单，不限月份 */
+  refundPendingCount: number;
   /** 现在待付款（pending_payment）的订单，不限月份 */
   pendingTotal: number;
   pendingCount: number;

@@ -1314,7 +1314,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
    * 说了已经办了的照算：「马上为您转接资深顾问，请稍候～在等顾问的时候，您看这两条哪个更感兴趣？」问的是等顾问时的事
    */
   const saysTransfer = (text: string, session?: Session): boolean => {
-    const paid = !!session?.orderIds.some((id) => getOrder(id)?.status === 'paid');
+    const paid = !!session?.orderIds.some((id) => ['paid', 'refund_pending', 'refunded'].includes(getOrder(id)?.status ?? ''));
     const parts = transferSentences(text);
     const choosing = asksToChoose(parts.filter((s) => s.trim()).at(-1) ?? '');
     return parts.some((s) => {
@@ -1346,7 +1346,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
     return session.orderIds
       .map((id) => getOrder(id))
       .toReversed()
-      .find((o) => o && o.status !== 'cancelled' && o.status !== 'superseded');
+      .find((o) => o && o.status !== 'cancelled' && o.status !== 'superseded' && o.status !== 'refunded');
   }
 
   /** 安全网三类转人工的类型：handoffReply 按它挑措辞，转人工记录按它记类型（在 enterHandoff 之前算） */
@@ -1384,7 +1384,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
     const title = `《${order.routeTitle}》`;
     if (kind === 'refund') return `${head}\n${title}这笔订单顾问会一并为您处理。`;
     if (kind === 'complaint') return `${head}\n${title}这笔订单顾问会一并跟进。`;
-    if (order.status === 'paid') return `${head}\n您预订的${title}顾问会一并跟进。`;
+    if (order.status === 'paid' || order.status === 'refund_pending') return `${head}\n您预订的${title}顾问会一并跟进。`;
     // 客户只是想找真人问问，不等于不买了：告诉他付款入口还在，别让这单悬着。企微里付款链接是以卡片发的；
     // advisor 模式下这条链接不是点开就能付的，同一意思换一种说法（02 spec「收款流程」，第 15 步审查第 5 条）
     if (paymentMode() === 'advisor') {
@@ -1473,7 +1473,7 @@ export function createTravelReplyHelpers(sources: TravelReplySources) {
   function promisesContact(text: string, session: Session): boolean {
     const live = session.orderIds.some((id) => {
       const o = getOrder(id);
-      return !!o && o.status !== 'cancelled' && o.status !== 'superseded';
+      return !!o && o.status !== 'cancelled' && o.status !== 'superseded' && o.status !== 'refunded';
     });
     return (
       !live &&

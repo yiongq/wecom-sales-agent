@@ -228,6 +228,8 @@ export const ORDER_STATUS_LABEL: Readonly<Record<OrderStatus, string>> = {
   paid: '已付款',
   cancelled: '已取消',
   superseded: '已失效',
+  refund_pending: '退款中',
+  refunded: '已退款',
 };
 
 /** 右栏「订单与付款」卡一行：线路、人数共多少钱、出发日期。返回数组给 cjk() 用 */

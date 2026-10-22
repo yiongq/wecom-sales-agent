@@ -177,6 +177,10 @@ const confirmed = [order({ confirmedAt: 5 })];
 lacks('您的订单已确认。', '订单已确认');
 same('您的订单已确认。', { orders: confirmed }, '顾问确认过的订单');
 same('您的订单已确认。', { orders: [order({ status: 'paid', paidAt: 1 })] }, '已付款订单');
+for (const status of ['refund_pending', 'refunded'] as const) {
+  same('付款已收到，订单正式生效了。', { orders: [order({ status, paidAt: 1 })] }, `${status} 是付款凭证`);
+  same('您的订单已确认。', { orders: [order({ status, paidAt: 1, confirmedAt: 1 })] }, `${status} 已确认不误拦`);
+}
 // 旧单失效：会话里有别的线路的待付款单时
 const other = [order({ routeId: 'r-a' }), order({ id: 'o2', routeId: 'r-c', routeTitle: '四川 九寨黄龙 6 日' })];
 for (const t of [

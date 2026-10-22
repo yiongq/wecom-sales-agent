@@ -695,6 +695,17 @@ const mkOrder = (s: Session): Order => {
   check('旧 /resume：转人工期间付过款的，交还后阶段是终态 paid', sess(sid).stage === 'paid' && !sess(sid).handedOver);
 }
 
+for (const status of ['refund_pending', 'refunded'] as const) {
+  const sid = newSid(`07-${status}`);
+  await say(sid, '转人工');
+  const o = mkOrder(sess(sid));
+  store.markOrderPaid(o.id);
+  o.status = status;
+  store.saveOrder(o);
+  await legacy(sid, 'resume');
+  check(`07：${status} 交还后仍是终态 paid`, sess(sid).stage === 'paid' && !sess(sid).handedOver);
+}
+
 // ---------------- 5. /api/orders/:id 的键集合（R22、不变量 43） ----------------
 const WHITELIST = [
   'confirmed',
@@ -702,6 +713,7 @@ const WHITELIST = [
   'departDate',
   'id',
   'paidAt',
+  'refund',
   'routeTitle',
   'status',
   'supersededBy',

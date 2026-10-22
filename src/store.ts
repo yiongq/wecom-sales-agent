@@ -830,7 +830,7 @@ const VISITOR_SESSION_MAX = Math.max(100, numEnv('VISITOR_SESSION_MAX', 5000));
 
 function hasPaidOrder(s: Session): boolean {
   const state = storeState();
-  return (s.orderIds ?? []).some((oid) => state.orders.get(oid)?.status === 'paid');
+  return (s.orderIds ?? []).some((oid) => ['paid', 'refund_pending', 'refunded'].includes(state.orders.get(oid)?.status ?? ''));
 }
 
 function evictExcessVisitorSessions(): void {

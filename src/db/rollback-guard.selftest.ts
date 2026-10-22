@@ -102,11 +102,11 @@ case "$*" in
   *"inspect --format {{.Image}}"*) [ "\${FAKE_RUNNING:-4}" = missing ] && exit 1; echo sha256:running ;;
   *"container ls"*) [ "\${FAKE_CONTAINER_DOWN:-0}" = 0 ] || exit 1; [ "\${FAKE_SANDBOX_CONTAINER:-absent}" = absent ] || echo placeholder; exit 0 ;;
   *"sandbox.ts purge --all"*) [ "\${FAKE_PURGE_FAIL:-0}" = 0 ] || { echo "[sandbox] sandbox_tenant_lock_held" >&2; exit 3; }; echo "purge image=\${APP_IMAGE:-missing}" >> "$FAKE_LOG"; touch "$FAKE_PURGED" ;;
-  *pg-backend.ts*|*registry.ts*|*pack-api.ts*|*runtime.ts*)
+  *pg-backend.ts*|*registry.ts*|*pack-api.ts*|*runtime.ts*|*0015_order_refund_status.sql*)
     phase="\${FAKE_TARGET:-3}"
     case "$*" in *sha256:running*) phase="\${FAKE_RUNNING:-4}" ;; esac
     [ "$phase" = error ] && exit 125
-    case "$*" in *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *pack-api.ts*) need=4 ;; *) need=5 ;; esac
+    case "$*" in *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *pack-api.ts*) need=4 ;; *runtime.ts*) need=5 ;; *) need=7 ;; esac
     [ "$phase" -ge "$need" ] ;;
   *information_schema.columns*"column_name = 'kind'"*)
     case "\${FAKE_TENANCY_SCHEMA:-f}" in down) exit 1 ;; *) echo "\${FAKE_TENANCY_SCHEMA:-f}" ;; esac ;;
@@ -128,6 +128,11 @@ case "$*" in
   *"from public.sop_versions where"*)
     printf '%s' "\${!#}" > "$FAKE_QUERY.published"
     echo "\${FAKE_PUBLISHED_BRAND-\${FAKE_BRAND-f}}" ;;
+  *to_regclass*public.orders*)
+    case "\${FAKE_REFUND_SCHEMA:-f}" in down) exit 1 ;; *) echo "\${FAKE_REFUND_SCHEMA:-f}" ;; esac ;;
+  *"from public.orders where status in"*)
+    printf '%s' "\${!#}" > "$FAKE_QUERY.refund"
+    case "\${FAKE_REFUND:-f}" in down) exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "\${FAKE_REFUND:-f}" ;; esac ;;
   *to_regclass*channel_accounts*) echo t ;;
   *"from channel_accounts where"*) echo "\${FAKE_CHANNEL:-f}" ;;
   *to_regclass*catalog_item_versions*) echo t ;;
@@ -154,8 +159,9 @@ case "$1" in
     case "$3" in
       *pg-backend.ts) case "$3" in *v01:*) exit 1 ;; esac ;;
       *registry.ts) case "$3" in *v01:*|*v02:*) exit 1 ;; esac ;;
-      *pack-api.ts) case "$3" in *v04:*) exit 0 ;; *) exit 1 ;; esac ;;
-      *runtime.ts) exit 1 ;;
+      *pack-api.ts) case "$3" in *v04:*|*v06:*|*v07:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *runtime.ts) case "$3" in *v06:*|*v07:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *0015_order_refund_status.sql) case "$3" in *v07:*) exit 0 ;; *) exit 1 ;; esac ;;
     esac ;;
   archive) tar -cf - package.json Dockerfile deploy src ;;
   *) exit 98 ;;
@@ -266,13 +272,20 @@ exit 0`,
   check('品牌为空放行，当前 04 发布的 brand:null 由 SQL 判断', r.code === 0, r.out);
   check(
     '每次品牌探测/查询都有进程超时、SQL/锁超时与失败退出保护',
-    r.log.split('\n').filter((line) => line.startsWith('docker ') && line.includes('psql') && !line.includes("column_name = 'kind'"))
-      .length === 4 &&
+    r.log
+      .split('\n')
+      .filter(
+        (line) =>
+          line.startsWith('docker ') && line.includes('psql') && !line.includes("column_name = 'kind'") && !line.includes('public.orders'),
+      ).length === 4 &&
       r.log
         .split('\n')
         .filter(
           (line) =>
-            line.startsWith('timeout --kill-after=2s 8s docker ') && line.includes('psql') && !line.includes("column_name = 'kind'"),
+            line.startsWith('timeout --kill-after=2s 8s docker ') &&
+            line.includes('psql') &&
+            !line.includes("column_name = 'kind'") &&
+            !line.includes('public.orders'),
         ).length === 4 &&
       r.log.includes('PGOPTIONS=-c statement_timeout=5000 -c lock_timeout=2000') &&
       r.log.includes('-v ON_ERROR_STOP=1'),
@@ -425,6 +438,64 @@ exit 0`,
   );
   // 05 验收 13：真实脚本由 bash -s 执行，所有 docker/psql 都是吞 stdin 的替身。
   fs.writeFileSync(path.join(srv, '.env'), 'DEPLOY_PROFILE=demo\nDEFAULT_TENANT_SLUG=demo\n');
+  {
+    guard('pre-07', { FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 'f' });
+    const refundSql = fs.readFileSync(`${queryFile}.refund`, 'utf8');
+    const pg = new PGlite();
+    try {
+      await pg.exec('create table orders(status text)');
+      for (const status of ['pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending', 'refunded']) {
+        await pg.query('insert into orders values ($1)', [status]);
+        const result = await pg.query<{ exists: boolean }>(refundSql);
+        check(`07：跨租户查询谓词识别 ${status}`, result.rows[0]?.exists === ['refund_pending', 'refunded'].includes(status));
+        await pg.exec('delete from orders');
+      }
+    } finally {
+      await pg.close();
+    }
+  }
+  // 07 R20：显式旧 tag 与自动回滚共用数据库检查，退款风险不触发 purge。
+  for (const status of ['refund_pending', 'refunded']) {
+    const env = { FAKE_TARGET: '6', FAKE_RUNNING: '7', FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 't' };
+    for (const target of ['pre-07', 'side1:prev']) {
+      r = guard(target, env);
+      check(
+        `${status} ${target}：退出 8、给出实测风险说明、不 purge`,
+        r.code === 8 &&
+          r.out.includes(
+            '先在后台把退款中的订单办完或驳回；旧镜像会把退款中、已退款的单当成待付款显示在支付页上，成交统计也会漏算，确认能接受再回滚',
+          ) &&
+          !fs.existsSync(purged),
+        r.out,
+      );
+    }
+    r = deploy('v06', env);
+    check(
+      `${status}：按 tag 树判 pre-07，8 转 1、rsync 前拒绝`,
+      r.code === 1 && r.log.includes('pre-07 side1 3999') && !r.log.includes('rsync '),
+      r.out,
+    );
+    r = deploy('v07', { ...env, FAKE_HEALTH_FAIL: '1' });
+    check(`${status}：自动回滚 8 转 1、不启动 prev`, r.code === 1 && r.out.includes('没有自动回滚') && !fs.existsSync(rolledBack), r.out);
+  }
+  for (const env of [
+    { FAKE_REFUND_SCHEMA: 'down', FAKE_REFUND: 'f' },
+    { FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 'down' },
+  ]) {
+    for (const running of ['7', 'missing', 'error']) {
+      r = guard('pre-07', { ...env, FAKE_RUNNING: running });
+      check('07：库问不到且运行镜像不能明确证明是旧版，从严退出 8', r.code === 8, r.out);
+    }
+    r = guard('pre-07', { ...env, FAKE_RUNNING: '6' });
+    check('07：库问不到但运行镜像明确是旧版，照 05 豁免', r.code === 0, r.out);
+  }
+  r = guard('pre-07', { FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 'f' });
+  check('07：没有退款订单放行', r.code === 0, r.out);
+  r = guard('side1:prev', { FAKE_TARGET: '7', FAKE_REFUND_SCHEMA: 'down' });
+  check('07：目标已有迁移标记不查询退款数据', r.code === 0 && !r.log.includes('public.orders'), r.out);
+  r = guard('pre-07', { FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 'hang', FAKE_RUNNING: '7', FAKE_TIMEOUT_MS: '100' });
+  check('07：退款查询挂住有时限，退出 8', r.code === 8 && r.elapsed < 4000, r.out);
+
   const sandboxEnv = { FAKE_TARGET: '4', FAKE_RUNNING: '5', FAKE_TENANCY_SCHEMA: 't' };
   for (const state of ['running', 'stopped', 'env-only']) {
     if (state === 'env-only') fs.writeFileSync(path.join(srv, '.env.sandbox'), 'placeholder');

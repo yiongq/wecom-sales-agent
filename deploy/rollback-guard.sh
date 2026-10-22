@@ -26,6 +26,7 @@
 #（只能回到 02 之后的镜像，不打印导出步骤）；5 拒绝，有渠道状态在库里或看不出来（先 channel-export，
 # 若目标同时是 02 之前、会话在库里，再回到文件存储）；6 拒绝，有品牌风险，按待生效值与发布快照打印恢复步骤。
 # 保留旧风险优先级：4 > 5 > 6 > 3；品牌步骤不因同时有旧风险而省略。
+# 07 R20：目标早于 07 且库里有退款状态（或无法确认）时退出 8；旧运行镜像豁免规则同 05。
 # 05 R18：pre-05 另查其他 standard Host、沙箱容器（含已停）与 .env.sandbox；前三项清掉后才以当前镜像
 # sandbox purge --all，并重新问库。拒绝以 7 退出，旧风险优先（品牌仍为 6）；查询失败只豁免明确的旧运行镜像。
 set -u
@@ -53,6 +54,7 @@ session_risk_count=${#risks[@]}
 pre02_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/store/pg-backend.ts' </dev/null; }
 pre03_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/channels/registry.ts' </dev/null; }
 pre04_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/core/pack-api.ts' </dev/null; }
+pre07_image() { timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/drizzle/0015_order_refund_status.sql' </dev/null; }
 pre05_image() { timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/tenancy/runtime.ts' </dev/null; }
 # 所有探测与风险查询共用时限：锁等至多 2 秒、SQL 至多 5 秒；连接或 docker 卡住也在 8 秒后终止，2 秒后强杀。
 # PGOPTIONS 传进容器里的 psql，ON_ERROR_STOP 保证 SQL 超时/错误不会被当成成功的空结果。
@@ -136,7 +138,7 @@ esac
 is_pre02=0
 case "$target" in
   pre-02) is_pre02=1 ;;
-  pre-03 | pre-04 | pre-05) ;;
+  pre-03 | pre-04 | pre-05 | pre-07) ;;
   *)
     if [ ${#risks[@]} -gt 0 ]; then
       pre02_image "$target" >/dev/null 2>&1
@@ -154,7 +156,7 @@ if [ "$is_pre02" = 0 ]; then
   session_risk_count=0
 fi
 is_pre03=1
-if [ "$target" = pre-04 ] || [ "$target" = pre-05 ]; then
+if [ "$target" = pre-04 ] || [ "$target" = pre-05 ] || [ "$target" = pre-07 ]; then
   is_pre03=0
 elif [ "$is_pre02" = 0 ] && [ "$target" != pre-03 ]; then
   pre03_image "$target" >/dev/null 2>&1
@@ -184,7 +186,7 @@ if [ "$is_pre03" = 1 ]; then
 fi
 [ -n "$channel_risk" ] && risks+=("$channel_risk")
 is_pre04=1
-if [ "$target" = pre-05 ]; then
+if [ "$target" = pre-05 ] || [ "$target" = pre-07 ]; then
   is_pre04=0
 elif [ "$is_pre03" = 0 ] && [ "$target" != pre-04 ]; then
   pre04_image "$target" >/dev/null 2>&1
@@ -216,8 +218,38 @@ fi
 is_pre05=1
 case "$target" in
   pre-02 | pre-03 | pre-04 | pre-05) ;;
+  pre-07) is_pre05=0 ;;
   *) pre05_image "$target" >/dev/null 2>&1; [ $? = 0 ] && is_pre05=0 ;;
 esac
+# 07 R20：先只读检查退款状态，避免拒绝前执行沙箱 purge。
+is_pre07=1
+case "$target" in
+  pre-02 | pre-03 | pre-04 | pre-05 | pre-07) ;;
+  *) pre07_image "$target" >/dev/null 2>&1; [ $? = 0 ] && is_pre07=0 ;;
+esac
+if [ "$is_pre07" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
+  refund=unknown
+  has=$(db_query "select to_regclass('public.orders') is not null") || has=unknown
+  case "$has" in
+    f) refund=f ;;
+    t) refund=$(db_query "select exists(select 1 from public.orders where status in ('refund_pending', 'refunded'))") || refund=unknown ;;
+  esac
+  case "$refund" in
+    f) ;;
+    t) ;;
+    *)
+      running=$(docker inspect --format '{{.Image}}' "$project" </dev/null 2>/dev/null)
+      if [ -n "$running" ] && [ "$(pre07_image "$running" >/dev/null 2>&1; echo $?)" = 1 ]; then
+        refund=f
+      fi ;;
+  esac
+  if [ "$refund" != f ]; then
+    echo "拒绝回滚：目标是 07 之前的镜像，库里有退款订单或查询结果无法确认。" >&2
+    echo "先在后台把退款中的订单办完或驳回；旧镜像会把退款中、已退款的单当成待付款显示在支付页上，成交统计也会漏算，确认能接受再回滚" >&2
+    [ "$refund" = t ] || echo "库问不到时从严拒绝；先确认 db 与查询结果，再重跑检查。" >&2
+    exit 8
+  fi
+fi
 # 超级用户跨租户检查；旧库没有新列就没有这类数据风险。
 tenancy_state() {
   local has host rows
