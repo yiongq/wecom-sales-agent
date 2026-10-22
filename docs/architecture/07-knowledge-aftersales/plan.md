@@ -87,7 +87,7 @@
   - 做：迁移（`orders_status_check` 六个值、`orders_refund_paid_check`、`orders_guard` 加「`refunded` 之后不变」）；`OrderStatus` 与 `RefundRecord` 类型、`Order.refund`；spec R20「要跟着改的地方」逐处改（类型、`hasPaidOrder`、对客订单行与已付判断、支付拒付与支付页、公开投影加 `refund`、后台与统计、评测枚举）；`public/pay.html`、`public/admin.html` 只加分支；demo 重置作废两种新状态；`deploy/rollback-guard.sh` 退出码 8（按 0.4 的结论定拦哪几种状态）。
   - 验：验收 9；`server.selftest.ts:514、516` 照绿；`handoff.selftest.ts` 的 `WHITELIST` 加 `refund`；真实 PG 上约束与触发器的正反例。
   - 依赖：P 合并；合并等 0.4。
-- [ ] 5. 退款申请、审批与结算（R19；2 天）
+- [x] 5. 退款申请、审批与结算（R19；2 天）——#261
   - 做：`src/core/refund.ts` 的 `quoteRefund`（经 `pack-api` 导出）；`src/payment/refunds.ts` 四个函数；后台三个路由与权限；四个审计动作进 `AUDIT_ACTIONS` 与审计句子；通知失败留系统备注；工作台订单卡两种新状态。
   - 验：验收 8 第三条（批准、驳回、结算、403、409、幂等不重复通知与审计）；`quoteRefund` 的档位边界（30、29、15、14、7、6、0 天、已出发）与取整；`check-fonts` 过。
   - 依赖：4。
@@ -114,7 +114,7 @@
   - 做：旅游包认问法（退款、退订、改期、保险、费用含不含，只认问法）；按主题确定性取条款，有订单时标出适用的一条；并进 contextNote；签证、保险、费用口径句在 `P/claim-words.ts` 补齐；新增一个 `regression` 目标（问退改规则带出处）。
   - 验：验收 7 第一条与最后一条；没有订单、不是政策问法的轮 contextNote 哈希不变（用 06 第 0.3 步那种探针）；没有嵌入请求。
   - 依赖：P 合并（不依赖第 9 步，可与之同时开发，按序合并）。
-- [ ] 11. 政策陈述护栏（R22；2.5 天）
+- [x] 11. 政策陈述护栏（R22；2.5 天）——#262
   - 做：旅游包步骤 `policy_claims`（`claim_words` 之后、`price` 之前），三条规则；跟随改步骤表（`validate.selftest.ts`、`trace.selftest.ts`、`reply-verdicts.json`）；待顾问确认备注；新增一个 `regression` 目标（无出处的保险问法）。另两件第 10 步留下的：保险、费用两句口径在 `fixed-replies.ts` 里暂登记在 `replace.claim.*`（来源 `claim_words`），改指 `policy_claims`；线路事实的出处「（《线路名》费用说明）」由本步补上（第 10 步的 contextNote 只给条款）。
   - 验：验收 7 其余各条；每条规则一正一反（含否定句）；带支付链接的句子不动；V8 r8d、`price-guard.selftest.ts` 照绿；不变量 19 的装载校验。
   - 依赖：10。
@@ -136,7 +136,7 @@
 
 ### 车道 2：看板与 trace（第 15–16 步）
 
-- [ ] 15. 看板拆分与来源（R23；2.5 天）
+- [x] 15. 看板拆分与来源（R23；2.5 天）——#263
   - 做：`Session.handoffLog`（`enterHandoff` 追加，最多 50 条，重置不清）；`src/shared/origin.ts`；`/orders/summary` 与成交数按来源分；`MetricsView` 加 `deals`、`handoffByKind`、`takeovers`；`admin.html` 去掉「1 − 接管率」；`insight.ts` 改用 `handoffBeforePaid`；console 总览两格与四个视图。
   - 验：验收 11；加载、空、503 三种状态；`check-fonts` 过。
   - 依赖：第 4 步合并（`refunded` 单列）。
@@ -448,6 +448,23 @@ aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.jso
 - 子 agent 多做的两处，协调者接受：同进程里同目录已建好的索引可补缺向量的块（守住 `budget.selftest` 的共享索引）；维数不是 2048 的向量只放内存不写库。另：库里是半精度，重启后装载的向量与首次嵌入有极小差别，不影响余弦排序；嵌入成功但写库失败时会再嵌一次，只在写库故障时发生。
 - 本机沙箱里 `db`、`rollback-guard`、`restore-cutoff`、`ops` 四套建不了临时目录，协调者在沙箱外跑通。合并时迁移 journal 排成 14、15、16。
 
+### 第 5 步 · 退款申请、审批与结算（2026-10-22，Codex，#261）
+
+- `src/core/refund.ts` 的 `quoteRefund`（经 `pack-api` 导出）；`src/payment/refunds.ts` 的申请、批准、驳回、结算照 `markPaidByAdvisor` 的写法；三个后台路由与四个审计动作；工作台订单卡的退款区。驳回只针对待审批的申请，订单改回 `paid` 并保留 `approval='rejected'`（`quoteRefund` 据此回 `rejected_before`）。
+- 退款对客文字一次写齐在 `src/packs/travel/refund-words.ts`，经运行时 `engineHooks.refund` 暴露（`quoteText`、`chooseText`、`texts`、`noticeText`），**第 6 步直接用**。`OrderView.refund` 另加只读 `tierTitle`（spec 第五条 `Revisions:`）。字体子集补「驳」「申」。
+
+### 第 11 步 · 政策陈述护栏（2026-10-22，Claude 子 agent，#262）
+
+- `src/packs/travel/policy-claims.ts`，登记在 `claim_words` 与 `price` 之间。协调者裁决：「待顾问确认」备注交给已有的 `system_note` 记；预订月数的对客句新加生成段 `note:far-future`（R2 由六段变七段）；改期条款是自由文本，规则 1 不从中解析天数；规则 3 按 spec 取在场线路的并集。以上写进 spec 第五条 `Revisions:`。
+- 一致性检查加 `wordlist:policy_claims`：所有固定文字（含第 5 步的退款文字）穿过这一步必须不变。具名快照 `v2-07-step11.json`：只多 23 条新 case（11 条第 10 步的用例首次进快照），原有 831 条 0 改变。
+- 合并时第 5、11 步各在 `fixed-replies.ts` 加了同一行 import，git 自动合并后重复声明，协调者删掉一行。`src/trace/verdicts.selftest.ts` 只在真实 PG 上跑，协调者带 PG 补跑通过。
+
+### 第 15 步 · 看板拆分与来源（2026-10-22，Claude 子 agent，#263）
+
+- `Session.handoffLog`（`src/handoff/record.ts`）、`src/shared/origin.ts`、`src/ops/board.ts`（成交拆分与本月汇总，`/orders/summary` 的循环挪进这里，顶层口径不变）、`readHandoffRows`（`src/db/repo/metrics.ts`）。`Session.seed` 已在类型里，第 7 步开通时打标；打标之前沙箱种子会话在转人工统计里暂算「访客」（成交数靠 `ord_seed_` 已能认出种子）。
+- 协调者裁决：`MetricsView` 另加 `handoffByOrigin`、`deals` 拆两类各自的已退款；沙箱租户总览默认「访客」（spec 第五条 `Revisions:`）；`admin.html` 规则版洞察里「AI 独立完成全部接待」说的是接待，保留。
+- `ops.selftest` 里新加的汇总断言原先把时钟拨到真实此刻，而登录会话空闲 12 小时过期，结果取决于一天里什么时候跑；已改成钉在测试的固定时刻。字体子集补「种」「拆」「协」。
+
 ## 验收记录
 
 ## 费用记录
@@ -488,3 +505,8 @@ aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.jso
 - 批 P 全部完成（#252、#253、#256）；车道 1 第 4 步（#257）、车道 2 第 8、9、10 步（#254、#259、#258）完成。第 9 步 #259 开了自动合并。
 - 下一步，都已可开工：车道 1 第 5 步（退款申请、审批与结算，依赖第 4 步）；车道 2 第 11 步（政策陈述护栏，依赖第 10 步）；第 15 步（看板，依赖第 4 步）也可以开。第 12 步（闸评测侧）依赖批 P，合并排在第 6 步之后。
 - 通用约定已改：缺字不停工，字体由协调者最后统一重建；后台金额写「元」。
+
+### 交接（2026-10-22，第 5、11、15 步完成）
+
+- 第 5 步 #261、第 11 步 #262 已合入；第 15 步 #263 开了自动合并。
+- 下一步，都已可开工：车道 1 第 6 步（售后钩子与核心提交，用第 5 步的 `quoteRefund`、`requestRefund` 与 `engineHooks.refund` 文字）；车道 2 第 16 步（trace 列表与「存为回归用例」，依赖第 15 步）。第 12 步（闸评测侧）依赖批 P，合并排在第 6 步之后，可以和第 6 步同时开发；第 7 步排在第 6 步之后。
