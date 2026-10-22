@@ -328,6 +328,31 @@ await test('归一只处理已知运行量；业务日期、金额、条目 id �
     status: 'pending_payment',
   });
   assert.deepEqual(observation.guard_events, [{ guard: 'order_net', action: 'replace', removed: ['旧', '旧'], added: ['ord_NORMALIZED'] }]);
+  // 07 R18：退款号、已观测尾号和退款时刻可变，报价金额与条款仍必须参与比对。
+  const refunded = (id: string, at: number) => ({
+    ...order,
+    id,
+    status: 'refunded' as const,
+    refund: {
+      id: `rf_${id}`,
+      requestedAt: at,
+      daysBefore: 40,
+      tierId: 'tier1',
+      percent: 100,
+      amount: 12345,
+      policyHash: 'published-policy',
+      approval: 'auto' as const,
+      settlement: 'mock' as const,
+      settled: { at, by: null },
+    },
+  });
+  const refundObservation = (o: Order) =>
+    observeTurn({ text: `尾号 ${o.id.slice(-6)} ¥12345 2026-12-10`, stage: 'paid' }, false, [o], finished);
+  const first = refundObservation(refunded('ord_aaaaaaaaaaaaaaaaaa123456', 1790913601000));
+  const second = refundObservation(refunded('ord_bbbbbbbbbbbbbbbbbb654321', 1790913602000));
+  assert.deepEqual(first, second);
+  assert.equal(first.text, '尾号 ORDER_TAIL_NORMALIZED ¥12345 2026-12-10');
+  assert.equal((first.orders.last!.refund as Record<string, unknown>).amount, 12345);
 });
 await test('运行入口支持自定义基线、差异判失败、off 跳过比对，失败时不覆盖快照', async () => {
   const previous = process.env.EVAL_V2_BASELINE;

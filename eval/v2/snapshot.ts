@@ -38,12 +38,13 @@ export function observeTurn(reply: AgentReply, handoff: boolean, orders: Order[]
   ]);
   for (const order of orders) {
     replacements.set(order.id, 'ord_NORMALIZED');
+    if (order.refund) replacements.set(order.refund.id, 'REFUND_NORMALIZED');
     if (order.supersededBy) replacements.set(order.supersededBy, 'ord_NORMALIZED');
   }
   const times = [
     finished.turn.startedAt,
     ...finished.turn.guards.map((g) => g.at),
-    ...orders.flatMap((o) => [o.createdAt, o.paidAt, o.confirmedAt]),
+    ...orders.flatMap((o) => [o.createdAt, o.paidAt, o.confirmedAt, o.refund?.requestedAt, o.refund?.decision?.at, o.refund?.settled?.at]),
   ];
   for (const time of times) {
     if (time === undefined) continue;
@@ -51,6 +52,8 @@ export function observeTurn(reply: AgentReply, handoff: boolean, orders: Order[]
     replacements.set(new Date(time).toISOString(), 'TIME_NORMALIZED');
   }
   const text = (s: string): string => {
+    // 尾号只在固定文字的「尾号」位置替换，避免掩盖同值的业务金额。
+    for (const order of orders) s = s.replaceAll(`尾号 ${order.id.slice(-6)}`, '尾号 ORDER_TAIL_NORMALIZED');
     for (const [value, replacement] of [...replacements].toSorted(([a], [b]) => b.length - a.length)) {
       if (value) s = s.replaceAll(value, replacement);
     }
@@ -58,6 +61,7 @@ export function observeTurn(reply: AgentReply, handoff: boolean, orders: Order[]
   };
   const normalizeValue = (value: unknown): unknown => {
     if (typeof value === 'string') return text(value);
+    if (typeof value === 'number' && times.includes(value)) return 'TIME_NORMALIZED';
     if (Array.isArray(value)) return value.map(normalizeValue);
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, v]) => [key, normalizeValue(v)]));
     return value;
@@ -137,7 +141,7 @@ export async function serializeSnapshot(snapshot: V2Snapshot): Promise<string> {
  * 默认比对的具名快照（06 R4）：每个有意改变行为的 PR 把它改成自己生成的 `eval/baselines/v2-06-step<N>.json`。
  * 旧快照不删；`EVAL_V2_BASELINE=<文件>` 临时换，`off` 关闭比对。
  */
-export const DEFAULT_BASELINE = 'v2-07-step11.json';
+export const DEFAULT_BASELINE = 'v2-07-step6.json';
 
 export function readBaseline(
   setting = process.env.EVAL_V2_BASELINE,

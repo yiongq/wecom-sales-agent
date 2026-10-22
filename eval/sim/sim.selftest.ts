@@ -402,9 +402,16 @@ try {
     const scripted = g.customerScript ?? [];
     sales.script.push(...Array.from({ length: g.maxTurns ?? 12 }, () => ({ content: '好的。' })));
     if (scripted.length < (g.maxTurns ?? 12)) customer.script.push(say('', true));
+    const salesRequestsBefore = sales.requests.length;
     const smoke = await simulate([g], 1, meter, runtime.deps);
     const said = smoke.runs[0]!.turns.map((t) => t.customer.say);
     check(`${g.id} 固定话术读完`, scripted.every((line, i) => said[i] === line) && smoke.runs[0]!.status !== 'customer_protocol');
+    if (g.id === 'qa-self-refund-auto' || g.id === 'qa-self-refund-approval') {
+      check(
+        `${g.id} 退款回归全部谓词通过且零模型请求：${JSON.stringify(smoke.runs[0]!.reasons)}`,
+        smoke.summary[0]!.passK && sales.requests.length === salesRequestsBefore,
+      );
+    }
   }
   sales.script.length = 0;
   customer.script.length = 0;

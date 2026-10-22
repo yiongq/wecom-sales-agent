@@ -145,6 +145,10 @@ export interface Session {
   reminders?: { altitude?: number; elderAge?: number; proposalSent?: number; paidNext?: number };
   /** 06 R7：本会话推荐过的线路，最多 5 条，去重（旅游字段，进 resetSession） */
   recommendedRoutes?: { id: string; title: string }[];
+  /** 07 R18：旅游售后的选单、确认；30 分钟过期，重置时清掉。 */
+  afterSale?:
+    | { step: 'choose'; orderIds: string[]; at: number }
+    | { step: 'confirm'; quote: import('./core/refund.js').RefundQuote; at: number };
   /** 本次转人工的记录（R9）：交还、重置时清 */
   handoff?: HandoffRecord;
   /** 第一次转人工的时间，永不清 */
