@@ -73,7 +73,12 @@ export const SaveDraftBody = z
 
 export const RevBody = z.strictObject({ rev: z.number().int().nonnegative() });
 
-export const PublishBody = z.strictObject({ rev: z.number().int().nonnegative(), changeNote: str.max(500) });
+export const PublishBody = z.strictObject({
+  rev: z.number().int().nonnegative(),
+  changeNote: str.max(500),
+  gateRunId: z.uuid().optional(),
+  override: z.strictObject({ reason: str.trim().min(1).max(500) }).optional(),
+});
 
 export const RollbackBody = z.strictObject({ changeNote: str.max(500) });
 
@@ -308,6 +313,7 @@ export interface ConfigDrift {
 export interface ApiError {
   error: string;
   detail?: string;
+  runId?: string;
   violations?: ContractViolation[];
   fields?: string[];
   keys?: string[];
@@ -793,3 +799,28 @@ export interface ConsoleEventMap {
   auth: Record<string, never>;
 }
 export type ConsoleEventName = keyof ConsoleEventMap;
+
+/** 07 R7：服务端结果与第 14 步面板共用的发布闸契约。 */
+export interface GateGoalResult {
+  id: string;
+  tags: string[];
+  attempts: { pass: boolean; failures: string[]; turns: number; costMilli: number }[];
+  result: 'pass' | 'flaky' | 'fail' | 'skipped_budget';
+}
+export interface GateRunView {
+  id: string;
+  status: 'queued' | 'running' | 'done' | 'error' | 'abandoned';
+  verdict: 'pass' | 'fail' | null;
+  mock: boolean;
+  progress: { done: number; total: number } | null;
+  draft: GateGoalResult[];
+  baseline: GateGoalResult[] | null;
+  baselineReused: boolean;
+  blocking: string[];
+  costMilli: number;
+  error: string | null;
+  finishedAt: string | null;
+}
+export interface StartGateResult {
+  runId: string;
+}

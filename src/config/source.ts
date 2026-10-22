@@ -36,6 +36,7 @@ import {
   type TenantCtx,
   type TenantLock,
 } from '../db/client.js';
+import { abandonGates } from '../db/repo/gate.js';
 import { writeAudit } from '../db/repo/audit.js';
 import { appliedMigrationHashes, imageMigrationHashes } from '../db/migrate.js';
 import { readActiveCatalog, type CatalogRow } from '../db/repo/catalog.js';
@@ -160,7 +161,8 @@ export type ConfigStartupReason =
   | 'renderer_nondeterministic'
   | 'contract_failed'
   | 'no_active_routes'
-  | 'embed_endpoint_forbidden';
+  | 'embed_endpoint_forbidden'
+  | 'gate_unavailable';
 export class ConfigStartupError extends Error {
   constructor(
     readonly reason: ConfigStartupReason,
@@ -433,6 +435,7 @@ async function loadConfigFromEnv(env: NodeJS.ProcessEnv, gracefulExit: (code: nu
     configureTenancy({ role: 'host', standardCount: 1, strict: env.TENANCY_STRICT === '1' });
     return initConfig(null);
   }
+  assertGateAvailable(env);
   const deps = await productionConfigDeps(env, gracefulExit);
   let hostLocks: TenantLock | null = null;
   try {
@@ -725,6 +728,14 @@ export async function checkConfigDatabase(d: ConfigDeps): Promise<void> {
   if (extra.length) console.warn(`[config] 库里多出 ${extra.length} 条镜像里没有的迁移（库比镜像新），照常启动`);
 }
 
+/** 只在 DB 装载路径调用，profile 启动行由组合根先输出；文件模式与沙箱不读取闸开关。 */
+function assertGateAvailable(env: NodeJS.ProcessEnv): void {
+  if (env.APP_ROLE === 'sandbox' || currentRuntime().kind === 'sandbox' || env.SOP_GATE !== 'required') return;
+  const provider = (env.LLM_PROVIDER ?? '').toLowerCase();
+  const key = (provider === 'zhipu' ? env.ZHIPU_API_KEY : provider === 'deepseek' ? env.DEEPSEEK_API_KEY : '') || env.LLM_API_KEY;
+  if (env.LLM_MOCK === '1' || !key) throw startup('gate_unavailable', '发布闸要求真实模型配置，不能使用 LLM_MOCK 或空模型密钥');
+}
+
 async function loadConfig(deps: ConfigDeps | null): Promise<void> {
   const state = configState();
   if (!deps) {
@@ -738,6 +749,7 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
   let lock: TenantLock | null = null;
   try {
     // 0
+    assertGateAvailable(process.env);
     assertEmbedEndpoint();
     await checkConfigDatabase(d);
     // 3
@@ -813,6 +825,8 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
     // 9（02）条目版本的启动补写，两种会话存储都做；补写的版本随后与读到的一起进内存
     const backfill = backfillPlan(items, versions);
     if (backfill.length) await dbStep('补写条目版本', () => writeBackfill(d, tenant.id, backfill));
+    if (currentRuntime().kind === 'standard')
+      await dbStep('放弃重启前的发布闸', () => withTenant(d.db, systemCtx(tenant.id), (tx) => abandonGates(tx)));
     const history = historyOf([...versions, ...backfill]);
     // 10
     state.loaded = {
@@ -1124,6 +1138,8 @@ export async function closeConfig(): Promise<void> {
   const state = configState();
   const cur = state.loaded;
   if (!cur) return;
+  const { stopTenantGates } = await import('./gate.js');
+  await stopTenantGates(cur.tenantId);
   await cur.lock.release().catch(() => {});
   await cur.deps.closeDb?.().catch(() => {});
 }

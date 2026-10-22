@@ -3296,6 +3296,9 @@ async function workbenchSuite(): Promise<void> {
   const S0 = 'wecom:wb13-matrix';
   mk(S0);
   const MATRIX: { route: string; url: string; json?: unknown; allowed: RoleName[]; sse?: true }[] = [
+    // 07 R7：先校验权限，合法成员再进入参数/目标检查，不在权限矩阵里发模型请求。
+    { route: 'POST /sop/draft/gate', url: '/sop/draft/gate', json: { rev: -1 }, allowed: MONEY },
+    { route: 'GET /sop/gate-runs/:id', url: '/sop/gate-runs/00000000-0000-0000-0000-000000000000', allowed: MONEY },
     { route: 'GET /conversations/:id', url: `/conversations/${enc(S0)}`, allowed: ALL },
     { route: 'GET /conversations/:id/messages', url: `/conversations/${enc(S0)}/messages?beforeSeq=10`, allowed: ALL },
     { route: 'GET /conversations/:id/turns', url: `/conversations/${enc(S0)}/turns`, allowed: ALL },

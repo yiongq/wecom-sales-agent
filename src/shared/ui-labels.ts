@@ -281,6 +281,12 @@ const issueCount = (b: ApiError): number => count(b.issues?.length) + (b.rows ??
  * detail 与原码只进「技术详情」。spec 表之外多一条 invalid_credentials（登录页的「文案取 ERROR_COPY」，spec 顶部 Revisions）
  */
 export const ERROR_COPY: Readonly<Record<string, ErrorEntry>> = {
+  gate_required: { title: '发布前要先跑一次回归', next: '保存草稿后运行回归，通过后再发布', place: 'banner', tone: 'caution' },
+  gate_failed: { title: '回归没有通过', next: '查看拦发布的目标，修改后重新运行', place: 'banner', tone: 'danger' },
+  gate_active: { title: '已有一次回归在排队或运行', next: '等待这次回归结束', place: 'banner', tone: 'neutral' },
+  gate_quota: { title: '今天的回归次数已用完', next: '明天再试，或请所有者填写原因强发', place: 'banner', tone: 'caution' },
+  gate_skipped: { title: '沙箱不需要运行发布回归', next: '静态检查通过后可以发布', place: 'banner', tone: 'neutral' },
+  override_forbidden: { title: '只有所有者可以强发', next: '请所有者填写原因后发布', place: 'page', tone: 'caution' },
   unauthorized: { title: '登录已过期', next: '重新登录后接着刚才的操作', place: 'relogin', tone: 'neutral', action: 'relogin' },
   forbidden: { title: '你的角色无法执行这项操作', next: '需要所有者或管理员', place: 'page', tone: 'caution' },
   csrf: { title: '页面已过期', next: '刷新后重试', place: 'page', tone: 'danger', action: 'refresh' },

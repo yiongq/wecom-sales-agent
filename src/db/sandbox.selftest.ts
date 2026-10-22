@@ -283,6 +283,13 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
     values ($1,'draft','console','travel','[]')`,
     [created.tenantId],
   );
+  // 07 R7/R10：闸表也在删除清单里；造一行证明先删闸、再删它引用的 SOP。
+  await q(
+    `insert into sop_gate_runs (tenant_id,draft_id,draft_rev,status,mock,prompt_hash,policy_hash,draft_key,baseline_key)
+    select tenant_id,id,rev,'done',true,'synthetic','synthetic','synthetic','synthetic'
+    from sop_versions where tenant_id=$1 and status='draft'`,
+    [created.tenantId],
+  );
   // 07 R13：块与向量（kb_vectors 只在装了 vector 扩展的真实 PG 上有）；删除要两张表都清空，且各自数得出行数
   await q(`insert into kb_chunks (tenant_id,source,ref,body,body_hash) values ($1,'route','route-test','正文',$2)`, [
     created.tenantId,
