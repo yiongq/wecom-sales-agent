@@ -72,9 +72,9 @@ const HYPOTHETICAL = /如果|要是|假如|若是|倘若|是否|能不能|可不
 const ALREADY_DEFERS = /由顾问|顾问[^，。！？!?\n]{0,10}(?:确认|核实|为准|说明|答复)|以[^，。！？!?\n]{0,12}为准|政策会变/;
 const NEGATE_BEFORE = /(?:没法|无法|不能|不用|不必|不需要|不会|不|没|未|别)[^，。！？!?\n]{0,6}$/;
 
-const hasPaidOrder = (ctx: ClaimWordsContext): boolean => ctx.orders.some((o) => o.status === 'paid');
+const hasPaidOrder = (ctx: ClaimWordsContext): boolean => ctx.orders.some((o) => ['paid', 'refund_pending', 'refunded'].includes(o.status));
 const hasConfirmedOrder = (ctx: ClaimWordsContext): boolean =>
-  ctx.orders.some((o) => (o.status === 'pending_payment' || o.status === 'paid') && !!o.confirmedAt);
+  ctx.orders.some((o) => (o.status === 'pending_payment' || ['paid', 'refund_pending', 'refunded'].includes(o.status)) && !!o.confirmedAt);
 /** 会话里有别的线路的待付款单：最近一次报价（没有就取最新一张订单）指的不是它 */
 function hasOtherPending(ctx: ClaimWordsContext): boolean {
   const live = ctx.orders.filter((o) => o.status === 'pending_payment');

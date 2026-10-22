@@ -14,7 +14,8 @@ function aggregate(sessions: Session[], orders: Order[]) {
   const active = sessions.filter((s) => s.stage !== 'handoff');
   const names = prompts().funnelNames;
   const cnt = [1, 2, 3, 4, 5].map((min) => active.filter((s) => (prompts().reach[s.stage] ?? -1) >= min).length);
-  const paid = orders.filter((o) => o.status === 'paid');
+  const paid = orders.filter((o) => o.status === 'paid' || o.status === 'refund_pending');
+  const refunded = orders.filter((o) => o.status === 'refunded');
   const paidSids = new Set(paid.map((o) => o.sessionId));
   const handoff = sessions.filter((s) => s.handedOver);
   const gmv = paid.reduce((a, o) => a + o.totalPrice, 0);
@@ -28,6 +29,8 @@ function aggregate(sessions: Session[], orders: Order[]) {
     handoffGmvPct: gmv ? Math.round((hoGmv / gmv) * 100) : 0,
     gmv,
     deals: paid.length,
+    refundedCount: refunded.length,
+    refundedTotal: refunded.reduce((a, o) => a + o.totalPrice, 0),
     stuckQuotes: stuck,
   };
 }
@@ -84,7 +87,8 @@ export async function getInsights(): Promise<string[]> {
     '%。\n' +
     '报价/促成档中已沉默超 10 分钟的会话 ' +
     agg.stuckQuotes +
-    ' 条。';
+    ' 条。' +
+    (agg.refundedCount ? `\n已退款 ${agg.refundedCount} 单，原成交额 ${agg.refundedTotal.toLocaleString()} 元（单列）。` : '');
   const out = await rt.inflight.track(completeText(sys, user, { purpose: 'insight' }));
   if (rt.cancel.aborted || !caches.owns(rt, state)) return [];
   if (!out) return state.insightCache?.data ?? []; // LLM 不可用：返回旧缓存或空（前端回退规则版）

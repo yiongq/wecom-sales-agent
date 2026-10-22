@@ -663,6 +663,32 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
   check(`${L}触发器：agent_app 清空 paid_at 报错`, clearPaid === 'trigger', clearPaid);
   const movePaid = await why(as('agent_app', P, `update orders set paid_at = paid_at - interval '1 day' where id = 'ord_cancelled'`));
   check(`${L}触发器：agent_app 改 paid_at 报错`, movePaid === 'trigger', movePaid);
+
+  // 07 R20：旧四值仍能写；退款状态必须有 paid_at，已退款只能作废不能换状态。
+  await order(P, 'ord_refund', 'cancelled', false);
+  for (const status of ['pending_payment', 'paid', 'cancelled', 'superseded']) {
+    const result = await outcome(as('agent_app', P, `update orders set status = $1 where id = 'ord_refund'`, [status]));
+    check(`${L}07：旧镜像状态 ${status} 仍合法`, result === 'ok', result);
+  }
+  for (const status of ['refund_pending', 'refunded']) {
+    const result = await why(as('agent_app', P, `update orders set status = $1 where id = 'ord_refund'`, [status]));
+    check(`${L}07：${status} 没 paid_at 拒绝`, result === 'orders_refund_paid_check', result);
+  }
+  const invalid = await why(as('agent_app', P, `update orders set status = 'invalid' where id = 'ord_refund'`));
+  check(`${L}07：六值之外拒绝`, invalid === 'orders_status_check', invalid);
+  await su(`update orders set paid_at = now() where tenant_id = $1 and id = 'ord_refund'`, [P]);
+  for (const status of ['refund_pending', 'paid', 'refunded']) {
+    const result = await outcome(as('agent_app', P, `update orders set status = $1 where id = 'ord_refund'`, [status]));
+    check(`${L}07：有 paid_at 能写 ${status}（退款中可驳回）`, result === 'ok', result);
+  }
+  for (const status of ['pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending']) {
+    const result = await why(as('agent_app', P, `update orders set status = $1 where id = 'ord_refund'`, [status]));
+    check(`${L}07：refunded 之后不能改成 ${status}`, result === 'trigger', result);
+  }
+  const voided = await outcome(
+    as('agent_app', P, `update orders set status = 'refunded', voided_at = now(), void_reason = 'reset' where id = 'ord_refund'`),
+  );
+  check(`${L}07：refunded 保持状态仍能作废`, voided === 'ok', voided);
   // 把已付订单从会话上摘下来（置空、改挂到别的会话），会话就成了线索：agent_app 做不到（R20）
   const moved = await conv(P, 'moved', 11);
   await order(P, 'ord_moved', 'moved', true);
@@ -1978,7 +2004,7 @@ await expectWhy([
   ['同一会话的 seq 重复', () => insMsg(A, 'c-a', 1, 'customer'), 'messages_tenant_id_conversation_id_seq_pk'],
   ['订单号带空格', () => insOrder(A, 'ord 1'), 'orders_id_check'],
   ['订单号超过 64 个字符', () => insOrder(A, 'o'.repeat(65)), 'orders_id_check'],
-  ['订单状态只有四种', () => insOrder(A, 'ord_s', { status: 'refunded' }), 'orders_status_check'],
+  ['订单状态只有六种', () => insOrder(A, 'ord_s', { status: 'unknown' }), 'orders_status_check'],
   ['订单金额小于 0', () => insOrder(A, 'ord_p', { totalPrice: -1 }), 'orders_total_price_check'],
   ['作废原因只有两种', () => insOrder(A, 'ord_v', { voidReason: 'oops' }), 'orders_void_reason_check'],
   ['订单 data.id 与 id 不一致', () => insOrder(A, 'ord_d', { data: { id: 'ord_x' } }), 'orders_data_check'],
@@ -3617,11 +3643,12 @@ await t.close();
     'case "$1" in exec|compose|run|inspect|image|container) cat >/dev/null ;; esac',
     // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
     // 只认 rollback-guard.sh 自己的两条渠道查询：backup.sh 的探测里也有 channel_accounts（'public.' || t 的写法），不能被截走
-    'case "$*" in *information_schema.columns*"column_name = \'kind\'"*) echo "docker05 $PWD|$*" >> "$FAKE_LOG" ;; *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
+    'case "$*" in *0015_order_refund_status.sql*|*public.orders*) echo "docker07 $PWD|$*" >> "$FAKE_LOG" ;; *information_schema.columns*"column_name = \'kind\'"*) echo "docker05 $PWD|$*" >> "$FAKE_LOG" ;; *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
     'case "$*" in',
     '  *information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo f ;;',
     // 这些旧版用例没有沙箱痕迹：目标镜像早于 05、容器列表为空、上面的 psql 返回没有 kind 列。
-    '  *tenancy/runtime.ts*) exit 1 ;;',
+    '  *tenancy/runtime.ts*|*0015_order_refund_status.sql*) exit 1 ;;',
+    '  *to_regclass*public.orders*) echo f ;;',
     '  *"container ls"*) exit 0 ;;',
     '  *pack-api.ts*) exit 1 ;;',
     '  *sha256:running*registry.ts*) exit "${FAKE_RUNNING_REGISTRY:-1}" ;;',
@@ -4575,7 +4602,7 @@ await t.close();
     rb > 0 &&
       rb < gp &&
       gp < up &&
-      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[34567*]\) echo "[^\n]*" >&2 ;;\n){6} {2}esac\n {2}exit 1\n\}\n/.test(
+      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[345678*]\) echo "[^\n]*" >&2 ;;\n){7} {2}esac\n {2}exit 1\n\}\n/.test(
         deploySrc,
       ),
   );

@@ -57,7 +57,7 @@ const initialSchema = z
             routeId: z.string().min(1),
             travelers: z.number().int().positive(),
             departDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '需要 YYYY-MM-DD'),
-            status: z.enum(['pending_payment', 'paid', 'cancelled']),
+            status: z.enum(['pending_payment', 'paid', 'cancelled', 'refund_pending', 'refunded']),
           })
           .strict(),
       )

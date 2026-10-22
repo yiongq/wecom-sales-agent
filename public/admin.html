@@ -584,8 +584,8 @@ const sessOrders = s => S.orders.filter(o => o.sessionId === s.id);
 // 改单后被替代的旧单（superseded）不算待支付：金额取仍有效的那张，标签写明「已被替代」，
 // 不然客户改一次日期，后台就挂着两张「待支付」、列表金额还可能是旧单的
 const liveOrder = s => sessOrders(s).find(o => o.status !== 'superseded' && o.status !== 'cancelled');
-const ordLabel = o => o.status==='paid' ? '已支付' : o.status==='superseded' ? '已被替代' : o.status==='cancelled' ? '已取消' : '待支付';
-const ordColor = o => o.status==='paid' ? '--green' : o.status==='pending_payment' ? '--amber' : '--faint';
+const ordLabel = o => o.status==='refund_pending' ? '退款中' : o.status==='refunded' ? '已退款' : o.status==='paid' ? '已支付' : o.status==='superseded' ? '已被替代' : o.status==='cancelled' ? '已取消' : '待支付';
+const ordColor = o => o.status==='refund_pending' ? '--amber' : o.status==='refunded' ? '--faint' : o.status==='paid' ? '--green' : o.status==='pending_payment' ? '--amber' : '--faint';
 const isUrgent = s => s.handedOver || (['quote','objection','closing'].includes(s.stage) && idleMin(s) >= 10);
 // 优先显示企微拉到的微信昵称；没有昵称时用「目的地客户/访客 + 短码」兜底。
 // 短码剥掉 wecom:/sim-/cust_ 前缀和下划线，避免显示成「· _E01」这种残码。
@@ -780,7 +780,7 @@ function renderList() {
     html += '<div style="margin-bottom:10px"><div class="grp-head"><span class="dot'+(g.live?' pulse':'')+'" style="background:'+g.color+'"></span><span class="t">'+g.t+'</span><span class="c mono">'+g.c+'</span></div>';
     for (const s of g.items) {
       const st = STAGES[s.stage], sc = SCORE[s.stage]||0, hot = sc>=70, i = idleMin(s);
-      const os = sessOrders(s), paid = os.find(o=>o.status==='paid'), live = liveOrder(s);
+      const os = sessOrders(s), paid = os.find(o=>o.status==='paid'||o.status==='refund_pending'), live = liveOrder(s);
       const amt = paid ? yuan(paid.totalPrice) : (live ? yuan(live.totalPrice) : '');
       const lm = lastMsg(s), on = s.id === S.selected;
       html += '<div class="row'+(on?' on':'')+'" data-id="'+esc(s.id)+'">'
@@ -805,7 +805,8 @@ function dashHTML() {
   const sess = S.sessions.filter(s => s.createdAt >= rs);
   const ords = S.orders.filter(o => o.createdAt >= rs);
   const total = sess.length || 1;
-  const paidOrders = ords.filter(o => o.status === 'paid');
+  const paidOrders = ords.filter(o => o.status === 'paid' || o.status === 'refund_pending');
+  const refundedOrders = ords.filter(o => o.status === 'refunded');
   const paidSids = new Set(paidOrders.map(o => o.sessionId));
   const paidSess = sess.filter(s => paidSids.has(s.id)).length;
   const handoff = sess.filter(s => s.handedOver).length;
@@ -820,6 +821,7 @@ function dashHTML() {
 
   const kpi = (lb,v,nt) => '<div class="kpi card"><div class="lb">'+lb+'</div><div class="v mono">'+v+'</div><div class="nt">'+nt+'</div></div>';
   const kpis = kpi('会话数', num(sess.length), '本范围累计')
+    + (refundedOrders.length ? kpi('已退款', refundedOrders.length+' 单', '原成交额 '+yuan(refundedOrders.reduce((a,o)=>a+o.totalPrice,0))) : '')
     + kpi('成交率', conv+'%', paidSess+' / '+sess.length+' 会话成交')
     + kpi('人工接管率', handRate+'%', 'AI 独立完成 '+autoRate+'%')
     + kpi('AI 自动化率', autoRate+'%', handoff+' 单需人工兜底')

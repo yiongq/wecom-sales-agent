@@ -320,7 +320,14 @@ eq(
   orderLine({ routeTitle: '贵州', travelers: 4, totalPrice: 60_040, departDate: '2026-11-08' }),
   ['贵州', '4位共60,040元', '2026-11-08出发'],
 );
-eq('订单状态中文', ORDER_STATUS_LABEL, { pending_payment: '待付款', paid: '已付款', cancelled: '已取消', superseded: '已失效' });
+eq('订单状态中文', ORDER_STATUS_LABEL, {
+  pending_payment: '待付款',
+  paid: '已付款',
+  cancelled: '已取消',
+  superseded: '已失效',
+  refund_pending: '退款中',
+  refunded: '已退款',
+});
 eq('能处理会话的角色：owner/admin/supervisor/agent，不含 viewer', [...CAN_HANDLE_ROLES].sort(), ['admin', 'agent', 'owner', 'supervisor']);
 
 // 沙箱自己的会话在所有状态组前，状态计数不重复；没有标记的宿主分组照旧。

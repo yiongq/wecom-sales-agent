@@ -367,6 +367,15 @@ try {
     initial: { orders: [{ routeId: 'r-sichuan-mid', travelers: 2, departDate: '2027-03-10', status: 'pending_payment' }] },
   });
   check('待付款种子订单与阶段缺省', report.summary[0]!.passK && report.runs[0]!.initial.stage === 'greeting');
+
+  for (const status of ['refund_pending', 'refunded'] as const) {
+    const started = runtime.deps.start({ orders: [{ routeId: 'r-sichuan-mid', travelers: 2, departDate: '2027-03-10', status }] });
+    check(
+      `07：${status} 初始订单带 paidAt，阶段仍 paid`,
+      started.initial.orders[0]?.status === status && started.initial.orders[0]?.paidAt !== undefined && started.initial.stage === 'paid',
+    );
+    await runtime.deps.end(started.id);
+  }
   const probe = runtime.deps.start();
   check('每遍结束清掉种子订单', report.runs[0]!.initial.orders.length === 1 && probe.initial.orders.length === 0);
   await runtime.deps.end(probe.id);

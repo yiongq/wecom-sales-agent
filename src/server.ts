@@ -271,7 +271,8 @@ interface PublicOrder {
   travelers: number;
   departDate: string;
   totalPrice: number;
-  status: OrderStatus;
+  status: Exclude<OrderStatus, 'refund_pending' | 'refunded'>;
+  refund: 'pending' | 'refunded' | null;
   createdAt: number;
   paidAt: number | null;
   /** 顾问确认过价格（advisor 收款方式，02 第 15 步）：确认人的姓名不对外 */
@@ -284,7 +285,8 @@ const publicOrder = (o: Order): PublicOrder => ({
   travelers: o.travelers,
   departDate: o.departDate,
   totalPrice: o.totalPrice,
-  status: o.status,
+  status: o.status === 'refund_pending' || o.status === 'refunded' ? 'paid' : o.status,
+  refund: o.status === 'refund_pending' ? 'pending' : o.status === 'refunded' ? 'refunded' : null,
   createdAt: o.createdAt,
   paidAt: o.paidAt ?? null,
   confirmed: o.confirmedAt != null,
@@ -743,6 +745,9 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
   if (order.status === 'superseded' || order.status === 'cancelled') {
     return c.json({ error: order.status === 'superseded' ? '这笔订单已被新订单替代' : '订单已取消', order: publicOrder(order) }, 409);
   }
+  if (order.status === 'refund_pending' || order.status === 'refunded') {
+    return c.json({ error: order.status === 'refund_pending' ? '订单退款中' : '订单已退款', order: publicOrder(order) }, 409);
+  }
   if (order.status !== 'paid') {
     markOrderPaid(id);
     // 共享工作台的操作记一行审计（02 spec「收款流程」）：这条旧路径不要求先经 confirmOrder 确认价格
@@ -823,7 +828,8 @@ app.get('/pay/:orderId', async (c) => {
       ),
     );
   }
-  const title = `${o.routeTitle} · 订单支付`;
+  const refundLabel = o.status === 'refund_pending' ? '退款中' : o.status === 'refunded' ? '已退款' : null;
+  const title = `${o.routeTitle} · ${refundLabel ?? '订单支付'}`;
   // 出发日期与企微卡片、网页支付卡片同一写法（「10月12日出发」，跨年才带年份），别是「2026-10-12 出发」
   const d = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(o.departDate ?? '');
   const when = !o.departDate
@@ -831,7 +837,7 @@ app.get('/pay/:orderId', async (c) => {
     : !d
       ? `${o.departDate}出发`
       : `${Number(d[1]) === new Date().getFullYear() ? '' : `${d[1]}年`}${Number(d[2])}月${Number(d[3])}日出发`;
-  const desc = `${o.travelers} 位出行 · ${when} · 合计 ¥${o.totalPrice.toLocaleString('zh-CN')}`;
+  const desc = refundLabel ?? `${o.travelers} 位出行 · ${when} · 合计 ¥${o.totalPrice.toLocaleString('zh-CN')}`;
   return c.html(
     withHead(
       html,

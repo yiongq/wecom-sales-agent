@@ -4050,6 +4050,38 @@ async function workbenchSuite(): Promise<void> {
         (await call('GET', '/orders/summary', { as: ag1 })).status === 403,
       summary.text,
     );
+
+    const prior = summary.body;
+    const refundPending = order(4321);
+    store.markOrderPaid(refundPending.id);
+    refundPending.status = 'refund_pending';
+    store.saveOrder(refundPending);
+    const refunded = order(2345);
+    store.markOrderPaid(refunded.id);
+    refunded.status = 'refunded';
+    store.saveOrder(refunded);
+    const oldRefund = order(9999);
+    oldRefund.status = 'refunded';
+    oldRefund.paidAt = from - 1;
+    store.saveOrder(oldRefund);
+    const oldPending = order(1111);
+    oldPending.status = 'refund_pending';
+    oldPending.paidAt = from - 1;
+    store.saveOrder(oldPending);
+    const refunds = await call('GET', '/orders/summary', O);
+    check(
+      '07：本月成交含退款中，已退款原成交额单列，跨月不算成交，退款中笔数不限月份',
+      refunds.body.paidTotal === Number(prior.paidTotal) + 4321 &&
+        refunds.body.paidCount === Number(prior.paidCount) + 1 &&
+        refunds.body.refundedTotal === Number(prior.refundedTotal) + 2345 &&
+        refunds.body.refundedCount === Number(prior.refundedCount) + 1 &&
+        refunds.body.refundPendingCount === Number(prior.refundPendingCount) + 2,
+      refunds.text,
+    );
+    for (const status of ['refund_pending', 'refunded']) {
+      const filtered = await call('GET', `/orders?status=${status}`, O);
+      check(`07：后台接受 ${status} 筛选`, filtered.status === 200 && filtered.text.includes(status), filtered.text);
+    }
     await sleep(100);
     const au = await call('GET', '/audit?actions=order.confirm,order.mark_paid,order.cancel', O);
     const rows = ((au.body.items ?? []) as Body[]).filter((x) => [o1.id, o2.id].includes(String(x.targetId)));

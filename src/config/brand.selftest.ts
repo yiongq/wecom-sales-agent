@@ -92,10 +92,26 @@ try {
     const html = fs.readFileSync(`public/${name}.html`, 'utf8');
     // owner 2026-10-13 只授权改 chat 页脚一句；替回旧句后仍按原哈希核对全部字节。
     const footer = '演示：模拟企业微信里的客户对话。';
-    const baselineHtml =
+    let baselineHtml =
       page === 'chat' ? html.replace(footer, 'Demo：模拟企业微信会话。生产环境经企微回调接入，界面即企业微信本身。') : html;
     if (page === 'chat') assert.ok(html.includes(footer));
-    assert.equal(sha256(baselineHtml), hash, `${page} 除授权页脚外必须与开工时逐字节相同`);
+    if (page === 'pay') {
+      // 07 R20 明确增加退款状态分支：只剔除这些新增字节，原页面哈希及其余字节继续锁住。
+      const refundBranches = [
+        "    if (o.refund === 'pending') return '退款中';\n    if (o.refund === 'refunded') return '已退款';\n",
+        '      if (order.refund) return renderAdvisor();\n',
+        '        const body = await res.json();\n' +
+          '        if (body.order && body.order.refund) {\n' +
+          '          order = body.order;\n' +
+          '          return renderAdvisor();\n' +
+          '        }\n',
+      ];
+      for (const branch of refundBranches) {
+        assert.ok(baselineHtml.includes(branch), 'R20 只允许这几段退款分支');
+        baselineHtml = baselineHtml.replace(branch, '');
+      }
+    }
+    assert.equal(sha256(baselineHtml), hash, `${page} 除授权页脚与 R20 退款分支外必须与开工时逐字节相同`);
     assert.equal(renderBrandPage(html, name, runtime, null), html);
     const next = renderBrandPage(html, name, runtime, shanhaiBrand);
     // 检查全部客户文案（含 JS 中的动态文案）；技术注释不属于客户文案，支付产品名保留。

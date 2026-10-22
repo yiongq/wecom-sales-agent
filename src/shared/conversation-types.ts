@@ -39,7 +39,21 @@ export interface Assignee {
   at: number;
 }
 
-export type OrderStatus = 'pending_payment' | 'paid' | 'cancelled' | 'superseded';
+export type OrderStatus = 'pending_payment' | 'paid' | 'cancelled' | 'superseded' | 'refund_pending' | 'refunded';
+
+export interface RefundRecord {
+  id: string; // rf_ 加 12 位十六进制
+  requestedAt: number;
+  daysBefore: number;
+  tierId: string;
+  percent: number;
+  amount: number; // 元，整数
+  policyHash: string;
+  approval: 'auto' | 'pending' | 'approved' | 'rejected';
+  settlement: 'mock' | 'advisor';
+  decision?: { at: number; by: { userId: string | null; name: string }; reason?: string };
+  settled?: { at: number; by: { userId: string | null; name: string } | null };
+}
 
 /** 收款方式：online 是今天的模拟支付，advisor 是顾问确认收款（spec「收款流程」） */
 export type PaymentMode = 'online' | 'advisor';

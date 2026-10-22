@@ -1,6 +1,6 @@
 // 全项目共享契约。构建各模块时以此为准，不要私自改动已有字段。
 import type { SalesSegment } from './shared/catalog-types.js';
-import type { Assignee, HandoffRecord, OrderStatus, OutboundKind } from './shared/conversation-types.js';
+import type { Assignee, HandoffRecord, OrderStatus, OutboundKind, RefundRecord } from './shared/conversation-types.js';
 import type { SensitiveCategory } from './handoff/triggers.js';
 import { cleanText } from './shared/text.js';
 
@@ -13,6 +13,7 @@ export type {
   HandoffRecord,
   MessageAuthor,
   OrderStatus,
+  RefundRecord,
   OutboundKind,
   PaymentMode,
   SendWindow,
@@ -179,6 +180,7 @@ export interface Order {
   /** superseded：客户下单后改了人数/日期，同一条线重新下了一单，这张待付款的旧单作废（见 tools.ts create_order）。
    *  此前旧单一直挂着待付款，模型嘴上说「之前那笔作废了」，客户点旧链接照样能付，后台也看到两张待付款 */
   status: OrderStatus;
+  refund?: RefundRecord;
   createdAt: number;
   paidAt?: number;
   /** 替代它的新订单号（status=superseded 时有） */

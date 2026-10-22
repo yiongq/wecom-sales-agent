@@ -402,7 +402,7 @@ export const orders = pgTable(
     sessionId: text('session_id'),
     /** 不对产品库建外键 */
     routeId: text('route_id').notNull(),
-    status: text('status', { enum: ['pending_payment', 'paid', 'cancelled', 'superseded'] }).notNull(),
+    status: text('status', { enum: ['pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending', 'refunded'] }).notNull(),
     totalPrice: integer('total_price').notNull(),
     createdAt: tstz('created_at').notNull(),
     /** 触发器：写入之后不能改、不能清空 */
@@ -416,7 +416,8 @@ export const orders = pgTable(
   (t) => [
     primaryKey({ columns: [t.tenantId, t.id] }),
     check('orders_id_check', sql`${t.id} ~ '^[A-Za-z0-9_-]{1,64}$'`),
-    check('orders_status_check', sql`${t.status} IN ('pending_payment', 'paid', 'cancelled', 'superseded')`),
+    check('orders_status_check', sql`${t.status} IN ('pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending', 'refunded')`),
+    check('orders_refund_paid_check', sql`${t.status} NOT IN ('refund_pending', 'refunded') OR ${t.paidAt} IS NOT NULL`),
     check('orders_total_price_check', sql`${t.totalPrice} >= 0`),
     check('orders_void_reason_check', sql`${t.voidReason} IN ('reset', 'resync')`),
     check('orders_data_check', sql`json_typeof(${t.data}) = 'object' AND coalesce(${t.data}->>'id' = ${t.id}, false)`),

@@ -12,7 +12,7 @@ const patterns = z.array(
   }),
 );
 const stage = z.enum(['greeting', 'discovery', 'recommend', 'quote', 'objection', 'closing', 'paid', 'handoff']);
-const status = z.enum(['pending_payment', 'paid', 'cancelled', 'superseded']);
+const status = z.enum(['pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending', 'refunded']);
 const quote = z.strictObject({
   routeId: z.string(),
   routeTitle: z.string(),

@@ -779,11 +779,18 @@ export const consoleApi = new Hono<ConsoleEnv>()
       month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
       paidTotal: 0,
       paidCount: 0,
+      refundedTotal: 0,
+      refundedCount: 0,
+      refundPendingCount: 0,
       pendingTotal: 0,
       pendingCount: 0,
     };
     for (const o of listOrders()) {
-      if (o.status === 'paid' && o.paidAt != null && o.paidAt >= from && o.paidAt < to) {
+      if (o.status === 'refund_pending') body.refundPendingCount += 1;
+      if (o.status === 'refunded' && o.paidAt != null && o.paidAt >= from && o.paidAt < to) {
+        body.refundedTotal += o.totalPrice;
+        body.refundedCount += 1;
+      } else if ((o.status === 'paid' || o.status === 'refund_pending') && o.paidAt != null && o.paidAt >= from && o.paidAt < to) {
         body.paidTotal += o.totalPrice;
         body.paidCount += 1;
       } else if (o.status === 'pending_payment') {

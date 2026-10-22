@@ -244,14 +244,19 @@ export async function engineRuntime(
               totalPrice: quote.total,
               catalogVersion: routeVersion(o.routeId),
             });
-            if (o.status === 'paid') store.markOrderPaid(order.id);
-            else if (o.status === 'cancelled') {
+            if (['paid', 'refund_pending', 'refunded'].includes(o.status)) {
+              store.markOrderPaid(order.id);
+              order.status = o.status;
+              store.saveOrder(order);
+            } else if (o.status === 'cancelled') {
               order.status = 'cancelled';
               store.saveOrder(order);
             }
             session.orderIds.push(order.id);
           }
-          session.stage = seed.stage ?? ((seed.orders ?? []).some((o) => o.status === 'paid') ? 'paid' : session.stage);
+          session.stage =
+            seed.stage ??
+            ((seed.orders ?? []).some((o) => ['paid', 'refund_pending', 'refunded'].includes(o.status)) ? 'paid' : session.stage);
           store.saveSession(session);
         }
         return { id, initial: snapshot(id) };

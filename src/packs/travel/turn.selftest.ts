@@ -1,6 +1,14 @@
 // 包钩子的输入/输出契约：context 不提前沉淀画像、预取保留实际参数与部分成功结果。
 import assert from 'node:assert/strict';
-import { spokenMoney, type PrefetchedCall, type Route, type Session, type TurnContext, type TurnToolContext } from '../../core/pack-api.js';
+import {
+  spokenMoney,
+  type Order,
+  type PrefetchedCall,
+  type Route,
+  type Session,
+  type TurnContext,
+  type TurnToolContext,
+} from '../../core/pack-api.js';
 import { createTravelTurnHooks } from './turn.js';
 import { travelPriceThresholds } from './thresholds.js';
 
@@ -17,9 +25,10 @@ const routes: Route[] = ['云南', '四川'].map((destination, i) => ({
   segments: [],
   itinerary: [],
 }));
+const testOrders = new Map<string, Order>();
 const hooks = createTravelTurnHooks({
   loadRoutes: () => routes,
-  getOrder: () => undefined,
+  getOrder: (id) => testOrders.get(id),
   searchRoutes: async () => routes,
   rememberShownRoutes: () => {},
   mentionsPlace: (text, word) => text.includes(word),
@@ -239,4 +248,38 @@ assert.match(rejected.reject, /这是过去的日期/);
   assert.ok('args' in quote && (quote.args as Record<string, unknown>).departDate === undefined, '只有方案书沿用，报价不补');
 }
 
+// 07 R20：状态只进 context，不改变终态；已退款且没有其他已付单时不短路寒暄。
+for (const [status, label] of [
+  ['paid', '已付款'],
+  ['refund_pending', '退款中'],
+  ['refunded', '已退款'],
+] as const) {
+  testOrders.clear();
+  const order: Order = {
+    id: 'ord_turn',
+    sessionId: session.id,
+    routeId: 'fixture-0',
+    routeTitle: '测试行程',
+    travelers: 2,
+    departDate: '2099-12-10',
+    totalPrice: 10000,
+    status,
+    createdAt: 0,
+    paidAt: 1,
+  };
+  testOrders.set(order.id, order);
+  const paidSession: Session = { ...structuredClone(session), stage: 'paid', orderIds: [order.id] };
+  const note = hooks.contextNote({ ...ctx, session: paidSession, text: '我已经付款了' }).join('\n');
+  assert.ok(note.includes(`出发，${label}`), note);
+  assert.ok(!note.includes('系统还没收到到账'), note);
+  const chitchat = hooks.preModel!({ ...ctx, session: paidSession, text: '谢谢' });
+  assert.equal(chitchat === null, status === 'refunded', `${status} 寒暄短路边界`);
+  assert.equal(paidSession.stage, 'paid');
+  if (status === 'refunded') {
+    testOrders.set('ord_other', { ...order, id: 'ord_other', status: 'paid' });
+    paidSession.orderIds.push('ord_other');
+    assert.ok(hooks.preModel!({ ...ctx, session: paidSession, text: '谢谢' }));
+  }
+}
+testOrders.clear();
 console.log('TRAVEL TURN SELFTEST PASS: context、预取实际参数/顺序/部分失败与工具核正/结果/画像边界/成单安全网意图与选线');
