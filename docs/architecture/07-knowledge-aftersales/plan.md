@@ -70,7 +70,7 @@
   - 做：`lockedSectionTemplates` 由镜像 7 节按声明的替换表生成（每条恰好命中一次，否则启动失败）；旧版硬性要求由模板模式渲染再过替换表；`src/adapters/wecom.ts` 的两段欢迎语改引用包的旧版文字，`LEGACY_WELCOME_TEXTS` 原样。先写断言新旧逐字节相同的自测，再删手抄那份。
   - 验：验收 2 后半；替换表一条不命中时启动失败的反例；`wecom.selftest.ts` 照绿，`PREFIX` 不变。
   - 依赖：0.1。和第 1 步同时开、不碰同一文件。
-- [ ] 3. policy 入库与发布路径（R1、R4、R5；2 天）
+- [x] 3. policy 入库与发布路径（R1、R4、R5；2 天）——#256
   - 做：
     - 迁移 0014 `sop_versions.policy json`；`render_inputs.policyHash`；`SopVersion.policyHash`；运行时只读本轮捕获的已发布快照。
     - 启动重渲染：「直接用存下的行」加 `policyHash` 条件，原因与 `causes` 枚举加 `policy`；07 之前的已发布行首次启动物化默认 policy、写 `sop.rerender`（前后 `promptHash` 相同）；`upgrade` 补出差异才重渲染。
@@ -83,7 +83,7 @@
 
 ### 车道 1：售后（第 4–7 步）
 
-- [ ] 4. 订单状态与消费方（R20；1.5 天）
+- [x] 4. 订单状态与消费方（R20；1.5 天）——#257
   - 做：迁移（`orders_status_check` 六个值、`orders_refund_paid_check`、`orders_guard` 加「`refunded` 之后不变」）；`OrderStatus` 与 `RefundRecord` 类型、`Order.refund`；spec R20「要跟着改的地方」逐处改（类型、`hasPaidOrder`、对客订单行与已付判断、支付拒付与支付页、公开投影加 `refund`、后台与统计、评测枚举）；`public/pay.html`、`public/admin.html` 只加分支；demo 重置作废两种新状态；`deploy/rollback-guard.sh` 退出码 8（按 0.4 的结论定拦哪几种状态）。
   - 验：验收 9；`server.selftest.ts:514、516` 照绿；`handoff.selftest.ts` 的 `WHITELIST` 加 `refund`；真实 PG 上约束与触发器的正反例。
   - 依赖：P 合并；合并等 0.4。
@@ -106,16 +106,16 @@
   - 做：`src/core/llm/endpoints.ts`；DB 模式启动校验；`readEmbedding` 发请求前校验；非 prod 放行本机回环。
   - 验：白名单外主机 DB 模式拒绝启动、文件模式不发请求并退回关键词；`LLM_MOCK=1` 行为不变。
   - 依赖：0.1（不依赖 P，可以最先开）。
-- [ ] 9. 线路向量入库、装载、增量嵌入、沙箱复制与删除（R11–R13；3.5 天）
+- [x] 9. 线路向量入库、装载、增量嵌入、沙箱复制与删除（R11–R13；3.5 天）——#259
   - 做：迁移（`kb_chunks`、按扩展判断的 `kb_vectors` DO 块，按 0.7 裁决的建法）；装载进内存索引；`onCatalogChanged` 后台增量；DB 模式不再读写 `var/route-vectors.json`；沙箱开通复制块与向量；`sandbox_tenant_purge` 加两张表（`to_regclass` 判断）。
   - 验：验收 6 全部（计数假嵌入服务；`queryCount()` 不增；重启不重嵌；改一条只嵌一块；沙箱开通无嵌入请求、删除后无行；真实 PG 跨租户读不到；PGlite 全绿；没扩展又建不了时 migrate 失败并写明原因）。`db.selftest.ts` 的表清单两边分开写。
   - 依赖：P 合并、8；合并等 0.7。
-- [ ] 10. 政策问法进上下文（R14；1.5 天）
+- [x] 10. 政策问法进上下文（R14；1.5 天）——#258（与第 9 步不碰同一批文件，先于第 9 步合并）
   - 做：旅游包认问法（退款、退订、改期、保险、费用含不含，只认问法）；按主题确定性取条款，有订单时标出适用的一条；并进 contextNote；签证、保险、费用口径句在 `P/claim-words.ts` 补齐；新增一个 `regression` 目标（问退改规则带出处）。
   - 验：验收 7 第一条与最后一条；没有订单、不是政策问法的轮 contextNote 哈希不变（用 06 第 0.3 步那种探针）；没有嵌入请求。
   - 依赖：P 合并（不依赖第 9 步，可与之同时开发，按序合并）。
 - [ ] 11. 政策陈述护栏（R22；2.5 天）
-  - 做：旅游包步骤 `policy_claims`（`claim_words` 之后、`price` 之前），三条规则；跟随改步骤表（`validate.selftest.ts`、`trace.selftest.ts`、`reply-verdicts.json`）；待顾问确认备注；新增一个 `regression` 目标（无出处的保险问法）。
+  - 做：旅游包步骤 `policy_claims`（`claim_words` 之后、`price` 之前），三条规则；跟随改步骤表（`validate.selftest.ts`、`trace.selftest.ts`、`reply-verdicts.json`）；待顾问确认备注；新增一个 `regression` 目标（无出处的保险问法）。另两件第 10 步留下的：保险、费用两句口径在 `fixed-replies.ts` 里暂登记在 `replace.claim.*`（来源 `claim_words`），改指 `policy_claims`；线路事实的出处「（《线路名》费用说明）」由本步补上（第 10 步的 contextNote 只给条款）。
   - 验：验收 7 其余各条；每条规则一正一反（含否定句）；带支付链接的句子不动；V8 r8d、`price-guard.selftest.ts` 照绿；不变量 19 的装载校验。
   - 依赖：10。
 
@@ -152,7 +152,7 @@
   - 验：逐条结果写进「验收记录」，费用进「费用记录」。
   - 依赖：1–16。
 - [ ] 18. 第一次上线（协调者，owner 当次授权）
-  - 做：确认应用库有 vector 扩展（按 0.7 的裁决，必要时请 owner 执行）；备份并复制到异地；线上 env 写 `SOP_GATE=required` 与三个闸参数；rc tag 上线；核 `/healthz` 的 `promptHash` 不变、每个租户一条 `sop.rerender`（`causes` 含 `policy`）、企微与网页各一句一回、新开沙箱 G01 走一遍。
+  - 做：确认应用库有 vector 扩展——没有就请 owner 在服务器上执行 `docker compose -f deploy/compose.yml exec db /db-init/extensions.sh`（第 9 步，README「首次部署前置条件」第 5 条；漏做时 migrate 整批回退、停在切换之前）；备份并复制到异地；线上 env 写 `SOP_GATE=required` 与三个闸参数；rc tag 上线；核 `/healthz` 的 `promptHash` 不变、每个租户一条 `sop.rerender`（`causes` 含 `policy`）、企微与网页各一句一回、新开沙箱 G01 走一遍。
   - 验：记进「验收记录」。
   - 依赖：17、0.7。
 
@@ -421,6 +421,33 @@ aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.jso
 
 另：#251（只改文档）CI 的 `src/quota/shutdown.selftest.ts:103`「截止后模型异常也不开始 send_msg」偶发失败一次，重跑。是计时相关的既有自测，与 07 无关；再出现就记「Open」。
 
+### 第 3 步 · policy 入库与发布路径（2026-10-22，Codex，#256）
+
+- 迁移 `0014_sop_policy.sql`；照品牌快照的写法加 `policySnapshot` / `publishedPolicy`、`render_inputs.policyHash`、启动重渲染原因 `policy`；07 之前的行首次启动物化一次。运行时入口 `currentPolicy()`（`src/config/source.ts`）：每轮开始与 `currentPack()` 同一刻取一次，整轮沿用；文件模式读 `SOP_PATH` 同目录的 `policy.json`，没有就用包默认。CLI `src/cli/sop-policy.ts set` 与 `PUT /sop/draft` 都走 `saveSopDraft`。lint 在 `src/packs/travel/policy-lint.ts`，由 `src/sop/contract.ts`、`src/config/` 直接引用（先例：`contract.ts` 本来就直接引用旅游包的 `SOP_CONTRACT`）。已知技术债：第二个带 policy 的行业包出现时，lint 要改成经 `PackPolicy` 由包提供。
+- 文件模式的模板模式渲染补上与导入一致的开场白切换（镜像同 DB 模式，读 `data/sop.md`），验收 3 的模板模式那一遍才对得上。
+- 只读卡片新用了「批」「阈」：协调者重建字体子集（`scripts/fonts/build.ts`，在临时 venv 里装 fonttools、brotli，用 `FONTTOOLS_PYTHON` 指过去；源字体用本机缓存）。后台金额统一写「元」，不用「¥」（Geist 子集里没有，重建也加不进）。
+- Codex 第一次因通用约定写着「缺字就停下」只做了一半，改约定后续做完成。
+
+### 第 4 步 · 订单状态与消费方（2026-10-22，Codex，#257）
+
+- 迁移 `0015_order_refund_status.sql`；`orders_guard` 原有两条逐字照旧。demo 重置在库里写 `voided_at`、不改状态，与「`refunded` 之后状态不变」不冲突。
+- `/orders/summary`：成交额含退款中；`refundedTotal` 是已退款单按原付款月份的原成交额，`refundPendingCount` 不限月份。第 5 步有了 `RefundRecord.amount` 之后，若要统计实际退回金额，在第 5 或第 15 步明确。
+- 回滚检查：`deploy.sh` 按目标 tag 里有没有 `drizzle/0015_order_refund_status.sql` 判定 `pre-07`；有退款中或已退款的订单时 `rollback-guard.sh` 以 8 退出，两个入口转成 1。
+
+### 第 10 步 · 政策问法进上下文（2026-10-22，Claude 子 agent，#258）
+
+- `src/packs/travel/policy-ask.ts`：逐句认问法，主题词与问的信号要在同一句；条款取自本轮已发布 policy；有待付款或已付款的单时按最近一张标出适用条款，出发日已过时只陈述「不适用」（spec 没写，协调者接受）。「去不了怎么办」这类没出现主题词的隐含问法不认（精确优先）。
+- 引擎每轮把 `currentPolicy()` 的结果放进 `TurnContext`。`claim-words.ts` 补保险、费用两句（登记在 `fixed-replies.ts` 的 `replace.claim.*`，第 11 步改指 `policy_claims`）。回归目标 `47-policy-ask-refund-rules.json`。
+- 探针逐轮比对 1085 轮 contextNote：1080 轮逐字节相同，5 轮是真问法、只在末尾追加，0 轮被改（不变量 17）。
+- SOP 锁定节里「只是问规则就说由顾问确认」与新的 contextNote 方向相反，第 19 步改；在那之前模型实际听哪边，第 17 步的真实模型验收里看。
+
+### 第 9 步 · 线路向量入库（2026-10-22，Claude 子 agent，#259）
+
+- 迁移 `0016_kb_vectors.sql`（DO 块三分支）、`src/db/repo/kb.ts`、`src/core/retrieval-kb.ts`（同步算法）；`sandbox_tenant_purge` 从当前版本改起加删两张表，第 13 步要在此基础上再加 `sop_gate_runs`。
+- `deploy/db-init/extensions.sql` 与 `extensions.sh`：新库由 `roles.sh` 建完库后顺带调用；不给 `db` 服务另加挂载（挂载一变，下次 `compose up` 会重建线上 db 容器）。线上库第一次部署前由 owner 执行一次（已写进第 18 步）。
+- 子 agent 多做的两处，协调者接受：同进程里同目录已建好的索引可补缺向量的块（守住 `budget.selftest` 的共享索引）；维数不是 2048 的向量只放内存不写库。另：库里是半精度，重启后装载的向量与首次嵌入有极小差别，不影响余弦排序；嵌入成功但写库失败时会再嵌一次，只在写库故障时发生。
+- 本机沙箱里 `db`、`rollback-guard`、`restore-cutoff`、`ops` 四套建不了临时目录，协调者在沙箱外跑通。合并时迁移 journal 排成 14、15、16。
+
 ## 验收记录
 
 ## 费用记录
@@ -455,3 +482,9 @@ aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.jso
 - 第 1、2 步已合入 `dev`（#252、#253），第 8 步 #254 开了自动合并。批 P 只剩第 3 步（依赖第 1 步，已可开工）；车道 2 的第 9 步依赖批 P 合并、第 8 步（已完成）与 0.7（已定）。
 - 下一步：第 3 步（policy 入库与发布路径，带迁移 0014，需要一次性 `pgvector/pgvector:pg17` 容器跑真实 PG 自测）；第 3 步合并后开车道 1 的第 4 步与车道 2 的第 9、10 步。
 - 三个实现 worktree 在协调者 worktree 的 `.claude/worktrees/impl-07-*` 下，PR 合并后删掉。
+
+### 交接（2026-10-22，第 3、4、9、10 步完成）
+
+- 批 P 全部完成（#252、#253、#256）；车道 1 第 4 步（#257）、车道 2 第 8、9、10 步（#254、#259、#258）完成。第 9 步 #259 开了自动合并。
+- 下一步，都已可开工：车道 1 第 5 步（退款申请、审批与结算，依赖第 4 步）；车道 2 第 11 步（政策陈述护栏，依赖第 10 步）；第 15 步（看板，依赖第 4 步）也可以开。第 12 步（闸评测侧）依赖批 P，合并排在第 6 步之后。
+- 通用约定已改：缺字不停工，字体由协调者最后统一重建；后台金额写「元」。
