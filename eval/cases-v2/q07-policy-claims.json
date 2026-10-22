@@ -1,0 +1,1454 @@
+[
+  {
+    "version": 2,
+    "id": "q07-policy-claims-refund-wrong",
+    "desc": "R22 规则 1 正例（验收 7）：模型写「出发前 7 天也能全额退」，换成第3条原句加出处；不转人工、不建单",
+    "tags": ["q07", "policy_claims"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "万一临时去不了，退改怎么算？",
+        "script": [
+          {
+            "content": "出发前 7 天也能全额退。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^出发前7–14天取消，退订单金额的50%（退改条款第3条）。$"],
+          "replyExcludes": ["全额退"],
+          "guardVerdicts": [
+            {
+              "id": "pre_clean",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "stage_advance",
+              "action": "pass"
+            },
+            {
+              "id": "other_order",
+              "action": "pass"
+            },
+            {
+              "id": "order_net",
+              "action": "pass"
+            },
+            {
+              "id": "link_whitelist",
+              "action": "pass"
+            },
+            {
+              "id": "markdown",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:mark",
+              "action": "pass"
+            },
+            {
+              "id": "dejargon",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-a",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:fill",
+              "action": "pass"
+            },
+            {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
+              "id": "injection",
+              "action": "pass"
+            },
+            {
+              "id": "encyclopedia",
+              "action": "pass"
+            },
+            {
+              "id": "unbacked_claims",
+              "action": "pass"
+            },
+            {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
+              "id": "policy_claims",
+              "action": "replace"
+            },
+            {
+              "id": "price",
+              "action": "pass"
+            },
+            {
+              "id": "stranded",
+              "action": "pass"
+            },
+            {
+              "id": "adults",
+              "action": "pass"
+            },
+            {
+              "id": "dangling",
+              "action": "pass"
+            },
+            {
+              "id": "advisor_prefix",
+              "action": "pass"
+            },
+            {
+              "id": "identity",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-b",
+              "action": "pass"
+            },
+            {
+              "id": "post_handoff",
+              "action": "pass"
+            },
+            {
+              "id": "proposal_suffix",
+              "action": "pass"
+            },
+            {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:post",
+              "action": "pass"
+            },
+            {
+              "id": "turn_failure",
+              "action": "pass"
+            },
+            {
+              "id": "final_clean",
+              "action": "pass"
+            },
+            {
+              "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
+              "action": "pass"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q07-policy-claims-refund-right-no-cite",
+    "desc": "R22 规则 1：写对了的只补出处（句末），其余一个字不动",
+    "tags": ["q07", "policy_claims"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "取消的话怎么退？",
+        "script": [
+          {
+            "content": "出发前15–29天取消，退订单金额的80%。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyMatches": ["^出发前15–29天取消，退订单金额的80%（退改条款第2条）。$"],
+          "guardVerdicts": [
+            {
+              "id": "pre_clean",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "stage_advance",
+              "action": "pass"
+            },
+            {
+              "id": "other_order",
+              "action": "pass"
+            },
+            {
+              "id": "order_net",
+              "action": "pass"
+            },
+            {
+              "id": "link_whitelist",
+              "action": "pass"
+            },
+            {
+              "id": "markdown",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:mark",
+              "action": "pass"
+            },
+            {
+              "id": "dejargon",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-a",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:fill",
+              "action": "pass"
+            },
+            {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
+              "id": "injection",
+              "action": "pass"
+            },
+            {
+              "id": "encyclopedia",
+              "action": "pass"
+            },
+            {
+              "id": "unbacked_claims",
+              "action": "pass"
+            },
+            {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
+              "id": "policy_claims",
+              "action": "patch"
+            },
+            {
+              "id": "price",
+              "action": "pass"
+            },
+            {
+              "id": "stranded",
+              "action": "pass"
+            },
+            {
+              "id": "adults",
+              "action": "pass"
+            },
+            {
+              "id": "dangling",
+              "action": "pass"
+            },
+            {
+              "id": "advisor_prefix",
+              "action": "pass"
+            },
+            {
+              "id": "identity",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-b",
+              "action": "pass"
+            },
+            {
+              "id": "post_handoff",
+              "action": "pass"
+            },
+            {
+              "id": "proposal_suffix",
+              "action": "pass"
+            },
+            {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:post",
+              "action": "pass"
+            },
+            {
+              "id": "turn_failure",
+              "action": "pass"
+            },
+            {
+              "id": "final_clean",
+              "action": "pass"
+            },
+            {
+              "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
+              "action": "pass"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q07-policy-claims-refund-cited",
+    "desc": "R22 规则 1：写对了又写了出处，一个字不改（含两句并排）",
+    "tags": ["q07", "policy_claims"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "取消的话怎么退？",
+        "script": [
+          {
+            "content": "出发前30天及以上取消，退全款（退改条款第1条）。出发前15–29天取消，退订单金额的80%（退改条款第2条）。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyMatches": ["^出发前30天及以上取消，退全款（退改条款第1条）。出发前15–29天取消，退订单金额的80%（退改条款第2条）。$"],
+          "guardVerdicts": [
+            {
+              "id": "pre_clean",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "stage_advance",
+              "action": "pass"
+            },
+            {
+              "id": "other_order",
+              "action": "pass"
+            },
+            {
+              "id": "order_net",
+              "action": "pass"
+            },
+            {
+              "id": "link_whitelist",
+              "action": "pass"
+            },
+            {
+              "id": "markdown",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:mark",
+              "action": "pass"
+            },
+            {
+              "id": "dejargon",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-a",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:fill",
+              "action": "pass"
+            },
+            {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
+              "id": "injection",
+              "action": "pass"
+            },
+            {
+              "id": "encyclopedia",
+              "action": "pass"
+            },
+            {
+              "id": "unbacked_claims",
+              "action": "pass"
+            },
+            {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
+              "id": "policy_claims",
+              "action": "pass"
+            },
+            {
+              "id": "price",
+              "action": "pass"
+            },
+            {
+              "id": "stranded",
+              "action": "pass"
+            },
+            {
+              "id": "adults",
+              "action": "pass"
+            },
+            {
+              "id": "dangling",
+              "action": "pass"
+            },
+            {
+              "id": "advisor_prefix",
+              "action": "pass"
+            },
+            {
+              "id": "identity",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-b",
+              "action": "pass"
+            },
+            {
+              "id": "post_handoff",
+              "action": "pass"
+            },
+            {
+              "id": "proposal_suffix",
+              "action": "pass"
+            },
+            {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:post",
+              "action": "pass"
+            },
+            {
+              "id": "turn_failure",
+              "action": "pass"
+            },
+            {
+              "id": "final_clean",
+              "action": "pass"
+            },
+            {
+              "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
+              "action": "pass"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q07-policy-claims-refund-negative",
+    "desc": "R22 规则 1 反例（K16 与否定句）：「退改条款都写明」没有数字，「不能全额退」是否定，都不动",
+    "tags": ["q07", "policy_claims"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "先交钱然后人跑了咋整，退改有保障吗",
+        "script": [
+          {
+            "content": "出团前签正式电子旅游合同，行程、酒店、金额、退改条款都写明。出发前 7 天不能全额退。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyMatches": ["^出团前签正式电子旅游合同，行程、酒店、金额、退改条款都写明。出发前 7 天不能全额退。$"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q07-policy-claims-pricing-wrong",
+    "desc": "R22 规则 2 正例：上浮 15%、9 折与 pricing 不符，换成生成段原句",
+    "tags": ["q07", "policy_claims"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月出发价格怎么算",
+        "script": [
+          {
+            "content": "10月是最佳出行季上浮 15%，4 人及以上每人打 9 折。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "replyMatches": ["价格上浮 10%", "4 人及以上享 95 折"],
+          "replyExcludes": ["15%", "9 折"],
+          "guardVerdicts": [
+            {
+              "id": "pre_clean",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "stage_advance",
+              "action": "pass"
+            },
+            {
+              "id": "other_order",
+              "action": "pass"
+            },
+            {
+              "id": "order_net",
+              "action": "pass"
+            },
+            {
+              "id": "link_whitelist",
+              "action": "pass"
+            },
+            {
+              "id": "markdown",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:mark",
+              "action": "pass"
+            },
+            {
+              "id": "dejargon",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-a",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:fill",
+              "action": "pass"
+            },
+            {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
+              "id": "injection",
+              "action": "pass"
+            },
+            {
+              "id": "encyclopedia",
+              "action": "pass"
+            },
+            {
+              "id": "unbacked_claims",
+              "action": "pass"
+            },
+            {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
+              "id": "policy_claims",
+              "action": "replace"
+            },
+            {
+              "id": "price",
+              "action": "pass"
+            },
+            {
+              "id": "stranded",
+              "action": "pass"
+            },
+            {
+              "id": "adults",
+              "action": "pass"
+            },
+            {
+              "id": "dangling",
+              "action": "pass"
+            },
+            {
+              "id": "advisor_prefix",
+              "action": "pass"
+            },
+            {
+              "id": "identity",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-b",
+              "action": "pass"
+            },
+            {
+              "id": "post_handoff",
+              "action": "pass"
+            },
+            {
+              "id": "proposal_suffix",
+              "action": "pass"
+            },
+            {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:post",
+              "action": "pass"
+            },
+            {
+              "id": "turn_failure",
+              "action": "pass"
+            },
+            {
+              "id": "final_clean",
+              "action": "pass"
+            },
+            {
+              "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
+              "action": "pass"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q07-policy-claims-pricing-equal",
+    "desc": "R22 规则 2 反例（K19）：与默认 policy 相等的写法（上浮了10%、4 人 95 折、4人及以上享95折）一字不改",
+    "tags": ["q07", "policy_claims"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "10月出发价格怎么算",
+        "script": [
+          {
+            "content": "10月是最佳出行季，价格上浮了10%。4 人 95 折，4人及以上享95折。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "replyMatches": ["^10月是最佳出行季，价格上浮了10%。4 人 95 折，4人及以上享95折。$"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q07-policy-claims-booking-wrong",
+    "desc": "R22 规则 2 正例：「超过 6 个月」与 booking 不符，换成按 12 个月说的话",
+    "tags": ["q07", "policy_claims"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "明年夏天的能订吗",
+        "script": [
+          {
+            "content": "出发日期超过 6 个月的只能给参考价。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "replyMatches": ["^目前只受理 12 个月以内出发的订单，更远的日期只能给参考价。$"],
+          "replyExcludes": ["6 个月"],
+          "guardVerdicts": [
+            {
+              "id": "pre_clean",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "stage_advance",
+              "action": "pass"
+            },
+            {
+              "id": "other_order",
+              "action": "pass"
+            },
+            {
+              "id": "order_net",
+              "action": "pass"
+            },
+            {
+              "id": "link_whitelist",
+              "action": "pass"
+            },
+            {
+              "id": "markdown",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:mark",
+              "action": "pass"
+            },
+            {
+              "id": "dejargon",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-a",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:fill",
+              "action": "pass"
+            },
+            {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
+              "id": "injection",
+              "action": "pass"
+            },
+            {
+              "id": "encyclopedia",
+              "action": "pass"
+            },
+            {
+              "id": "unbacked_claims",
+              "action": "pass"
+            },
+            {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
+              "id": "policy_claims",
+              "action": "replace"
+            },
+            {
+              "id": "price",
+              "action": "pass"
+            },
+            {
+              "id": "stranded",
+              "action": "pass"
+            },
+            {
+              "id": "adults",
+              "action": "pass"
+            },
+            {
+              "id": "dangling",
+              "action": "pass"
+            },
+            {
+              "id": "advisor_prefix",
+              "action": "pass"
+            },
+            {
+              "id": "identity",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-b",
+              "action": "pass"
+            },
+            {
+              "id": "post_handoff",
+              "action": "pass"
+            },
+            {
+              "id": "proposal_suffix",
+              "action": "pass"
+            },
+            {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:post",
+              "action": "pass"
+            },
+            {
+              "id": "turn_failure",
+              "action": "pass"
+            },
+            {
+              "id": "final_clean",
+              "action": "pass"
+            },
+            {
+              "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
+              "action": "pass"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q07-policy-claims-insurance-unbacked",
+    "desc": "R22 规则 3 正例（验收 7）：问「这条线含保险吗」而线路的「含」里没有保险，模型说「含的」，换成口径句；不转人工、不建单",
+    "tags": ["q07", "policy_claims"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "lastShownRoutes": [
+          {
+            "id": "r-guizhou",
+            "title": "贵州 荔波小七孔·西江千户苗寨 6 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-guizhou"]
+      }
+    },
+    "turns": [
+      {
+        "say": "这条线含保险吗",
+        "script": [
+          {
+            "content": "含的～"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": ["get_route_detail"],
+          "orders": {
+            "count": 0
+          },
+          "replyMatches": ["^保险含不含、保哪些，要看这条线的费用说明；说明里没写的，由顾问跟您确认。$"],
+          "replyExcludes": ["^含的"],
+          "guardVerdicts": [
+            {
+              "id": "pre_clean",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "stage_advance",
+              "action": "pass"
+            },
+            {
+              "id": "other_order",
+              "action": "pass"
+            },
+            {
+              "id": "order_net",
+              "action": "pass"
+            },
+            {
+              "id": "link_whitelist",
+              "action": "pass"
+            },
+            {
+              "id": "markdown",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:mark",
+              "action": "pass"
+            },
+            {
+              "id": "dejargon",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-a",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:fill",
+              "action": "pass"
+            },
+            {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
+              "id": "injection",
+              "action": "pass"
+            },
+            {
+              "id": "encyclopedia",
+              "action": "pass"
+            },
+            {
+              "id": "unbacked_claims",
+              "action": "pass"
+            },
+            {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
+              "id": "policy_claims",
+              "action": "replace"
+            },
+            {
+              "id": "price",
+              "action": "pass"
+            },
+            {
+              "id": "stranded",
+              "action": "pass"
+            },
+            {
+              "id": "adults",
+              "action": "pass"
+            },
+            {
+              "id": "dangling",
+              "action": "pass"
+            },
+            {
+              "id": "advisor_prefix",
+              "action": "pass"
+            },
+            {
+              "id": "identity",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-b",
+              "action": "pass"
+            },
+            {
+              "id": "post_handoff",
+              "action": "pass"
+            },
+            {
+              "id": "proposal_suffix",
+              "action": "pass"
+            },
+            {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:post",
+              "action": "pass"
+            },
+            {
+              "id": "turn_failure",
+              "action": "pass"
+            },
+            {
+              "id": "final_clean",
+              "action": "pass"
+            },
+            {
+              "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
+              "action": "pass"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q07-policy-claims-insurance-backed",
+    "desc": "R22 规则 3 反例 + 线路事实出处：线路的「含」里确实有保险，说含是真话，不换，句末补（《线路名》费用说明）",
+    "tags": ["q07", "policy_claims"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "lastShownRoutes": [
+          {
+            "id": "r-xian",
+            "title": "西安 兵马俑·大唐不夜城 5 日",
+            "priceFrom": 12800
+          }
+        ],
+        "seenRouteIds": ["r-xian"]
+      }
+    },
+    "turns": [
+      {
+        "say": "这条线含保险吗",
+        "script": [
+          {
+            "content": "含的，全程旅行意外保险。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": ["get_route_detail"],
+          "replyMatches": ["^含的，全程旅行意外保险（《西安 兵马俑·大唐不夜城 5 日》费用说明）。$"],
+          "guardVerdicts": [
+            {
+              "id": "pre_clean",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "stage_advance",
+              "action": "pass"
+            },
+            {
+              "id": "other_order",
+              "action": "pass"
+            },
+            {
+              "id": "order_net",
+              "action": "pass"
+            },
+            {
+              "id": "link_whitelist",
+              "action": "pass"
+            },
+            {
+              "id": "markdown",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:mark",
+              "action": "pass"
+            },
+            {
+              "id": "dejargon",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-a",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:fill",
+              "action": "pass"
+            },
+            {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
+              "id": "injection",
+              "action": "pass"
+            },
+            {
+              "id": "encyclopedia",
+              "action": "pass"
+            },
+            {
+              "id": "unbacked_claims",
+              "action": "pass"
+            },
+            {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
+              "id": "policy_claims",
+              "action": "patch"
+            },
+            {
+              "id": "price",
+              "action": "pass"
+            },
+            {
+              "id": "stranded",
+              "action": "pass"
+            },
+            {
+              "id": "adults",
+              "action": "pass"
+            },
+            {
+              "id": "dangling",
+              "action": "pass"
+            },
+            {
+              "id": "advisor_prefix",
+              "action": "pass"
+            },
+            {
+              "id": "identity",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-b",
+              "action": "pass"
+            },
+            {
+              "id": "post_handoff",
+              "action": "pass"
+            },
+            {
+              "id": "proposal_suffix",
+              "action": "pass"
+            },
+            {
+              "id": "closing",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:post",
+              "action": "pass"
+            },
+            {
+              "id": "turn_failure",
+              "action": "pass"
+            },
+            {
+              "id": "final_clean",
+              "action": "pass"
+            },
+            {
+              "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
+              "action": "pass"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q07-policy-claims-fees-negation",
+    "desc": "R22 规则 3 否定句反例（K14，V8 r8d）：「不含国际机票」原样留着",
+    "tags": ["q07", "policy_claims"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "lastShownRoutes": [
+          {
+            "id": "r-swiss",
+            "title": "瑞士冰川快车全景环线 9 日",
+            "priceFrom": 62800
+          }
+        ],
+        "seenRouteIds": ["r-swiss"]
+      }
+    },
+    "turns": [
+      {
+        "say": "瑞士那条费用含机票吗",
+        "script": [
+          {
+            "content": "这条费用不含国际机票和签证。"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": ["get_route_detail"],
+          "replyMatches": ["^这条费用不含国际机票和签证。$"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q07-policy-claims-not-a-policy-ask",
+    "desc": "R22 规则 3 反例（K20）：客户这句不是政策问法，模型说含保险就是含保险，一个字不动",
+    "tags": ["q07", "policy_claims"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {},
+        "lastShownRoutes": [
+          {
+            "id": "r-guizhou",
+            "title": "贵州 荔波小七孔·西江千户苗寨 6 日",
+            "priceFrom": 15800
+          }
+        ],
+        "seenRouteIds": ["r-guizhou"]
+      }
+    },
+    "turns": [
+      {
+        "say": "行，我再看看",
+        "script": [
+          {
+            "content": "含保险的哦～"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "replyMatches": ["^含保险的哦～"],
+          "replyExcludes": ["费用说明"],
+          "guardVerdicts": [
+            {
+              "id": "pre_clean",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "stage_advance",
+              "action": "pass"
+            },
+            {
+              "id": "other_order",
+              "action": "pass"
+            },
+            {
+              "id": "order_net",
+              "action": "pass"
+            },
+            {
+              "id": "link_whitelist",
+              "action": "pass"
+            },
+            {
+              "id": "markdown",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:mark",
+              "action": "pass"
+            },
+            {
+              "id": "dejargon",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-a",
+              "action": "pass"
+            },
+            {
+              "id": "repair_links:fill",
+              "action": "pass"
+            },
+            {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
+              "id": "injection",
+              "action": "pass"
+            },
+            {
+              "id": "encyclopedia",
+              "action": "pass"
+            },
+            {
+              "id": "unbacked_claims",
+              "action": "pass"
+            },
+            {
+              "id": "claim_words",
+              "action": "pass"
+            },
+            {
+              "id": "policy_claims",
+              "action": "pass"
+            },
+            {
+              "id": "price",
+              "action": "pass"
+            },
+            {
+              "id": "stranded",
+              "action": "pass"
+            },
+            {
+              "id": "adults",
+              "action": "pass"
+            },
+            {
+              "id": "dangling",
+              "action": "pass"
+            },
+            {
+              "id": "advisor_prefix",
+              "action": "pass"
+            },
+            {
+              "id": "identity",
+              "action": "pass"
+            },
+            {
+              "id": "custom_promise-b",
+              "action": "pass"
+            },
+            {
+              "id": "post_handoff",
+              "action": "pass"
+            },
+            {
+              "id": "proposal_suffix",
+              "action": "pass"
+            },
+            {
+              "id": "closing",
+              "action": "append"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:post",
+              "action": "pass"
+            },
+            {
+              "id": "turn_failure",
+              "action": "pass"
+            },
+            {
+              "id": "final_clean",
+              "action": "pass"
+            },
+            {
+              "id": "system_note",
+              "action": "pass"
+            },
+            {
+              "id": "note_reply",
+              "action": "pass"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q07-policy-claims-payment-link-untouched",
+    "desc": "R22 / 06 R13：含 /pay/ 链接的句子整句不动，哪怕里面的天数与比例对不上档位；不建额外的单、不转人工",
+    "tags": ["q07", "policy_claims"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "quote",
+        "profile": {
+          "travelers": "2人",
+          "dates": "2026-12-10"
+        },
+        "seenRouteIds": ["r-yunnan-mid"]
+      }
+    },
+    "turns": [
+      {
+        "say": "就订云南这条，2人，2026-12-10出发",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_order",
+                "args": {
+                  "routeId": "r-yunnan-mid",
+                  "travelers": 2,
+                  "departDate": "2026-12-10"
+                }
+              }
+            ]
+          },
+          {
+            "content": "出发前 7 天也能全额退，下单请点击付款链接：{{call:create_order.payUrl}}<state>{\"stage\":\"closing\"}</state>"
+          }
+        ],
+        "expect": {
+          "silent": false,
+          "handoff": false,
+          "tools": ["create_order"],
+          "orders": {
+            "count": 1
+          },
+          "replyMatches": ["出发前 7 天也能全额退", "/pay/{{order:0.id}}"],
+          "replyExcludes": ["7–14天", "退改条款第"]
+        }
+      }
+    ]
+  }
+]

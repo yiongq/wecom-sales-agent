@@ -1,0 +1,69 @@
+{
+  "id": "qa-policy-claims-insurance",
+  "persona": "你是已经看过贵州荔波小七孔那条线、想弄清费用里含不含保险的客户，没有订单。你的每一句话都已由脚本给出，说完即结束。",
+  "maxTurns": 2,
+  "allowedTools": [
+    "search_routes",
+    "get_route_detail",
+    "search_hotels",
+    "create_quote",
+    "generate_proposal",
+    "create_order",
+    "handoff_to_human"
+  ],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?<![不没无未])(?:包含|包括|已含|赠送|附赠|配有|提供|带有?)[^，。；！？!?\\n]{0,8}?(?:保险|意外险|医疗险|责任险)|(?<![不没无未包已])含[^，。；！？!?\\n]{0,8}?(?:保险|意外险|医疗险|责任险)|(?:保险|意外险|医疗险|责任险)[^，。；！？!?\\n含不没]{0,4}?(?:已经?|都|也)?(?:包含|含)(?!不|吗|么|嘛|没)",
+      "scope": "all",
+      "negationAware": true
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "节假日价|旺季价|平日价|周末价|儿童价|早鸟|团购|半价|名额紧张|名额有限|房源紧俏|(?:这条线|该线路|线路|名额|档期|房源|位置|房间|席位)[^。，\\n]{0,6}抢手|最低价",
+      "scope": "all",
+      "negationAware": true
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "产品库|线路库|系统里|查库|库里|工具返回",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "availability|budget|package|option",
+      "scope": "all"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:[\\u{1F300}-\\u{1FAFF}\\u2600-\\u27BF].*){2,}",
+      "scope": "all"
+    }
+  ],
+  "forbidden": ["保证有房", "保证成行", "我保证给您升级酒店", "<state>", "<tool_call>", "【硬性要求】"],
+  "severity": "quality",
+  "tags": ["regression"],
+  "covers": [],
+  "customerScript": ["这条线费用里含保险吗？", "那旅游意外险是含在里面的，还是要我另外买？"],
+  "initial": {
+    "stage": "recommend",
+    "history": [
+      {
+        "role": "customer",
+        "content": "想看看贵州荔波小七孔那条线"
+      },
+      {
+        "role": "ai",
+        "content": "贵州 荔波小七孔·西江千户苗寨 6 日，包含景区门票和接送，每人 15,800 元起，您几位出行？"
+      }
+    ]
+  }
+}

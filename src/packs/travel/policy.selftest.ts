@@ -38,6 +38,7 @@ assert.equal(
 assert.ok(lines.includes(segments['sop:far-future'](p)));
 assert.equal(segments['note:peak'](p).replace('{month}', '10'), '10月为最佳出行季，价格上浮 10%');
 assert.equal(segments['note:group'](p), '4 人及以上享 95 折');
+assert.equal(segments['note:far-future'](p), '目前只受理 12 个月以内出发的订单，更远的日期只能给参考价');
 const unused = (): never => {
   throw new Error('报价 note 不应调用外部能力');
 };
@@ -96,6 +97,14 @@ assert.equal(sopPolicyMirror(written, changed), written);
 assert.equal(sopPolicyMirror(written, p, true), sop, '写回仅改变生成片段，其余字节原样保留');
 assert.throws(() => sopPolicyMirror(sop.replace(rule1, ''), p, true), /sop:price-rules.*实际 0/);
 assert.throws(() => sopPolicyMirror(`${sop}\n${rule1}`, p, true), /sop:price-rules.*实际 2/);
+// note:far-future 只随 booking 变，不带上浮：1.15 夹具下一个字不变，改预订月数才变
+assert.equal(segments['note:far-future'](changed), segments['note:far-future'](p));
+assert.ok(!segments['note:far-future'](changed).includes('15%'));
+{
+  const far = structuredClone(p);
+  far.booking.maxDepartMonths = 6;
+  assert.equal(segments['note:far-future'](far), '目前只受理 6 个月以内出发的订单，更远的日期只能给参考价');
+}
 changed.pricing.groupDiscount = 0.9;
 assert.equal(segments['note:group'](changed), '4 人及以上享 9 折');
 console.log('✔ 1.15 夹具四段同变，admin.html 比对按预期变红；镜像写回保留其他字节');

@@ -44,7 +44,7 @@ if (!process.env.PG_TEST_URL) {
     );
     assert.deepEqual(permissions, { app_read: true, app_insert: true, app_update: false, platform: false });
     await handleMessage(sid, '你好', 'wecom');
-    assert.equal(turns.at(-1)!.turn.guardVerdicts?.length, 32);
+    assert.equal(turns.at(-1)!.turn.guardVerdicts?.length, 33); // 28 个原有 + 06 的四个 + 07 R22 的 policy_claims
     assert.ok(turns.at(-1)!.turn.guardVerdicts!.some((v) => v.action === 'pass'));
     await handleMessage(sid, '重置', 'wecom');
     assert.equal(turns.at(-1)!.turn.guardVerdicts, null);

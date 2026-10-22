@@ -7,6 +7,7 @@ import { convLabel, logQuote, cleanText, replyStep, type GuardStep, type ReplyGu
 import { CUSTOM_PROMISE } from './itinerary.js';
 import { noteReply } from './reply-notes.js';
 import { rewriteClaimWords } from './claim-words.js';
+import { rewritePolicyClaims, routesInScope } from './policy-claims.js';
 import { dropQuoteHedge, isQuoteRound } from './quote-hedge.js';
 import type { createTravelTurnHooks } from './turn.js';
 import type { createTravelPriceRules } from './price-rules.js';
@@ -471,7 +472,49 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         claims.text || (ctx.turn.flags.customPromise ? '' : session.handedOver ? HANDED_OVER_FALLBACK : ctx.fallbackReply(session.stage));
       ctx.recordGuard('claim_words', before, ctx.text, 'drop_sentence');
     }),
-    replyStep('price', 'claim_words', ['customPromise', 'guardHit'], ['guardHit'], (ctx) => {
+    // 07 R22：政策陈述。退改天数与比例、定价比例与预订月数对不上已发布 policy 的句子换成条款 / 生成段原句，对得上没写出处的补出处；
+    // 客户问保险、费用含不含而回复的肯定说法在线路的「含」里没有的，换成口径句（「待顾问确认」备注由 system_note 按口径句记）。
+    // 只换小句或补出处，不建单、不转人工、不调工具；含 /pay/、/proposal/ 链接的句子不动；PRICE_GUARD=0 时同价格护栏一起关
+    replyStep('policy_claims', 'claim_words', ['customPromise'], [], (ctx) => {
+      if (process.env.PRICE_GUARD === '0') return;
+      // 没有已发布 policy（别的包、夹具）就没有可核对的东西
+      if (ctx.policy == null) return;
+      const { session } = ctx;
+      let routes: import('../../core/pack-api.js').Route[] = [];
+      try {
+        routes = loadRoutes();
+      } catch (e) {
+        // 数据文件坏了另有告警，这里不阻断对话；配置源没装载好是启动顺序出了错，照常抛
+        if (sources.isConfigNotReadyError(e)) throw e;
+      }
+      const out = rewritePolicyClaims(
+        ctx.text,
+        {
+          policy: ctx.policy,
+          inputText: ctx.inputText,
+          scope: routesInScope(session, ctx.orderSources, ctx.toolSources ?? [], ctx.text, routes),
+        },
+        { hasHole: (t) => new RegExp(ANY_HOLE.source).test(t) },
+        session.lastQuote?.routeId,
+      );
+      if (out.text === ctx.text) return;
+      // 只补出处不算拦截：warn；换了句子才是 error（同其他出口护栏）
+      (out.edits.some((e) => e.action === 'replace') ? console.error : console.warn)(
+        `[engine] ⚠️ 政策陈述已${out.edits.some((e) => e.action === 'replace') ? '换' : '补出处'}（会话 ${convLabel(session.id)}）：${logQuote(out.edits.map((e) => e.before).join(' | '))}`,
+      );
+      // 补出处与换句分两次记：同一轮两样都有时，最后的裁决是更重的 replace
+      const before = ctx.text;
+      if (out.patched !== before && out.patched !== out.text) {
+        ctx.text = out.patched;
+        ctx.recordGuard('policy_claims', before, ctx.text, 'patch');
+      }
+      const mid = ctx.text;
+      ctx.text =
+        out.text.trim() ||
+        (ctx.turn.flags.customPromise ? '' : session.handedOver ? HANDED_OVER_FALLBACK : ctx.fallbackReply(session.stage));
+      ctx.recordGuard('policy_claims', mid, ctx.text, out.patched === out.text ? 'patch' : 'replace');
+    }),
+    replyStep('price', 'policy_claims', ['customPromise', 'guardHit'], ['guardHit'], (ctx) => {
       const { session } = ctx;
       // 价格出口校验：回复里的金额必须能追溯到产品库定价规则、本会话报价/订单，或客户自己说过的数字。
       // 追溯不到就是模型自己编的价——高客单价产品里这是最贵的一类错误（客户按错价下单，
