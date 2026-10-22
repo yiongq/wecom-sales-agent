@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 import { currentTenantCtx, type Tx } from '../client.js';
 import { usageDaily } from '../schema.js';
 
-export type UsagePurpose = 'chat' | 'followup' | 'insight' | 'suggestion' | 'draft' | 'embedding';
+export type UsagePurpose = 'chat' | 'followup' | 'insight' | 'suggestion' | 'draft' | 'embedding' | 'gate';
 
 export interface UsageDelta {
   /** 服务器时区的日期，'YYYY-MM-DD' */

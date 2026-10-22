@@ -178,6 +178,7 @@ import { conversationState, shortIdOf } from '../shared/conversation.js';
 import { deliveryOfSegments, handoffKindOfTurn, isHandoffKind } from '../shared/conversation-types.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { CONSOLE_SECURITY_HEADERS } from '../shared/security-headers.js';
+import { startGate, getGateRun, GateError, GateSkippedError } from '../config/gate.js';
 import { SopEncodingError, SopStructureError } from '../sop/sections.js';
 import {
   flushSession,
@@ -370,7 +371,7 @@ function dbIp(c: Context): string | null {
 
 function ctxOf(c: Context<ConsoleEnv>): TenantCtx {
   const u = c.var.user!;
-  return { tenantId: u.tenantId, actor: { kind: 'user', userId: u.userId, name: u.displayName, ip: dbIp(c) } };
+  return { tenantId: u.tenantId, actor: { role: u.role, kind: 'user', userId: u.userId, name: u.displayName, ip: dbIp(c) } };
 }
 
 const meOf = (u: AuthedUser): Me => ({
@@ -423,6 +424,12 @@ function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503
       body: { error: 'store_lagging', detail: '写库跟不上：改动之前就拒绝的什么都没改，等提交超时的已在内存生效、稍后保存' },
     };
   if (e instanceof StoreFileModeError) return { status: 503, body: { error: 'store_file_mode', detail: e.message } };
+  if (e instanceof GateSkippedError) return { status: 409, body: { error: 'gate_skipped', detail: e.message } };
+  if (e instanceof GateError)
+    return {
+      status: e.code === 'override_forbidden' ? 403 : e.code === 'gate_quota' ? 429 : 409,
+      body: { error: e.code, ...(e.runId ? { runId: e.runId } : {}) },
+    };
   if (e instanceof SopConflictError)
     return { status: 409, body: { error: 'sop_conflict', detail: e.message, keys: e.keys, current: e.current } };
   if (e instanceof SopRevConflictError || e instanceof CatalogRevConflictError) {
@@ -557,6 +564,10 @@ export const consoleApi = new Hono<ConsoleEnv>()
     const body: DraftCheck = await checkSopDraft(ctxOf(c));
     return c.json(body, 200);
   })
+  .post('/sop/draft/gate', canEdit, zValidator('json', RevBody, badRequest), async (c) =>
+    c.json(await startGate(ctxOf(c), c.req.valid('json')), 202),
+  )
+  .get('/sop/gate-runs/:id', canEdit, async (c) => c.json(await getGateRun(ctxOf(c), c.req.param('id')), 200))
   .post('/sop/draft/publish', canEdit, zValidator('json', PublishBody, badRequest), async (c) => {
     const body: SopVersion = await publishSopDraft(ctxOf(c), c.req.valid('json'));
     return c.json(body, 200);

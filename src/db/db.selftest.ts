@@ -206,6 +206,7 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
         'sandbox_process_epoch',
         'sandbox_wechat',
         'sandbox_wecom_state',
+        'sop_gate_runs',
         'sop_versions',
         'tenants',
         'turn_traces',
@@ -4833,6 +4834,7 @@ async function realPostgres(superUrl: string): Promise<void> {
       auth_sessions: { agent_app: '', agent_platform: 'SELECT,DELETE' },
       memberships: { agent_app: '', agent_platform: 'SELECT,INSERT,UPDATE,DELETE' },
       sop_versions: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
+      sop_gate_runs: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       catalog_items: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       audit_log: { agent_app: 'SELECT,INSERT', agent_platform: 'SELECT,INSERT' },
       // 02 spec「数据库」的授权表：没有任何角色对新表有 DELETE 或 TRUNCATE

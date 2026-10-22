@@ -38,6 +38,10 @@ import type { PolicyView, SopVersion } from '../shared/console-api.js';
 import { promptHashes, publishedBrand, policySnapshot, publishedPolicy, renderInputsFor, type PromptHashes } from './hashes.js';
 import { assertConfigWritable, configRuntime, currentSop, reloadFromDb, replacePublishedSop, toPublishedSop } from './source.js';
 
+import { currentCatalog } from './source.js';
+import { currentRuntime } from '../tenancy/runtime.js';
+import { gatesForDraft } from '../db/repo/gate.js';
+import { GateError } from './gate-errors.js';
 import { preambleWarning, tenantImage } from './brand.js';
 
 export type { SopSource, SopStatus, SopVersion } from '../shared/console-api.js';
@@ -423,11 +427,50 @@ export async function checkSopDraft(ctx: TenantCtx): Promise<{
   );
 }
 
+/** 闸与发布共用同一份三方合并、渲染与静态检查；调用方持配置写锁。 */
+export async function prepareSopDraft(tx: Tx, rt: ReturnType<typeof configRuntime>, draft: SopVersionRow, pub: SopVersionRow) {
+  let mine: readonly SopSection[] = draft.sections;
+  let rebasedFrom: number | null = null;
+  if (draft.basedOn !== pub.id) {
+    const base = draft.basedOn ? await readVersionById(tx, draft.basedOn) : null;
+    const r = rebase(base?.sections ?? pub.sections, pub.sections, draft.sections);
+    if (r.conflicts.length) throw new SopConflictError(r.conflicts, editableOf(mergeWithImage(pub.sections, rt.imageSections)));
+    mine = r.sections;
+    rebasedFrom = base?.versionNo ?? null;
+  }
+  const policy = draftPolicy(rt.deps.runtime?.policy, draft.policy);
+  const ev = await evaluate(tx, rt, mine, policy.policy);
+  if (ev.violations.length) throw new SopContractError(ev.violations);
+  return { ev, policy, rebasedFrom };
+}
+
+/** 只供闸在配置写锁下捕获快照，长评测不持锁。 */
+export async function gateDraftSnapshot(tx: Tx, ctx: TenantCtx, rev: number) {
+  const rt = runtimeFor(ctx);
+  const draft = await readDraftForUpdate(tx);
+  if (!draft) throw new SopNotFoundError('没有草稿');
+  if (draft.rev !== rev) throw new SopRevConflictError('草稿已被别人改过，刷新后重来');
+  const pub = await readPublishedSop(tx);
+  if (!pub) throw new SopNotFoundError('没有已发布的 SOP');
+  const prepared = await prepareSopDraft(tx, rt, draft, pub);
+  return {
+    draft,
+    pub,
+    ...prepared,
+    catalog: structuredClone(currentCatalog()),
+    brand: currentSop().brand,
+    publishedPolicy: publishedPolicy(rt.deps.runtime?.policy, pub),
+  };
+}
+
 /**
  * 发布：核对 rev → 必要时三方 rebase → 与镜像合并、渲染、契约检查 → 归档当前版本、草稿翻成 published
  * （写回合并后的节，发布时才分配版本号）→ 审计。全部在一个事务里；提交之后才替换缓存
  */
-export async function publishSopDraft(ctx: TenantCtx, input: { rev: number; changeNote: string }): Promise<SopVersion> {
+export async function publishSopDraft(
+  ctx: TenantCtx,
+  input: { rev: number; changeNote: string; gateRunId?: string; override?: { reason: string } },
+): Promise<SopVersion> {
   const note = requireNote(input.changeNote);
   const row = await write(ctx, async (tx, rt) => {
     const draft = await readDraftForUpdate(tx);
@@ -435,18 +478,31 @@ export async function publishSopDraft(ctx: TenantCtx, input: { rev: number; chan
     if (draft.rev !== input.rev) throw new SopRevConflictError('草稿已被别人改过，刷新后重来');
     const pub = await readPublishedSop(tx);
     if (!pub) throw new SopNotFoundError('没有已发布的 SOP');
-    let mine: readonly SopSection[] = draft.sections;
-    let rebasedFrom: number | null = null;
-    if (draft.basedOn !== pub.id) {
-      const base = draft.basedOn ? await readVersionById(tx, draft.basedOn) : null;
-      const r = rebase(base?.sections ?? pub.sections, pub.sections, draft.sections);
-      if (r.conflicts.length) throw new SopConflictError(r.conflicts, editableOf(mergeWithImage(pub.sections, rt.imageSections)));
-      mine = r.sections;
-      rebasedFrom = base?.versionNo ?? null;
+    const { ev, policy, rebasedFrom } = await prepareSopDraft(tx, rt, draft, pub);
+    const sandbox = currentRuntime().kind === 'sandbox';
+    if (input.override && (ctx.actor.kind !== 'user' || !ctx.actor.userId || ctx.actor.role !== 'owner'))
+      throw new GateError('override_forbidden');
+    const reason = input.override ? requireNote(input.override.reason) : null;
+    if (reason && reason.length > 500) throw new SopInputError('强发原因不能超过500字');
+    let gate: string | undefined = sandbox ? 'skipped_sandbox' : undefined;
+    if (!sandbox && process.env.SOP_GATE === 'required') {
+      if (reason) gate = 'override';
+      else {
+        const runs = (await gatesForDraft(tx, draft.id)).filter(
+          (r) =>
+            r.draftRev === draft.rev &&
+            r.promptHash === ev.hashes.promptHash &&
+            r.policyHash === policy.policyHash &&
+            (!input.gateRunId || r.id === input.gateRunId),
+        );
+        const passed = runs.find((r) => r.status === 'done' && r.verdict === 'pass');
+        if (!passed) {
+          const failed = runs.find((r) => r.status === 'done' && r.verdict === 'fail');
+          throw new GateError(failed ? 'gate_failed' : 'gate_required', failed?.id);
+        }
+        gate = passed.id;
+      }
     }
-    const policy = draftPolicy(rt.deps.runtime?.policy, draft.policy);
-    const ev = await evaluate(tx, rt, mine, policy.policy);
-    if (ev.violations.length) throw new SopContractError(ev.violations);
     const changedKeys = EDITABLE.filter((s) => textOf(pub.sections, s.key) !== textOf(ev.merged, s.key)).map((s) => s.key);
     const versionNo = (await maxVersionNo(tx)) + 1;
     await archivePublished(tx, pub.id);
@@ -458,7 +514,7 @@ export async function publishSopDraft(ctx: TenantCtx, input: { rev: number; chan
       ...ev.hashes,
       policy: policy.policy,
       renderInputs: renderInputsFor(rt.deps.render, rt.deps.imageSop, rt.deps.toolsJson, undefined, currentSop().brand, policy.policyHash),
-      changeNote: note,
+      changeNote: reason ? `${note}\n强发原因：${reason}` : note,
       publishedBy: ctx.actor.userId,
       publishedByName: ctx.actor.name,
     });
@@ -467,7 +523,13 @@ export async function publishSopDraft(ctx: TenantCtx, input: { rev: number; chan
       action: 'sop.publish',
       targetType: 'sop_version',
       targetId: published.id,
-      diff: { versionNo, changedKeys, ...(rebasedFrom === null ? {} : { rebasedFrom }) },
+      diff: {
+        versionNo,
+        changedKeys,
+        ...(rebasedFrom === null ? {} : { rebasedFrom }),
+        ...(gate ? { gate } : {}),
+        ...(reason ? { gate: sandbox ? 'skipped_sandbox' : 'override', override: { reason }, changeNote: note } : {}),
+      },
     });
     return published;
   });
@@ -533,7 +595,13 @@ export async function rollbackSop(
       action: 'sop.rollback',
       targetType: 'sop_version',
       targetId: v.id,
-      diff: { fromVersionNo: pub.versionNo, toVersionNo: versionNo, targetVersionNo: target.versionNo, sameHashAsTarget },
+      diff: {
+        fromVersionNo: pub.versionNo,
+        toVersionNo: versionNo,
+        targetVersionNo: target.versionNo,
+        sameHashAsTarget,
+        gate: 'skipped_rollback',
+      },
     });
     return { row: v, same: sameHashAsTarget };
   });

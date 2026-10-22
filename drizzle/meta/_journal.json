@@ -120,6 +120,13 @@
       "when": 1792620000000,
       "tag": "0016_kb_vectors",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1792630000000,
+      "tag": "0017_sop_gate",
+      "breakpoints": true
     }
   ]
 }

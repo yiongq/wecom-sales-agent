@@ -3,6 +3,14 @@ export const STATE_MANIFEST: Record<
   string,
   { kind: 'tenant'; state: string } | { kind: 'instance'; why: string } | { kind: 'object-keyed' }
 > = Object.freeze({
+  'src/config/gate.ts:__gateTest': { kind: 'instance', why: '自测目标目录选择；不保存租户数据，生产使用固定回归集目录。' },
+  'src/config/gate.ts:goalSchema': { kind: 'instance', why: '报告目标的静态校验 schema。' },
+  'src/config/gate.ts:usageSchema': { kind: 'instance', why: '报告用量的静态校验 schema。' },
+  'src/config/gate.ts:summarySchema': { kind: 'instance', why: '报告汇总的静态校验 schema。' },
+  'src/db/schema.ts:sopGateRuns': { kind: 'instance', why: 'Drizzle 静态表定义，不保存行或租户快照。' },
+  'src/config/gate.ts:slot': { kind: 'instance', why: '进程唯一发布闸调度槽；只串行调度，租户项登记在 gate.progress，摘下时取消。' },
+  'src/config/gate.ts:progress': { kind: 'tenant', state: 'gate.progress' },
+
   'src/tenancy/sandbox/limits.ts:provisioned': { kind: 'instance', why: '进程开通的小时与 IP 日计数；崩溃归零，不随沙箱删除减去。' },
   'src/tenancy/sandbox/limits.ts:tenantState': { kind: 'tenant', state: 'sandbox.limits.writes' },
   'src/tenancy/sandbox/provision.ts:provisioning': { kind: 'instance', why: '开通的进程互斥链；不缓存租户或令牌，失败后仍可继续。' },

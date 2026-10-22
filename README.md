@@ -384,6 +384,8 @@ CONFIG_SOURCE=file PARITY_CLOCK_MS=1790913600000 pnpm exec tsx --import ./src/st
 4. HTTPS 用 Caddy 反代到宿主机 3210 端口（Compose 仅绑定本机回环地址），SSE 透传；云防火墙放行 80/443。站点地址仅在服务器配置，不写入仓库。
 5. 应用库里要有 **vector 扩展**（07 起，迁移 0016 的 `kb_vectors` 用 pgvector 的 `halfvec`）。它不是 trusted 扩展，迁移用的 `agent_owner` 不是超级用户，建不了：新库首次初始化时 `deploy/db-init/roles.sh` 建完库会顺带调 `extensions.sh` 建好；**现有的线上库在第一次部署含迁移 0016 的版本之前，由 owner 手工执行一次**：`docker compose -f deploy/compose.yml exec db /db-init/extensions.sh`（可重复执行，用超级用户连应用库执行 `deploy/db-init/extensions.sql`）。没做这一步，migrate 服务报「先由超级用户在应用库里建 vector 扩展」并整批回退，部署停在切换之前，旧容器照常运行；`deploy.sh` 此时已把 `deploy/` 同步到服务器，补做上面那条命令后重新部署即可。
 
+DB 模式的 prod 与 demo 宿主在应用环境中设置 `SOP_GATE=required`；开发与 CI 默认 `off`，沙箱忽略此开关。可调参数为 `SOP_GATE_BUDGET_CNY=2`（元）、`SOP_GATE_DAILY_RUNS=3`（每租户每天）、`SOP_GATE_TIMEOUT_MS=1800000`（30 分钟）。启用后必须配置模型密钥且不能使用 `LLM_MOCK=1`，否则以 `gate_unavailable` 拒绝启动。回归在后台单独运行，发布只认对应草稿和哈希的通过记录；所有者可填写原因强发，回滚、首次导入与启动重渲染跳过闸。预算达到上限后不发新请求，最后一次请求的费用如实记录，最多超出这一笔费用。报告保留在 `VAR_DIR/gate/<runId>/`，每次结束清理临时状态和配置副本；运维可按保留期删除旧报告，数据库结果不受影响。
+
 之后每次发布：给要上线的提交打 tag，再按 tag 部署。
 
 ```bash

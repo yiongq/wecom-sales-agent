@@ -19,7 +19,14 @@ export type Tx = PgTransaction<PgQueryResultHKT, Schema, ExtractTablesWithRelati
 
 export interface TenantCtx {
   tenantId: string;
-  actor: { kind: 'user' | 'system' | 'platform'; userId: string | null; name: string | null; ip: string | null };
+  actor: {
+    /** 已认证的后台会话带入，供所有者强发校验；系统与平台任务不填。 */
+    role?: import('../shared/console-api.js').Role;
+    kind: 'user' | 'system' | 'platform';
+    userId: string | null;
+    name: string | null;
+    ip: string | null;
+  };
 }
 
 // ---------------- 查询计数 ----------------

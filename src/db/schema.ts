@@ -502,7 +502,7 @@ export const usageDaily = pgTable(
     /** 服务器时区（TZ）的日期，'YYYY-MM-DD' */
     day: date('day', { mode: 'string' }).notNull(),
     model: text('model').notNull(),
-    purpose: text('purpose', { enum: ['chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding'] }).notNull(),
+    purpose: text('purpose', { enum: ['chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate'] }).notNull(),
     calls: integer('calls').notNull().default(0),
     promptTokens: bigint('prompt_tokens', { mode: 'number' }).notNull().default(0),
     completionTokens: bigint('completion_tokens', { mode: 'number' }).notNull().default(0),
@@ -513,7 +513,7 @@ export const usageDaily = pgTable(
   },
   (t) => [
     primaryKey({ columns: [t.tenantId, t.day, t.model, t.purpose] }),
-    check('usage_daily_purpose_check', sql`${t.purpose} IN ('chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding')`),
+    check('usage_daily_purpose_check', sql`${t.purpose} IN ('chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate')`),
   ],
 );
 
@@ -908,4 +908,41 @@ export const sandboxProcessEpoch = pgTable(
     epoch: bigint('epoch', { mode: 'bigint' }).notNull(),
   },
   (t) => [check('sandbox_process_epoch_id_check', sql`${t.id} = 1`)],
+);
+
+/** 07 R7：进度不入库，终态结果持久保存。 */
+export const sopGateRuns = pgTable(
+  'sop_gate_runs',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    id: uuid('id').notNull().defaultRandom(),
+    draftId: uuid('draft_id').notNull(),
+    draftRev: integer('draft_rev').notNull(),
+    status: text('status', { enum: ['queued', 'running', 'done', 'error', 'abandoned'] }).notNull(),
+    verdict: text('verdict', { enum: ['pass', 'fail'] }),
+    mock: boolean('mock').notNull(),
+    promptHash: text('prompt_hash').notNull(),
+    policyHash: text('policy_hash').notNull(),
+    draftKey: text('draft_key').notNull(),
+    baselineKey: text('baseline_key').notNull(),
+    results:
+      json('results').$type<Pick<import('../shared/console-api.js').GateRunView, 'draft' | 'baseline' | 'baselineReused' | 'blocking'>>(),
+    costMilli: bigint('cost_milli', { mode: 'number' }).notNull().default(0),
+    error: text('error'),
+    createdBy: uuid('created_by').references(() => users.id),
+    createdByName: text('created_by_name'),
+    createdAt: tstz('created_at').notNull().defaultNow(),
+    finishedAt: tstz('finished_at'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.id] }),
+    foreignKey({ columns: [t.tenantId, t.draftId], foreignColumns: [sopVersions.tenantId, sopVersions.id] }),
+    check('sop_gate_runs_status_check', sql`${t.status} IN ('queued','running','done','error','abandoned')`),
+    check('sop_gate_runs_verdict_check', sql`${t.verdict} IN ('pass','fail')`),
+    uniqueIndex('sop_gate_one_active')
+      .on(t.tenantId)
+      .where(sql`${t.status} IN ('queued','running')`),
+  ],
 );
