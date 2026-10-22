@@ -148,6 +148,20 @@ const summarySchema = z.object({
   metadata: z.object({ promptHash: z.string(), policyHash: z.string(), salesModel: z.string(), customerModel: z.string() }),
 });
 type Summary = z.infer<typeof summarySchema>;
+/** 一边中途出错；子进程已写出 summary 时带上它的分模型用量，供入账（R9「最后一笔如实记」） */
+class GateSideError extends Error {
+  constructor(
+    reason: string,
+    readonly usage: Summary['usage'] | null,
+  ) {
+    super(reason);
+  }
+}
+/** 报告的目标行里有、但没等到 summary 的花费：记成销售模型名下的一行，token 与调用数不明都记 0 */
+function unreported(model: string, costMilli: number): Summary['usage'] {
+  if (costMilli <= 0) return [];
+  return [{ model, calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, reasoningTokens: 0, costMilli }];
+}
 
 async function exportSide(
   dir: string,
@@ -247,10 +261,11 @@ async function runSide(
       child.once('close', resolve);
     });
     await consume();
-    if (entry.cancelled) throw new Error('cancelled');
-    if (timedOut) throw new Error('timeout');
-    if (invalid) throw new Error('report_invalid');
-    if ((code !== 0 && code !== 3) || !summary) throw new Error('child_exit');
+    const fail = (reason: string) => new GateSideError(reason, summary?.usage ?? null);
+    if (entry.cancelled) throw fail('cancelled');
+    if (timedOut) throw fail('timeout');
+    if (invalid) throw fail('report_invalid');
+    if ((code !== 0 && code !== 3) || !summary) throw fail('child_exit');
     if (
       summary.metadata.promptHash !== expected.promptHash ||
       summary.metadata.policyHash !== expected.policyHash ||
@@ -260,7 +275,7 @@ async function runSide(
       summary.results.some((g) => !g.tags.includes('regression')) ||
       summary.budgetStopped !== (code === 3)
     )
-      throw new Error('report_invalid');
+      throw fail('report_invalid');
     return summary;
   } finally {
     clearInterval(poll);
@@ -351,7 +366,19 @@ export async function startGate(ctx: TenantCtx, input: { rev: number }): Promise
           if (remaining <= 0) throw new Error('budget_stop');
           const time = deadline - Date.now();
           if (time <= 0) throw new Error('timeout');
-          const summary = await runSide(entry, root, side, remaining, hashes, goals.ids, time, goals.dir);
+          let summary: Summary;
+          try {
+            summary = await runSide(entry, root, side, remaining, hashes, goals.ids, time, goals.dir);
+          } catch (e) {
+            // 这一边中途出错（取消、超时、子进程异常、报告不合法），已经花掉的钱照样入账：子进程写出了 summary 就用它的
+            // 分模型用量，没写出来就按报告里最后一个目标的 spentMilli 记在销售模型名下（调用数不明，记 0）。
+            // 被杀时正在跑的那个目标还没出报告，它的花费拿不到，最多少记一个目标。
+            const spent = e instanceof GateSideError && e.usage ? e.usage : unreported(model, entry.costMilli - costMilli);
+            usage.push(...spent);
+            costMilli += spent.reduce((n, u) => n + u.costMilli, 0);
+            entry.costMilli = costMilli;
+            throw e;
+          }
           usage.push(...summary.usage);
           costMilli += summary.costMilli;
           entry.costMilli = costMilli;
@@ -385,7 +412,11 @@ export async function startGate(ctx: TenantCtx, input: { rev: number }): Promise
               results: { draft, baseline, baselineReused, blocking },
             });
           });
-          for (const u of usage) for (let i = 0; i < u.calls; i++) owner.budget.reserve('gate', 0)?.settle(i === 0 ? u.costMilli : 0);
+          for (const u of usage) {
+            // 补记的那一行调用数是 0，费用照样进当天预算
+            const calls = u.calls || Number(u.costMilli > 0);
+            for (let i = 0; i < calls; i++) owner.budget.reserve('gate', 0)?.settle(i === 0 ? u.costMilli : 0);
+          }
         } finally {
           // 保留 JSONL 报告供诊断；成功、失败或杀进程都删除配置副本及子进程临时状态。
           try {
