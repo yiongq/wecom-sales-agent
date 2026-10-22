@@ -90,6 +90,10 @@ function NavLink({ item, selected, collapsed }: { item: NavItem; selected: boole
     <Link to="/conversations" {...common}>
       {body}
     </Link>
+  ) : item.key === '/traces' ? (
+    <Link to="/traces" {...common}>
+      {body}
+    </Link>
   ) : item.key === '/audit' ? (
     <Link to="/audit" {...common}>
       {body}

@@ -9,15 +9,7 @@ import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import { Button, Dropdown, Input, Modal, Switch } from 'antd';
 import { Ellipsis, MessagesSquare } from 'lucide-react';
 import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
-import type {
-  ConversationDetail,
-  MessageView,
-  OrderView,
-  Role,
-  TurnDiffView,
-  TurnStepsView,
-  TurnTraceView,
-} from '../../../src/shared/console-api.js';
+import type { ConversationDetail, MessageView, OrderView, Role, TurnDiffView, TurnStepsView } from '../../../src/shared/console-api.js';
 import { conversationState } from '../../../src/shared/conversation.js';
 import { clockTime } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
@@ -28,7 +20,6 @@ import { popupRegion } from '../parts/popupRegion.js';
 import { PrimaryButton } from '../parts/PrimaryButton.js';
 import { EmptyBlock, Skeleton, StateView } from '../parts/StateView.js';
 import { Status } from '../parts/Status.js';
-import { TechDetails } from '../parts/TechDetails.js';
 import { conversationDetailQuery } from '../queries.js';
 import { useDocumentTitle } from '../shell/hooks.js';
 import { Icon } from '../shell/icons.js';
@@ -40,6 +31,7 @@ import { refreshSandboxProgress, usePack, useViewer } from '../viewer.js';
 import { OwnConversationTag, SimulatorLink } from '../sandbox/Sandbox.js';
 import { stageLabel } from './model.js';
 import { QuickRepliesCard } from './QuickReplies.js';
+import { TraceTab } from './TraceDetail.js';
 import {
   advisorLabel,
   CAN_HANDLE_ROLES,
@@ -739,32 +731,6 @@ export function OrderRow({
       >
         取消之后这张订单作废，不能恢复；客户需要新的报价才能再下单。
       </ConfirmDanger>
-    </div>
-  );
-}
-
-function TraceTab({ id, turnId }: { id: string; turnId: string | null }) {
-  const q = useQuery({
-    queryKey: [...CONV_PREFIX, 'turnTrace', id, turnId] as const,
-    queryFn: () => unwrap(api.conversations[':id'].turns[':turnId'].$get({ param: { id, turnId: turnId! } })),
-    enabled: turnId !== null,
-  });
-  if (turnId === null) return <p className="wb-side-empty">选中一条AI回复，看它为什么这么回</p>;
-  if (q.isPending) return <Skeleton rows={4} />;
-  if (q.error) return <InlineError error={q.error} />;
-  const t: TurnTraceView = q.data!;
-  return (
-    <div className="wb-trace">
-      <p>{`模型用了${t.durationMs}毫秒`}</p>
-      <p>{`阶段：${t.stageBefore ?? '—'} → ${t.stageAfter ?? '—'}`}</p>
-      <TechDetails
-        rows={[
-          ['SOP版本', String(t.sopVersion ?? '—')],
-          ['前缀哈希', t.prefixHash],
-          ['产品库版本', JSON.stringify(t.catalogVersions)],
-        ]}
-        json={{ calls: t.calls, llm: t.llm, signals: t.signals, draft: t.draft, finalText: t.finalText }}
-      />
     </div>
   );
 }

@@ -509,12 +509,6 @@
 .wb-quick-btn:hover {
   background: var(--hover);
 }
-.wb-trace p {
-  margin: 0 0 4px;
-  font-size: 13px;
-  line-height: 20px;
-  color: var(--text-2);
-}
 
 /* 卡片标题一行带右侧操作（「快捷回复」卡的「管理」）：标题不再自带下边距，由这一行统一留 */
 .wb-card-head {
