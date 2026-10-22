@@ -32,6 +32,7 @@ import type {
   Me,
   MetricsView,
   OrderSummary,
+  OrderSummaryPart,
   OrderView,
   Role,
   SopOverview,
@@ -39,6 +40,7 @@ import type {
 } from '../../../src/shared/console-api.js';
 import { auditRuns } from '../../../src/shared/audit-text.js';
 import { relativeTime } from '../../../src/shared/format.js';
+import { ORIGINS } from '../../../src/shared/origin.js';
 import type { EntityType, FieldDef, FieldType, IndustryPack } from '../../../src/shared/pack.js';
 import type { Viewer } from '../shell/boot.js';
 import { catalogListQuery, conversationCountsQuery, waitingConversationsQuery } from '../queries.js';
@@ -47,7 +49,9 @@ import {
   attentionTodos,
   catalogCounts,
   catalogTodos,
+  dealsKpi,
   enoughAudit,
+  handoffKpi,
   inSaleKpi,
   issueText,
   memberKpis,
@@ -502,8 +506,17 @@ eq(
 }
 
 // 「本月成交额」「运行数字」KPI 格（都不是链接）
-const SUMMARY: OrderSummary = {
-  month: '2026-09',
+const ZERO_PART: OrderSummaryPart = {
+  paidTotal: 0,
+  paidCount: 0,
+  refundedTotal: 0,
+  refundedCount: 0,
+  refundPendingCount: 0,
+  pendingTotal: 0,
+  pendingCount: 0,
+};
+// 来源拆分（07 R23）：默认让「真实客户」拿全部的数，其余为 0，这样默认视图下原有的断言不变；拆开的场景见 SPLIT_SUMMARY
+const SUMMARY_ALL: OrderSummaryPart = {
   paidTotal: 207_440,
   paidCount: 2,
   refundedTotal: 0,
@@ -511,6 +524,11 @@ const SUMMARY: OrderSummary = {
   refundPendingCount: 0,
   pendingTotal: 85_600,
   pendingCount: 1,
+};
+const SUMMARY: OrderSummary = {
+  month: '2026-09',
+  ...SUMMARY_ALL,
+  byOrigin: { customer: { ...SUMMARY_ALL }, visitor: { ...ZERO_PART }, seed: { ...ZERO_PART } },
 };
 eq('本月成交额：数字不带单位（标签已经写了「元」），明细写另有待付', monthlyRevenueKpi(SUMMARY), {
   key: 'monthlyRevenue',
@@ -520,6 +538,8 @@ eq('本月成交额：数字不带单位（标签已经写了「元」），明�
   breakdown: ['另有待付85,600元'],
 });
 eq('本月成交额：没有待付款时不写明细', monthlyRevenueKpi({ ...SUMMARY, pendingCount: 0 }).breakdown, null);
+const NO_DEALS = { aiOnly: 0, aiOnlyAmount: 0, aiOnlyRefunded: 0, assisted: 0, assistedAmount: 0, assistedRefunded: 0, refunded: 0 };
+const EMPTY_HANDOFF = { sessions: 0, byKind: {}, takeovers: 0 };
 const METRICS: MetricsView = {
   days: 7,
   turns: 120,
@@ -528,6 +548,19 @@ const METRICS: MetricsView = {
   aiErrorRate: 0.03,
   costTodayYuan: 18.62,
   costRangeYuan: 96.4,
+  // 07 R23：真实客户 5 单（AI 独立 3 单 38,000 元其中退 1 单，人机协同 2 单 52,000 元）；访客 1 单；种子 1 单协同
+  deals: {
+    customer: { aiOnly: 3, aiOnlyAmount: 38_000, aiOnlyRefunded: 1, assisted: 2, assistedAmount: 52_000, assistedRefunded: 0, refunded: 1 },
+    visitor: { ...NO_DEALS, aiOnly: 1, aiOnlyAmount: 5_000 },
+    seed: { ...NO_DEALS, assisted: 1, assistedAmount: 105_600 },
+  },
+  handoffByKind: { request: 0.08, model: 0.05, complaint: 0.02, agent: 0.03 },
+  takeovers: 3,
+  handoffByOrigin: {
+    customer: { sessions: 40, byKind: { request: 0.08, model: 0.05, complaint: 0.02, agent: 0.03 }, takeovers: 3 },
+    visitor: { ...EMPTY_HANDOFF },
+    seed: { ...EMPTY_HANDOFF },
+  },
 };
 eq(
   '运行数字：回复用时按秒取整、比例写成百分数、费用两位小数',
@@ -550,6 +583,115 @@ eq(
   metricsKpis({ ...METRICS, replyP90Ms: null, handoffRate: null, aiErrorRate: null }).map((k) => k.value),
   ['—', '—', '—', '18.62'],
 );
+
+// 07 R23：本月成交额、成交拆分、按原因的转人工率，按来源视图看
+const SPLIT_SUMMARY: OrderSummary = {
+  month: '2026-09',
+  paidTotal: 300_000,
+  paidCount: 5,
+  refundedTotal: 0,
+  refundedCount: 0,
+  refundPendingCount: 0,
+  pendingTotal: 1_000,
+  pendingCount: 1,
+  byOrigin: {
+    customer: { ...ZERO_PART, paidTotal: 90_000, paidCount: 2 },
+    visitor: { ...ZERO_PART, paidTotal: 5_000, paidCount: 1, pendingTotal: 1_000, pendingCount: 1 },
+    seed: { ...ZERO_PART, paidTotal: 205_000, paidCount: 2 },
+  },
+};
+eq(
+  '本月成交额按来源：真实客户 / 访客 / 种子各取各的，口径后面标出看的是哪一类；全部取合计、口径同原来',
+  (['customer', 'visitor', 'seed', 'all'] as const).map((v) => {
+    const k = monthlyRevenueKpi(SPLIT_SUMMARY, v);
+    return [k.value, k.caption, k.breakdown];
+  }),
+  [
+    ['90,000', ['本月已付款订单的总额', '真实客户'], null],
+    ['5,000', ['本月已付款订单的总额', '访客'], ['另有待付1,000元']],
+    ['205,000', ['本月已付款订单的总额', '种子'], null],
+    ['300,000', ['本月已付款订单的总额'], ['另有待付1,000元']],
+  ],
+);
+eq(
+  '成交拆分（真实客户）：成交数是两类之和；AI 独立成交与人机协同成交各带金额，「其中已退款」各列各的',
+  [dealsKpi(METRICS, 'customer').value, dealsKpi(METRICS, 'customer').caption, dealsKpi(METRICS, 'customer').rows],
+  [
+    '5',
+    ['近7天付过款的订单'],
+    [
+      { label: 'AI独立成交', value: ['3单', '38,000元'] },
+      { label: '其中已退款', value: ['1单'], sub: true },
+      { label: '人机协同成交', value: ['2单', '52,000元'] },
+      { label: '其中已退款', value: ['0单'], sub: true },
+    ],
+  ],
+);
+eq(
+  '成交拆分：访客、种子各取各的，全部是三类相加（7 单：AI 独立 4 单 43,000 元，协同 3 单 157,600 元）',
+  [
+    dealsKpi(METRICS, 'visitor').value,
+    dealsKpi(METRICS, 'seed').rows?.[2]?.value,
+    dealsKpi(METRICS, 'all').value,
+    dealsKpi(METRICS, 'all').rows?.map((r) => r.value),
+  ],
+  ['1', ['1单', '105,600元'], '7', [['4单', '43,000元'], ['1单'], ['3单', '157,600元'], ['0单']]],
+);
+eq(
+  '成交拆分：窗口内没有成交写 0 和一句说明（空状态），不画明细行',
+  (() => {
+    const none = { customer: NO_DEALS, visitor: NO_DEALS, seed: NO_DEALS };
+    const k = dealsKpi({ ...METRICS, deals: none, days: 30 }, 'customer');
+    return [k.value, k.caption, k.rows ?? null];
+  })(),
+  ['0', ['近30天没有付过款的订单'], null],
+);
+eq(
+  '按原因的转人工率（真实客户）：大数字是最多的那个原因，其余按比率从高到低列在下面；顾问主动接手不算原因，单列次数',
+  (() => {
+    const k = handoffKpi(METRICS, 'customer');
+    return [k.label, k.value, k.caption, k.rows, k.breakdown];
+  })(),
+  [
+    '转人工率（按原因）',
+    '8%',
+    ['最多的是客户要找顾问'],
+    [
+      { label: 'AI 判断要请顾问处理', value: ['5%'] },
+      { label: '客户要投诉', value: ['2%'] },
+    ],
+    ['顾问主动接手3次'],
+  ],
+);
+eq(
+  '按原因的转人工率：宿主的访客、种子永不进库，写明「只统计进库的会话」而不是 0%；真实客户视图没有会话写「近N天没有会话」',
+  [
+    handoffKpi(METRICS, 'visitor').value,
+    handoffKpi(METRICS, 'visitor').caption,
+    handoffKpi(METRICS, 'seed').caption,
+    handoffKpi({ ...METRICS, handoffByOrigin: { ...METRICS.handoffByOrigin, customer: EMPTY_HANDOFF } }, 'customer').caption,
+  ],
+  ['—', ['只统计进库的会话'], ['只统计进库的会话'], ['近7天没有会话']],
+);
+eq(
+  '按原因的转人工率：没有会话转人工写 0%；顾问主动接手没有经过轮次，会话数为 0 时也照列；全部视图取接口的合计',
+  [
+    handoffKpi(
+      { ...METRICS, handoffByOrigin: { ...METRICS.handoffByOrigin, customer: { sessions: 5, byKind: {}, takeovers: 0 } } },
+      'customer',
+    ).value,
+    handoffKpi({ ...METRICS, handoffByOrigin: { ...METRICS.handoffByOrigin, seed: { sessions: 0, byKind: {}, takeovers: 2 } } }, 'seed')
+      .breakdown,
+    handoffKpi(METRICS, 'all').value,
+  ],
+  ['0%', ['顾问主动接手2次'], '8%'],
+);
+eq(
+  '按原因的转人工率：有转人工但不到 0.5% 不写成 0%',
+  handoffKpi({ ...METRICS, handoffByKind: { request: 0.003 }, takeovers: 0 }, 'all').value,
+  '不到1%',
+);
+eq('三类来源的顺序固定', ORIGINS, ['customer', 'visitor', 'seed']);
 
 {
   const policy = { clauses: [], approvalThresholdYuan: 30000, selfService: true };
@@ -983,16 +1125,7 @@ let requests: string[] = [];
 const json = (status: number, b: unknown): Response =>
   new Response(JSON.stringify(b), { status, headers: { 'Content-Type': 'application/json' } });
 
-const DEFAULT_SUMMARY: OrderSummary = {
-  month: '2026-09',
-  paidTotal: 207_440,
-  paidCount: 2,
-  refundedTotal: 0,
-  refundedCount: 0,
-  refundPendingCount: 0,
-  pendingTotal: 85_600,
-  pendingCount: 1,
-};
+const DEFAULT_SUMMARY: OrderSummary = SUMMARY;
 
 function respond(method: string, url: URL): Response {
   const p = url.pathname.replace(/^\/api\/console/, '');
@@ -1081,11 +1214,13 @@ const blockOf = (e: HTMLElement): string =>
       ? '阶段'
       : e.closest('.ov-metrics-block')
         ? '运行数字'
-        : e.closest('.ov-kpi-block')
-          ? '业务数'
-          : e.closest('.ov-system')
-            ? '系统状态'
-            : '需要你处理';
+        : e.closest('.ov-deals-block')
+          ? '成交与转人工'
+          : e.closest('.ov-kpi-block')
+            ? '业务数'
+            : e.closest('.ov-system')
+              ? '系统状态'
+              : '需要你处理';
 
 // 验收 6：页面上任何地方都不出现这五个词（设计系统 §11 只许用四种状态名）。每次挂载的总览记三份：首帧（请求都还没回来，
 // 各块画着骨架）、载完、卸载前。每份是文字、标签页标题（页头写的「总览 · 租户名」），以及 title、aria-label、placeholder
@@ -1191,7 +1326,7 @@ const member = (role: Role, pack = TRAVEL): Viewer => ({ kind: 'member', me: me(
   };
   requests = [];
   const m = await mountOverview(member('owner'));
-  eq('所有者：区块顺序', m.texts('h2'), ['需要你处理', '最近变更', '客户停在哪一步']);
+  eq('所有者：区块顺序', m.texts('h2'), ['需要你处理', '成交与转人工', '最近变更', '客户停在哪一步']);
   eq('所有者：标签页标题', document.title, '总览 · 云途定制旅行');
   eq('所有者：页头状态句是租户名与日期', m.texts('.page-status'), ['云途定制旅行·9月26日 周六']);
   eq('需要你处理：7项（等人接手2 + 已成交客户要人工1 + 待付款1 + 话术草稿1 + 待上架2）', m.texts('.ov-count')[0], '7项');
@@ -1258,10 +1393,11 @@ const member = (role: Role, pack = TRAVEL): Viewer => ({ kind: 'member', me: me(
     ['接手', '接手', '接手'],
   );
   eq('本月成交额：数字与明细（宽于 1280 时在「需要你处理」右侧）', m.texts('.ov-todos-kpi .ov-kpi-value'), ['207,440']);
-  eq('本月成交额：口径与明细', m.texts('.ov-todos-kpi .ov-kpi-caption, .ov-todos-kpi .ov-kpi-detail'), [
-    '本月已付款订单的总额',
-    '另有待付85,600元',
-  ]);
+  eq(
+    '本月成交额：口径与明细（07 R23：默认看真实客户，口径后面标明）',
+    m.texts('.ov-todos-kpi .ov-kpi-caption, .ov-todos-kpi .ov-kpi-detail'),
+    ['本月已付款订单的总额·真实客户', '另有待付85,600元'],
+  );
   check('本月成交额：静态格不是链接（spec 没给「点了去」）', m.$('.ov-todos-kpi a').length === 0);
   eq('运行数字：四格的名称与数字', m.texts('.ov-metrics-block .ov-kpi-label'), [
     '回复用时（秒）',
@@ -1773,6 +1909,199 @@ const humanRequests = (): string[] => requests.filter((r) => r.includes('state=h
   await e.unmount();
 }
 
+// 2.9c 成交与转人工（07 R23）：两格加四个来源视图，默认真实客户；本月成交额跟着视图走；加载、空、出错、文件存储四种状态
+{
+  const dealsBlock = (m: Awaited<ReturnType<typeof mountOverview>>) => ({
+    labels: m.texts('.ov-deals-block .ov-kpi-label'),
+    values: m.texts('.ov-deals-block .ov-kpi-value'),
+    captions: m.texts('.ov-deals-block .ov-kpi-caption'),
+    rows: m.texts('.ov-deals-block .ov-kpi-row'),
+  });
+  const segment = (m: Awaited<ReturnType<typeof mountOverview>>, label: string): HTMLElement | undefined =>
+    m
+      .$('.ov-deals-block .ant-segmented-item')
+      .find((e) => (e.textContent ?? '').trim() === label)
+      ?.querySelector<HTMLElement>('input') ?? undefined;
+
+  server = { pack: TRAVEL, lists: SCENE, ordersSummary: SPLIT_SUMMARY, metrics: METRICS };
+  requests = [];
+  const m = await mountOverview(member('owner'));
+  eq('成交与转人工：四个视图，顺序是真实客户、访客、种子、全部', m.texts('.ov-deals-block .ant-segmented-item'), [
+    '真实客户',
+    '访客',
+    '种子',
+    '全部',
+  ]);
+  eq('成交与转人工：默认选中真实客户', m.texts('.ov-deals-block .ant-segmented-item-selected'), ['真实客户']);
+  eq('成交与转人工：分段控件整条轨道不进 Tab 顺序', m.box.querySelector('.ov-deals-block .ant-segmented')?.getAttribute('tabindex'), '-1');
+  eq('成交与转人工：两格，名称', dealsBlock(m).labels, ['成交拆分（单）', '转人工率（按原因）']);
+  eq('成交与转人工（真实客户）：大数字', dealsBlock(m).values, ['5', '8%']);
+  eq('成交与转人工（真实客户）：成交拆分的明细行与「其中已退款」', dealsBlock(m).rows.slice(0, 4), [
+    'AI独立成交3单·38,000元',
+    '其中已退款1单',
+    '人机协同成交2单·52,000元',
+    '其中已退款0单',
+  ]);
+  eq('成交与转人工（真实客户）：口径', dealsBlock(m).captions, ['近7天付过款的订单', '最多的是客户要找顾问']);
+  eq('成交与转人工：顾问主动接手单列次数', m.texts('.ov-deals-block .ov-kpi-detail'), ['顾问主动接手3次']);
+  eq(
+    '本月成交额跟着视图：默认真实客户取 90,000，口径后标明',
+    [m.texts('.ov-todos-kpi .ov-kpi-value'), m.texts('.ov-todos-kpi .ov-kpi-caption')],
+    [['90,000'], ['本月已付款订单的总额·真实客户']],
+  );
+  eq(
+    '成交与转人工：只请求了一份 /metrics 和一份 /orders/summary（视图切换不重新请求）',
+    [
+      requests.filter((r) => r.startsWith('GET /api/console/metrics')).length,
+      requests.filter((r) => r.startsWith('GET /api/console/orders/summary')).length,
+    ],
+    [1, 1],
+  );
+
+  await m.click(segment(m, '访客'));
+  eq(
+    '切到访客：成交拆分取访客的，转人工写只统计进库的会话',
+    [dealsBlock(m).values, dealsBlock(m).captions],
+    [
+      ['1', '—'],
+      ['近7天付过款的订单', '只统计进库的会话'],
+    ],
+  );
+  eq(
+    '切到访客：本月成交额取访客的，另有待付',
+    [m.texts('.ov-todos-kpi .ov-kpi-value'), m.texts('.ov-todos-kpi .ov-kpi-detail')],
+    [['5,000'], ['另有待付1,000元']],
+  );
+  await m.click(segment(m, '种子'));
+  eq(
+    '切到种子：成交拆分取种子的（1 单协同 105,600 元）',
+    [dealsBlock(m).values[0], dealsBlock(m).rows.slice(0, 4)],
+    ['1', ['AI独立成交0单·0元', '其中已退款0单', '人机协同成交1单·105,600元', '其中已退款0单']],
+  );
+  await m.click(segment(m, '全部'));
+  eq(
+    '切到全部：成交拆分是三类相加，本月成交额取合计且口径同原来',
+    [dealsBlock(m).values, m.texts('.ov-todos-kpi .ov-kpi-value'), m.texts('.ov-todos-kpi .ov-kpi-caption')],
+    [['7', '8%'], ['300,000'], ['本月已付款订单的总额']],
+  );
+  await m.click(segment(m, '真实客户'));
+  eq('切回真实客户', dealsBlock(m).values, ['5', '8%']);
+  check(
+    '成交与转人工：金额写「元」，不写「¥」；文案不出现 1 − 接管率 这类口径',
+    !(m.$('.ov-deals-block')[0]?.textContent ?? '').includes('¥') && !(m.box.textContent ?? '').includes('接管率'),
+  );
+  await m.unmount();
+}
+{
+  // 空：窗口内没有成交、没有会话
+  server = {
+    pack: TRAVEL,
+    lists: SCENE,
+    metrics: {
+      ...METRICS,
+      deals: { customer: NO_DEALS, visitor: NO_DEALS, seed: NO_DEALS },
+      handoffByKind: {},
+      takeovers: 0,
+      handoffByOrigin: { customer: EMPTY_HANDOFF, visitor: EMPTY_HANDOFF, seed: EMPTY_HANDOFF },
+    },
+  };
+  const m = await mountOverview(member('owner'));
+  eq(
+    '空（窗口内没有成交）：成交拆分写 0 和说明，转人工写「—」和说明，不画明细行',
+    [m.texts('.ov-deals-block .ov-kpi-value'), m.texts('.ov-deals-block .ov-kpi-caption'), m.$('.ov-deals-block .ov-kpi-row').length],
+    [['0', '—'], ['近7天没有付过款的订单', '近7天没有会话'], 0],
+  );
+  await m.unmount();
+}
+{
+  // 默认视图：standard 租户是真实客户，沙箱租户（Me.sandbox 不为空）里没有真实客户，默认访客；自己点选之后以点选为准
+  const sandboxMe = {
+    ownConversationId: null,
+    expiresAt: new Date(NOW + 86_400_000).toISOString(),
+    wechat: 'off' as const,
+    steps: [false, false, false, false] as [boolean, boolean, boolean, boolean],
+  };
+  server = { pack: TRAVEL, lists: SCENE, ordersSummary: SPLIT_SUMMARY, metrics: METRICS };
+  const std = await mountOverview(member('owner'));
+  eq(
+    'standard 租户：来源视图默认真实客户，成交拆分与本月成交额取真实客户的',
+    [
+      std.texts('.ov-deals-block .ant-segmented-item-selected'),
+      std.texts('.ov-deals-block .ov-kpi-value')[0],
+      std.texts('.ov-todos-kpi .ov-kpi-value'),
+    ],
+    [['真实客户'], '5', ['90,000']],
+  );
+  await std.unmount();
+  const sbx = await mountOverview({ kind: 'member', me: { ...me('owner'), tenantName: '体验沙箱', sandbox: sandboxMe }, pack: TRAVEL });
+  eq(
+    '沙箱租户：来源视图默认访客（沙箱没有真实客户），成交拆分与本月成交额取访客的',
+    [
+      sbx.texts('.ov-deals-block .ant-segmented-item-selected'),
+      sbx.texts('.ov-deals-block .ov-kpi-value')[0],
+      sbx.texts('.ov-todos-kpi .ov-kpi-value'),
+    ],
+    [['访客'], '1', ['5,000']],
+  );
+  const pick = sbx
+    .$('.ov-deals-block .ant-segmented-item')
+    .find((e) => (e.textContent ?? '').trim() === '全部')
+    ?.querySelector<HTMLElement>('input');
+  await sbx.click(pick ?? undefined);
+  eq('沙箱租户：点选「全部」之后以点选为准', sbx.texts('.ov-deals-block .ant-segmented-item-selected'), ['全部']);
+  await sbx.unmount();
+}
+{
+  // 加载：数据回来之前是两格的骨架；出错：就地写没取到，重试之后显示数字；文件存储：整块不画，本月成交额看全部
+  server = { pack: TRAVEL, lists: SCENE, metrics: METRICS, hold: /^GET \/metrics/ };
+  const m = await mountOverview(member('owner'));
+  eq(
+    '加载：成交与转人工画两格骨架，没有数字',
+    [m.$('.ov-deals-block .ov-kpi-skeleton').length, m.$('.ov-deals-block .ov-kpi-value').length],
+    [2, 0],
+  );
+  await act(async () => releaseHeld());
+  await settle(m.qc);
+  eq(
+    '加载完：骨架换成两格数字',
+    [m.$('.ov-deals-block .ov-kpi-skeleton').length, m.texts('.ov-deals-block .ov-kpi-value')],
+    [0, ['5', '8%']],
+  );
+  await m.unmount();
+
+  server = { pack: TRAVEL, lists: SCENE, metrics: 'fail' };
+  const e = await mountOverview(member('owner'));
+  check(
+    '出错：成交与转人工就地写「没取到」加重试，标题和视图切换还在',
+    (e.$('.ov-deals-block')[0]?.textContent ?? '').includes('没取到') && e.$('.ov-deals-block .ant-segmented').length === 1,
+  );
+  server.metrics = METRICS;
+  const retry = [...e.$('.ov-deals-block button')].find((b) => (b.textContent ?? '').replace(/ /g, '') === '重试');
+  await e.click(retry);
+  eq('出错：重试之后显示数字', e.texts('.ov-deals-block .ov-kpi-value'), ['5', '8%']);
+  await e.unmount();
+
+  server = { pack: TRAVEL, lists: SCENE, ordersSummary: SPLIT_SUMMARY };
+  const f = await mountOverview(member('owner'));
+  eq(
+    '文件存储（/metrics 503）：成交与转人工整块不画；没法切换视图，本月成交额看全部',
+    [f.$('.ov-deals-block').length, f.texts('.ov-todos-kpi .ov-kpi-value'), f.texts('.ov-todos-kpi .ov-kpi-caption')],
+    [0, ['300,000'], ['本月已付款订单的总额']],
+  );
+  await f.unmount();
+
+  // 权限：supervisor、agent、viewer 不发 /metrics，也看不到这一块
+  server = { pack: TRAVEL, lists: SCENE, metrics: METRICS };
+  requests = [];
+  const v = await mountOverview(member('supervisor'));
+  eq(
+    'supervisor：看不到成交与转人工，也没请求 /metrics',
+    [v.$('.ov-deals-block').length, requests.filter((r) => r.includes('/metrics')).length],
+    [0, 0],
+  );
+  await v.unmount();
+}
+
 // 2.10 接手：成功后打开 J 页；409（assigned_to_other）就地说明，不丢弹窗、不跳转（brief「范围」）
 {
   server = { pack: TRAVEL, lists: SCENE, takeoverTaken: new Set(['wecom:cust_A01']) };
@@ -1832,9 +2161,9 @@ check(
   `挂载 ${mounts} 次，扫了 ${rendered.length} 份`,
 );
 eq(
-  '禁用词（验收 6）：六块画骨架（载入中）时都扫到了（02 新增运行数字）',
+  '禁用词（验收 6）：七块画骨架（载入中）时都扫到了（02 新增运行数字，07 新增成交与转人工）',
   [...loadingSeen].sort(),
-  ['需要你处理', '系统状态', '业务数', '运行数字', '最近变更', '阶段'].sort(),
+  ['需要你处理', '系统状态', '业务数', '运行数字', '成交与转人工', '最近变更', '阶段'].sort(),
 );
 for (const w of BANNED) {
   const hit = rendered.find((t) => t.includes(w));

@@ -811,7 +811,10 @@ function dashHTML() {
   const paidSess = sess.filter(s => paidSids.has(s.id)).length;
   const handoff = sess.filter(s => s.handedOver).length;
   const gmv = paidOrders.reduce((a,o)=>a+o.totalPrice,0);
-  const conv = Math.round(paidSess/total*100), handRate = Math.round(handoff/total*100), autoRate = Math.round((sess.length-handoff)/total*100);
+  const conv = Math.round(paidSess/total*100), handRate = Math.round(handoff/total*100);
+  // 07 R23：没转人工不等于成交，不再拿「1 − 接管率」当 AI 独立完成。AI 独立成交 = 本范围内付过款、付款前没转过人工的订单（Order.handoffBeforePaid）
+  const dealOrders = S.orders.filter(o => o.paidAt && o.paidAt >= rs && ['paid','refund_pending','refunded'].includes(o.status));
+  const aiDeals = dealOrders.filter(o => !o.handoffBeforePaid).length;
   const aov = paidOrders.length ? gmv/paidOrders.length : 0;
 
   const active = sess.filter(s => s.stage !== 'handoff');
@@ -823,8 +826,8 @@ function dashHTML() {
   const kpis = kpi('会话数', num(sess.length), '本范围累计')
     + (refundedOrders.length ? kpi('已退款', refundedOrders.length+' 单', '原成交额 '+yuan(refundedOrders.reduce((a,o)=>a+o.totalPrice,0))) : '')
     + kpi('成交率', conv+'%', paidSess+' / '+sess.length+' 会话成交')
-    + kpi('人工接管率', handRate+'%', 'AI 独立完成 '+autoRate+'%')
-    + kpi('AI 自动化率', autoRate+'%', handoff+' 单需人工兜底')
+    + kpi('人工接管率', handRate+'%', handoff+' 个会话转了人工')
+    + kpi('AI 独立成交', aiDeals+' 单', '人机协同 '+(dealOrders.length-aiDeals)+' 单')
     // 模型成本：这是唯一能回答「这套系统跑起来一天多少钱、一个客户成交要花多少」的数字
     // 缓存命中率跟成本放在一起：省下的钱只有和花掉的钱并排看才有意义。
     // 用 > 0 而不是 != null 判断——旧版本服务端不返回这个字段，没有就不显示，别渲染出 NaN%

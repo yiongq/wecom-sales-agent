@@ -18,6 +18,22 @@ export type HandoffKind =
   | 'consent' // 客户不同意或撤回同意处理敏感信息（R23）
   | 'agent'; // 顾问在后台接手，或旧工作台点了转人工
 
+/** 转人工类型的全集（键就是 HandoffKind，少写一个编译不过）：从库里读回的 handoffLog 要先过 isHandoffKind，才进统计 */
+const HANDOFF_KIND_SET = {
+  request: true,
+  complaint: true,
+  refund: true,
+  emergency: true,
+  failure: true,
+  sentiment: true,
+  model: true,
+  promise: true,
+  claimed: true,
+  consent: true,
+  agent: true,
+} as const satisfies Record<HandoffKind, true>;
+export const isHandoffKind = (k: string): k is HandoffKind => Object.hasOwn(HANDOFF_KIND_SET, k);
+
 /** 一次转人工的记录：进入时写下，交还、重置时清（R9） */
 export interface HandoffRecord {
   kind: HandoffKind;
@@ -29,6 +45,17 @@ export interface HandoffRecord {
   /** 客户原话里识别出的出行时间（departNoteForHandoff 的结果） */
   departNote?: string;
 }
+
+/**
+ * 逐次转人工的记录（07 R23，Session.handoffLog）：enterHandoff 每次进入或升级时追加一条，最多 HANDOFF_LOG_MAX 条（保留最新的），
+ * 同 handoffCount 永不清、重置不清。turnId 是触发它的那一轮 trace 的 id（顾问主动接手等不经轮次的没有）
+ */
+export interface HandoffLogEntry {
+  kind: HandoffKind;
+  at: number;
+  turnId?: string;
+}
+export const HANDOFF_LOG_MAX = 50;
 
 /** 接手人 */
 export interface Assignee {

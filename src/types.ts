@@ -1,6 +1,6 @@
 // 全项目共享契约。构建各模块时以此为准，不要私自改动已有字段。
 import type { SalesSegment } from './shared/catalog-types.js';
-import type { Assignee, HandoffRecord, OrderStatus, OutboundKind, RefundRecord } from './shared/conversation-types.js';
+import type { Assignee, HandoffLogEntry, HandoffRecord, OrderStatus, OutboundKind, RefundRecord } from './shared/conversation-types.js';
 import type { SensitiveCategory } from './handoff/triggers.js';
 import { cleanText } from './shared/text.js';
 
@@ -10,6 +10,7 @@ export { SALES_SEGMENTS, type Hotel, type Route, type SalesSegment } from './sha
 export type {
   Assignee,
   HandoffKind,
+  HandoffLogEntry,
   HandoffRecord,
   MessageAuthor,
   OrderStatus,
@@ -150,6 +151,16 @@ export interface Session {
   firstHandoffAt?: number;
   /** 转人工次数，只增不减 */
   handoffCount?: number;
+  /**
+   * 逐次转人工的记录（07 R23，核心字段）：enterHandoff 每次进入或升级时追加，最多 50 条（保留最新的）；同 handoffCount 永不清、
+   * 重置不清（不进 resetSession 的清理名单）。随会话的 state json 进库，看板按原因算转人工率、数顾问主动接手（kind 'agent'）
+   */
+  handoffLog?: HandoffLogEntry[];
+  /**
+   * 种子会话标记（07 R23；沙箱开通时打在种子会话上，第 7 步）：看板的来源判定认它，没有就不是种子。
+   * 宿主的种子靠 id 前缀 wecom:cust_ 认，不打这个标记
+   */
+  seed?: boolean;
   /** 接手人：从「未转人工」进入转人工时清成 null，交还、重置时清 */
   assignee?: Assignee | null;
   /** 最近 6 轮是否失败（0 / 1，新的在后），R15；重置时清 */
