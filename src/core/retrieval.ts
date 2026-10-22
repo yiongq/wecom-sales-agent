@@ -13,13 +13,14 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 
 import { llmCfg } from './llm/client.js';
+import { embedEndpointAllowed, embedEndpointHost } from './llm/endpoints.js';
 import { recordUsage } from '../usage.js';
 import { gatedFetch } from '../llm-gate.js';
 import { claimSandboxInitialIndex } from '../tenancy/sandbox/budget.js';
 import type { CatalogItem } from './pack-api.js';
 
 export const RETRIEVAL_TIMEOUT_MS = 20_000;
-import { configMode, currentCatalog, onCatalogChanged, currentPack } from '../config/source.js';
+import { bindEmbedBaseUrl, configMode, currentCatalog, onCatalogChanged, currentPack } from '../config/source.js';
 
 const VAR_DIR = process.env.VAR_DIR ?? path.join(process.cwd(), 'var');
 const cacheFile = () => path.join(VAR_DIR, currentPack().runtime.retrievalCacheFile);
@@ -95,6 +96,14 @@ async function embed(texts: string[], poolOnly = false): Promise<number[][] | nu
 async function readEmbedding(texts: string[], poolOnly: boolean): Promise<number[][] | null> {
   const { baseUrl, apiKey } = embedCfg();
   if (!apiKey || process.env.LLM_MOCK === '1') return null;
+  // 07 R15：客户原文只发往境内已备案的端点。不在清单里就不发请求，退回关键词匹配（文件模式的评测与发布闸的子进程也受管）。
+  // 日志里没有 key 与查询原文，只有主机
+  if (!embedEndpointAllowed(baseUrl)) {
+    console.error(
+      `[retrieval] embedding 端点主机 ${embedEndpointHost(baseUrl)} 不在境内已备案清单里，或清单内主机没用 https（07 R15），不发请求，本次退回关键词匹配`,
+    );
+    return null;
+  }
   try {
     const { res, settleUsage } = await gatedFetch(
       baseUrl + '/embeddings',
@@ -316,6 +325,8 @@ export function indexHealth(): IndexHealth {
 
 // 产品库快照变了（后台上架、改了条目）：失效并重建。依赖方向只能是运行时模块 import 配置层，反过来由回调注册
 withoutTenantScope(() => onCatalogChanged(() => invalidateIndex()));
+// 07 R15：DB 模式装载租户时，配置层用它拿到嵌入服务的地址，主机不在境内清单里就拒绝启动。同上，配置层不 import 本模块
+bindEmbedBaseUrl(() => embedCfg().baseUrl);
 
 /** 仅供自测：清空索引与状态，退避调短 */
 export const __retrievalTest = {

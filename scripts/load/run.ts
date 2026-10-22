@@ -381,7 +381,8 @@ async function runScenario(): Promise<ScenarioResult> {
   process.env.LLM_BASE_URL = `http://${LLM_HOST}/v1`;
   process.env.LLM_API_KEY = 'loadtest-fake-key';
   process.env.LLM_MODEL = 'glm-5.3-flashx';
-  process.env.EMBED_BASE_URL = `http://${LLM_HOST}/v1`;
+  // 07 R15：嵌入端点只放行境内清单里的主机（智谱，https）；假 fetch 在 fake-upstream.ts 里按这个主机接住 /embeddings
+  process.env.EMBED_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
   process.env.EMBED_API_KEY = 'loadtest-fake-key';
   process.env.FOLLOWUP_ENABLED = '';
   process.env.ALERT_WEBHOOK_URL = '';
