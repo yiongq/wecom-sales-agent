@@ -258,7 +258,8 @@ function runOneRepeat(repeatIdx: number): ScenarioOut {
       LLM_BASE_URL: `http://${LLM_HOST}/v1`,
       LLM_API_KEY: 'loadtest-fake-key',
       LLM_MODEL: 'glm-5.3-flashx',
-      EMBED_BASE_URL: `http://${LLM_HOST}/v1`,
+      // 07 R15：嵌入端点只放行境内清单里的主机（智谱，https）；假 fetch 在 channel-fake-upstream.ts 里按这个主机接住 /embeddings
+      EMBED_BASE_URL: 'https://open.bigmodel.cn/api/paas/v4',
       EMBED_API_KEY: 'loadtest-fake-key',
       LLM_HEDGE_MODEL: '',
       LLM_HEDGE_MS: '',

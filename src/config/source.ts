@@ -46,6 +46,7 @@ import type { RenderInputs } from '../db/schema.js';
 import { setLogTenant } from '../log.js';
 import { packById, runtimeById, legacyTravelRuntime as travelRuntime } from '../packs/registry.js';
 import { renderSystemPrompt } from '../core/prompt.js';
+import { embedEndpointAllowed, embedEndpointHost } from '../core/llm/endpoints.js';
 import { packPipelines } from '../core/engine/pipelines.js';
 import { bindPack, boundPack, BrandProfileSchema, type PackBinding, type PackSources, type BrandProfile } from '../core/pack-api.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
@@ -155,7 +156,8 @@ export type ConfigStartupReason =
   | 'integrity'
   | 'renderer_nondeterministic'
   | 'contract_failed'
-  | 'no_active_routes';
+  | 'no_active_routes'
+  | 'embed_endpoint_forbidden';
 export class ConfigStartupError extends Error {
   constructor(
     readonly reason: ConfigStartupReason,
@@ -372,6 +374,29 @@ export async function productionConfigDeps(
     render: (sop) => renderSystemPrompt(sop, currentPack().runtime.legacy.hardRequirements),
     gracefulExit,
   };
+}
+
+// 07 R15：嵌入服务的地址。配置层不 import 检索模块（依赖方向，同 onCatalogChanged 与 installRuntimeSources）：
+// src/core/retrieval.ts 加载时把 `embedCfg().baseUrl` 装进来，DB 模式装载租户时据此校验。
+// 没装（进程没加载检索模块，比如只跑配置的 CLI）就没有地址可查，不校验。
+let embedBaseUrl: (() => string) | null = null;
+export function bindEmbedBaseUrl(read: () => string): void {
+  embedBaseUrl = read;
+}
+
+/**
+ * DB 模式启动校验的第 0 步（07 R15）：嵌入请求会带着客户原文出去，目的地的主机不在境内已备案清单里就拒绝启动。
+ * 不碰库，所以排在连库之前。LLM_MOCK=1 时 readEmbedding 一个请求都不发，端点用不到，不校验（行为不变，同 K4 的 mock 优先）。
+ * 提示里只有主机：地址里可能带账号口令
+ */
+function assertEmbedEndpoint(): void {
+  if (process.env.LLM_MOCK === '1' || !embedBaseUrl) return;
+  const url = embedBaseUrl();
+  if (embedEndpointAllowed(url)) return;
+  throw startup(
+    'embed_endpoint_forbidden',
+    `嵌入服务（EMBED_BASE_URL，没配时跟着智谱或主模型走）的主机 ${embedEndpointHost(url)} 不在境内已备案清单里，或清单内主机没用 https：客户原文只发往清单里的 https 端点（07 R15）`,
+  );
 }
 
 async function loadStandardTenants(deps: ConfigDeps) {
@@ -657,8 +682,8 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
 }
 
 /**
- * deps 为 null：文件模式，装配同目录品牌。否则依次执行，前 8 步只读：
- *   1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包 → 4 取租户锁
+ * deps 为 null：文件模式，装配同目录品牌。否则依次执行，前 8 步只读（第 0 步校验嵌入端点，不碰库）：
+ *   0 嵌入端点在境内清单里（07 R15）→ 1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包 → 4 取租户锁
  *   → 5 切分并校验 imageSop → 6 装载已发布 SOP，校验完整性，算出合并、渲染与契约结果 → 7 装载产品库快照（至少一条 active 线路）
  *   → 8 按节、按条目打印 DB 与镜像 data/ 的差异 → 9 需要时写入 rerender 版本 → 10 装上缓存。
  * 任何一步失败都以 ConfigStartupError reject，释放锁、关闭连接池，不留半装载状态
@@ -702,6 +727,8 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
   state.dbInstalled = true;
   let lock: TenantLock | null = null;
   try {
+    // 0
+    assertEmbedEndpoint();
     await checkConfigDatabase(d);
     // 3
     const tenant = await dbStep('解析租户', () => findTenantBySlug(d.db, d.tenantSlug));

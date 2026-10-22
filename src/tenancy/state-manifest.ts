@@ -84,6 +84,7 @@ export const STATE_MANIFEST: Record<
     kind: 'instance',
     why: '只在空作用域装配的全租户监听；租户订阅另存于 runtime.config 并登记。',
   },
+  'src/config/source.ts:embedBaseUrl': { kind: 'instance', why: '能力接线 / 模块引用；调用时读取当前作用域，不在绑定里缓存租户值' },
   'src/config/source.ts:lockSubscriptions': {
     kind: 'instance',
     why: '只在空作用域装配的全租户监听；租户订阅另存于 runtime.config 并登记。',

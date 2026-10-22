@@ -67,7 +67,10 @@ const bodyOf = (init?: RequestInit): Record<string, unknown> => {
   }
 };
 
-// 装上假 fetch。llmHost 是选定的假模型主机名（环境变量 LLM_BASE_URL、EMBED_BASE_URL 都指向它，不解析真实 DNS，
+/** 嵌入地址的主机：代码里写死的境内清单里唯一一家（src/core/llm/endpoints.ts），压测的 EMBED_BASE_URL 指向 https://<它>/api/paas/v4 */
+const EMBED_HOST = 'open.bigmodel.cn';
+
+// 装上假 fetch。llmHost 是选定的假模型主机名（环境变量 LLM_BASE_URL 指向它；EMBED_BASE_URL 指向上面的智谱主机，不解析真实 DNS，
 // 全部请求在到达网络之前就被这个覆盖接住）。调用方负责把企微与模型相关的环境变量设成与这里一致的值。
 export function installFakeUpstream(opts: { llmHost: string }): FakeUpstream {
   const serverLog: FakeMsg[] = [];
@@ -114,16 +117,20 @@ export function installFakeUpstream(opts: { llmHost: string }): FakeUpstream {
       return json({ errcode: 40001, errmsg: `loadtest: 未模拟的企微接口 ${ep}` });
     }
 
+    // 嵌入请求：07 R15 起 EMBED_BASE_URL 只能指向智谱的主机（https），压测的嵌入地址指向它，这里接住，不出本机
+    const embeddings = (): Response => {
+      stats.embedCalls += 1;
+      const body = bodyOf(init);
+      const input_ = Array.isArray((body as { input?: unknown }).input) ? ((body as { input: unknown[] }).input as unknown[]) : [];
+      return json({
+        data: input_.map((_, i) => ({ embedding: [1, i % 3, (i * 7) % 5] })),
+        usage: { prompt_tokens: 11 * input_.length + 3, completion_tokens: 0 },
+      });
+    };
+    if (url.hostname === EMBED_HOST && url.pathname.endsWith('/embeddings')) return embeddings();
+
     if (url.hostname === opts.llmHost) {
-      if (url.pathname.endsWith('/embeddings')) {
-        stats.embedCalls += 1;
-        const body = bodyOf(init);
-        const input_ = Array.isArray((body as { input?: unknown }).input) ? ((body as { input: unknown[] }).input as unknown[]) : [];
-        return json({
-          data: input_.map((_, i) => ({ embedding: [1, i % 3, (i * 7) % 5] })),
-          usage: { prompt_tokens: 11 * input_.length + 3, completion_tokens: 0 },
-        });
-      }
+      if (url.pathname.endsWith('/embeddings')) return embeddings();
       if (url.pathname.endsWith('/chat/completions')) {
         stats.chatCalls += 1;
         if (isStormActive() && Math.random() < 0.3) {

@@ -230,7 +230,7 @@ glm-5.3 系列是强制思考模型，发 disabled 会 400，改发 enabled 并�
 
 （下表的「回归」一栏同样是当时的回归集：23 用例 / 54 断言。）
 
-架构对模型无绑定：`LLM_PROVIDER=zhipu|deepseek` 一行切换**对话**供应商（各读自己的 `ZHIPU_*` / `DEEPSEEK_*` 变量），或不设 `LLM_PROVIDER` 直接用 `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` 指向任意 OpenAI 兼容端点。两点要知道：语义召回的 embedding 默认仍走智谱（DeepSeek 没有 embeddings 接口），切过去后要保留 `ZHIPU_API_KEY` 或配 `EMBED_BASE_URL`/`EMBED_API_KEY`，否则 `search_routes` 退回关键词匹配；`LLM_MODEL_CHEAP` 填的 `glm-` 模型在 deepseek 下会被忽略。实测对比（同一销售场景，含工具调用）：
+架构对模型无绑定：`LLM_PROVIDER=zhipu|deepseek` 一行切换**对话**供应商（各读自己的 `ZHIPU_*` / `DEEPSEEK_*` 变量），或不设 `LLM_PROVIDER` 直接用 `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` 指向任意 OpenAI 兼容端点。两点要知道：语义召回的 embedding 默认走智谱（DeepSeek 没有 embeddings 接口），切过去后要保留 `ZHIPU_API_KEY` 或配 `EMBED_API_KEY`，否则 `search_routes` 退回关键词匹配；客户原文会作为检索查询发给嵌入服务，所以嵌入只发往代码里写死的境内端点（`src/core/llm/endpoints.ts`，本期只有智谱 `open.bigmodel.cn`，必须 https），没有环境变量能放宽：`EMBED_BASE_URL`（没配时旧写法跟着 `LLM_BASE_URL`）指向清单外的主机，DB 模式拒绝启动，其他模式不发请求、退回关键词匹配；非 prod 另允许本机回环（`127.0.0.1`、`localhost`，给本机假服务）。`LLM_MODEL_CHEAP` 填的 `glm-` 模型在 deepseek 下会被忽略。实测对比（同一销售场景，含工具调用）：
 
 | 模型                     | P50 / P90                 | 说明                                                                            |
 | ------------------------ | ------------------------- | ------------------------------------------------------------------------------- |

@@ -219,13 +219,21 @@ if (CHILD === 'json-logs') {
   });
   await new Promise<void>((r) => llm.listen(0, '127.0.0.1', r));
   const llmUrl = `http://127.0.0.1:${(llm.address() as AddressInfo).port}`;
+  // 07 R15：这个子进程是 prod，嵌入端点只放行境内清单里的主机，本机回环不行。地址写智谱的，请求在 fetch 里改道到本机假服务，不出本机
+  const zhipuEmbed = 'https://open.bigmodel.cn/api/paas/v4';
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+    realFetch(
+      typeof input === 'string' && input.startsWith(zhipuEmbed) ? llmUrl + input.slice(zhipuEmbed.length) : input,
+      init,
+    )) as typeof fetch;
   Object.assign(process.env, {
     LLM_MOCK: '0',
     LLM_PROVIDER: '',
     LLM_BASE_URL: llmUrl,
     LLM_API_KEY: 'selftest-fake-key',
     LLM_MODEL: 'glm-5.3-flashx',
-    EMBED_BASE_URL: llmUrl,
+    EMBED_BASE_URL: zhipuEmbed,
     EMBED_API_KEY: 'selftest-fake-key',
     LLM_HEDGE_MODEL: '',
     LLM_MAX_RETRY: '0',
