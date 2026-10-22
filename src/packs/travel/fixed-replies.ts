@@ -19,6 +19,9 @@ import {
 import type { TravelParts } from './runtime.js';
 import { shanhaiBrand } from './brand-fixture.js';
 import { type ContactMode, paymentPendingReply } from './contact-words.js';
+import { refundQuoteText, refundChooseText, refundTexts, refundNoticeText } from './refund-words.js';
+import { defaultTravelPolicy } from './policy.js';
+import { quoteRefund } from '../../core/pack-api.js';
 import { closingLine } from './closing-words.js';
 import { claimWordsTest } from './claim-words.js';
 import { followupTemplates } from './followup.js';
@@ -121,6 +124,7 @@ const ORIGINS: readonly (readonly [string, FixedReplyOrigin])[] = Object.freeze(
   ['order.other-order-ask', reply('other_order')],
   ['order.net.', reply('order_net')],
   ['order.resend.', outside('客户要重发链接时模型前的确定性回复（core/engine 的 preModel 路径），不经出口护栏')],
+  ['refund.', outside('售后确定性回复与后台退款通知，在模型回复管线之外')],
   ['payment.paid', outside('到账通知由支付回调直发（core/engine 的 paidText 路径），在回复管线之外')],
   ['payment.pending-reply', reply('claim_words')],
   ['payment.chitchat.', outside('付款后寒暄由模型前的确定性回复直发（preModel 路径），不经出口护栏')],
@@ -172,6 +176,69 @@ export function createTravelFixedReplies(world: World): readonly FixedReply[] {
     const byId = new Map(orders.map((o) => [o.id, o]));
     return world({ getOrder: (id) => byId.get(id), paymentMode: () => pay });
   };
+
+  const refundOrder = fixtureOrder({ id: 'ord_a1b2c3', status: 'paid', paidAt: 0 });
+  const quote = quoteRefund(refundOrder, defaultTravelPolicy.refund, 'fixture', '2099-01-14');
+  if ('ineligible' in quote) throw new Error('退款固定文字样例不能报价');
+  const refundCtx = (m: ModeCtx) => ({ policy: defaultTravelPolicy, brand: m.brand, channel: m.channel });
+  add(
+    reg(
+      'refund.quote',
+      'refund-words.ts',
+      'rich',
+      each((m) => refundQuoteText(refundOrder, quote, refundCtx(m))),
+    ),
+    reg(
+      'refund.choose',
+      'refund-words.ts',
+      'rich',
+      each(() => refundChooseText([refundOrder, fixtureOrder({ id: 'ord_d4e5f6' })])),
+    ),
+  );
+  for (const key of ['done', 'submitted', 'duplicate', 'busy', 'delayed'] as const) {
+    add(
+      reg(
+        `refund.${key}`,
+        'refund-words.ts',
+        'plain',
+        each((m) => refundTexts(quote, refundCtx(m))[key]),
+      ),
+    );
+  }
+  add(
+    reg(
+      'refund.submitted-auto',
+      'refund-words.ts',
+      'plain',
+      each((m) => refundTexts({ ...quote, amount: 10000 }, refundCtx(m)).submitted),
+    ),
+  );
+  for (const settlement of ['mock', 'advisor'] as const) {
+    const order: Order = {
+      ...refundOrder,
+      refund: {
+        id: 'rf_000000000001',
+        requestedAt: 0,
+        daysBefore: quote.daysBefore,
+        tierId: quote.tier.id,
+        percent: quote.tier.percent,
+        amount: quote.amount,
+        policyHash: quote.policyHash,
+        approval: 'approved',
+        settlement,
+      },
+    };
+    for (const kind of ['settled', 'rejected'] as const) {
+      add(
+        reg(
+          `refund.notice.${settlement}.${kind}`,
+          'refund-words.ts',
+          'plain',
+          each((m) => refundNoticeText(order, kind, refundCtx(m))),
+        ),
+      );
+    }
+  }
 
   // ---------------- 身份、欢迎、快捷回复（legacy.ts / templates.ts） ----------------
   add(

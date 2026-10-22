@@ -1,8 +1,16 @@
+import type { PaymentMode } from '../../../src/shared/conversation-types.js';
 // 会话工作台（J 页）的纯逻辑（02 spec「后台页面 · 会话工作台（J 页）」「后台接口」，设计系统 §6.7、§10.0、§10.2 J 页）。
 // 不依赖 React，workbench.selftest.tsx 直接 import。界面代码不认行业：阶段名取自行业包；会话状态只经 conversationState 判定；
 // 不读 handedOver、不拿 stage 跟 'paid' 比（scripts/check-console-src.ts 不变量 17）——用 src/shared/conversation.ts 的
 // paidNeedsHuman 分辨「已成交客户要人工」。
-import type { ConversationCounts, ConversationRow, ConversationState, MessageView, Role } from '../../../src/shared/console-api.js';
+import type {
+  ConversationCounts,
+  ConversationRow,
+  ConversationState,
+  MessageView,
+  OrderView,
+  Role,
+} from '../../../src/shared/console-api.js';
 import { conversationState, paidNeedsHuman, shortIdOf } from '../../../src/shared/conversation.js';
 import {
   type OrderStatus,
@@ -302,4 +310,31 @@ export function quoteLine(q: QuoteLike): readonly string[] {
     q.total != null ? `${q.travelers}位共${money(q.total)}` : null,
     q.departDate ? `${q.departDate}出发` : null,
   ].filter((p): p is string => !!p);
+}
+
+/** 退款按钮与服务端权限一致；最终权限仍由服务端校验。 */
+export function refundActions(
+  o: OrderView,
+  role: Role | null,
+  canMarkPaid: boolean,
+  mode: PaymentMode,
+): { approve: boolean; settle: boolean } {
+  const pending = o.status === 'refund_pending' && !!o.refund;
+  return {
+    approve: pending && o.refund!.approval === 'pending' && (role === 'owner' || role === 'admin' || role === 'supervisor'),
+    settle:
+      pending &&
+      mode === 'advisor' &&
+      o.refund!.settlement === 'advisor' &&
+      (o.refund!.approval === 'auto' || o.refund!.approval === 'approved') &&
+      canMarkPaid &&
+      role !== null &&
+      CAN_HANDLE_ROLES.has(role),
+  };
+}
+
+export function refundLine(o: OrderView): string | null {
+  const r = o.refund;
+  if (!r || (o.status !== 'refund_pending' && o.status !== 'refunded')) return null;
+  return `退款额：${money(r.amount)} · ${r.tierTitle ?? '退改条款'}（${r.percent}%） · 申请时间：${absoluteTime(new Date(r.requestedAt).toISOString(), Date.now())}`;
 }

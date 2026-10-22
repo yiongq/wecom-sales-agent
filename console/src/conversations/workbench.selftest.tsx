@@ -23,6 +23,7 @@ import type {
   Me,
   MessagesPage,
   MessageView,
+  OrderView,
   QuickReply,
   Role,
   TurnDiffView,
@@ -31,7 +32,7 @@ import type { IndustryPack } from '../../../src/shared/pack.js';
 import type { Viewer } from '../shell/boot.js';
 import { useViewer, VIEWER_KEY } from '../viewer.js';
 import { SandboxChecklist } from '../sandbox/Sandbox.js';
-import { WorkbenchPage } from './WorkbenchPage.js';
+import { OrderRow, WorkbenchPage } from './WorkbenchPage.js';
 import {
   CAN_HANDLE_ROLES,
   deliveryNote,
@@ -44,6 +45,8 @@ import {
   orderLine,
   ORDER_STATUS_LABEL,
   quoteLine,
+  refundActions,
+  refundLine,
   sendWindowView,
   stepsLine,
   wbContext,
@@ -1545,6 +1548,137 @@ Date.now = realNow;
     ['你的微信', '你的模拟器会话'],
   );
   await m.unmount();
+}
+
+// 07 R19：真实订单卡按角色与支付模式显示操作，金额用元。
+{
+  const order: OrderView = {
+    id: 'ord_refund',
+    routeTitle: '合成线路',
+    travelers: 2,
+    departDate: '2026-12-10',
+    totalPrice: 40000,
+    status: 'refund_pending',
+    createdAt: new Date(NOW).toISOString(),
+    paidAt: new Date(NOW).toISOString(),
+    confirmed: null,
+    handoffBeforePaid: false,
+    conversation: null,
+    refund: {
+      amount: 40000,
+      tierId: 'd30',
+      tierTitle: '退改条款第1条',
+      percent: 100,
+      approval: 'pending',
+      settlement: 'mock',
+      requestedAt: NOW,
+      settledAt: null,
+    },
+  };
+  check(
+    '退款金额与条款拼行',
+    refundLine(order)!.includes('40,000元') && refundLine(order)!.includes('退改条款第1条') && !refundLine(order)!.includes('¥'),
+  );
+  for (const role of ['owner', 'admin', 'supervisor', 'agent', 'viewer', null] as const) {
+    eq(
+      `退款审批权限 ${role}`,
+      refundActions(order, role, role !== 'viewer' && role !== null, 'online').approve,
+      role === 'owner' || role === 'admin' || role === 'supervisor',
+    );
+    const box = document.createElement('div');
+    document.body.append(box);
+    const root = createRoot(box);
+    const clicks: string[] = [];
+    const reasons: (string | undefined)[] = [];
+    await act(async () =>
+      root.render(
+        <OrderRow
+          o={order}
+          role={role}
+          canConfirm={false}
+          canMarkPaid={false}
+          onConfirm={() => {}}
+          onMarkPaid={() => {}}
+          onCancel={() => {}}
+          confirmError={null}
+          markPaidError={null}
+          cancelError={null}
+          onRefund={(action, reason) => {
+            clicks.push(action);
+            reasons.push(reason);
+          }}
+        />,
+      ),
+    );
+    const buttons = [...box.querySelectorAll('button')];
+    eq(
+      `订单卡 ${role} 审批按钮`,
+      buttons.some((b) => b.textContent?.includes('批准退款')),
+      role === 'owner' || role === 'admin' || role === 'supervisor',
+    );
+    if (role === 'supervisor') {
+      await act(async () => {
+        buttons.find((b) => b.textContent?.includes('批准退款'))!.click();
+      });
+      eq('批准按钮调用审批动作', clicks, ['approve']);
+      await act(async () => {
+        buttons.find((b) => b.textContent?.includes('驳回退款'))!.click();
+      });
+      const textarea = document.querySelector<HTMLTextAreaElement>(`#refund-reason-${order.id}`)!;
+      check('驳回弹窗有原因输入且最多 200 字', !!textarea && textarea.maxLength === 200);
+      const rejectButton = [...document.querySelectorAll<HTMLButtonElement>('.ant-modal-footer button')].find((b) =>
+        b.textContent?.includes('驳回退款'),
+      )!;
+      check('没有原因不能驳回', rejectButton.disabled);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, '合成原因');
+        textarea.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
+      });
+      await act(async () => {
+        rejectButton.click();
+      });
+      eq('驳回提交带原因', [clicks.at(-1), reasons.at(-1)], ['reject', '合成原因']);
+    }
+    await act(async () => root.unmount());
+    box.remove();
+  }
+  const manual: OrderView = { ...order, refund: { ...order.refund!, approval: 'approved', settlement: 'advisor' } };
+  eq('顾问退款接手人可结算', refundActions(manual, 'agent', true, 'advisor'), { approve: false, settle: true });
+  eq('只读即使拿到旧权限也不能结算', refundActions(manual, 'viewer', true, 'advisor').settle, false);
+  eq('匿名即使拿到旧权限也不能结算', refundActions(manual, null, true, 'advisor').settle, false);
+  eq('顾问退款非接手人不能结算', refundActions(manual, 'agent', false, 'advisor').settle, false);
+  eq(
+    '待审批不能结算',
+    refundActions({ ...manual, refund: { ...manual.refund!, approval: 'pending' } }, 'supervisor', true, 'advisor').settle,
+    false,
+  );
+  eq('模拟支付不显示手动结算', refundActions(manual, 'supervisor', true, 'online').settle, false);
+  const box = document.createElement('div');
+  document.body.append(box);
+  const root = createRoot(box);
+  await act(async () =>
+    root.render(
+      <OrderRow
+        o={{ ...manual, status: 'refunded', refund: { ...manual.refund!, settledAt: NOW } }}
+        role="supervisor"
+        mode="advisor"
+        canConfirm
+        canMarkPaid
+        onConfirm={() => {}}
+        onMarkPaid={() => {}}
+        onCancel={() => {}}
+        confirmError={null}
+        markPaidError={null}
+        cancelError={null}
+      />,
+    ),
+  );
+  check(
+    '已退款卡显示结算时间与方式且没有按钮',
+    box.textContent!.includes('结算时间') && box.textContent!.includes('顾问退款') && box.querySelectorAll('button').length === 0,
+  );
+  await act(async () => root.unmount());
+  box.remove();
 }
 
 if (fails.length) {

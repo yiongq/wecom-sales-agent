@@ -137,6 +137,7 @@ export const MetricsQuery = z.object({ days: intParam(90).optional() });
 export const ReplyBody = z.strictObject({ text: str.min(1).max(2000), clientId: z.uuid() });
 /** 接手；force 是改派（别人接手中时，只有 supervisor 以上） */
 export const TakeoverBody = z.strictObject({ force: z.boolean().optional() });
+export const RejectRefundBody = z.strictObject({ reason: str.min(1).max(200) });
 export const CancelOrderBody = z.strictObject({ reason: str.min(1).max(200) });
 /** 更早的消息：seq 小于 beforeSeq 的最近 limit 条（默认 50） */
 export const MessagesQuery = z.object({ beforeSeq: intParam(INT4_MAX), limit: intParam(100).optional() });
@@ -502,6 +503,10 @@ export interface OrderView {
   confirmed: { at: string; by: string } | null;
   /** 标记已付时会话是否曾经转过人工（R9）；没付或旧数据为 null */
   handoffBeforePaid: boolean | null;
+  refund?: Pick<
+    import('./conversation-types.js').RefundRecord,
+    'amount' | 'tierId' | 'percent' | 'approval' | 'settlement' | 'requestedAt'
+  > & { settledAt: number | null; tierTitle?: string };
   /**
    * 所属会话的最小投影（02 第 21 步新增，A2「待付款」行用：标题、「打开会话」的去向）；会话已被清除（订单不再指向
    * 内存里的会话，第 16 步之后才会出现）时为 null，这种订单的行不画

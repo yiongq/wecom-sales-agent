@@ -3325,6 +3325,9 @@ async function workbenchSuite(): Promise<void> {
     { route: 'POST /orders/:id/confirm', url: '/orders/ord_nosuch13/confirm', allowed: HANDLE },
     { route: 'POST /orders/:id/mark-paid', url: '/orders/ord_nosuch13/mark-paid', allowed: HANDLE },
     { route: 'POST /orders/:id/cancel', url: '/orders/ord_nosuch13/cancel', json: { reason: '矩阵' }, allowed: HANDLE },
+    { route: 'POST /orders/:id/refund/approve', url: '/orders/ord_nosuch13/refund/approve', allowed: REPLIES },
+    { route: 'POST /orders/:id/refund/reject', url: '/orders/ord_nosuch13/refund/reject', json: { reason: '矩阵' }, allowed: REPLIES },
+    { route: 'POST /orders/:id/refund/settle', url: '/orders/ord_nosuch13/refund/settle', allowed: HANDLE },
     { route: 'GET /quick-replies', url: '/quick-replies', allowed: ALL },
     { route: 'POST /quick-replies', url: '/quick-replies', json: {}, allowed: REPLIES },
     { route: 'PATCH /quick-replies/:id', url: '/quick-replies/nosuch', json: { title: '矩阵' }, allowed: REPLIES },
@@ -4051,7 +4054,63 @@ async function workbenchSuite(): Promise<void> {
       summary.text,
     );
 
-    const prior = summary.body;
+    // 07 R19：真实路由的权限、审批、驳回与顾问结算。
+    const { requestRefund } = await import('../payment/refunds.js');
+    const { quoteRefund } = await import('../core/refund.js');
+    const { defaultTravelPolicy } = await import('../packs/travel/policy.js');
+    const refundOrder = () => {
+      const o = order(40000);
+      store.markOrderPaid(o.id);
+      const q = quoteRefund(o, defaultTravelPolicy.refund, 'published', '2026-10-31');
+      if ('ineligible' in q) throw new Error('退款夹具不可退');
+      requestRefund(q, defaultTravelPolicy.refund);
+      return o;
+    };
+    const rf = refundOrder();
+    const rfNotices = notice.length;
+    check(
+      '退款批准：坐席与只读均 403',
+      (await call('POST', `/orders/${rf.id}/refund/approve`, { as: ag1 })).status === 403 &&
+        (await call('POST', `/orders/${rf.id}/refund/approve`, { as: vw })).status === 403,
+    );
+    const approved = await call('POST', `/orders/${rf.id}/refund/approve`, { as: sup });
+    check(
+      '主管批准：模拟结算并通知，退款投影不泄露 policyHash 与操作者',
+      approved.status === 200 &&
+        rf.status === 'refunded' &&
+        notice.length === rfNotices + 1 &&
+        (approved.body.refund as Body).settledAt != null &&
+        !JSON.stringify(approved.body.refund).includes('policyHash'),
+    );
+    await call('POST', `/orders/${rf.id}/refund/approve`, { as: sup });
+    check('批准幂等：不再通知', notice.length === rfNotices + 1);
+    const deniedRf = refundOrder();
+    check(
+      '驳回原因最长 200 字',
+      (await call('POST', `/orders/${deniedRf.id}/refund/reject`, { as: sup, json: { reason: '长'.repeat(201) } })).status === 400,
+    );
+    check(
+      '主管驳回：回到 paid、保留原因',
+      (await call('POST', `/orders/${deniedRf.id}/refund/reject`, { as: sup, json: { reason: '合成原因' } })).status === 200 &&
+        deniedRf.status === 'paid' &&
+        deniedRf.refund?.decision?.reason === '合成原因',
+    );
+    __profileTest.use({ DEPLOY_PROFILE: 'prod' });
+    try {
+      const manualRf = refundOrder();
+      const early = await call('POST', `/orders/${manualRf.id}/refund/settle`, { as: sup });
+      check('待审批时结算：409 order_state', early.status === 409 && early.body.error === 'order_state');
+      await call('POST', `/orders/${manualRf.id}/refund/approve`, { as: sup });
+      check('顾问模式批准仍在退款中', manualRf.status === 'refund_pending');
+      const other = await call('POST', `/orders/${manualRf.id}/refund/settle`, { as: ag2 });
+      check('非接手人结算：409 not_assignee', other.status === 409 && other.body.error === 'not_assignee');
+      const settled = await call('POST', `/orders/${manualRf.id}/refund/settle`, { as: ag1 });
+      check('接手人确认已退款：200 refunded', settled.status === 200 && settled.body.status === 'refunded');
+    } finally {
+      __profileTest.reset();
+    }
+
+    const prior = (await call('GET', '/orders/summary', O)).body;
     const refundPending = order(4321);
     store.markOrderPaid(refundPending.id);
     refundPending.status = 'refund_pending';
@@ -4748,6 +4807,24 @@ async function dbStoreChild(): Promise<never> {
     sl.messages.push({ role: 'customer', content: '在吗', at: Date.now() });
     store.saveSession(sl);
     await store.flushSession(SL);
+    const { requestRefund: submitRefund } = await import('../payment/refunds.js');
+    const { quoteRefund: quoteRf } = await import('../core/refund.js');
+    const { defaultTravelPolicy: refundPolicy } = await import('../packs/travel/policy.js');
+    const refundLag = store.createOrder({
+      sessionId: SL,
+      routeId: 'r-test',
+      routeTitle: '合成退款',
+      travelers: 2,
+      departDate: '2099-12-10',
+      totalPrice: 40000,
+    });
+    sl.orderIds.push(refundLag.id);
+    store.saveSession(sl);
+    store.markOrderPaid(refundLag.id);
+    const rfQuote = quoteRf(refundLag, refundPolicy.refund, 'published', '2099-10-31');
+    if ('ineligible' in rfQuote) throw new Error('退款积压夹具不能报价');
+    submitRefund(rfQuote, refundPolicy.refund);
+    await store.flushSession(SL);
     let open!: () => void;
     fx.faults.gate = new Promise<void>((r) => (open = r));
     const t0 = Date.now();
@@ -4767,6 +4844,20 @@ async function dbStoreChild(): Promise<never> {
       lagReply.status === 503 && lagReply.body.error === 'store_lagging' && sl.messages.length === before && pushedL.length === 0,
       lagReply.text,
     );
+    for (const action of ['approve', 'reject']) {
+      const refundBefore = JSON.stringify(refundLag);
+      const denied = await req(
+        'POST',
+        `/orders/${refundLag.id}/refund/${action}`,
+        own,
+        action === 'reject' ? { reason: '合成原因' } : undefined,
+      );
+      ck(
+        `退款${action}积压：503 store_lagging 且订单不变`,
+        denied.status === 503 && denied.body.error === 'store_lagging' && JSON.stringify(refundLag) === refundBefore,
+        denied.text,
+      );
+    }
     fx.faults.gate = null;
     open();
     await store.flushSession(SL, { timeoutMs: 5000 });

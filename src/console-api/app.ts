@@ -99,12 +99,14 @@ import {
   ReplyTooLongError,
   SendWindowError,
   takeover,
+  supervisesConversations,
 } from '../handoff/takeover.js';
 import { clientKey, isCrossSite, lookupLimit } from '../http-guards.js';
 import { requestLogContext } from '../log.js';
 import { readMetricsView } from '../ops/metrics.js';
 import { defaultQuickRepliesOf } from '../packs/registry.js';
 import { paymentMode } from '../payment/mode.js';
+import { approveRefund, rejectRefund, settleRefund } from '../payment/refunds.js';
 import { cancelOrder, confirmOrder, markPaidByAdvisor, OrderNotFoundError, OrderStateError } from '../payment/orders.js';
 import { profile } from '../profile.js';
 import { loginShowcase, sandboxTryUrl } from './entry.js';
@@ -113,6 +115,7 @@ import { csvLabelsOf } from '../shared/catalog-csv.js';
 import {
   AuditQuery,
   CancelOrderBody,
+  RejectRefundBody,
   CatalogItemParam,
   CatalogKindParam,
   ConvQuery,
@@ -294,6 +297,13 @@ const roleIn =
 const canHandle = roleIn(new Set<Role>(['owner', 'admin', 'supervisor', 'agent']), '只读成员不能处理会话');
 /** 管理快捷回复：owner、admin、supervisor */
 const canManageReplies = roleIn(new Set<Role>(['owner', 'admin', 'supervisor']), '只有所有者、管理员与主管能管理快捷回复');
+
+/** 07 R19：审批与驳回先过主管权限，再校验请求体。 */
+const canApproveRefund: MiddlewareHandler<ConsoleEnv> = async (c, next) => {
+  if (!c.var.user) return unauthorized(c);
+  if (!supervisesConversations(c.var.user.role)) return fail(c, 403, { error: 'forbidden', detail: '只有所有者、管理员与主管能审批退款' });
+  return next();
+};
 
 /** 只在 db 存储有的接口（更早的消息、trace、运行数字）在文件存储下 → 503 store_file_mode */
 class StoreFileModeError extends Error {}
@@ -812,6 +822,21 @@ export const consoleApi = new Hono<ConsoleEnv>()
     if (!persisted) throw new StoreLaggingError(order.sessionId);
     const body: OrderView = orderView(order);
     return c.json(body, 200);
+  })
+  .post('/orders/:id/refund/approve', canApproveRefund, async (c) => {
+    const { order, persisted } = await approveRefund(c.req.param('id'), actorOf(c.var.user!, dbIp(c)));
+    if (!persisted) throw new StoreLaggingError(order.sessionId);
+    return c.json(orderView(order), 200);
+  })
+  .post('/orders/:id/refund/reject', canApproveRefund, zValidator('json', RejectRefundBody, badRequest), async (c) => {
+    const { order, persisted } = await rejectRefund(c.req.param('id'), actorOf(c.var.user!, dbIp(c)), c.req.valid('json').reason);
+    if (!persisted) throw new StoreLaggingError(order.sessionId);
+    return c.json(orderView(order), 200);
+  })
+  .post('/orders/:id/refund/settle', canHandle, async (c) => {
+    const { order, persisted } = await settleRefund(c.req.param('id'), actorOf(c.var.user!, dbIp(c)));
+    if (!persisted) throw new StoreLaggingError(order.sessionId);
+    return c.json(orderView(order), 200);
   })
   .post('/orders/:id/cancel', canHandle, zValidator('json', CancelOrderBody, badRequest), async (c) => {
     const o = cancelOrder(c.req.param('id'), actorOf(c.var.user!, dbIp(c)), c.req.valid('json').reason);
