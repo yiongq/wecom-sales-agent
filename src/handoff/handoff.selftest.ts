@@ -20,6 +20,10 @@ fs.mkdirSync(varParent, { recursive: true });
 const VAR_DIR = fs.mkdtempSync(path.join(varParent, 'wecom-handoff-selftest-'));
 process.env.VAR_DIR = VAR_DIR;
 process.env.CONFIG_SOURCE = 'file';
+const sopDir = path.join(VAR_DIR, 'sop');
+fs.mkdirSync(sopDir);
+fs.copyFileSync(new URL('../../data/sop.md', import.meta.url), path.join(sopDir, 'sop.md'));
+process.env.SOP_PATH = path.join(sopDir, 'sop.md');
 process.env.SERVER_SELFTEST = '1'; // 不 listen、不起企微轮询
 process.env.ADMIN_USER = 'admin';
 process.env.ADMIN_PASS = 'selftest-pass';
@@ -85,6 +89,7 @@ const { cleanText } = await import('../shared/text.js');
 const { conversationState, needSummary, paidNeedsHuman } = await import('../shared/conversation.js');
 const { packById } = await import('../packs/registry.js');
 const { __profileTest, DEMO_DEFAULTS, PROD_CEILING, resolveProfile, ProfileConfigError } = await import('../profile.js');
+const { defaultTravelPolicy } = await import('../packs/travel/policy.js');
 
 let pass = 0;
 const fails: string[] = [];
@@ -545,6 +550,13 @@ const mkOrder = (s: Session): Order => {
 };
 {
   // 验收 12：转人工 → 交还 → 再转人工 → 交还 → 付款 → 已付后要退款 → 再发一句 → 有人接手 → 重置 → 再转人工
+  fs.writeFileSync(
+    path.join(sopDir, 'policy.json'),
+    JSON.stringify({
+      ...defaultTravelPolicy,
+      refund: { ...defaultTravelPolicy.refund, selfService: false },
+    }),
+  );
   const sid = newSid('ACC12');
   await say(sid, '转人工');
   const t1 = sess(sid).firstHandoffAt;
@@ -612,6 +624,34 @@ const mkOrder = (s: Session): Order => {
     '重置后再转人工：状态是等人接手（不是顾问处理中），计数 4，firstHandoffAt 不变',
     conversationState(s, travel) === 'human' && s.assignee === null && s.handoffCount === 4 && s.firstHandoffAt === t1,
   );
+  fs.rmSync(path.join(sopDir, 'policy.json'));
+}
+{
+  const sid = newSid('SELF');
+  const s = store.getOrCreateSession(sid, 'wecom');
+  const o = mkOrder(s);
+  o.totalPrice = 40000;
+  store.markOrderPaid(o.id);
+  s.stage = 'paid';
+  store.saveSession(s);
+  const before = requests.length;
+  const quote = await say(sid, '我要退款');
+  check('自助退款先报价、不转人工', quote.text.includes('确认退款') && !s.handedOver && o.status === 'paid');
+  const result = await say(sid, '确认退款');
+  await store.flushSession(sid);
+  check(
+    '确认后待审批、终态保留、进已成交客户要人工',
+    result.handoff === true &&
+      s.stage === 'paid' &&
+      o.status === 'refund_pending' &&
+      s.handoff?.kind === 'refund' &&
+      paidNeedsHuman(s, packById('travel')!) &&
+      startedOf(sid).length === 1,
+  );
+  const refundId = o.refund?.id;
+  const again = await say(sid, '确认退款');
+  check('重复确认静默，不新增申请或转人工事件', again.silent === true && o.refund?.id === refundId && startedOf(sid).length === 1);
+  check('自助退款全程不调用模型', requests.length === before);
 }
 {
   // 从没转过人工的会话付款：handoffBeforePaid 为 false

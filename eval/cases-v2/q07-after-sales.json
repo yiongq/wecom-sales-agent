@@ -1,0 +1,198 @@
+[
+  {
+    "version": 2,
+    "tags": ["q07", "after-sales"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "paid"
+      },
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 1,
+          "departDate": "2026-11-11",
+          "status": "paid"
+        }
+      ]
+    },
+    "id": "q07-after-sales-auto",
+    "desc": "R17–R19：40天前请求、确认、幂等重复，不调用模型。",
+    "turns": [
+      {
+        "say": "我要退款",
+        "script": [],
+        "expect": {
+          "replyMatches": ["丽江大理", "订单尾号", "40 天", "退改条款第1条", "确认退款"],
+          "stage": "paid",
+          "handoff": false,
+          "tools": [],
+          "guardVerdicts": [],
+          "orders": {
+            "count": 1,
+            "last": {
+              "status": "paid"
+            }
+          }
+        }
+      },
+      {
+        "say": "确认退款！",
+        "script": [],
+        "expect": {
+          "replyMatches": ["已为您办好退款"],
+          "stage": "paid",
+          "handoff": false,
+          "tools": [],
+          "guardVerdicts": [],
+          "orders": {
+            "count": 1,
+            "last": {
+              "status": "refunded"
+            }
+          }
+        }
+      },
+      {
+        "say": "确认退款",
+        "script": [],
+        "expect": {
+          "replyMatches": ["退款申请已经提交过了"],
+          "silent": false,
+          "handoff": false,
+          "tools": [],
+          "orders": {
+            "count": 1,
+            "last": {
+              "status": "refunded"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "tags": ["q07", "after-sales"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "paid"
+      },
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 2,
+          "departDate": "2026-11-11",
+          "status": "paid"
+        }
+      ]
+    },
+    "id": "q07-after-sales-approval",
+    "desc": "R17–R19：40天前请求、确认、幂等重复，不调用模型。",
+    "turns": [
+      {
+        "say": "我要退款",
+        "script": [],
+        "expect": {
+          "replyMatches": ["丽江大理", "订单尾号", "40 天", "退改条款第1条", "确认退款"],
+          "stage": "paid",
+          "handoff": false,
+          "tools": [],
+          "guardVerdicts": [],
+          "orders": {
+            "count": 1,
+            "last": {
+              "status": "paid"
+            }
+          }
+        }
+      },
+      {
+        "say": "确认退款！",
+        "script": [],
+        "expect": {
+          "replyMatches": ["退款申请已提交"],
+          "stage": "paid",
+          "handoff": true,
+          "tools": [],
+          "guardVerdicts": [],
+          "orders": {
+            "count": 1,
+            "last": {
+              "status": "refund_pending"
+            }
+          }
+        }
+      },
+      {
+        "say": "确认退款",
+        "script": [],
+        "expect": {
+          "replyMatches": [],
+          "silent": true,
+          "handoff": true,
+          "tools": [],
+          "orders": {
+            "count": 1,
+            "last": {
+              "status": "refund_pending"
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "tags": ["q07", "after-sales"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": {
+        "stage": "paid"
+      },
+      "orders": [
+        {
+          "routeId": "r-yunnan-mid",
+          "travelers": 1,
+          "departDate": "2026-11-11",
+          "status": "paid"
+        },
+        {
+          "routeId": "r-sichuan-mid",
+          "travelers": 1,
+          "departDate": "2026-11-11",
+          "status": "paid"
+        }
+      ]
+    },
+    "id": "q07-after-sales-choose",
+    "desc": "R17：两张已付单先列线路日期和尾号，非尾号取消售后。",
+    "turns": [
+      {
+        "say": "我要退款",
+        "script": [],
+        "expect": {
+          "replyMatches": ["多张可退款订单", "尾号", "2026-11-11", "丽江大理", "熊猫"],
+          "tools": [],
+          "handoff": false,
+          "orders": {
+            "count": 2
+          }
+        }
+      },
+      {
+        "say": "我再考虑一下",
+        "script": [
+          {
+            "content": "好的，您可以再考虑一下。"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["再考虑一下"],
+          "handoff": false
+        }
+      }
+    ]
+  }
+]

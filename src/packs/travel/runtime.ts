@@ -38,6 +38,7 @@ import { createTravelConsistency } from './consistency.js';
 import { refundQuoteText, refundChooseText, refundTexts, refundNoticeText } from './refund-words.js';
 import { paidOrderText } from './order-words.js';
 import { travelPolicy } from './policy.js';
+import { createTravelAfterSales } from './after-sales.js';
 
 const thresholds = { ...travelPriceThresholds, dates: travelDateThresholds, search: travelSearchThresholds };
 interface TravelRuntimeTypes extends PackRuntimeTypes {
@@ -139,6 +140,9 @@ export function createTravelRuntime(sources: PackSources) {
       stripAdvisorPrefix,
     }),
     engineHooks: {
+      afterSales: createTravelAfterSales(sources, (input) =>
+        helpers.handoffReply(input.session, input.text, 'refund', { brand: input.brand }),
+      ),
       isComplaint: turnHooks.isComplaint,
       isHandoffIntent: turnHooks.isHandoffIntent,
       safetyNetKind: helpers.safetyNetKind,
@@ -159,6 +163,7 @@ export function createTravelRuntime(sources: PackSources) {
         session.missedDestinations = undefined;
         session.reminders = undefined;
         session.recommendedRoutes = undefined;
+        delete session.afterSale;
       },
       paidText: paidOrderText,
       refund: { quoteText: refundQuoteText, chooseText: refundChooseText, texts: refundTexts, noticeText: refundNoticeText },

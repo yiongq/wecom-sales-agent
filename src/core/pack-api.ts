@@ -7,6 +7,7 @@ import type { CustomerProfile, HandoffRecord, Hotel, Order, Route, SalesStage, S
 import type { ToolDef } from '../tool-defs.js';
 import type { MoneyParseOptions } from './parse/money.js';
 import type { PaymentMode } from '../shared/conversation-types.js';
+import type { RefundQuote, RefundTexts } from './refund.js';
 import type { CatalogItem } from '../shared/console-api.js';
 import { z } from 'zod';
 
@@ -736,6 +737,7 @@ export function boundPack(): PackBinding | null {
 
 /** 第 18 步：模型前安全网、重置与支付通知的行业能力，按旧调用位置注入。 */
 export interface EnginePackHooks {
+  afterSales?(input: AfterSalesInput): AfterSalesStep | null;
   isComplaint(text: string): boolean;
   isHandoffIntent(text: string): boolean;
   safetyNetKind(session: Session, text: string): 'complaint' | 'refund' | 'request';
@@ -766,6 +768,19 @@ export interface EnginePackHooks {
     noticeText(order: Order, kind: 'settled' | 'rejected', ctx: RefundTextContext): string;
   };
 }
+
+export type AfterSalesInput = {
+  session: Session;
+  text: string;
+  policy: unknown;
+  policyHash: string;
+  brand: BrandProfile | null;
+  today: string;
+};
+export type AfterSalesStep =
+  | { kind: 'reply'; text: string }
+  | { kind: 'submit'; quote: RefundQuote; texts: RefundTexts }
+  | { kind: 'handoff'; text: string; record: Pick<HandoffRecord, 'kind' | 'reason' | 'quote'> };
 
 export interface RefundTextContext {
   policy: unknown;

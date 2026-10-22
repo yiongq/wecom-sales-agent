@@ -497,6 +497,44 @@ async function childSuite(rig: Rig): Promise<void> {
     );
   }
 
+  // 07 R18：先报价不通知，确认后只发一次已成交客户的退款转人工通知。
+  {
+    await retireAll();
+    const s = store.getOrCreateSession(id('NR01'), 'wecom');
+    used.push(s.id);
+    const order = store.createOrder({
+      sessionId: s.id,
+      routeId: 'r-test',
+      routeTitle: '合成退款线路',
+      travelers: 2,
+      departDate: '2099-12-10',
+      totalPrice: 40000,
+    });
+    s.orderIds.push(order.id);
+    store.markOrderPaid(order.id);
+    s.stage = 'paid';
+    store.saveSession(s);
+    await store.flushSession(s.id);
+    const calls = llm.calls;
+    await ask('NR01', '我要退款');
+    await runner.runJobsOnce();
+    check('自助退款报价不转人工、不发外部通知', !s.handedOver && okFor('NR01').length === 0);
+    await ask('NR01', '确认退款');
+    await runner.runJobsOnce();
+    const notice = okFor('NR01');
+    check(
+      '退款确认后发一条已成交客户要人工通知',
+      order.status === 'refund_pending' &&
+        s.handoff?.kind === 'refund' &&
+        notice.length === 1 &&
+        notice[0]!.content.startsWith('已成交客户要人工 · 企微客户 · NR01\n'),
+    );
+    const refundId = order.refund?.id;
+    await ask('NR01', '确认退款');
+    await runner.runJobsOnce();
+    check('重复确认不重复申请和外部通知、不调模型', order.refund?.id === refundId && okFor('NR01').length === 1 && llm.calls === calls);
+  }
+
   // ---- unclaimed：10 分钟后有人接手的不发（done），没人接手的发「还没人接手」 ----
   {
     await retireAll();
