@@ -225,6 +225,12 @@ export interface TurnContext {
   text: string;
   /** 品牌模板模式下的品牌（旧版模式为 null）；contextNote 里对客口径按它渲染（06 原则的三种情形） */
   brand?: BrandProfile | null;
+  /**
+   * 本轮开始时捕获的已发布 policy 快照与 policyHash（07 R1，同品牌的做法）：整轮沿用，发布新版也不混用；
+   * 运行时不读草稿、不再查库。核心以 unknown 持有，行业包在自己的边界按 schema 读
+   */
+  policy?: unknown;
+  policyHash?: string;
   /** 经本轮注册表执行预取，并返回实际执行的参数与完整结果。 */
   callTool(name: string, args: Record<string, unknown>): Promise<import('./llm/types.js').PrefetchedCall>;
 }

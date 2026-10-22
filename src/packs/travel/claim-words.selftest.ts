@@ -64,7 +64,8 @@ const lacks = (text: string, gone: RegExp | string, ctx: Partial<ClaimWordsConte
   return out;
 };
 
-const { POLICY_REPLY, VISA_REPLY, INVOICE_REPLY, HOTEL_REPLY, MEDIA_REPLY, OLD_ORDER_REPLY } = claimWordsTest();
+const { POLICY_REPLY, VISA_REPLY, INSURANCE_REPLY, FEES_REPLY, INVOICE_REPLY, HOTEL_REPLY, MEDIA_REPLY, OLD_ORDER_REPLY } =
+  claimWordsTest();
 
 // ---- D 类：审查原话（正向词表，不套否定守卫，「别担心」「放心」不放过）----
 const sensitive =
@@ -274,6 +275,8 @@ for (const t of [
   '款项到账后您会收到确认，顾问核实后会在微信上联系您。',
   '这块政策会变，由顾问按您的出行时间确认。',
   '签证怎么办、要多久，由顾问跟您确认。',
+  INSURANCE_REPLY,
+  FEES_REPLY,
   '酒店我可以推荐，要订请顾问确认房态。',
   '照片和视频我这边发不了，请顾问发给您。',
   '之前那张单请先别付款，我请顾问帮您处理。',
@@ -289,6 +292,8 @@ for (const t of [
 const replies = [
   POLICY_REPLY,
   VISA_REPLY,
+  INSURANCE_REPLY,
+  FEES_REPLY,
   INVOICE_REPLY,
   HOTEL_REPLY,
   MEDIA_REPLY,

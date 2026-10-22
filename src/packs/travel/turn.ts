@@ -47,6 +47,7 @@ import {
 } from './progress.js';
 import { holidayIn, travelDatePolicy } from './dates.js';
 import { advisorCheck, paymentPendingReply } from './contact-words.js';
+import { policyNote } from './policy-ask.js';
 import { isPureChitchat, paidChitchatReply, reminderLines } from './reply-notes.js';
 import { TARGET_DAYS, requestedDays, customHandoffReply } from './itinerary.js';
 
@@ -601,7 +602,7 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
       .slice(-3);
   }
 
-  function contextNote({ session, text, brand }: TurnContext): string[] {
+  function contextNote({ session, text, brand, policy }: TurnContext): string[] {
     const lines: string[] = [];
     // 线路 id 跨轮带着走：历史里只有文本，没有这一行，客户说「第二条报个价」时模型得先重查一遍库
     const shown = session.lastShownRoutes ?? [];
@@ -648,6 +649,8 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     // 06 R7：已对客户说过的提醒与本会话推荐过的线路。没有记录时不加
     lines.push(...reminderLines(session));
     lines.push(quoteTimingNote(session, text) ?? '', headcountAskNote(session, text) ?? '');
+    // 07 R14：客户在问退款、退订、改期、保险、费用含不含时追加条款（只追加在已有各行之后）；不是政策问法的轮一个字节都不加
+    lines.push(...policyNote({ policy, text, orderIds: session.orderIds, getOrder, today: todayIso() }));
     return lines;
   }
 

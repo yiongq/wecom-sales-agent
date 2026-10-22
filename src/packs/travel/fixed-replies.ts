@@ -584,6 +584,9 @@ export function createTravelFixedReplies(world: World): readonly FixedReply[] {
   add(
     reg('replace.claim.policy', 'claim-words.ts', 'plain', () => same(cw.POLICY_REPLY)),
     reg('replace.claim.visa', 'claim-words.ts', 'plain', () => same(cw.VISA_REPLY)),
+    // 07 R4：保险、费用两句口径。第 10 步先作为条款原句进 contextNote；第 11 步的 policy_claims 才拿它换回复，出处到时再改指那一步
+    reg('replace.claim.insurance', 'claim-words.ts', 'plain', () => same(cw.INSURANCE_REPLY)),
+    reg('replace.claim.fees', 'claim-words.ts', 'plain', () => same(cw.FEES_REPLY)),
     reg('replace.claim.invoice', 'claim-words.ts', 'plain', () => same(cw.INVOICE_REPLY)),
     reg('replace.claim.hotel', 'claim-words.ts', 'plain', () => same(cw.HOTEL_REPLY)),
     reg('replace.claim.media', 'claim-words.ts', 'plain', () => same(cw.MEDIA_REPLY)),

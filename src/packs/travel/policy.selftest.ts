@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import type { Route, TravelToolSources } from '../../core/pack-api.js';
 import { createTravelCatalog } from './tools/catalog.js';
-import { VISA_REPLY } from './claim-words.js';
+import { FEES_REPLY, INSURANCE_REPLY, VISA_REPLY } from './claim-words.js';
 import { travel } from './console-pack.js';
 import { travelDateThresholds, travelPriceThresholds } from './thresholds.js';
 import {
@@ -134,10 +134,10 @@ assert.equal(travelDateThresholds.maxDepartMonths, 12);
 assert.equal(travelPolicy.refund(p), p.refund);
 assert.deepEqual(travelPolicy.editable, ['refund', 'change']);
 const all = clauses(p);
-assert.equal(all.length, 6);
+assert.equal(all.length, 8);
 assert.deepEqual(
   all.map((clause) => clause.topic),
-  ['refund', 'refund', 'refund', 'refund', 'change', 'visa'],
+  ['refund', 'refund', 'refund', 'refund', 'change', 'visa', 'insurance', 'fees'],
 );
 assert.deepEqual(
   all.slice(0, 4).map((clause) => `${clause.text}（${clause.title}）`),
@@ -172,6 +172,13 @@ assert.deepEqual(
 );
 assert.equal(all[4].text, p.change);
 assert.equal(all[5].text, VISA_REPLY);
+// 07 第 10 步：保险、费用两句口径与签证同一做法，引用 claim-words 的常量；出处不进 policy，随租户改档位也不变
+assert.equal(all[6].text, INSURANCE_REPLY);
+assert.equal(all[7].text, FEES_REPLY);
+assert.deepEqual(
+  all.slice(5).map((clause) => clause.title),
+  ['签证说明', '保险说明', '费用说明'],
+);
 for (const clause of all) assert.doesNotMatch(`${clause.text}（${clause.title}）`, /[*#`[\]]/);
 assert.equal(p.refund.tiers.length, 3);
 assert.equal(p.refund.selfService, true);
