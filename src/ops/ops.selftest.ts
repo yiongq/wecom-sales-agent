@@ -1334,6 +1334,25 @@ const sameKinds = (got: unknown, want: Record<string, number>): boolean => {
       deals.visitor.assisted === 1,
   );
 
+  // 成交拆分是内存订单现算的，不进 60 秒缓存：同一个后台时钟下紧接着再取，订单变了数字立刻跟着变；转人工那部分走库，照旧缓存
+  {
+    const vb = store.listOrders().find((o) => o.sessionId === visitorB)!;
+    vb.status = 'refunded';
+    const again = await api('GET', '/metrics?days=7', { token: tokens.owner });
+    vb.status = 'refund_pending';
+    const d = again.body.deals as Record<string, typeof none>;
+    check(
+      '成交拆分不进缓存：同一时钟下紧接着再取 /metrics，访客那张退款中的单改成已退款后「其中已退款」立刻 0 → 1，种子与真实客户不动',
+      again.status === 200 &&
+        d.visitor?.refunded === 1 &&
+        d.visitor.assistedRefunded === 1 &&
+        d.seed?.refunded === 0 &&
+        d.customer?.refunded === 1 &&
+        json({ ...again.body, deals: null }) === json({ ...r.body, deals: null }),
+      json(d),
+    );
+  }
+
   // /orders/summary 也按来源拆：顶层口径不变（全部来源），三类之和等于顶层（时钟仍是 NOW，付款都在 NOW 的自然月里）
   clockAt = NOW;
   const sum2 = await api('GET', '/orders/summary', { token: tokens.owner });

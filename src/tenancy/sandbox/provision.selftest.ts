@@ -16,6 +16,9 @@ import { closeConfig, currentCatalog, currentSop, ConfigStartupError } from '../
 import { readSandboxTemplate } from '../../db/repo/sandbox.js';
 import { listSessions, listOrders, getOrder } from '../../store.js';
 import { currentPrivacyNotice } from '../../privacy/privacy.js';
+import { todayIso } from '../../env.js';
+import { paidNeedsHuman } from '../../shared/conversation.js';
+import { packById } from '../../packs/registry.js';
 import { dropShutdownHooks } from '../../shutdown.js';
 import {
   configureTenancy,
@@ -184,20 +187,45 @@ async function suite(
   check(() => assert.match(first.token, /^[A-Za-z0-9_-]{43}$/));
   check(() => assert.equal(first.user.role, 'owner'));
   const rt = runtimeOf(first.tenantId)!;
+  // 开通日 = 租户创建的那一刻在服务器时区的日期（G01 的出发日从它算，07 R21）；独立于种子代码，用库里的 created_at 算
+  const [createdRow] = await q<{ created_at: Date | string }>('select created_at from tenants where id=$1', [first.tenantId]);
+  const provisionDay = todayIso(new Date(createdRow!.created_at));
+  const [py, pm, pd] = provisionDay.split('-').map(Number) as [number, number, number];
+  const departDay = new Date(Date.UTC(py, pm - 1, pd + 40)).toISOString().slice(0, 10);
   const verify = () =>
     withTenantScope(rt, () => {
       const sessions = listSessions();
-      check(() => assert.equal(sessions.length, 5));
-      check(() => assert.equal(listOrders().length, 2));
-      check(() => assert.deepEqual(sessions.map((s) => s.stage).sort(), ['closing', 'discovery', 'handoff', 'paid', 'quote']));
+      check(() => assert.equal(sessions.length, 6));
+      check(() => assert.equal(listOrders().length, 3));
+      check(() => assert.deepEqual(sessions.map((s) => s.stage).sort(), ['closing', 'discovery', 'handoff', 'paid', 'paid', 'quote']));
       check(() =>
         assert.deepEqual(
           listOrders()
             .map((o) => o.status)
             .sort(),
-          ['paid', 'pending_payment'],
+          ['paid', 'pending_payment', 'refund_pending'],
         ),
       );
+      // 07 R21：每段种子都打 seed: true；G01 出发日在开通后 40 天、退款待审批，在「已成交客户要人工」里；A01 的出发日照旧
+      check(() => assert.ok(sessions.every((s) => s.seed === true)));
+      const g01 = getOrder('ord_seed_7c41a9')!;
+      check(() => assert.equal(g01.departDate, departDay));
+      check(() => assert.equal(getOrder('ord_seed_A01')!.departDate, '2026-10-15'));
+      check(() => assert.equal(g01.status, 'refund_pending'));
+      check(() => assert.equal(g01.refund?.daysBefore, 40));
+      check(() => assert.equal(g01.refund?.approval, 'pending'));
+      check(() => assert.equal(g01.refund?.settlement, 'mock'));
+      check(() => assert.equal(g01.refund?.policyHash, currentPolicy().policyHash));
+      check(() => assert.ok(g01.refund!.amount > templatePolicy.refund.approvalThresholdYuan));
+      const g01Session = sessions.find((s) => s.id === g01.sessionId)!;
+      const pack = packById('travel')!;
+      check(() =>
+        assert.deepEqual(
+          sessions.filter((s) => paidNeedsHuman(s, pack)).map((s) => s.id),
+          [g01Session.id],
+        ),
+      );
+      check(() => assert.equal(g01Session.handoff?.kind, 'refund'));
       check(() => assert.ok(sessions.every((s) => /^sbx-[a-f0-9]{32}$/.test(s.id) && s.channel === 'simulator')));
       const fixture = JSON.parse(fs.readFileSync('data/sandbox-seeds.json', 'utf8')) as { orders: { id: string }[] };
       for (const { id } of fixture.orders) check(() => assert.ok(getOrder(id) && sessions.some((s) => s.id === getOrder(id)!.sessionId)));
@@ -429,7 +457,7 @@ async function suite(
     check(() => assert.equal(tenantRuntimes().length, 20));
     const restored = runtimeOf(first.tenantId)!;
     check(() => assert.deepEqual(listSessionIds(restored), ids));
-    for (const loaded of tenantRuntimes()) withTenantScope(loaded, () => check(() => assert.equal(listSessions().length, 5)));
+    for (const loaded of tenantRuntimes()) withTenantScope(loaded, () => check(() => assert.equal(listSessions().length, 6)));
   } else {
     await releaseRuntimes();
     const loaded = await loadSandboxRuntime(deps, { id: first.tenantId, slug: first.slug, expiresAt: first.expiresAt }, base.host, acquire);
@@ -547,7 +575,7 @@ try {
             sessions: string[];
           }[];
           check(() => assert.equal(restored.length, 20));
-          check(() => assert.ok(restored.every((row) => row.sessions.length === 5)));
+          check(() => assert.ok(restored.every((row) => row.sessions.length === 6)));
           await restarted.start();
         },
         async () => {

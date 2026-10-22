@@ -224,7 +224,10 @@ if args.fixture:
 
     # 仅沙箱夹具修正默认种子里已不存在的线路；普通 demo 输出保持原样。
     with open(Path(__file__).resolve().parent.parent / "data/routes.json", encoding="utf-8") as routes_file:
-        bali = next(r for r in json.load(routes_file) if r["id"] == "r-bali")
+        routes = json.load(routes_file)
+    bali = next(r for r in routes if r["id"] == "r-bali")
+    yunnan = next(r for r in routes if r["id"] == "r-yunnan-mid")
+    g01_total = yunnan["priceFrom"] * 2
     bali_order = next(o for o in O if o["routeId"] == "r-bali-lux")
     bali_order["routeId"] = bali["id"]
     bali_order["routeTitle"] = bali["title"]
@@ -243,6 +246,46 @@ if args.fixture:
     O = [o for o in O if o["sessionId"] in sandbox_ids]
     latest = max(m["at"] for s in S for m in s["messages"])
 
+    # G01 只在沙箱夹具里：已付款、客户说「我要退款」、看过报价、回了「确认退款」、退款待审批并在转人工里（07 R21）。
+    # 时间已经是相对最新消息的毫秒偏移（最新消息为 0）；出发日、报价句、提交句、转人工原因与退款记录都留给开通时现算。
+    h, m_ = 3600 * 1000, 60 * 1000
+    g01_start = -50 * h
+    g01_confirm_at = -25 * m_
+    g01_requested_at = g01_confirm_at + 10_000
+    g01_messages = [
+        {"role": "customer", "content": "想带爸妈去云南，两位，推荐个轻松点的", "at": g01_start},
+        {"role": "agent", "content": f'推荐{yunnan["title"]}，古城慢游、行程轻松，适合带长辈～大概什么时候出发？', "at": g01_start + m_},
+        {"role": "customer", "content": "一个多月以后吧，报个价", "at": g01_start + 2 * m_},
+        {"role": "agent", "content": f'给您报个价：{yunnan["title"]}，每人 {yunnan["priceFrom"]:,}，2 人共 {g01_total:,} 元。可以吗？', "at": g01_start + 3 * m_},
+        {"role": "customer", "content": "就订这个", "at": g01_start + 4 * m_},
+        {"role": "agent", "content": "已为您锁定名额，请点链接完成支付～", "at": g01_start + 5 * m_},
+        {"role": "agent", "content": "已收到您的支付，太开心啦！顾问稍后对接行程细节～", "at": g01_start + 13 * m_},
+        {"role": "customer", "content": "我要退款", "at": -30 * m_},
+        {"role": "agent", "content": "{refund_quote}", "at": -30 * m_ + 30_000},
+        {"role": "customer", "content": "确认退款", "at": g01_confirm_at},
+        {"role": "agent", "content": "{refund_submitted}", "at": g01_confirm_at + 30_000},
+    ]
+    g01_session = {
+        "id": "wecom:cust_G01", "channel": "wecom", "stage": "paid",
+        "profile": {"nickname": "周婷", "destinationInterest": "云南", "travelers": "2人", "budget": "每人2万"},
+        "messages": g01_messages,
+        "orderIds": ["ord_seed_7c41a9"], "handedOver": True,
+        "createdAt": g01_start, "updatedAt": g01_messages[-1]["at"],
+        "afterSale": {"step": "confirm", "at": -30 * m_ + 20_000},
+        "stageBeforeHandoff": "paid",
+        "firstHandoffAt": g01_requested_at,
+        "handoffCount": 1,
+        "handoffLog": [{"kind": "refund", "at": g01_requested_at}],
+        "assignee": None,
+        "handoff": {"kind": "refund", "at": g01_requested_at, "reason": "{refund_reason}", "quote": "确认退款"},
+    }
+    g01_order = {
+        "id": "ord_seed_7c41a9", "sessionId": "wecom:cust_G01", "routeId": yunnan["id"],
+        "routeTitle": yunnan["title"], "travelers": 2, "departOffsetDays": 40,
+        "totalPrice": g01_total, "status": "refund_pending", "refundSeed": {"requestedAt": g01_requested_at},
+        "createdAt": g01_start + 5 * m_, "paidAt": g01_start + 13 * m_, "handoffBeforePaid": False,
+    }
+
     def relative_times(value):
         if isinstance(value, list):
             return [relative_times(item) for item in value]
@@ -257,16 +300,18 @@ if args.fixture:
         "$comment": "由 scripts/seed-demo.py --fixture 生成；sessions 与 orders 沿用默认场景字段。"
                     "沿用既有沙箱夹具的旧线路修正：B01 的 r-bali-lux 改为目录 r-bali，正文、标题与金额按目录对应。"
                     "各会话 updatedAt 等于最后一条消息时间。"
-                    "沙箱是默认场景的5段会话、2个对应订单子集。"
+                    "沙箱是默认场景的5段会话、2个对应订单子集，另加沙箱专有的 G01（退款待审批，不在宿主默认种子里）。"
+                    "订单的 departOffsetDays 是出发日相对开通日的天数，开通时算出 departDate；G01 订单的 refundSeed 开通时按已发布 policy 补全退款记录。"
+                    "G01 里 {refund_quote}、{refund_submitted}、{refund_reason} 是占位，开通时用行业包的退款文字和原因现算，日期、天数、金额随开通日变。"
                     "所有 at、createdAt、updatedAt、paidAt 均为相对最新消息的毫秒偏移（整数，<=0，最新消息为0）；"
                     "开通时加上开通时刻减5分钟。profile.dates 与 departDate 是行程日期文本，不是时间戳。"
                     "会话 id、channel 与订单引用在开通时重映射。",
-        "sessions": relative_times(S),
-        "orders": relative_times(O),
+        "sessions": relative_times(S) + [g01_session],
+        "orders": relative_times(O) + [g01_order],
     }
     rendered = json.dumps(fixture, ensure_ascii=False, indent=2)
     # 仓库格式约定把短的标量数组放在一行；生成器直接遵守，CI 不需要另跑格式化工具。
-    for s in S:
+    for s in S + [g01_session]:
         expanded = json.dumps(s["orderIds"], ensure_ascii=False, indent=2).replace("\n", "\n      ")
         compact = json.dumps(s["orderIds"], ensure_ascii=False)
         rendered = rendered.replace('"orderIds": ' + expanded, '"orderIds": ' + compact)

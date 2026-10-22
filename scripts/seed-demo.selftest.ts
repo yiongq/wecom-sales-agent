@@ -86,8 +86,25 @@ with patch("builtins.open", side_effect=isolated_open):
       );
     return value;
   }
-  assert.deepEqual(sandbox.sessions, relative(subset), '沙箱是宿主默认种子的5段子集，正文与画像不改');
-  assert.deepEqual(sandbox.orders, relative(hostOrders.filter((o) => ids.has(o.sessionId))), '仅保留这5段对应的2个订单，字段不改');
+  // 07 R21：沙箱夹具在这 5 段之外多一个沙箱专有的 G01（退款待审批），宿主的默认种子不含它
+  const sandboxOnly = new Set(['wecom:cust_G01']);
+  assert.ok(!generated.some((s) => sandboxOnly.has(s.id)) && !hostOrders.some((o) => sandboxOnly.has(o.sessionId)), '宿主默认种子不含 G01');
+  assert.deepEqual(
+    sandbox.sessions.filter((s) => !sandboxOnly.has(s.id)),
+    relative(subset),
+    '沙箱是宿主默认种子的5段子集，正文与画像不改',
+  );
+  assert.deepEqual(
+    sandbox.orders.filter((o) => !sandboxOnly.has(o.sessionId)),
+    relative(hostOrders.filter((o) => ids.has(o.sessionId))),
+    '仅保留这5段对应的2个订单，字段不改',
+  );
+  assert.deepEqual(
+    sandbox.sessions.map((s) => s.id),
+    [...subset.map((s) => s.id), ...sandboxOnly],
+    'G01 排在 5 段之后',
+  );
+  assert.equal(sandbox.orders.length, 3, '沙箱夹具共 3 个订单（5 段的 2 个加 G01）');
   assert.deepEqual(sandbox, JSON.parse(fs.readFileSync('data/sandbox-seeds.json', 'utf8')), '已提交的沙箱夹具与生成器一致');
   const handoffs = generated.filter((s) => s.handedOver || s.stage === 'handoff');
   assert.ok(handoffs.length > 0, '默认场景必须含转人工会话');
