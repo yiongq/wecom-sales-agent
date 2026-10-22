@@ -1274,10 +1274,11 @@ const sameKinds = (got: unknown, want: Record<string, number>): boolean => {
     sess.orderIds.push(o.id);
     store.saveSession(sess);
     store.markOrderPaid(o.id);
-    if (final) {
-      o.status = final;
-      store.saveOrder(o);
-    }
+    // 付款时刻钉在后台时钟 NOW 的前半小时：/orders/summary 按后台时钟的自然月算，登录的会话在 NOW 才有效（空闲 12 小时过期），
+    // 时钟不能拨到真实的现在（离 NOW 超过 12 小时就 401）；paid_at 写进库之后不能改，所以在落库（flush）之前改
+    o.paidAt = NOW - 30 * 60_000;
+    if (final) o.status = final;
+    store.saveOrder(o);
     return o;
   };
   const visitorA = `sim-${'1'.repeat(24)}`;
@@ -1333,14 +1334,15 @@ const sameKinds = (got: unknown, want: Record<string, number>): boolean => {
       deals.visitor.assisted === 1,
   );
 
-  // /orders/summary 也按来源拆：顶层口径不变（全部来源），三类之和等于顶层
-  clockAt = Date.now();
+  // /orders/summary 也按来源拆：顶层口径不变（全部来源），三类之和等于顶层（时钟仍是 NOW，付款都在 NOW 的自然月里）
+  clockAt = NOW;
   const sum2 = await api('GET', '/orders/summary', { token: tokens.owner });
   const top = sum2.body as Record<string, unknown>;
-  const byO = top.byOrigin as Record<string, Record<string, number>>;
+  const byO = (top.byOrigin ?? {}) as Record<string, Record<string, number>>;
   check(
     '/orders/summary：顶层是全部来源（成交额含退款中，已退款单列，退款中与待付款不限月）',
-    top.paidTotal === 148_600 &&
+    sum2.status === 200 &&
+      top.paidTotal === 148_600 &&
       top.paidCount === 6 &&
       top.refundedTotal === 5_000 &&
       top.refundedCount === 1 &&
@@ -1362,7 +1364,6 @@ const sameKinds = (got: unknown, want: Record<string, number>): boolean => {
       ),
     json(byO),
   );
-  clockAt = NOW;
 
   // 后台接手一次：未转人工的会话以 kind=agent 进入，handoffLog 追加一条随 state 落库，/metrics 的 takeovers 加 1
   const sid = 'wecom:wmBoardTk01';
