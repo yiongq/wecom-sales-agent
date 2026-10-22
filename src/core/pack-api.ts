@@ -557,6 +557,9 @@ export interface ShapePolicy {
 export interface ReplyGuardContext extends GuardContext<GuardContextTypes & { flags: ReplyGuardFlags }> {
   raw: string;
   inputText: string;
+  /** 本轮开始时捕获的已发布 policy 快照与 policyHash（07 R1，同 TurnContext）：整轮沿用，运行时不读草稿；核心以 unknown 持有 */
+  policy?: unknown;
+  policyHash?: string;
   stageAtStart: SalesStage;
   ordersBefore: number;
   handoffDeclined: boolean;

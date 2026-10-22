@@ -17,7 +17,7 @@ const { GuardStepValidationError } = await import('../core/guards/validate.js');
 const runtime = legacyTravelRuntime(packSources()).runtime;
 const ids = (r: typeof runtime) => packPipelines(r).reply.steps.map((s) => s.id);
 
-// 1) 完整顺序：spec「主回复步骤」的 32 项
+// 1) 完整顺序：spec「主回复步骤」的 32 项，加 07 R22 的 policy_claims 共 33 项
 const expected = [
   'pre_clean',
   'takeover_check:pre',
@@ -35,6 +35,7 @@ const expected = [
   'encyclopedia',
   'unbacked_claims',
   'claim_words',
+  'policy_claims',
   'price',
   'stranded',
   'adults',
@@ -57,7 +58,8 @@ assert.deepEqual(ids(runtime), expected);
 // 2) 新步骤的锚点
 const steps = new Map(packPipelines(runtime).reply.steps.map((s) => [s.id, s]));
 assert.deepEqual(steps.get('claim_words')!.after, ['unbacked_claims']);
-assert.deepEqual(steps.get('price')!.after, ['claim_words']);
+assert.deepEqual(steps.get('policy_claims')!.after, ['claim_words']);
+assert.deepEqual(steps.get('price')!.after, ['policy_claims']);
 assert.deepEqual(steps.get('closing')!.after, ['proposal_suffix']);
 assert.deepEqual(steps.get('shape_check')!.after, ['closing']);
 assert.deepEqual(steps.get('takeover_check:post')!.after, ['shape_check']);
@@ -84,6 +86,22 @@ assert.throws(
   },
 );
 
+// 4b) 07 R22（不变量 19）：policy_claims 在 claim_words 之后、price 之前。它的 after 改指 price（与 price 的 after 成环）、
+// 或这一步从包里拿掉（price 的 after 指向缺失的步骤），启动都失败
+for (const replySteps of [
+  runtime.replySteps.map((s) => (s.id === 'policy_claims' ? { ...s, after: ['price'] } : s)),
+  runtime.replySteps.filter((s) => s.id !== 'policy_claims'),
+]) {
+  assert.throws(
+    () => packPipelines({ ...runtime, replySteps }),
+    (error: unknown) => {
+      assert.ok(error instanceof GuardStepValidationError);
+      assert.match(error.message, /after 指向缺失、自身或排在后面的步骤/);
+      return true;
+    },
+  );
+}
+
 // 5) 步骤体还没填的新增步骤不改文本（closing 在第 8 步已填，由 closing-words 自测与 q06-closing 用例守；claim_words 第 11 步已填，下面单独测）
 const ctx = { text: '原文', recordGuard() {} } as never;
 for (const id of ['shape_check', 'note_reply']) {
@@ -98,5 +116,14 @@ const claimCtx = {
   recordGuard() {},
 } as never;
 assert.deepEqual(await steps.get('claim_words')!.run(claimCtx), { action: 'pass' }, 'claim_words');
+const policyCtx = {
+  text: '出发前 7 天也能全额退',
+  inputText: '想去西藏',
+  brand: null,
+  session: { id: 'wm-pipeline', channel: 'wecom', stage: 'greeting', orderIds: [], messages: [] },
+  turn: { flags: {} },
+  recordGuard() {},
+} as never;
+assert.deepEqual(await steps.get('policy_claims')!.run(policyCtx), { action: 'pass' }, 'policy_claims 没有 policy 时不动');
 
-console.log('pipelines 自测：32 步顺序、新步骤锚点、shape_check 装载校验通过');
+console.log('pipelines 自测：33 步顺序、新步骤锚点、shape_check 装载校验通过');

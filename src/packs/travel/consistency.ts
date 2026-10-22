@@ -24,6 +24,8 @@ import {
 } from '../../core/pack-api.js';
 import type { TravelParts } from './runtime.js';
 import { rewriteClaimWords } from './claim-words.js';
+import { rewritePolicyClaims } from './policy-claims.js';
+import { defaultTravelPolicy } from './policy.js';
 import { dejargonVocab } from './dejargon-vocab.js';
 import { createTravelFixedReplies, fixtureSession, MODE_CTX, type ModeCtx } from './fixed-replies.js';
 import { TRAVEL_SHAPE_LIMITS } from './shape-words.js';
@@ -45,7 +47,7 @@ export const travelConsistencyRules: readonly ConsistencyRule[] = Object.freeze(
   {
     id: 'sop-vs-wordlist',
     a: 'SOP_CONTRACT 的 include 短语，以及 SOP 要求模型说的固定句（如“名额以付款为准”）',
-    b: '出口词表（dropUnbackedClaims 的各表、claim_words）',
+    b: '出口词表（dropUnbackedClaims 的各表、claim_words、policy_claims）',
     scope: ['sop', 'wordlist'],
     why: 'SOP 要求说的话穿过出口词表后必须原样留着；变了就是护栏在删 SOP 要求说的话，模型照做也白做。',
   },
@@ -238,7 +240,7 @@ export function createTravelConsistency(world: (over: Partial<PackSources>) => T
     },
 
     /**
-     * 两套出口词表：dropUnbackedClaims（价格规则、预算、稀缺、服务承诺、电话；本轮工具调用按空算）与 claim_words（越权说法）。
+     * 三套出口词表：dropUnbackedClaims（价格规则、预算、稀缺、服务承诺、电话；本轮工具调用按空算）、claim_words（越权说法）与 policy_claims（政策陈述）。
      * 联系方式的说法按文字的渲染模式走，没有模式的（SOP 句）按旧版。
      */
     wordlists(): TextTransform[] {
@@ -260,6 +262,17 @@ export function createTravelConsistency(world: (over: Partial<PackSources>) => T
               t,
               { mode: modeOf(item).contact, orders: [], routes: safeRoutes(parts), yuan: parts.helpers.yuan },
               { dropSentences: parts.priceGuard.dropSentences, hasHole: (s) => new RegExp(parts.helpers.ANY_HOLE.source).test(s) },
+            ).text,
+        },
+        // 07 R22：按默认 policy 查退改天数与比例、定价比例、预订月数；没有客户这一句，规则 3 不跑
+        {
+          id: 'wordlist:policy_claims',
+          steps: { reply: 'policy_claims' },
+          run: (t) =>
+            rewritePolicyClaims(
+              t,
+              { policy: defaultTravelPolicy, inputText: '', scope: [] },
+              { hasHole: (s) => new RegExp(parts.helpers.ANY_HOLE.source).test(s) },
             ).text,
         },
       ];

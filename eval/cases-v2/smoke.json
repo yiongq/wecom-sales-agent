@@ -82,6 +82,10 @@
               "action": "pass"
             },
             {
+              "id": "policy_claims",
+              "action": "pass"
+            },
+            {
               "id": "price",
               "action": "pass"
             },

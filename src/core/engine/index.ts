@@ -779,6 +779,8 @@ async function finishTurn(
     text: raw,
     raw,
     inputText: text,
+    policy: state.policy,
+    policyHash: state.policyHash,
     stageAtStart,
     ordersBefore,
     handoffDeclined,

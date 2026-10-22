@@ -126,6 +126,8 @@ export const segments = {
     `出发日期超过 ${p.booking.maxDepartMonths} 个月的只能给参考：create_quote 返回 farFuture 时没有确定价，按结果里的 priceFrom 说「参考价」，讲明到时价格可能有变，不下单（不调 create_order），具体由顾问到时确认。`,
   'note:peak': (p: TravelPolicy) => `{month}月为最佳出行季，价格上浮 ${peakPercent(p)}%`,
   'note:group': (p: TravelPolicy) => `${p.pricing.groupMinimum} 人及以上享 ${groupDiscount(p)} 折`,
+  // 预订月数的对客说法（07 R22 的 policy_claims 换上去的话）。sop:far-future 是给模型的指令，不能发给客户；不带上浮，只随 booking 变
+  'note:far-future': (p: TravelPolicy) => `目前只受理 ${p.booking.maxDepartMonths} 个月以内出发的订单，更远的日期只能给参考价`,
   'help:price': (p: TravelPolicy) =>
     `填淡季、${p.pricing.groupMinimum}人以下的价；旺季上浮${peakPercent(p)}%、${p.pricing.groupMinimum}人及以上${groupDiscount(p)}折由系统算`,
   'help:season': (p: TravelPolicy) => `这些月份出发报价上浮${peakPercent(p)}%，「全年」不加价`,

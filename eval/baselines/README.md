@@ -1,10 +1,10 @@
 # v2 具名快照与更新政策（06 R4）
 
-快照固定某一时刻的黑盒行为，文件配置与 PGlite 配置共用一份。当前默认比对的是 `eval/v2/snapshot.ts` 里常量 `DEFAULT_BASELINE` 指向的文件，现在是 `v2-06-step17.json`（06 第 17 步，出口兜底删「这是起价」与非报价轮的「微调」半句）；`v2-06-step16.json`（06 第 16 步，第二批话术与工具配套）留作第 16 步的凭证；`v2-06-batch1.json`（06 第一批合并后生成）留作第一批的凭证。`v2-pre04.json`（04 第 5 步，由未改生产代码的评测树生成）留作 04 的凭证，永远不删。
+快照固定某一时刻的黑盒行为，文件配置与 PGlite 配置共用一份。当前默认比对的是 `eval/v2/snapshot.ts` 里常量 `DEFAULT_BASELINE` 指向的文件，现在是 `v2-07-step11.json`（07 第 11 步，政策陈述护栏 `policy_claims`；07 第 10 步的 `q07-policy-ask` 用例也首次进快照）；`v2-06-step17.json`（06 第 17 步，出口兜底删「这是起价」与非报价轮的「微调」半句）留作第 17 步的凭证；`v2-06-step16.json`（06 第 16 步，第二批话术与工具配套）留作第 16 步的凭证；`v2-06-batch1.json`（06 第一批合并后生成）留作第一批的凭证。`v2-pre04.json`（04 第 5 步，由未改生产代码的评测树生成）留作 04 的凭证，永远不删。
 
 ## 政策
 
-- 快照不随实现自动更新，更新是显式动作。每个**有意改变行为**的 PR 生成一份新的具名快照 `v2-06-step<N>.json`（N 是 06 plan 的步骤号），并把 `DEFAULT_BASELINE` 改成它；写完用文件与 PGlite 两条路径各比对一次。旧快照一份都不删。
+- 快照不随实现自动更新，更新是显式动作。每个**有意改变行为**的 PR 生成一份新的具名快照 `v2-<阶段>-step<N>.json`（N 是该阶段 plan 的步骤号），并把 `DEFAULT_BASELINE` 改成它；写完用文件与 PGlite 两条路径各比对一次。旧快照一份都不删。
 - 新快照与上一份逐条 diff，每条差异写明是哪条 R 引起的、为什么是对的，记进 plan；说不清的差异就是回归，修代码，不写进快照。`eval/cases-v2/reply-verdicts.json` 一类断言裁决序列的用例，同一个 PR 里按新步骤表更新，同样逐条说明。
 - **没有改变行为**的 PR 不生成快照：默认基线不重生成照样全绿，就是行为没变的证据。
 - 两个 PR 并行时，后合并的那个在合并前基于最新的 `dev` 重新生成快照、重审差异，不能沿用在旧 `dev` 上审过的结论。
@@ -29,7 +29,7 @@
 ```sh
 # 只跑 v2，全部通过才写文件；写模式不比对旧基线（N 换成 plan 的步骤号）
 CONFIG_SOURCE=file LLM_MOCK=1 pnpm exec tsx eval/run.ts \
-  --cases-v2 eval/cases-v2 --v2-snapshot-write eval/baselines/v2-06-stepN.json
+  --cases-v2 eval/cases-v2 --v2-snapshot-write eval/baselines/v2-<阶段>-stepN.json
 
 # 默认先 v1 后 v2；两种配置都自动比对默认快照
 CONFIG_SOURCE=file LLM_MOCK=1 pnpm exec tsx eval/run.ts
