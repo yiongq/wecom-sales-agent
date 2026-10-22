@@ -283,6 +283,20 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
     values ($1,'draft','console','travel','[]')`,
     [created.tenantId],
   );
+  // 07 R13：块与向量（kb_vectors 只在装了 vector 扩展的真实 PG 上有）；删除要两张表都清空，且各自数得出行数
+  await q(`insert into kb_chunks (tenant_id,source,ref,body,body_hash) values ($1,'route','route-test','正文',$2)`, [
+    created.tenantId,
+    'a'.repeat(64),
+  ]);
+  const kbVectorsHere = (await q<{ ok: boolean }>("select to_regclass('public.kb_vectors') is not null as ok"))[0]?.ok === true;
+  if (kbVectorsHere) {
+    await q(
+      `insert into kb_vectors (tenant_id,chunk_id,model,body_hash,embedding)
+      select tenant_id,id,'embedding-3',body_hash,$2::halfvec from kb_chunks where tenant_id=$1`,
+      [created.tenantId, `[${Array.from({ length: 2048 }, (_, i) => (i === 0 ? 1 : 0)).join(',')}]`],
+    );
+  }
+  check(kbVectorsHere === real, 'kb_vectors：真实 PG（装了 vector 扩展）上有，PGlite 上没有');
   await q(`insert into privacy_notices (tenant_id,version,body) values ($1,7,'已有版本')`, [created.tenantId]);
   await rejects(() => execute(sql`select public.sandbox_privacy_seed(${created.tenantId}::uuid, '测试')`), '23514');
   await q('delete from privacy_notices where tenant_id=$1', [created.tenantId]);
@@ -314,7 +328,16 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
   ).map((r) => r.table_name);
   const [body] = await q<{ body: string }>("select prosrc as body from pg_proc where oid='sandbox_tenant_purge(uuid)'::regprocedure");
   const deleted = [...body!.body.matchAll(/DELETE FROM public\.(\w+) WHERE tenant_id = p_tenant/g)].map((m) => m[1]!).sort();
-  check(JSON.stringify(deleted) === JSON.stringify(catalogue), 'purge 静态删除清单与系统目录一致');
+  // 07 R13：kb_vectors 只在装了 vector 扩展的库里有，用 to_regclass 判断后动态执行；其余表仍是静态清单
+  const dynamic = [...body!.body.matchAll(/EXECUTE 'DELETE FROM public\.(\w+) WHERE tenant_id = \$1'/g)].map((m) => m[1]!).sort();
+  check(
+    JSON.stringify(dynamic) === JSON.stringify(['kb_vectors']) && body!.body.includes("to_regclass('public.kb_vectors') IS NOT NULL"),
+    'purge 动态删除清单只有 kb_vectors，且先用 to_regclass 判断表在不在',
+  );
+  check(
+    JSON.stringify([...deleted, ...dynamic.filter((x) => catalogue.includes(x))].sort()) === JSON.stringify(catalogue),
+    'purge 删除清单（静态加库里实有的动态表）与系统目录里每一张带 tenant_id 的表一致',
+  );
   const purge = () =>
     app((db) => withTenant(db, ctx(created.tenantId), (tx) => tx.execute(sql`select sandbox_tenant_purge(${created.tenantId}) as counts`)));
   // 删除被静默拦下：复数发现余行，前面删掉的审计、会话与池计数必须一起回滚。

@@ -6,6 +6,7 @@ import { readPublishedSop } from './sop.js';
 import { readActiveCatalog } from './catalog.js';
 import { listQuickReplies } from './quick-replies.js';
 import { readLatestPrivacyNotice } from './privacy.js';
+import { readKbSnapshot } from './kb.js';
 
 export async function readSandboxTemplate(db: Db, slug: string) {
   const [tenant] = await db
@@ -25,7 +26,9 @@ export async function readSandboxTemplate(db: Db, slug: string) {
       const items = await readActiveCatalog(tx);
       const replies = await listQuickReplies(tx);
       const privacy = await readLatestPrivacyNotice(tx);
-      return { tenantId: tenant.id, pub, items, replies, privacy };
+      // 07 R13：宿主的线路块与向量在同一个只读快照里读出来，开通时原样复制，沙箱装载时不用再发嵌入请求
+      const kb = await readKbSnapshot(tx);
+      return { tenantId: tenant.id, pub, items, replies, privacy, kb };
     },
     { isolation: 'repeatable read', readOnly: true },
   );

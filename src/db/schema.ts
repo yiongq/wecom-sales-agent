@@ -2,6 +2,7 @@
 // catalog_items.version（docs/architecture/02-conversations-workbench/spec.md「数据库」与各节的 DDL），03 的两张渠道表、
 // outbound_sends 的新列与新状态、conversations.channel_account_id（docs/architecture/03-channels-v2/spec.md「数据库」）。
 // 05 的 tenants 五列、四张沙箱表见 docs/architecture/05-tenancy-sandbox/spec.md「数据库」。
+// 07 的 kb_chunks、kb_vectors 见 docs/architecture/07-knowledge-aftersales/spec.md「数据库」（R11–R13）。
 // 这里只写表、索引和约束，由 drizzle-kit 生成迁移；RLS、策略、触发器、函数、授权，以及 drizzle 表达不了的约束
 // （orders 那条带列清单的 ON DELETE SET NULL (session_id)）在 custom 迁移里。
 // 列名一律显式写 snake_case，不依赖 casing 推导：迁移 SQL 与 spec 的 DDL 逐列对得上。
@@ -16,6 +17,7 @@ import {
   customType,
   date,
   foreignKey,
+  halfvec,
   index,
   inet,
   integer,
@@ -694,6 +696,57 @@ export const consents = pgTable(
     }).onDelete('cascade'),
     check('consents_category_check', sql`${t.category} IN ('health', 'minor')`),
     check('consents_decision_check', sql`${t.decision} IN ('asked', 'granted', 'declined', 'withdrawn')`),
+  ],
+);
+
+// ---------------- 07：知识库块与向量（spec R11–R13，迁移 0016） ----------------
+// 两张派生表，都带 tenant_id、套 01 的 RLS 模板（迁移里），agent_app 有 SELECT / INSERT / UPDATE / DELETE：丢了可以按产品库重建。
+// 每轮对话照旧不查库：装载与产品库变化时读进内存，相似度在进程内算，库里没有 HNSW。
+
+/** 目前只收线路：一条线路一块，正文是 PackRuntime.retrievalText 的输出；正文变了换 body_hash，身份是（source, ref） */
+export const kbChunks = pgTable(
+  'kb_chunks',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    id: uuid('id').notNull().defaultRandom(),
+    source: text('source', { enum: ['route'] }).notNull(),
+    ref: text('ref').notNull(),
+    body: text('body').notNull(),
+    /** body 的 sha256 小写十六进制 */
+    bodyHash: text('body_hash').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.id] }),
+    unique('kb_chunks_tenant_id_source_ref_uq').on(t.tenantId, t.source, t.ref),
+    check('kb_chunks_source_check', sql`${t.source} IN ('route')`),
+    check('kb_chunks_body_hash_check', sql`${t.bodyHash} ~ '^[0-9a-f]{64}$'`),
+  ],
+);
+
+/**
+ * 向量：2048 维 halfvec（ADR-001 决策 6），一块一个模型一行；body_hash 是算这个向量时那块正文的哈希，对不上就是过期。
+ * 这张表只在 vector 扩展已装的库里有（迁移 0016 的 DO 块，R12）；PGlite 上没有，所以运行时先问库里有没有（kbVectorsInstalled），
+ * 不能在 PGlite 的路径上查它。这里照常定义，只给真实 Postgres 上的仓储（src/db/repo/kb.ts）用
+ */
+export const kbVectors = pgTable(
+  'kb_vectors',
+  {
+    tenantId: uuid('tenant_id').notNull(),
+    chunkId: uuid('chunk_id').notNull(),
+    model: text('model').notNull(),
+    bodyHash: text('body_hash').notNull(),
+    embedding: halfvec('embedding', { dimensions: 2048 }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.chunkId, t.model] }),
+    foreignKey({
+      name: 'kb_vectors_chunk_fk',
+      columns: [t.tenantId, t.chunkId],
+      foreignColumns: [kbChunks.tenantId, kbChunks.id],
+    }).onDelete('cascade'),
+    check('kb_vectors_body_hash_check', sql`${t.bodyHash} ~ '^[0-9a-f]{64}$'`),
   ],
 );
 

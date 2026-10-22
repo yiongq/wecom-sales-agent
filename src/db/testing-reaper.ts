@@ -5,6 +5,7 @@ import pg from 'pg';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { MIGRATIONS_DIR } from './migrate.js';
+import { installVectorExtension } from './testing-extensions.js';
 import { openDb, holdTenantLocks, type ProcessTenantLock } from './client.js';
 // 独立库、沿用已有角色，不改共享集群角色口令。连接以 startup role 降为 agent_app。
 export async function realReaperFixture(url: string) {
@@ -46,6 +47,8 @@ export async function realReaperFixture(url: string) {
     owner = new pg.Client({ connectionString: superUrl });
     await owner.connect();
     try {
+      // 07 R12：vector 扩展由超级用户在应用库里建，agent_owner 建不了；迁移 0016 要求它已经在
+      await installVectorExtension((text) => owner!.query(text));
       await owner.query('set role agent_owner');
       await migrate(drizzle(owner), { migrationsFolder: MIGRATIONS_DIR });
     } finally {
