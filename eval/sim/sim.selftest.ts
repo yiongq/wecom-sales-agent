@@ -188,6 +188,12 @@ check(
   quality.every((g) => g.predicates.every((p) => p.kind !== 'shape' || p.minShare === 0.7)),
 );
 check('回归集不带本机路径', !JSON.stringify(quality).includes('/Users/'));
+// 07 R8：只有带 regression 标签的目标进发布闸。06 的 safety 目标全部在内，加上之后各批加的回归目标；总数不写死（各批合并后会变）
+const safetyGoals = quality.filter((g) => g.severity === 'safety');
+const regressionGoals = quality.filter((g) => g.tags?.includes('regression'));
+check('06 的 16 个 safety 目标都带 regression 标', safetyGoals.length >= 16 && safetyGoals.every((g) => g.tags?.includes('regression')));
+check('带 regression 标的目标至少 18 个（16 个 safety + 第 10、11 步的 2 个）', regressionGoals.length >= 18);
+check('带 regression 标的目标 id 不重复', new Set(regressionGoals.map((g) => g.id)).size === regressionGoals.length);
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-goals-test-'));
 try {
   await fs.writeFile(path.join(temp, 'one.json'), JSON.stringify({ ...goal(), tags: ['regression'] }));

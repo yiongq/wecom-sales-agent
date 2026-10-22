@@ -117,3 +117,10 @@ export async function loadGoals(input: string): Promise<SimGoal[]> {
   }
   return goals;
 }
+
+/** 只留 tags 含 tag 的目标（07 R8：只有带 regression 的目标进闸）。一个都没有就抛错，不让闸空跑成「通过」。 */
+export function selectByTag(goals: SimGoal[], tag: string): SimGoal[] {
+  const selected = goals.filter((g) => g.tags?.includes(tag));
+  if (!selected.length) throw new Error(`没有目标带标签 ${tag}`);
+  return selected;
+}
