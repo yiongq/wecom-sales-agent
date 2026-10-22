@@ -1,0 +1,180 @@
+/*
+ * AI 记录（07 spec R24，TracesPage.tsx）：筛选一行、表格一张、「加载更早的记录」，点一行右侧开 480 宽的抽屉。
+ * 颜色只取 brand.css 的变量。由 pages/traces.lazy.tsx 引入，随这一页的块下载；组件本身不 import CSS，自测才能在 Node 里直接 import 它们。
+ * 表格的外观照会话列表（conversations.css 的 .cv-table）：表头 36、行 44、左右各 −12；抽屉照审计日志（audit.css 的 .au-drawer）
+ */
+
+/* ---------------- 筛选：时间段分段控件、三个下拉、一个开关，间隔 12 / 16；放不下时折行，分段控件自己横滚 ---------------- */
+.tr-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px 16px;
+}
+.tr-seg-scroll {
+  max-width: calc(100% + 8px);
+  margin: -4px;
+  padding: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.tr-seg-scroll::-webkit-scrollbar {
+  display: none;
+}
+.tr-select {
+  width: 148px;
+}
+.tr-select-wide {
+  width: 200px;
+}
+.tr-over {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 28px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text-2);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+/* ---------------- 列表与表格 ---------------- */
+.tr-list {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 16px;
+  margin-top: 12px;
+}
+.tr-table {
+  margin: 0 -12px;
+}
+.tr-table .ant-table-thead > tr > th {
+  height: 36px;
+  padding-block: 8px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+  border-bottom: 0;
+  box-shadow: inset 0 -1px 0 var(--border);
+}
+.tr-table .ant-table-thead > tr > th::before {
+  display: none;
+}
+/* 横滚时固定的首列：表头也要不透明，不然滚过去的表头字从底下透出来 */
+.tr-table .ant-table-thead > tr > th.ant-table-cell-fix-start {
+  background: var(--panel);
+}
+.tr-row {
+  cursor: pointer;
+}
+.tr-row.is-selected > td {
+  background: var(--selected);
+}
+.tr-table .ant-table-tbody > tr > td {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 时间是一颗真正的按钮（键盘可达），外观是一段 text-2 的文字；点它和点整行一样 */
+.tr-when {
+  padding: 0;
+  border: 0;
+  border-radius: var(--r-xs);
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+.tr-when:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.tr-when:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.tr-conv {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border-radius: var(--r-xs);
+  font-weight: 500;
+  color: var(--text);
+}
+.tr-conv:hover {
+  color: var(--text);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.tr-conv:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.tr-conv svg {
+  color: var(--text-3);
+}
+.tr-text {
+  color: var(--text-2);
+}
+.tr-dim {
+  color: var(--text-3);
+}
+.tr-num {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-2);
+}
+.tr-more {
+  align-self: flex-start;
+}
+/* 取到底后焦点会落在这一句上：焦点框只圈住字，不横贯整页 */
+.tr-end {
+  align-self: flex-start;
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+
+/*
+ * 详情抽屉（§5.13 M 480）：头 56，内边距 0 16 0 24，标题 16/24/600，没有分隔线；体内边距 4 24 24。
+ * --raised 底由主题的 colorBgElevated 给（theme/antd.ts），这里不另写
+ */
+.tr-drawer .ant-drawer-content-wrapper {
+  max-width: 100vw;
+  box-shadow: var(--shadow-modal);
+}
+.tr-drawer .ant-drawer-header {
+  min-height: 56px;
+  padding: 0 16px 0 24px;
+  border-bottom: 0;
+}
+.tr-drawer .ant-drawer-title {
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.tr-drawer .ant-drawer-body {
+  padding: 4px 24px 24px;
+}
+.tr-drawer-body {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.tr-drawer-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin: 0;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text-3);
+}

@@ -3309,6 +3309,12 @@ async function workbenchSuite(): Promise<void> {
       url: `/conversations/${enc(S0)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001`,
       allowed: MONEY,
     },
+    {
+      route: 'GET /conversations/:id/turns/:turnId/goal-draft',
+      url: `/conversations/${enc(S0)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001/goal-draft`,
+      allowed: MONEY,
+    },
+    { route: 'GET /traces', url: '/traces', allowed: MONEY },
     // 写接口拿不存在的会话、订单与不合规的请求体测：过了权限这一层的回 404 / 400，不动任何东西
     { route: 'POST /conversations/:id/takeover', url: '/conversations/wecom%3AwmNOSUCH13/takeover', json: {}, allowed: HANDLE },
     { route: 'POST /conversations/:id/release', url: '/conversations/wecom%3AwmNOSUCH13/release', allowed: HANDLE },
@@ -3740,12 +3746,25 @@ async function workbenchSuite(): Promise<void> {
       await call('GET', `/conversations/${enc(S)}/turns`, { as: vw }),
       await call('GET', `/conversations/${enc(S)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001/diff`, { as: vw }),
       await call('GET', `/conversations/${enc(S)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001`, O),
+      // 07 R24：AI 记录列表与「存为回归用例」同样只在 db 存储有
+      await call('GET', '/traces', O),
+      await call('GET', `/conversations/${enc(S)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001/goal-draft`, O),
     ];
     keep(rs[0]!);
     check(
-      '文件存储：更早的消息、步骤摘要、改写对照、trace 原文 → 503 store_file_mode',
+      '文件存储：更早的消息、步骤摘要、改写对照、trace 原文、AI 记录列表、回归用例草稿 → 503 store_file_mode',
       rs.every((r) => r.status === 503 && r.body.error === 'store_file_mode'),
       rs.map((r) => r.text).join(' | '),
+    );
+    const viewerTraces = [
+      await call('GET', '/traces', { as: vw }),
+      await call('GET', '/traces', { as: ag1 }),
+      await call('GET', `/conversations/${enc(S)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001/goal-draft`, { as: ag1 }),
+    ];
+    check(
+      '文件存储：AI 记录与回归用例草稿对只读成员、坐席仍是 403（权限先于存储模式）',
+      viewerTraces.every((r) => r.status === 403),
+      viewerTraces.map((r) => r.status).join(),
     );
     const viewerTrace = await call('GET', `/conversations/${enc(S)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001`, { as: vw });
     check('文件存储：trace 原文对只读成员仍是 403（权限先于存储模式）', viewerTrace.status === 403);

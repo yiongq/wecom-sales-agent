@@ -636,6 +636,34 @@ for (const [action, verb] of [
   else check(`${action} 金额以元显示`, described.text.includes('40,000元'));
 }
 
+// 07 R24：AI 记录里「存为回归用例」每下载一次记一行 trace.export；对象是会话的短码，不写会话 id 与轮次 id
+{
+  const exported = describeAudit(
+    entry({
+      action: 'trace.export',
+      targetType: 'conversation',
+      targetId: 'f3a0c1d2-0000-4000-8000-000000000001',
+      diff: { shortId: '7F3A', turnId: 'b3b0f1e0-0000-4000-8000-000000000002' },
+    }),
+    TRAVEL,
+  );
+  eq('trace.export：句子写短码，不写轮次 id', exported.text, '小林 下载了会话7F3A的回归用例草稿');
+  eq(
+    'trace.export：归在「会话与订单」一类，有中文名与图标',
+    [exported.group, auditAction('trace.export')?.label, exported.icon],
+    ['conversation', '下载回归用例草稿', 'file-down'],
+  );
+  eq(
+    'trace.export：没有 diff 时写「一个会话」',
+    describeAudit(entry({ action: 'trace.export', diff: null }), TRAVEL).text,
+    '小林 下载了一个会话的回归用例草稿',
+  );
+  check(
+    'trace.export：在「会话与订单」的 actions 里',
+    (auditActionsParam('conversation', false) ?? '').split(',').includes('trace.export'),
+  );
+}
+
 if (fails.length) {
   console.error(`AUDIT TEXT SELFTEST FAIL: ${fails.length} 项\n  ${fails.join('\n  ')}`);
   process.exit(1);

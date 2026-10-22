@@ -223,6 +223,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
       const go = (): void => {
         if (kind) void navigate({ to: '/catalog/$kind', params: { kind } });
         else if (item.key === '/conversations') void navigate({ to: '/conversations' });
+        else if (item.key === '/traces') void navigate({ to: '/traces' });
         else if (item.key === '/audit') void navigate({ to: '/audit' });
         else if (item.key === '/') void navigate({ to: '/' });
         else void navigate({ to: '/sop' });

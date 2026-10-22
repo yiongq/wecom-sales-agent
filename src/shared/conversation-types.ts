@@ -57,6 +57,18 @@ export interface HandoffLogEntry {
 }
 export const HANDOFF_LOG_MAX = 50;
 
+/**
+ * 这一轮触发的转人工原因（07 R24）：handoffLog 里 turnId 对得上的最后一条（一轮里先转人工、再升级成紧急情况时，取升级后的）；
+ * 没有、或类型不认识（库里读回的脏数据）为 null。AI 记录列表在 SQL 里按同一规则取（src/db/repo/traces.ts 的 listTraces）
+ */
+export function handoffKindOfTurn(log: readonly { kind: string; turnId?: string }[] | undefined, turnId: string): HandoffKind | null {
+  for (let i = (log?.length ?? 0) - 1; i >= 0; i -= 1) {
+    const e = log![i]!;
+    if (e.turnId === turnId) return isHandoffKind(e.kind) ? e.kind : null;
+  }
+  return null;
+}
+
 /** 接手人 */
 export interface Assignee {
   /** console 成员的 user id；共享工作台（ADMIN_PASS 旧接口）为 null */

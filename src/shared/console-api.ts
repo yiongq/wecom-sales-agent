@@ -6,7 +6,15 @@ import { z } from 'zod';
 import type { ChannelKind, ChannelAccountStatus } from './channel-types.js';
 import type { Hotel, Route } from './catalog-types.js';
 import type { CatalogKind } from './catalog.js';
-import type { DeliveryView, HandoffKind, MessageAuthor, OrderStatus, PaymentMode, SendWindow } from './conversation-types.js';
+import {
+  isHandoffKind,
+  type DeliveryView,
+  type HandoffKind,
+  type MessageAuthor,
+  type OrderStatus,
+  type PaymentMode,
+  type SendWindow,
+} from './conversation-types.js';
 import type { Origin } from './origin.js';
 
 export type Role = 'owner' | 'admin' | 'supervisor' | 'agent' | 'viewer';
@@ -131,6 +139,32 @@ export const AuditQuery = z
  * 实际窗口再按这个租户的 trace 保留期截断（min(days, retention_trace_days)），见 MetricsView.days
  */
 export const MetricsQuery = z.object({ days: intParam(90).optional() });
+
+/** 一轮的结果（turn_traces.outcome 的全部取值）：AI 记录页的筛选、TraceRow.outcome；中文名在 ui-labels.ts 的 TURN_OUTCOME_LABEL */
+export const TRACE_OUTCOMES = ['replied', 'silent', 'handoff', 'deterministic', 'reset', 'budget', 'error'] as const;
+export type TraceOutcome = (typeof TRACE_OUTCOMES)[number];
+
+/** AI 记录的游标（TracePage.next 原样传回 before）：这一页最后一行的开始时刻（UTC、微秒）加下划线加轮次 id；微秒不能截成毫秒，否则同毫秒的行翻页时会漏 */
+const TRACE_CURSOR = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * AI 记录列表（07 R24，GET /traces，所有者、管理员）：since 含、until 不含，都是带时区的 ISO 时刻；
+ * guard 是主回复步骤的 id（guard_verdicts 里 action 不是 pass 的算触发过）；handoffKind 是这一轮触发的转人工原因；
+ * overLimit 只能写 1（只看回复仍超长的）；before 取上一页的 next；limit 1–100，默认 50
+ */
+export const TracesQuery = z.object({
+  since: z.iso.datetime({ offset: true }).optional(),
+  until: z.iso.datetime({ offset: true }).optional(),
+  outcome: z.enum(TRACE_OUTCOMES).optional(),
+  guard: z
+    .string()
+    .regex(/^[a-z][a-z0-9_:-]{0,63}$/)
+    .optional(),
+  handoffKind: z.string().refine(isHandoffKind, '不认识的转人工原因').optional(),
+  overLimit: z.literal('1').optional(),
+  before: z.string().regex(TRACE_CURSOR).optional(),
+  limit: intParam(100).optional(),
+});
 
 // ---------------- 02：会话工作台、订单、快捷回复（docs/architecture/02-conversations-workbench/spec.md「后台接口」） ----------------
 
@@ -619,7 +653,33 @@ export interface TurnDiffView {
   events: { guard: string; action: string; removed: string[]; added: string[] }[];
 }
 
-/** GET /conversations/:id/turns/:turnId：trace 原文（只给所有者、管理员）：原稿、参数、耗时、模型、前缀 */
+/** 主回复流水线里一步的裁决（turn_traces.guard_verdicts 的一项；只记步骤 id 与动作，不含客户原文）。与 src/core/pack-api.ts 的 GuardVerdict 同形 */
+export interface GuardVerdictView {
+  id: string;
+  action: string;
+}
+
+/** 一轮回复的形状（turn_traces.reply_shape，06 R10）。与 src/core/pack-api.ts 的 ReplyShape 同形 */
+export interface ReplyShapeView {
+  class: 'rich' | 'plain';
+  lines: number;
+  chars: number;
+  /** 本轮行数上限 */
+  limit: number;
+  generatedList?: true;
+  /** 裁掉的句数 */
+  trimmed: number;
+  /** 最终文本仍超行数或字数上限 */
+  overLimit: boolean;
+  rewrite: 'off' | 'skipped_time' | 'skipped_budget' | 'used' | 'discarded' | 'timeout' | null;
+  rewriteMs: number | null;
+}
+
+/**
+ * GET /conversations/:id/turns/:turnId：trace 原文（只给所有者、管理员）：原稿、参数、耗时、模型、前缀。
+ * 07 R24 补四项：guardVerdicts、replyShape 来自 turn_traces；handoffKind 是这一轮触发的转人工原因（会话 handoffLog 里 turnId 对得上的最后一条）；
+ * customerText 是这一轮 AI 回复之前的那条客户消息（messages 表），这一轮没有发出回复（沉默）时为 null；不打码，同 trace 的其余内容
+ */
 export interface TurnTraceView {
   turnId: string;
   startedAt: string;
@@ -635,6 +695,35 @@ export interface TurnTraceView {
   calls: unknown[];
   llm: unknown[];
   signals: unknown;
+  guardVerdicts: GuardVerdictView[] | null;
+  replyShape: ReplyShapeView | null;
+  handoffKind: HandoffKind | null;
+  customerText: string | null;
+}
+
+/** AI 记录列表的一行（GET /traces）：一轮对话，跨会话 */
+export interface TraceRow {
+  /** 这一轮的 trace id（turn_traces.id）：详情与「存为回归用例」都用它 */
+  turnId: string;
+  /** 所属会话的 id：现有的详情接口 /conversations/:id/turns/:turnId 与工作台地址 /conversations/$id 用它（审计的 target 才是会话行的 ref） */
+  conversationId: string;
+  /** 会话的渠道：拼「企微客户 · F01」这样的标签 */
+  channel: string;
+  startedAt: string;
+  durationMs: number;
+  outcome: TraceOutcome;
+  /** 触发过的护栏：guard_verdicts 里 action 不是 pass 的步骤 id，按执行顺序；没进主回复流水线（确定性回复、沉默等）为空 */
+  guards: string[];
+  /** 这一轮触发的转人工原因（会话 handoffLog 里 turnId 对得上的最后一条）；没转人工、或记录已被挤出最近 50 条为 null */
+  handoffKind: HandoffKind | null;
+  /** 回复仍超出行数或字数上限（reply_shape.overLimit）；没记形状的轮次为 false */
+  overLimit: boolean;
+}
+
+/** GET /traces：按开始时间倒序（同一时刻按轮次 id 倒序）；next 原样作为下一页的 before，没有更多时为 null */
+export interface TracePage {
+  items: TraceRow[];
+  next: string | null;
 }
 
 /** POST /conversations/:id/reply */
