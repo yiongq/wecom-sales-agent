@@ -75,6 +75,7 @@ export const goalSchema = z
     predicates: z.array(predicateSchema).min(1),
     forbidden: z.array(z.string().min(1)),
     severity: z.enum(['safety', 'quality']).optional(), // 缺省 quality
+    tags: z.array(z.string().min(1)).optional(),
     covers: z.array(z.string().min(1)).optional(), // 问题表里的 ID
     initial: initialSchema.optional(), // 初始会话与订单（真 paid 走订单状态）
     customerScript: z.array(z.string().min(1)).optional(), // 前几轮客户原话固定，之后交给客户模型

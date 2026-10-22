@@ -653,8 +653,26 @@ export interface PackRuntimeTypes {
   MockPolicy: MockPolicy;
 }
 
+export type PolicyTopic = 'refund' | 'change' | 'visa' | 'insurance' | 'fees';
+/** title 是对客出处，如「退改条款第2条」。 */
+export type PolicyClause = { id: string; topic: PolicyTopic; title: string; text: string };
+/** 距出发天数闭区间；null 表示不封顶，percent 是 0–100 的整数。 */
+export type RefundTier = { id: string; minDays: number; maxDays: number | null; percent: number };
+export type RefundTerms = { selfService: boolean; approvalThresholdYuan: number; tiers: readonly RefundTier[] };
+export interface PackPolicy<P = unknown> {
+  schema: z.ZodType<P>;
+  defaults: P;
+  editable: readonly string[];
+  canonical(p: P): string;
+  upgrade(old: unknown): P;
+  clauses(p: P): PolicyClause[];
+  refund(p: P): RefundTerms | null;
+  segments: Readonly<Record<string, (p: P) => string>>;
+}
+
 export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   id: string;
+  policy?: PackPolicy;
   defaultBrand: BrandProfile;
   legacy: T['LegacyTexts'];
   templates: T['BrandTemplates'];

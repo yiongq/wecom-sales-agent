@@ -437,6 +437,10 @@ export const STATE_MANIFEST: Record<
   'src/packs/travel/mock.ts:CN_NUM': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/packs/travel/mock.ts:DESTINATIONS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/packs/travel/mock.ts:travelMock': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
+  'src/packs/travel/policy.ts:travelPolicySchema': { kind: 'instance', why: '严格政策结构校验；不保存租户 policy。' },
+  'src/packs/travel/policy.ts:defaultTravelPolicy': { kind: 'instance', why: '递归冻结的包默认政策；租户发布快照另行持有。' },
+  'src/packs/travel/policy.ts:segments': { kind: 'instance', why: '固定文字生成函数；政策只从参数传入。' },
+  'src/packs/travel/policy.ts:travelPolicy': { kind: 'instance', why: '包政策能力与默认值；无按租户变化的业务数据。' },
   'src/packs/travel/progress.ts:SEGMENT_RULES': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/packs/travel/progress.ts:STAGE_RANK': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/packs/travel/quick-reply-defaults.ts:travelQuickReplyDefaults': {

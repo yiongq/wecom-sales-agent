@@ -1,11 +1,12 @@
 import type { PriceThresholds } from '../../core/pack-api.js';
+import { defaultTravelPolicy } from './policy.js';
 
 // 04 第 8 步：旅游日期与人数政策，保持抽取前默认值。
 export const travelDateThresholds = {
   maxTravelers: 50,
   bookableYears: 3,
   /** 06 R20：出发日期超过这么多个月的不出确定价（create_quote 返回 farFuture） */
-  maxDepartMonths: 12,
+  maxDepartMonths: defaultTravelPolicy.booking.maxDepartMonths,
 } as const;
 
 // 04 第 9 步：金额识别、出处容差与定价/低海拔政策，默认值等于抽取前。
@@ -15,9 +16,9 @@ export const travelPriceThresholds: Readonly<PriceThresholds> = {
   precisionTolerance: 0.5,
   tierTolerance: 5000,
   maxTravelers: travelDateThresholds.maxTravelers,
-  groupMinimum: 4,
-  groupDiscount: 0.95,
-  peakMultiplier: 1.1,
+  groupMinimum: defaultTravelPolicy.pricing.groupMinimum,
+  groupDiscount: defaultTravelPolicy.pricing.groupDiscount,
+  peakMultiplier: defaultTravelPolicy.pricing.peakMultiplier,
   lowlandMaxAltitude: 2500,
 };
 
