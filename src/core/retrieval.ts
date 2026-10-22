@@ -8,6 +8,11 @@ import { currentRuntime, tenantCallback, withoutTenantScope, TenantScopeMissing,
 // 这里用 embedding 把线路描述向量化后放内存做余弦相似度。几百条数据用不着向量数据库，
 // 内存暴力检索 20 条 × 2048 维一次不到 1ms；上千条再考虑 hnswlib / pgvector。
 // 索引在启动时异步构建，构建期间与构建失败时自动退回关键词匹配，不阻塞服务。
+//
+// 向量放哪里（07 R11–R13）：文件模式照旧缓存在 var/route-vectors.json（按全库指纹，改一条全量重建）；
+// DB 模式且库里有 kb_vectors（真实 Postgres）时以库为准：装载时读这个租户的块与向量进内存，产品库变化后在后台只给
+// 缺向量的块发嵌入请求、写库提交后换内存索引，沙箱开通直接复制宿主的行（src/core/retrieval-kb.ts）。
+// 库里没有 kb_vectors（PGlite）时退回下面进程内建索引、不持久。每轮对话的读路径都只用内存里的索引，不查库。
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
@@ -18,9 +23,10 @@ import { recordUsage } from '../usage.js';
 import { gatedFetch } from '../llm-gate.js';
 import { claimSandboxInitialIndex } from '../tenancy/sandbox/budget.js';
 import type { CatalogItem } from './pack-api.js';
+import { syncKb } from './retrieval-kb.js';
 
 export const RETRIEVAL_TIMEOUT_MS = 20_000;
-import { bindEmbedBaseUrl, configMode, currentCatalog, onCatalogChanged, currentPack } from '../config/source.js';
+import { bindEmbedBaseUrl, configMode, configRuntime, currentCatalog, onCatalogChanged, currentPack } from '../config/source.js';
 
 const VAR_DIR = process.env.VAR_DIR ?? path.join(process.cwd(), 'var');
 const cacheFile = () => path.join(VAR_DIR, currentPack().runtime.retrievalCacheFile);
@@ -164,7 +170,8 @@ const snapshotGeneration = (): number => (configMode() === 'db' ? currentCatalog
 /** 缓存先写临时文件再 rename：写到一半进程被杀，留下的是旧缓存而不是半个 JSON */
 function writeCache(fp: string, items: readonly Indexed[]): void {
   try {
-    if (!currentRuntime().isHost || process.env.APP_ROLE === 'sandbox') return;
+    // DB 模式不读写这个文件（07 R13）：真实 Postgres 上向量在库里，PGlite 上退回内存、不持久
+    if (configMode() !== 'file' || !currentRuntime().isHost || process.env.APP_ROLE === 'sandbox') return;
     fs.mkdirSync(VAR_DIR, { recursive: true });
     const tmp = `${cacheFile()}.tmp-${process.pid}`;
     fs.writeFileSync(tmp, JSON.stringify({ fp, model: EMBED_MODEL, items }));
@@ -174,8 +181,45 @@ function writeCache(fp: string, items: readonly Indexed[]): void {
   }
 }
 
-/** 按给定的线路建一次索引：先看磁盘缓存（键是整库内容指纹），再调 embedding。失败返回 null */
+/**
+ * 07 R13：DB 模式下以库为准。返回 'unavailable' 表示这个库没有 kb_vectors，调用方走 buildOnce 的进程内路径；
+ * 返回 null 是失败（嵌入没成），同 buildOnce。只有缺向量、进程里又没有同目录现成向量的块才发嵌入请求；
+ * 没缺就一个请求都不发，也不占沙箱的首次建索引名额
+ */
+async function buildFromKb(routes: CatalogItem[]): Promise<readonly Indexed[] | null | 'unavailable'> {
+  const rt = currentRuntime();
+  const local = state();
+  const { db, tenantId } = configRuntime();
+  // 同一份目录的另一个租户（比如先开通的沙箱）已经在这个进程里建过索引：缺向量的块先用它补，不再发嵌入请求
+  const key = `${EMBED_MODEL}:${fingerprint(routes)}`;
+  const peer = shared.get(key);
+  peer?.owners.add(rt);
+  const result = await syncKb({
+    db,
+    tenantId,
+    model: EMBED_MODEL,
+    entries: routes.map((item) => ({ ref: item.code, body: currentPack().runtime.retrievalText(item) })),
+    known: peer && new Map(peer.items.map((item) => [item.id, item.vec])),
+    embed: (texts) => embed(texts, claimSandboxInitialIndex()),
+    alive: () => !rt.cancel.aborted && indexes.owns(rt, local),
+  });
+  if (result.kind === 'unavailable') return 'unavailable';
+  if (result.kind !== 'ready') return null;
+  const items = freezeIndex(result.items);
+  cacheShared(key, items);
+  if (shared.size > 64) shared.delete(shared.keys().next().value!);
+  console.log(
+    `[retrieval] 语义索引已从库装载：${items.length} 条线路，新嵌入 ${result.embedded} 条${result.persisted ? '' : '（未写库）'} · ${EMBED_MODEL}`,
+  );
+  return items;
+}
+
+/** 按给定的线路建一次索引：DB 模式先问库；否则先看磁盘缓存（键是整库内容指纹，只文件模式读写），再调 embedding。失败返回 null */
 async function buildOnce(routes: CatalogItem[]): Promise<readonly Indexed[] | null> {
+  if (configMode() === 'db') {
+    const fromKb = await buildFromKb(routes);
+    if (fromKb !== 'unavailable') return fromKb;
+  }
   const fp = fingerprint(routes);
   const key = `${EMBED_MODEL}:${fp}`;
   const rt = currentRuntime();
@@ -184,7 +228,7 @@ async function buildOnce(routes: CatalogItem[]): Promise<readonly Indexed[] | nu
   cached?.owners.add(currentRuntime());
   const reusable = cached?.items;
   if (reusable) return reusable;
-  if (rt.isHost && process.env.APP_ROLE !== 'sandbox') {
+  if (configMode() === 'file' && rt.isHost && process.env.APP_ROLE !== 'sandbox') {
     try {
       const cached = JSON.parse(fs.readFileSync(cacheFile(), 'utf8')) as { fp: string; model: string; items: readonly Indexed[] };
       if (cached.fp === fp && cached.model === EMBED_MODEL && cached.items?.length === routes.length) {

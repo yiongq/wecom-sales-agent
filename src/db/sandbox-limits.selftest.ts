@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { openDb, rowsOf, type Db } from './client.js';
 import { runMigrations } from './migrate.js';
+import { installVectorExtension } from './testing-extensions.js';
 import { openTestDb, fakeLock, testConfigDeps } from './testing.js';
 import { importConfig } from '../config/transfer.js';
 import { closeConfig, currentCatalog, currentSop } from '../config/source.js';
@@ -535,6 +536,15 @@ if (!process.env.PG_TEST_URL) {
   let owner: pg.Client | undefined;
   try {
     await admin.query(`create database "${name}" owner agent_owner`);
+    // 07 R12：vector 扩展由超级用户在应用库里建，agent_owner 建不了；迁移 0016 要求它已经在
+    const su = new pg.Client({ connectionString: url.toString() });
+    su.on('error', () => {});
+    await su.connect();
+    try {
+      await installVectorExtension((text) => su.query(text));
+    } finally {
+      await su.end();
+    }
     await runMigrations(roleUrl('agent_owner'));
     db = await openDb(roleUrl('agent_app'));
     owner = new pg.Client({ connectionString: url.toString() });

@@ -370,6 +370,7 @@ CONFIG_SOURCE=file PARITY_CLOCK_MS=1790913600000 pnpm exec tsx --import ./src/st
 2. 服务器上创建 `/opt/wecom-sales-agent/.env`（参考 `.env.example`）：至少填 `LLM_API_KEY`、`ADMIN_PASS`、`PUBLIC_BASE_URL`（发给微信客户的支付链接靠它拼完整 URL），并**显式写明 `DEPLOY_PROFILE=demo` 或 `DEPLOY_PROFILE=prod`**（不带引号）。deploy.sh 在同步之前检查它，缺 `.env` 或没写明 profile 会直接中止，不会打掉在跑的旧容器。
 3. 同一目录下还有 `.env.db`、`.env.migrate`（数据库容器与迁移各自的凭据，写法见 [deploy/compose.yml](deploy/compose.yml) 开头），跑平台命令行时再加 `.env.platform`。应用的 `.env` 里不能有 owner、platform 或超级用户的口令，查到就拒绝启动。这几个文件都按 `docker run --env-file` 的规则读：值是 `=` 后面的整行，引号、`$`、`#` 都原样进容器，所以不要加引号和行尾注释。deploy.sh 也会查 `.env.db` 里四个口令都有、没有 `POSTGRES_DB`。
 4. HTTPS 用 Caddy 反代到宿主机 3210 端口（Compose 仅绑定本机回环地址），SSE 透传；云防火墙放行 80/443。站点地址仅在服务器配置，不写入仓库。
+5. 应用库里要有 **vector 扩展**（07 起，迁移 0016 的 `kb_vectors` 用 pgvector 的 `halfvec`）。它不是 trusted 扩展，迁移用的 `agent_owner` 不是超级用户，建不了：新库首次初始化时 `deploy/db-init/roles.sh` 建完库会顺带调 `extensions.sh` 建好；**现有的线上库在第一次部署含迁移 0016 的版本之前，由 owner 手工执行一次**：`docker compose -f deploy/compose.yml exec db /db-init/extensions.sh`（可重复执行，用超级用户连应用库执行 `deploy/db-init/extensions.sql`）。没做这一步，migrate 服务报「先由超级用户在应用库里建 vector 扩展」并整批回退，部署停在切换之前，旧容器照常运行；`deploy.sh` 此时已把 `deploy/` 同步到服务器，补做上面那条命令后重新部署即可。
 
 之后每次发布：给要上线的提交打 tag，再按 tag 部署。
 
@@ -395,7 +396,7 @@ bash deploy.sh demo-v1.2   # SERVER 由已忽略的 .deploy.env 或环境变量�
 演练回滚可以在同一台服务器上起一个旁路实例：`NAME`、`REMOTE_DIR`、`HOST_PORT` 三个环境变量同时换成和线上不同的值（只换一两个会被拒绝，免得打到线上），它的 `.env` 不能配企微凭据，否则会和线上实例抢同一个客服账号的消息。
 
 - **密钥**：`LLM_API_KEY`、`WECOM_*` 全在服务器 `.env`，不在仓库、脚本不碰。
-- **数据**：DB 模式下真实会话、消息、订单在数据库卷；`var/` 保留种子、访客、企微 cursor、spill、用量与客服二维码。文件存储下会话与订单也在 `var/`；rsync 既不同步也不删除它。
+- **数据**：DB 模式下真实会话、消息、订单在数据库卷；`var/` 保留种子、访客、企微 cursor、spill、用量与客服二维码。文件存储下会话与订单也在 `var/`；rsync 既不同步也不删除它。DB 模式下线路的检索向量在库里（`kb_chunks`、`kb_vectors`），不再读写 `var/route-vectors.json`（文件模式照旧）；回滚到 07 之前的镜像时，旧代码照旧用那个文件，回滚后重建一次索引。
 - **鉴权**：demo 作战室匿名只读，旧写接口要 `ADMIN_PASS`；成员工作台使用独立账号与角色权限（见上节）。改了服务器 `.env` 要 `docker compose -f deploy/compose.yml up -d app`（或重新部署）重建容器才生效：env 只在创建容器时读一次，`docker restart` 读不到新值。
 - **后台**：`/console/` 要求 `CONFIG_SOURCE=db`，并配置 `DATABASE_URL`、`DEFAULT_TENANT_SLUG`。平台凭据仅给 `platform` 服务；初始化命令见下，账号口令从 stdin 输入，勿写入命令历史。
 - **备份**：宿主机 cron 每晚跑部署时装好的那一份 [deploy/backup.sh](deploy/backup.sh)：`15 3 * * * bash /usr/local/lib/wecom-sales-agent/backup.sh /opt/wecom-sales-agent >>/var/log/wecom-backup.log 2>&1`。导出数据库并校验、打包 `var/`，用 age 公钥加密后按日期存 7 天，配了异地目标再复制一份存 30 天。配置写在 `.env.backup`，恢复步骤写在脚本开头。装在部署目录之外，是为了回到旧版本时 cron 照样能跑。

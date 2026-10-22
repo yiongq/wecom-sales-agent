@@ -4,6 +4,7 @@ import { randomBytes } from 'node:crypto';
 import { drizzle } from 'drizzle-orm/node-postgres';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { MIGRATIONS_DIR } from './migrate.js';
+import { installVectorExtension } from './testing-extensions.js';
 import { openDb } from './client.js';
 import { withoutTenantScope } from '../tenancy/runtime.js';
 
@@ -29,6 +30,8 @@ export async function openOutboundTestPg(url: string) {
     migration = new pg.Client({ connectionString: databaseUrl.href });
     withoutTenantScope(() => migration!.on('error', () => {}));
     await migration.connect();
+    // 07 R12：vector 扩展由超级用户在应用库里建，agent_owner 建不了；迁移 0016 要求它已经在
+    await installVectorExtension((text) => migration!.query(text));
     await migration.query('SET ROLE agent_owner');
     await migrate(drizzle(migration), { migrationsFolder: MIGRATIONS_DIR });
     await migration.end();

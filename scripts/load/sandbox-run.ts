@@ -194,6 +194,12 @@ try {
       .replaceAll(':"db_name"', `"${dbName}"`);
     query(superUrl, line);
   }
+  // 07 R12：迁移 0016 要求应用库里已有 vector 扩展，agent_owner 建不了；超级用户连应用库执行 extensions.sql（一行一条语句）
+  for (const stmt of fs
+    .readFileSync('deploy/db-init/extensions.sql', 'utf8')
+    .split('\n')
+    .filter((line) => line.trim() && !line.startsWith('--')))
+    query(new URL(`/${dbName}`, superUrl).href, stmt);
   await runMigrations(url('agent_owner', pw.owner));
   const hostId = query(
     url('agent_owner', pw.owner),

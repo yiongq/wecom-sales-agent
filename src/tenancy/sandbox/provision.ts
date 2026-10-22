@@ -9,6 +9,7 @@ import { expireBrokenSandbox, sandboxStartupRows, sandboxPoolHealth } from '../.
 import { writeAudit } from '../../db/repo/audit.js';
 import { readSandboxTemplate, insertSandboxWechat, seedSandboxPrivacy } from '../../db/repo/sandbox.js';
 import { copyQuickReplies } from '../../db/repo/quick-replies.js';
+import { copyKbSnapshot } from '../../db/repo/kb.js';
 import { alert } from '../../ops/alert.js';
 import { SessionStoreStartupError } from '../../store/backend.js';
 import { withoutTenantScope } from '../runtime.js';
@@ -134,6 +135,8 @@ async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
         await writeTemplateConfig(tx, template.pub, template.items, o.deps.imageSop);
         if (template.privacy) await seedSandboxPrivacy(tx, template.privacy.body);
         await copyQuickReplies(tx, template.replies);
+        // 07 R13：块与向量跟着同一个只读快照走，开通不发嵌入请求
+        await copyKbSnapshot(tx, template.kb);
         const seeds = sandboxSeeds(tenant.expiresAt.getTime() - 24 * 60 * 60_000);
         await writeSeedSessions(tx, seeds.sessions, seeds.orders);
         await insertSandboxWechat(tx, randomBytes(32).toString('base64url'));
