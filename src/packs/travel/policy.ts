@@ -1,7 +1,7 @@
 // 07 R2：政策数字与文字的单一来源；不读取租户配置，不依赖 thresholds。
 import { z } from 'zod';
 import { deepFreeze, type PackPolicy, type PolicyClause } from '../../core/pack-api.js';
-import { VISA_REPLY } from './claim-words.js';
+import { FEES_REPLY, INSURANCE_REPLY, VISA_REPLY } from './claim-words.js';
 
 export const travelPolicySchema = z
   .object({
@@ -102,6 +102,8 @@ export function clauses(p: TravelPolicy): PolicyClause[] {
     ...refund,
     { id: 'change', topic: 'change', title: '改期条款', text: p.change },
     { id: 'visa', topic: 'visa', title: '签证说明', text: VISA_REPLY },
+    { id: 'insurance', topic: 'insurance', title: '保险说明', text: INSURANCE_REPLY },
+    { id: 'fees', topic: 'fees', title: '费用说明', text: FEES_REPLY },
   ];
 }
 

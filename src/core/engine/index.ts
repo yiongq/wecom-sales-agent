@@ -34,7 +34,7 @@ import { tryReserveVisitorLLM } from '../../budget.js';
 import { BudgetExhausted } from '../../llm-gate.js';
 import { numEnv, todayIso } from '../../env.js';
 import { profile } from '../../profile.js';
-import { configMode, currentSop, pinCatalogForTurn, currentPack, fileSopPath, renderFileSop } from '../../config/source.js';
+import { configMode, currentSop, pinCatalogForTurn, currentPack, currentPolicy, fileSopPath, renderFileSop } from '../../config/source.js';
 import { promptHashes } from '../../config/hashes.js';
 import { emergencyReason, HANDOFF_REASON, isTerminalStage, enterHandoff, terminalStageKey } from '../../handoff/record.js';
 import { TAKEN_OVER_NOTE, takeoverGen, prepareChannel, pushToChannel } from '../../handoff/takeover.js';
@@ -297,6 +297,8 @@ async function handleMessageInner(
     session,
     text: state.text,
     brand: state.binding.brand,
+    policy: state.policy,
+    policyHash: state.policyHash,
     callTool: async (name, args) => {
       const result = await tools.runTool(name, args, { prefetch: true });
       return { name, args: calls[calls.length - 1]?.args ?? args, result };
@@ -340,6 +342,9 @@ interface TurnState {
   session: Session;
   binding: PackBinding;
   runtime: PackBinding['runtime'];
+  /** 本轮捕获的已发布 policy 与哈希（07 R1），与 binding 同一刻取，整轮沿用 */
+  policy: unknown;
+  policyHash: string;
   triggers: ReturnType<typeof createHandoffTriggers>;
   answerIdentity(text: string, reply: string): string;
   done(outcome: TurnOutcome, reply: AgentReply, message?: ChatMessage): AgentReply;
@@ -353,6 +358,7 @@ interface TurnState {
 function beginTurn(sessionId: string, text: string, channel: string, opts: HandleOpts, receivedAt: number): TurnState {
   const binding = currentPack();
   const { runtime } = binding;
+  const { policy, policyHash } = currentPolicy();
   const texts = brandTexts(runtime, binding.brand);
   text = inboundText(text);
   const session = getOrCreateSession(sessionId, channel);
@@ -385,6 +391,8 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
     session,
     binding,
     runtime,
+    policy,
+    policyHash,
     triggers: createHandoffTriggers(runtime.vocab.handoff),
     answerIdentity: (text, reply) => coreAnswerIdentity(text, reply, texts.identityAnswer),
     done,

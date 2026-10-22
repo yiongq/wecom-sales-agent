@@ -41,6 +41,9 @@ export interface ClaimWordsDeps {
 
 const POLICY_REPLY = '这块政策会变，由顾问按您的出行时间确认。';
 export const VISA_REPLY = '签证怎么办、要多久，由顾问跟您确认。';
+// 07 R4 第 2 条：保险与费用含不含的口径句。照线路的费用说明说，说明里没有的由顾问确认；条款出处（R14）与护栏（R22）共用这两句
+export const INSURANCE_REPLY = '保险含不含、保哪些，要看这条线的费用说明；说明里没写的，由顾问跟您确认。';
+export const FEES_REPLY = '费用里含不含哪些项目，要看这条线的费用说明；说明里没写的，由顾问跟您确认。';
 /** 与 price-rules 的专票句同一句 */
 const INVOICE_REPLY = '发票（含专票）怎么开，由顾问跟您确认。';
 const HOTEL_REPLY = '酒店我可以推荐，要订请顾问确认房态。';
@@ -420,6 +423,8 @@ export function claimWordsTest() {
     rules: buildRules(),
     POLICY_REPLY,
     VISA_REPLY,
+    INSURANCE_REPLY,
+    FEES_REPLY,
     INVOICE_REPLY,
     HOTEL_REPLY,
     MEDIA_REPLY,
