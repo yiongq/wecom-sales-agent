@@ -57,7 +57,7 @@
 
 ### 批 P：政策单一来源（第 1–3 步）
 
-- [ ] 1. policy 骨架与生成段（R2；2 天）
+- [x] 1. policy 骨架与生成段（R2；2 天）——#252
   - 做：
     - `src/core/pack-api.ts` 加 spec「接口与数据流」的 `PolicyTopic`、`PolicyClause`、`RefundTier`、`RefundTerms`、`PackPolicy`，`PackRuntime` 加可选 `policy`（不含 `afterSales`，那是第 6 步）。
     - `P/policy.ts`：`TravelPolicy` 严格 schema、`defaultTravelPolicy`（退改按 R16 的表、阈值 30,000、`selfService: true`、改期句）、`canonical`、`upgrade`、`clauses`、`refund`、`segments`。`P/thresholds.ts` 的四个值改为引用默认 policy，值不变。
@@ -66,7 +66,7 @@
     - `eval/sim/goals.ts` 的 `goalSchema` 加 `tags`。
   - 验：每段一条逐字节自测；夹具把 `peakMultiplier` 改成 1.15，带上浮的四段同时出现「15%」、admin.html 比对自测变红（验收 2 前半）；`PREFIX` 不变，默认基线不重生成照样全绿。
   - 依赖：0.1。
-- [ ] 2. 锁定节模板、硬性要求、欢迎语去重（R3；1 天）
+- [x] 2. 锁定节模板、硬性要求、欢迎语去重（R3；1 天）——#253
   - 做：`lockedSectionTemplates` 由镜像 7 节按声明的替换表生成（每条恰好命中一次，否则启动失败）；旧版硬性要求由模板模式渲染再过替换表；`src/adapters/wecom.ts` 的两段欢迎语改引用包的旧版文字，`LEGACY_WELCOME_TEXTS` 原样。先写断言新旧逐字节相同的自测，再删手抄那份。
   - 验：验收 2 后半；替换表一条不命中时启动失败的反例；`wecom.selftest.ts` 照绿，`PREFIX` 不变。
   - 依赖：0.1。和第 1 步同时开、不碰同一文件。
@@ -102,7 +102,7 @@
 
 ### 车道 2：知识库与政策护栏（第 8–11 步）
 
-- [ ] 8. 嵌入端点白名单（R15；0.5 天）
+- [x] 8. 嵌入端点白名单（R15；0.5 天）——#254
   - 做：`src/core/llm/endpoints.ts`；DB 模式启动校验；`readEmbedding` 发请求前校验；非 prod 放行本机回环。
   - 验：白名单外主机 DB 模式拒绝启动、文件模式不发请求并退回关键词；`LLM_MOCK=1` 行为不变。
   - 依赖：0.1（不依赖 P，可以最先开）。
@@ -159,7 +159,7 @@
 ### 批 S：SOP 改版（第 19–20 步）
 
 - [ ] 19. 锁定节与工具描述改版（R25；1.5 天，实现者 + 协调者；真实模型 ≤¥10）
-  - 做：照 R25 表的写法（开放问题 15 已照推荐）一个 PR 改 SOP handoff、capabilities 两个锁定节与 `handoff_to_human` 的描述（保留「坚持」）；`templates.ts` 随第 2 步自动生成；更新写死的哈希（`web.selftest.ts` 的 `SYSTEM_SHA`、`TOOLS_SHA`，`brand.selftest.ts`、`brand-publish.selftest.ts`、`tools.selftest.ts`）；新 `PREFIX sha256` 与具名快照。协调者在当前 `dev` 与这个 PR 上各跑一次 k=5（回归集 20 个加报价类 6 个，开放问题 11），逐目标记录；另各用 `eval/run.ts` 的真实模型模式加跑 `eval/cases.json` 里守 capabilities 与 price-rules 文字的三个 realOnly 用例 talk-02b、guard-11、guard-13（第 0.2 步 S8，花费在 ¥10 以内）。
+  - 做：照 R25 表的写法（开放问题 15 已照推荐）一个 PR 改 SOP handoff、capabilities 两个锁定节与 `handoff_to_human` 的描述（保留「坚持」）；`templates.ts` 随第 2 步自动生成；更新写死的哈希（`web.selftest.ts` 的 `SYSTEM_SHA`、`TOOLS_SHA`，`brand.selftest.ts`、`brand-publish.selftest.ts`、`tools.selftest.ts`）；新 `PREFIX sha256` 与具名快照。协调者在当前 `dev` 与这个 PR 上各跑一次 k=5（回归集 20 个加报价类 6 个，开放问题 11），逐目标记录；另各用 `eval/run.ts` 的真实模型模式加跑 `eval/cases.json` 里守 capabilities 与 price-rules 文字的三个 realOnly 用例 talk-02b、guard-11、guard-13（第 0.2 步 S8，花费在 ¥10 以内）。改 handoff、capabilities 两节时，同步更新 `src/config/template-derive.selftest.ts` 里这两节的 sha256，并确认第 2 步的替换表仍各命中一次（否则包装载先失败）。
   - 验：验收 13 的本机部分；`SOP_CONTRACT` 17 条一条不少、不新增；owner 看过对比后授权合并。
   - 依赖：18。
 - [ ] 20. 第二次上线与经闸发布可编辑节（协调者，owner 当次授权；真实模型 ≤¥3）
@@ -265,6 +265,7 @@
 - `/healthz` 的 `revision` 与四个哈希；第一次 `promptHash` 不变，第二次变。
 - 审计 `sop.rerender` 的 `causes` 符合预期。
 - 企微与网页各一句一回；新开沙箱走 G01。
+- 第一次：线上 env 的嵌入地址落在清单内且是 https（写 `EMBED_BASE_URL=https://open.bigmodel.cn/api/paas/v4`，或设 `LLM_PROVIDER=zhipu`；不设时回落到主模型地址），否则 DB 模式以 `embed_endpoint_forbidden` 拒绝启动（第 8 步）。
 
 ## 实施记录
 
@@ -398,6 +399,28 @@ aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.jso
 
 **Codex 冒烟与通用约定**（0.6）：Codex CLI 0.162.0，ChatGPT 登录有效，模型 `gpt-6.1-sol`、`service_tier` priority；0.4 就是第一单，5 分钟一次过。通用约定写在协调者 worktree 的 `.claude/runs/07-step-common.md`。派活时在沙箱里 `git worktree add` 要加 `--no-track`（写不了 `.git/config`）。
 
+### 第 1 步 · policy 骨架与生成段（2026-10-22，Codex，#252）
+
+- `src/packs/travel/policy.ts`：严格 schema、默认 policy、`canonical`、`upgrade`、`clauses`、六个生成段；旅游包 `PackRuntime.policy` 登记；`thresholds.ts` 的四个值引用默认 policy；`catalog.ts` 的两条 note 与 `console-pack.ts` 的两条帮助改由生成段渲染；`scripts/gen-sop-policy.ts` 检查（`--write` 改写）`data/sop.md` 里的生成段。`note:peak` 用 `{month}` 占位符，调用处填月份。
+- 协调者审查后改了两处：档位 id 改为稳定的内部键（`d30`、`d15`、`d7`），对客出处「退改条款第N条」按距出发天数从远到近现算，低于最低档的那条（id `below-min`）排最后，租户增删档位时编号随之重排（加了一条自测）；`catalog.ts` 的 import 挪回文件头注释之后。Codex 改了 plan，按通用约定撤回，由协调者统一记。
+- 门禁全绿，`PREFIX` 不变，8 个锁定文件不变，v2 两条路径 831/831、0 差异，没有新快照。
+
+### 第 2 步 · 锁定节模板、硬性要求、欢迎语去重（2026-10-22，Claude 子 agent，#253）
+
+- 新文件：`replacements.ts`（每条替换必须恰好命中一次）、`locked-templates.ts`（替换表 6 条：orders 1、capabilities 2、no-destinations 1、handoff 2，只在所在节里数命中）、`hard-requirements.ts`（模板模式硬性要求原文与旧版两条替换）、`demo-brand.ts`（`runtime.defaultBrand` 引用它）。`templates.ts` 装载时按文件位置同步读一次 `data/sop.md` 生成锁定节，对不上就抛错并点名节与原句（先例：`src/tenancy/sandbox/seeds.ts`）。
+- 企微适配器直接 import `packs/travel/legacy.js` 的两段旧版欢迎语（`check-boundaries` 允许，`src/engine.ts` 等已有先例；`WELCOME_TEXT` 要在模块顶层随 `__test` 导出，不能走 `currentPack()`）。
+- 自测 `src/config/template-derive.selftest.ts` 钉住逐节 sha256；第 19 步改 handoff、capabilities 时要同步更新（已写进第 19 步）。
+- 协调者 rebase 到 #252 之后解 `package.json`、`runtime.ts` 的机械冲突，补跑门禁。
+
+### 第 8 步 · 嵌入端点白名单（2026-10-22，Claude 子 agent，#254）
+
+- `src/core/llm/endpoints.ts`：清单 `open.bigmodel.cn`，必须 https；非 prod 另放行 `127.0.0.1`、`localhost`（http/https、任意端口），按调用时的 `profile()` 判断，`profile()` 解析失败按 prod。DB 模式装载配置第 0 步（连库之前）校验，新启动拒绝原因 `embed_endpoint_forbidden`；`readEmbedding` 发请求前再查，不在清单就不发、退回关键词。日志与拒绝说明只带主机。
+- 协调者裁决（写进 spec 第四条 `Revisions:`）：清单内公网主机强制 https（spec 原文只说按主机）；`LLM_MOCK=1` 时跳过启动校验（mock 下不发嵌入请求，避免本机 mock 评测被 `.env` 误伤）；启动校验只看地址不看 key；配置层不 import 检索模块，由 `retrieval.ts` 加载时注册地址读取函数（同 `onCatalogChanged` 的先例）。
+- 跟着改：`local-state.selftest.ts` 的嵌入地址改成回环；`ops.selftest.ts` 的 prod 子进程改用清单内主机并在子进程里把 fetch 改道到本机假服务；压测脚本与两个假上游改用清单内主机；README 与 `.env.example` 照实说明。隔离副本里 14 个变异全部被自测抓住。
+- `ops`、`db`、`rollback-guard`、`restore-cutoff` 四套在本机沙箱里建不了临时目录，出沙箱跑通过。
+
+另：#251（只改文档）CI 的 `src/quota/shutdown.selftest.ts:103`「截止后模型异常也不开始 send_msg」偶发失败一次，重跑。是计时相关的既有自测，与 07 无关；再出现就记「Open」。
+
 ## 验收记录
 
 ## 费用记录
@@ -426,3 +449,9 @@ aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.jso
 ### 交接（2026-10-22，开放问题 10 已定，开工第 1、2、8 步）
 
 - owner 确认开放问题 10，第 0 步全部完成。第 1 步派 Codex、第 2、8 步派 Claude 子 agent，各在自己的 worktree 里从 `dev` 开分支，协调者审完提交、开 PR。三步互不碰同一文件（第 1 步碰 `pack-api.ts`、`P/policy.ts`、`thresholds.ts`、`catalog.ts`、`console-pack.ts`、`eval/sim/goals.ts`；第 2 步碰 `P/templates.ts`、`P/legacy.ts`、`src/adapters/wecom.ts`；第 8 步碰 `src/core/llm/endpoints.ts` 与嵌入调用处）。
+
+### 交接（2026-10-22，第 1、2、8 步完成）
+
+- 第 1、2 步已合入 `dev`（#252、#253），第 8 步 #254 开了自动合并。批 P 只剩第 3 步（依赖第 1 步，已可开工）；车道 2 的第 9 步依赖批 P 合并、第 8 步（已完成）与 0.7（已定）。
+- 下一步：第 3 步（policy 入库与发布路径，带迁移 0014，需要一次性 `pgvector/pgvector:pg17` 容器跑真实 PG 自测）；第 3 步合并后开车道 1 的第 4 步与车道 2 的第 9、10 步。
+- 三个实现 worktree 在协调者 worktree 的 `.claude/worktrees/impl-07-*` 下，PR 合并后删掉。
