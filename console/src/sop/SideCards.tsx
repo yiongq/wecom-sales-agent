@@ -1,12 +1,12 @@
 // 话术页右栏的两张卡片（spec「销售话术 · 右栏」「检查」，设计系统 B 页、§5.17）：发布前检查的清单，和「话术里可以点名的工具」。
 // 宽 ≥1440 时在右栏；1280–1439 时右栏收掉，检查清单挪到目录下面、工具卡片不画；<1280 时检查清单落到编辑器下面（sop.css）。
 // 检查在每次自动保存以后跑（sop/check.ts），清单下一行写「每次自动保存都会跑 · 上次14:05」，没跑成时写「没检查上 · 重试」；
-// 没跑过时 8 项都是「还没跑」。没过的项右边写「1处 · 话术原则」，整行是按钮，点了由页面定位（切到那一节、选中第一处）；
+// 没跑过时 10 项都是「还没跑」。没过的项右边写「1处 · 话术原则」，整行是按钮，点了由页面定位（切到那一节、选中第一处）；
 // 「字数在额度内」右边写百分比，超了写「超出N字」。工具名与中文名取自行业包的 vocabulary.tools，console 不认识任何一个包的工具。
 // 两张卡片都是 memo：话术页每敲一个字整页重渲，它们的属性不变就不跟着重渲（属性都只在检查、保存以后变）
 import { memo, useId } from 'react';
 import type { DraftCheck, SectionSpecView, ViolationCode } from '../../../src/shared/console-api.js';
-import { clockTime, digits } from '../../../src/shared/format.js';
+import { clockTime, digits, money } from '../../../src/shared/format.js';
 import { SOP_CHECKS } from '../../../src/shared/ui-labels.js';
 import { type CheckItem, CheckList } from '../parts/CheckList.js';
 import { TechDetails } from '../parts/TechDetails.js';
@@ -23,7 +23,7 @@ export interface CheckBudget {
 }
 
 /**
- * 检查结果按 8 个检查项列出（名字固定，见 ui-labels.ts 的 SOP_CHECKS）；还没跑时都是「还没跑」。
+ * 检查结果按 10 个检查项列出（名字固定，见 ui-labels.ts 的 SOP_CHECKS）；还没跑时都是「还没跑」。
  * 没过的项写「N处 · 节名」（节按问题落在的节，见 problems.ts），给了 onLocate 就可以点，去这一项第一个有去处的问题
  */
 export function checkItems(
@@ -141,6 +141,57 @@ export const ToolsCard = memo(function ToolsCard({ tools }: { tools: Readonly<Re
         ))}
       </ul>
       <p className="sop-tools-note">{cjk('写别的名字模型会当成不存在')}</p>
+    </section>
+  );
+});
+
+/** 07 R4：只读条款，展示发布快照与草稿各自的完整内容，避免省略档位差异。 */
+export const PolicyCard = memo(function PolicyCard({
+  published,
+  draft,
+}: {
+  published: import('../../../src/shared/console-api.js').PolicyView | null | undefined;
+  draft?: import('../../../src/shared/console-api.js').PolicyView | null;
+}) {
+  const titleId = useId();
+  if (!published) return null;
+  const changed = draft && JSON.stringify(draft) !== JSON.stringify(published);
+  const terms = (view: NonNullable<typeof published>) => (
+    <>
+      <ol className="sop-policy-clauses">
+        {view.clauses.map((c) => (
+          <li key={c.id}>
+            <strong>{c.title}</strong>
+            <p>{c.text}</p>
+          </li>
+        ))}
+      </ol>
+      <dl className="sop-policy-facts">
+        <div>
+          <dt>审批阈值</dt>
+          <dd>{money(view.approvalThresholdYuan ?? 0, ' 元')}</dd>
+        </div>
+        <div>
+          <dt>自助退款</dt>
+          <dd>{view.selfService ? '已开启' : '未开启'}</dd>
+        </div>
+      </dl>
+    </>
+  );
+  return (
+    <section className="sop-card sop-policy-card" aria-labelledby={titleId}>
+      <h3 id={titleId} className="sop-card-title">
+        {cjk('退改条款')}
+      </h3>
+      <p className="sop-tools-note">{cjk('已发布')}</p>
+      {terms(published)}
+      {draft && <p className="sop-tools-note">{cjk(changed ? '草稿有改动，发布后生效' : '草稿与已发布一致')}</p>}
+      {changed && (
+        <details>
+          <summary>{cjk('查看草稿条款')}</summary>
+          {terms(draft)}
+        </details>
+      )}
     </section>
   );
 });

@@ -26,7 +26,7 @@ export const roleLabel = (role: unknown): string =>
 /** 06 R21 的第 8 项：话术与包登记的对客固定文字不冲突（违规码 `consistency`） */
 export const CONSISTENCY_CHECK_LABEL = '话术与固定文字不冲突';
 
-/** 发布前检查的 8 项，名字固定，与 ViolationCode 一一对应，按这个顺序列（设计系统 §5.17）；「字数在额度内」仍是最后一项 */
+/** 发布前检查的 10 项，名字固定，与 ViolationCode 一一对应，按这个顺序列（设计系统 §5.17）；「字数在额度内」仍是最后一项 */
 export const SOP_CHECK_LABEL: Readonly<Record<ViolationCode, string>> = {
   structure: '结构完整',
   locked_changed: '固定规则节没改',
@@ -35,6 +35,8 @@ export const SOP_CHECK_LABEL: Readonly<Record<ViolationCode, string>> = {
   unknown_tool: '工具名都存在',
   unknown_field: '字段名都存在',
   consistency: CONSISTENCY_CHECK_LABEL,
+  policy_invalid: '退改条款有效',
+  policy_mismatch: '话术与退改条款一致',
   over_budget: '字数在额度内',
 };
 
@@ -78,6 +80,7 @@ export interface AuditActionDef {
  * 顺序照原来审计页的动作下拉（第 14 步换成类别筛选之前，下拉按这里的顺序列）。图标不取设计系统 §7 的实体图标集合里的名字
  */
 export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
+  'sop.policy_draft': { label: '修改退改条款草稿', group: 'sop', icon: 'file-pen' },
   'sop.publish': { label: '发布话术', group: 'sop', icon: 'message-square-text' },
   'sop.rollback': { label: '回滚话术', group: 'sop', icon: 'undo-2' },
   'sop.discard': { label: '丢弃话术草稿', group: 'sop', icon: 'trash-2' },
@@ -168,6 +171,7 @@ export const RERENDER_CAUSE_LABEL: Readonly<Record<string, string>> = {
   locked_sections: '固定规则节',
   section_table: '话术分节',
   tools: '工具定义',
+  policy: '退改条款',
 };
 
 // ---------------- 错误文案 ----------------

@@ -113,7 +113,7 @@ import { ChangesDrawer, PublishBar, PublishDrawer, SopDrawer } from '../sop/Publ
 import { QuotaBar } from '../sop/QuotaBar.js';
 import { RollbackModal, rollbackNotice } from '../sop/RollbackModal.js';
 import { ConflictBanner, LostEdits, type LostSection, SaveLive, SaveState } from '../sop/SaveParts.js';
-import { CheckCard, ToolsCard } from '../sop/SideCards.js';
+import { CheckCard, ToolsCard, PolicyCard } from '../sop/SideCards.js';
 import { SopSkeleton } from '../sop/SopSkeleton.js';
 import { cjk } from '../typography.js';
 import { canEdit, refreshSandboxProgress, usePack, useViewer } from '../viewer.js';
@@ -624,6 +624,7 @@ function MemberSop({
   const row = rows.find((r) => r.key === nav.section);
   const quota = quotaModel(rows, draftChars(spec, current.sections, edits), budget.limit);
   const changed = rows.filter((r) => r.changed);
+  const policyChanged = !!draft?.policy && JSON.stringify(draft.policy) !== JSON.stringify(compared.policy);
   const draftChanged = draft ? spec.filter((s) => !s.locked && textOf(compared, s.key) !== textOf(draft, s.key)) : [];
   // 丢弃是对存下来的草稿做的：还有没存上的改动、请求在路上、409 停住时不能点（发布条的「发布…」点了先存，见下面）
   const discardBlocked = discardBlock({ draft: !!draft, unsaved: unsaved.length > 0, saving, frozen });
@@ -715,7 +716,12 @@ function MemberSop({
   });
 
   // ---------------- 发布（第 6.3 步） ----------------
-  const block = barBlock({ frozen, merging: merge !== null, changed: changed.length, problems: located?.length ?? 0 });
+  const block = barBlock({
+    frozen,
+    merging: merge !== null,
+    changed: changed.length + (policyChanged ? 1 : 0),
+    problems: located?.length ?? 0,
+  });
   // 发布成功的那句只在线上还是刚发布的那一版时留着：之后从版本历史回滚过、别人又发布过，它和「回滚到v2」都不再对
   const shownResult = result !== null && result.versionNo === published.versionNo ? result : null;
   const draftKey = checkKey(draft, published.id);
@@ -757,7 +763,7 @@ function MemberSop({
       setOpening(null);
       if (draftKey !== null) {
         // 预填改了哪几节；自己写过的说明留着，只剩上一次的预填（或空着）时换成这一次的
-        const fill = notePrefill(changed.map((r) => r.name));
+        const fill = notePrefill([...changed.map((r) => r.name), ...(policyChanged ? ['退改条款'] : [])]);
         setNote((n) => (n.trim() === '' || n === prefill ? fill : n));
         setPrefill(fill);
         setPublishError(null);
@@ -1084,7 +1090,7 @@ function MemberSop({
     draft || changed.length > 0
       ? {
           changed: changed.length,
-          same: sameAs(compared, online),
+          same: policyChanged ? '退改条款有改动' : sameAs(compared, online),
           hashes: check.result
             ? ([
                 ['prompt', check.result.promptHash.slice(0, 12)],
@@ -1270,19 +1276,24 @@ function MemberSop({
             )
           }
           check={
-            editable &&
+            (editable || published.policy) &&
             merge === null && (
-              <CheckCard
-                spec={spec}
-                located={located}
-                violations={violations}
-                check={check.result}
-                budget={check.result ?? budget}
-                at={check.at}
-                failed={check.error !== null}
-                onRetry={check.retry}
-                onLocate={locate}
-              />
+              <>
+                {editable && (
+                  <CheckCard
+                    spec={spec}
+                    located={located}
+                    violations={violations}
+                    check={check.result}
+                    budget={check.result ?? budget}
+                    at={check.at}
+                    failed={check.error !== null}
+                    onRetry={check.retry}
+                    onLocate={locate}
+                  />
+                )}
+                <PolicyCard published={published.policy} draft={draft?.policy} />
+              </>
             )
           }
           tools={merge === null && tools && Object.keys(tools).length > 0 && <ToolsCard tools={tools} />}
@@ -1298,7 +1309,7 @@ function MemberSop({
           limit={quota.limit}
           block={block}
           opening={opening !== null}
-          unchanged={`草稿${sameAs(compared, online)}`}
+          unchanged={policyChanged ? '草稿修改了退改条款' : `草稿${sameAs(compared, online)}`}
           // 页头吸顶时状态句藏起来，没保存上要在常驻的发布条上也看得见（409 另有横幅，滚进视口）
           saveFailed={saver.status.kind === 'failed'}
           onRetrySave={saver.flush}
@@ -1321,6 +1332,7 @@ function MemberSop({
         replacing={online}
         now={now}
         changes={changes}
+        policy={policyChanged ? <PolicyCard published={published.policy} draft={draft?.policy} /> : undefined}
         located={located}
         budget={check.result ?? budget}
         check={{ running: check.running, failed: check.error !== null, at: check.at, retry: check.retry }}

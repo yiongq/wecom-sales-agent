@@ -3,7 +3,7 @@
 // 事务提交之后才替换进程内缓存；提交失败时缓存不动；COMMIT 本身抛错、结果不明时从库里整体重读。
 // 导入、后台发布、回滚、启动重渲染这四条写路径，存进 sections 的都是与镜像合并之后的全部节，
 // 所以任何一行都满足 rendered_prompt === render(joinSop(sections))。
-import { isUniqueViolation, lockTenantConfig, withTenant, type TenantCtx, type Tx } from '../db/client.js';
+import { isUniqueViolation, lockTenantConfig, withTenant, type Db, type TenantCtx, type Tx } from '../db/client.js';
 import { writeAudit } from '../db/repo/audit.js';
 import {
   archivePublished,
@@ -32,8 +32,10 @@ import {
   type SectionSpec,
   type SopSection,
 } from '../sop/sections.js';
-import type { SopVersion } from '../shared/console-api.js';
-import { promptHashes, publishedBrand, renderInputsFor, type PromptHashes } from './hashes.js';
+import type { PackPolicy } from '../core/pack-api.js';
+import { policyViolations } from '../packs/travel/policy-lint.js';
+import type { PolicyView, SopVersion } from '../shared/console-api.js';
+import { promptHashes, publishedBrand, policySnapshot, publishedPolicy, renderInputsFor, type PromptHashes } from './hashes.js';
 import { assertConfigWritable, configRuntime, currentSop, reloadFromDb, replacePublishedSop, toPublishedSop } from './source.js';
 
 import { preambleWarning, tenantImage } from './brand.js';
@@ -74,7 +76,27 @@ const EDITABLE: readonly SectionSpec[] = TRAVEL_SOP_SECTIONS.filter((s) => !s.lo
 const textOf = (sections: readonly SopSection[], key: string): string | undefined => sections.find((s) => s.key === key)?.text;
 const editableOf = (sections: readonly SopSection[]): SopSection[] => sections.filter((s) => EDITABLE.some((e) => e.key === s.key));
 
-function toVersion(r: SopVersionRow): SopVersion {
+/** 旧草稿只补新增字段；不合格快照也走契约错误，不能变成未分类的 schema 异常。 */
+function draftPolicy(pack: PackPolicy | undefined, raw: unknown): ReturnType<typeof policySnapshot> {
+  try {
+    return policySnapshot(pack, pack?.upgrade(raw ?? undefined));
+  } catch {
+    throw new SopContractError([{ code: 'policy_invalid', sectionKey: null, detail: '退改条款不符合政策 schema' }]);
+  }
+}
+
+function policyView(raw: unknown, pack: PackPolicy | undefined): PolicyView | null {
+  if (!pack) return null;
+  const policy = pack.upgrade(raw);
+  const refund = pack.refund(policy);
+  return {
+    clauses: pack.clauses(policy).filter((c) => c.topic === 'refund' || c.topic === 'change'),
+    approvalThresholdYuan: refund?.approvalThresholdYuan ?? null,
+    selfService: refund?.selfService ?? null,
+  };
+}
+
+function toVersion(r: SopVersionRow, pack = configRuntime().deps.runtime?.policy): SopVersion {
   return {
     id: r.id,
     versionNo: r.versionNo,
@@ -83,6 +105,8 @@ function toVersion(r: SopVersionRow): SopVersion {
     sections: r.sections.map((s) => ({ key: s.key, text: s.text })),
     basedOn: r.basedOn,
     rev: r.rev,
+    policyHash: r.renderInputs?.policyHash ?? null,
+    policy: policyView(r.policy ?? undefined, pack),
     promptHash: r.promptHash,
     toolsHash: r.toolsHash,
     prefixHash: r.prefixHash,
@@ -146,7 +170,12 @@ function budgetFor(
 }
 
 /** 与镜像合并、渲染、契约检查；与概览使用同一份预算计算。 */
-async function evaluate(tx: Tx, rt: ReturnType<typeof configRuntime>, sections: readonly SopSection[]): Promise<Evaluated> {
+async function evaluate(
+  tx: Tx,
+  rt: ReturnType<typeof configRuntime>,
+  sections: readonly SopSection[],
+  policy: unknown,
+): Promise<Evaluated> {
   const merged = mergeWithImage(sections, rt.imageSections);
   const sop = joinSop(merged);
   const rendered = rt.deps.render(sop);
@@ -163,6 +192,7 @@ async function evaluate(tx: Tx, rt: ReturnType<typeof configRuntime>, sections: 
     rules: rt.deps.runtime?.contractRules(currentSop().brand ? { brand: currentSop().brand! } : 'legacy'),
     brand: currentSop().brand,
     hardRequirements: rt.deps.render(''),
+    policy,
   });
   return {
     merged,
@@ -239,7 +269,9 @@ export async function getSopOverview(ctx: TenantCtx): Promise<{
 export async function listSopVersions(ctx: TenantCtx, q: { limit: number; beforeVersionNo?: number }): Promise<SopVersion[]> {
   const rt = runtimeFor(ctx);
   const limit = Math.max(1, Math.min(100, Math.floor(q.limit)));
-  return withTenant(rt.db, ctx, async (tx) => (await listReleased(tx, limit, q.beforeVersionNo)).map(toVersion), { readOnly: true });
+  return withTenant(rt.db, ctx, async (tx) => (await listReleased(tx, limit, q.beforeVersionNo)).map((r) => toVersion(r)), {
+    readOnly: true,
+  });
 }
 
 /** 任意状态的一个版本（草稿、丢弃的也给：成员本来就看得到草稿） */
@@ -257,11 +289,12 @@ export async function getSopVersion(ctx: TenantCtx, id: string): Promise<SopVers
  * 没有草稿时，以 basedOn 新建一份（basedOn 必须是当前已发布版本，rev 传 null）；已有草稿时 rev 必须相等。edits 只能点名可编辑节。
  * rebaseOnto（后台 UX spec「接口改动」，合并冲突用）：只对已有的草稿有效，必须是当前发布版本的 id。草稿按发布时同一个三方 rebase
  * （基线是草稿的 based_on、上游是当前发布版本）并进上游的改动，撞上的节都要在 edits 里（edits 就是合并的结果），
- * 存下来的节 = rebase 结果再应用 edits，based_on 换成 rebaseOnto。草稿保存不记审计，这里也不记
+ * 存下来的节 = rebase 结果再应用 edits，based_on 换成 rebaseOnto。文字自动保存不记审计；显式写 policy 记 sop.policy_draft
  */
 export async function saveSopDraft(
   ctx: TenantCtx,
-  input: { basedOn: string; rev: number | null; edits: readonly { key: string; body: string }[]; rebaseOnto?: string },
+  input: { basedOn: string; rev: number | null; edits: readonly { key: string; body: string }[]; rebaseOnto?: string; policy?: unknown },
+  offline?: { db: Db; imageSections: readonly SopSection[]; policy?: PackPolicy },
 ): Promise<SopVersion> {
   if (input.rev === null && input.rebaseOnto !== undefined) throw new SopInputError('没有草稿，不需要合并');
   const keys = input.edits.map((e) => e.key);
@@ -279,7 +312,24 @@ export async function saveSopDraft(
       return e ? rebuildSection(TRAVEL_SOP_SECTIONS[i]!, e.body, i === TRAVEL_SOP_SECTIONS.length - 1) : s;
     });
   try {
-    return await write(ctx, async (tx, rt) => {
+    const pack = offline ? offline.policy : configRuntime().deps.runtime?.policy;
+    if (input.policy !== undefined) {
+      if (!pack) throw new SopContractError([{ code: 'policy_invalid', sectionKey: null, detail: '当前行业包不支持政策配置' }]);
+      const violations = policyViolations(input.policy);
+      if (violations.length) throw new SopContractError(violations);
+    }
+    const suppliedPolicy = input.policy === undefined ? undefined : policySnapshot(pack, input.policy);
+    const persist = async (tx: Tx, rt: { tenantId: string; imageSections: readonly SopSection[] }) => {
+      const audited = async (row: SopVersionRow) => {
+        if (suppliedPolicy)
+          await writeAudit(tx, {
+            action: 'sop.policy_draft',
+            targetType: 'sop_version',
+            targetId: row.id,
+            diff: { policyHash: suppliedPolicy.policyHash },
+          });
+        return toVersion(row, pack);
+      };
       const draft = await readDraftForUpdate(tx);
       if (!draft) {
         if (input.rev !== null) throw new SopRevConflictError('草稿已经不在了（被发布或丢弃），刷新后重来');
@@ -290,12 +340,13 @@ export async function saveSopDraft(
           tenantId: rt.tenantId,
           packId: pub.packId,
           sections: apply(mergeWithImage(pub.sections, rt.imageSections)),
+          policy: suppliedPolicy ? suppliedPolicy.policy : publishedPolicy(pack, pub).policy,
           basedOn: pub.id,
           rev: await nextDraftRev(tx),
           createdBy: ctx.actor.userId,
           createdByName: ctx.actor.name,
         });
-        return toVersion(row);
+        return audited(row);
       }
       if (input.rev === null || draft.rev !== input.rev) throw new SopRevConflictError('草稿已被别人改过，刷新后重来');
       if (input.rebaseOnto !== undefined) {
@@ -309,14 +360,20 @@ export async function saveSopDraft(
           const online = editableOf(mergeWithImage(pub.sections, rt.imageSections)).filter((s) => missing.includes(s.key));
           throw new SopConflictError(missing, online);
         }
-        const row = await updateDraftSections(tx, draft.id, draft.rev, apply(r.sections), pub.id);
+        const row = await updateDraftSections(tx, draft.id, draft.rev, apply(r.sections), pub.id, suppliedPolicy?.policy);
         if (!row) throw new SopRevConflictError('草稿已被别人改过，刷新后重来');
-        return toVersion(row);
+        return audited(row);
       }
-      const row = await updateDraftSections(tx, draft.id, draft.rev, apply(draft.sections));
+      const row = await updateDraftSections(tx, draft.id, draft.rev, apply(draft.sections), undefined, suppliedPolicy?.policy);
       if (!row) throw new SopRevConflictError('草稿已被别人改过，刷新后重来');
-      return toVersion(row);
-    });
+      return audited(row);
+    };
+    return offline
+      ? await withTenant(offline.db, ctx, async (tx) => {
+          await lockTenantConfig(tx);
+          return persist(tx, { tenantId: ctx.tenantId, imageSections: offline.imageSections });
+        })
+      : await write(ctx, persist);
   } catch (e) {
     // 两个并发的首次保存：配置写锁让它们排队，后一个看到草稿已在、rev 对不上；万一还是撞上唯一索引，同样是 409
     if (isUniqueViolation(e)) throw new SopRevConflictError('已经有人建了草稿，刷新后重来');
@@ -351,7 +408,8 @@ export async function checkSopDraft(ctx: TenantCtx): Promise<{
         conflicts = r.conflicts;
         if (!conflicts.length) sections = r.sections;
       }
-      const ev = await evaluate(tx, rt, sections);
+      const policy = draftPolicy(rt.deps.runtime?.policy, draft.policy);
+      const ev = await evaluate(tx, rt, sections, policy.policy);
       return {
         promptHash: ev.hashes.promptHash,
         prefixHash: ev.hashes.prefixHash,
@@ -386,7 +444,8 @@ export async function publishSopDraft(ctx: TenantCtx, input: { rev: number; chan
       mine = r.sections;
       rebasedFrom = base?.versionNo ?? null;
     }
-    const ev = await evaluate(tx, rt, mine);
+    const policy = draftPolicy(rt.deps.runtime?.policy, draft.policy);
+    const ev = await evaluate(tx, rt, mine, policy.policy);
     if (ev.violations.length) throw new SopContractError(ev.violations);
     const changedKeys = EDITABLE.filter((s) => textOf(pub.sections, s.key) !== textOf(ev.merged, s.key)).map((s) => s.key);
     const versionNo = (await maxVersionNo(tx)) + 1;
@@ -397,7 +456,8 @@ export async function publishSopDraft(ctx: TenantCtx, input: { rev: number; chan
       basedOn: pub.id,
       renderedPrompt: ev.rendered,
       ...ev.hashes,
-      renderInputs: renderInputsFor(rt.deps.render, rt.deps.imageSop, rt.deps.toolsJson, undefined, currentSop().brand),
+      policy: policy.policy,
+      renderInputs: renderInputsFor(rt.deps.render, rt.deps.imageSop, rt.deps.toolsJson, undefined, currentSop().brand, policy.policyHash),
       changeNote: note,
       publishedBy: ctx.actor.userId,
       publishedByName: ctx.actor.name,
@@ -442,7 +502,13 @@ export async function rollbackSop(
       throw new SopNotFoundError('只能回滚到已发布或已归档的版本');
     const pub = await readPublishedSop(tx);
     if (!pub) throw new SopNotFoundError('没有已发布的 SOP');
-    const ev = await evaluate(tx, rt, target.sections);
+    let policy: ReturnType<typeof policySnapshot>;
+    try {
+      policy = publishedPolicy(rt.deps.runtime?.policy, target);
+    } catch {
+      throw new SopContractError([{ code: 'policy_invalid', sectionKey: null, detail: '目标版本的政策快照不合格' }]);
+    }
+    const ev = await evaluate(tx, rt, target.sections, policy.policy);
     if (ev.violations.length) throw new SopContractError(ev.violations);
     const versionNo = (await maxVersionNo(tx)) + 1;
     await archivePublished(tx, pub.id);
@@ -455,12 +521,14 @@ export async function rollbackSop(
       basedOn: target.id,
       renderedPrompt: ev.rendered,
       ...ev.hashes,
-      renderInputs: renderInputsFor(rt.deps.render, rt.deps.imageSop, rt.deps.toolsJson, undefined, currentSop().brand),
+      policy: policy.policy,
+      renderInputs: renderInputsFor(rt.deps.render, rt.deps.imageSop, rt.deps.toolsJson, undefined, currentSop().brand, policy.policyHash),
       changeNote: note,
       createdBy: ctx.actor.userId,
       createdByName: ctx.actor.name,
     });
-    const sameHashAsTarget = v.promptHash === target.promptHash;
+    const sameHashAsTarget =
+      v.promptHash === target.promptHash && policy.policyHash === (target.renderInputs?.policyHash ?? policy.policyHash);
     await writeAudit(tx, {
       action: 'sop.rollback',
       targetType: 'sop_version',

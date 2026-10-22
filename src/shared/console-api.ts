@@ -48,19 +48,19 @@ export const VersionsQuery = z.object({
 });
 
 /** 没有草稿时 rev 传 null、basedOn 是当前已发布版本的 id；已有草稿时 rev 必须等于草稿的 rev */
-export const SaveDraftBody = z.strictObject({
-  basedOn: z.string().min(1).max(64),
-  rev: z.number().int().nonnegative().nullable(),
-  edits: z
-    .array(z.strictObject({ key: z.string().min(1).max(64), body: z.string().max(100_000) }))
-    .min(1)
-    .max(32),
-  /**
-   * 后台 UX spec 新增：把已有草稿的基线换成这个发布版本，用于合并冲突。必须是当前发布版本；
-   * 三方合并撞上的节都要出现在 edits 里（edits 就是合并的结果）
-   */
-  rebaseOnto: z.string().min(1).max(64).optional(),
-});
+export const SaveDraftBody = z
+  .strictObject({
+    basedOn: z.string().min(1).max(64),
+    rev: z.number().int().nonnegative().nullable(),
+    edits: z.array(z.strictObject({ key: z.string().min(1).max(64), body: z.string().max(100_000) })).max(32),
+    /**
+     * 后台 UX spec 新增：把已有草稿的基线换成这个发布版本，用于合并冲突。必须是当前发布版本；
+     * 三方合并撞上的节都要出现在 edits 里（edits 就是合并的结果）
+     */
+    rebaseOnto: z.string().min(1).max(64).optional(),
+    policy: z.unknown().optional(),
+  })
+  .refine((input) => input.edits.length > 0 || input.policy !== undefined, { message: '需要可编辑节或退改条款' });
 
 export const RevBody = z.strictObject({ rev: z.number().int().nonnegative() });
 
@@ -202,7 +202,9 @@ export type ViolationCode =
   | 'over_budget' // 可编辑节正文总长 > 基线 × BUDGET_RATIO
   // 06 R21：这一节的话和包里登记的对客固定文字互相矛盾（如「起价，按最终行程微调」对「总价」）。第 16 步起启用：
   // 发布、回滚、启动重渲染都查
-  | 'consistency';
+  | 'consistency'
+  | 'policy_invalid'
+  | 'policy_mismatch';
 
 export interface ContractViolation {
   code: ViolationCode;
@@ -210,12 +212,18 @@ export interface ContractViolation {
   /** 服务端原文，只在「技术详情」里显示；界面上的说明由前端按 code、sectionKey、match 生成 */
   detail: string;
   /** 后台 UX spec 新增：phrase_forbidden 是命中的短语或正则匹配文本；phrase_missing 是必需的那句原文（rule.text）；
-   *  unknown_tool / unknown_field 是标识符；consistency（R21）是和固定文字矛盾的那句原文；其余 code 没有 */
+   *  unknown_tool / unknown_field 是标识符；consistency（R21）与 policy_mismatch 是发生冲突的那句原文；其余 code 没有 */
   match?: string;
 }
 
 export type SopStatus = 'draft' | 'published' | 'archived' | 'discarded';
 export type SopSource = 'import' | 'console' | 'rollback' | 'rerender';
+
+export interface PolicyView {
+  clauses: { id: string; title: string; text: string }[];
+  approvalThresholdYuan: number | null;
+  selfService: boolean | null;
+}
 
 export interface SopVersion {
   id: string;
@@ -227,6 +235,8 @@ export interface SopVersion {
   sections: SopSectionText[];
   basedOn: string | null;
   rev: number;
+  policyHash: string | null;
+  policy?: PolicyView | null;
   promptHash: string | null;
   toolsHash: string | null;
   prefixHash: string | null;

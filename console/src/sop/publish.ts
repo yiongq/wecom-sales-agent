@@ -79,12 +79,14 @@ export const replacedIn = (basedOn: string | null, known: readonly (SopVersion |
 /** 这次发布改了的可编辑节（相对被替换下来的版本） */
 export function publishedNames(
   spec: readonly SectionSpecView[],
-  previous: Pick<SopVersion, 'sections'> | null,
-  v: Pick<SopVersion, 'sections'>,
+  previous: Pick<SopVersion, 'sections' | 'policy'> | null,
+  v: Pick<SopVersion, 'sections' | 'policy'>,
 ): string[] {
   if (!previous) return [];
   const textOf = (x: Pick<SopVersion, 'sections'>, key: string): string => x.sections.find((s) => s.key === key)?.text ?? '';
-  return spec.filter((s) => !s.locked && textOf(previous, s.key) !== textOf(v, s.key)).map((s) => s.heading ?? PREAMBLE_NAME);
+  const names = spec.filter((s) => !s.locked && textOf(previous, s.key) !== textOf(v, s.key)).map((s) => s.heading ?? PREAMBLE_NAME);
+  if (JSON.stringify(previous.policy ?? null) !== JSON.stringify(v.policy ?? null)) names.push('退改条款');
+  return names;
 }
 
 /**
