@@ -13,6 +13,8 @@ export interface FakeStep {
   completion?: number;
   cached?: number;
   reasoning?: number;
+  /** 等这么久再回；客户端先断开就不回（自测里造「跑到一半被杀」） */
+  delayMs?: number;
 }
 export async function fakeService(): Promise<{
   url: string;
@@ -42,6 +44,16 @@ export async function fakeService(): Promise<{
       res.statusCode = 500;
       res.end('{"error":"fake_script_exhausted"}');
       return;
+    }
+    if (step.delayMs) {
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, step.delayMs);
+        res.once('close', () => {
+          clearTimeout(timer);
+          resolve();
+        });
+      });
+      if (res.destroyed) return;
     }
     const message = step.tools
       ? {

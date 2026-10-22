@@ -327,6 +327,59 @@ async function suite(db: Db, q: Query, slug: string) {
     const exit = await run(d.rev);
     check(`${slug} 子进程异常退出 error`, exit.status === 'error' && exit.error === 'child_exit');
     process.env.LLM_MODEL = 'glm-5.2';
+    // 一边跑到一半被取消：报告里已出的目标花费照样记进本行费用、gate 用量与当天预算。第二个目标的请求一直不回，
+    // 等第一个目标出了报告再取消。
+    process.env.APP_REVISION = 'gate-selftest-partial';
+    const slowGoal = path.join(goalsDir, '02-regression-slow.json');
+    fs.writeFileSync(
+      slowGoal,
+      fs.readFileSync(path.join(goalsDir, '01-regression.json'), 'utf8').replace('"gate-regression"', '"gate-regression-slow"'),
+    );
+    service.script.length = 0;
+    service.script.push({ content: '您好，请问您想去哪里旅行？', prompt: 100000, completion: 0 });
+    for (let i = 0; i < 10; i++) service.script.push({ content: '您好，请问您想去哪里旅行？', delayMs: 60000 });
+    const gateCost = async () =>
+      Number(
+        (
+          await q<{ cost: string | null }>("select sum(cost_milli_cny) as cost from usage_daily where tenant_id=$1 and purpose='gate'", [
+            tenantId,
+          ])
+        )[0]!.cost ?? 0,
+      );
+    const costBefore = await gateCost();
+    const budgetBefore = currentRuntime().budget.status().costMilli;
+    r = await request('POST', '/sop/draft/gate', { rev: d.rev });
+    assert.equal(r.status, 202, await r.clone().text());
+    const partialId = ((await r.json()) as { runId: string }).runId;
+    const seenBy = Date.now() + 30000;
+    let seen = 0;
+    while (!(seen = (await getGateRun(ctx, partialId)).costMilli)) {
+      if (Date.now() > seenBy) throw new Error('闸自测：第一个目标没出报告');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    await stopTenantGates(tenantId);
+    const partial = await view(partialId);
+    const reported = fs
+      .readFileSync(path.join(process.env.VAR_DIR!, 'gate', partialId, 'published.jsonl'), 'utf8')
+      .trim()
+      .split('\n')
+      .map((line) => JSON.parse(line) as { type: string; spentMilli?: number })
+      .filter((line) => line.type === 'goal')
+      .at(-1)?.spentMilli;
+    check(
+      `${slug} 取消时已出报告的花费记进本行`,
+      partial.status === 'error' &&
+        partial.error === 'cancelled' &&
+        partial.costMilli > 0 &&
+        partial.costMilli === seen &&
+        partial.costMilli === reported,
+    );
+    check(
+      `${slug} 取消时的花费补记进gate用量与当天预算`,
+      (await gateCost()) - costBefore === partial.costMilli &&
+        currentRuntime().budget.status().costMilli - budgetBefore === partial.costMilli,
+    );
+    fs.rmSync(slowGoal);
     process.env.SOP_GATE_DAILY_RUNS = '1';
     r = await request('POST', '/sop/draft/gate', { rev: d.rev });
     check(`${slug} 每日次数429`, r.status === 429 && ((await r.json()) as { error: string }).error === 'gate_quota');
