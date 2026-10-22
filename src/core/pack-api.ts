@@ -12,6 +12,7 @@ import { z } from 'zod';
 
 export type { CustomerProfile, SalesStage, Session, Order, AgentReply, Route, Hotel } from '../types.js';
 export type { ToolDef } from '../tool-defs.js';
+export { quoteRefund, type RefundQuote, type RefundTexts } from './refund.js';
 export { deepFreeze } from '../shared/freeze.js';
 export { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, REPRICE_FIELDS, type CatalogKind } from '../shared/catalog.js';
 export { UNSTORABLE_TEXT, type CatalogItem } from '../shared/console-api.js';
@@ -754,6 +755,19 @@ export interface EnginePackHooks {
   createOrderTool: string | null;
   resetSession(session: Session): void;
   paidText(order: Order): string;
+  /** 07 R19：退款文字由包提供，核心与后台只负责提交和通知。 */
+  refund?: {
+    quoteText(order: Order, quote: import('./refund.js').RefundQuote, ctx: RefundTextContext): string;
+    chooseText(orders: readonly Order[]): string;
+    texts(quote: import('./refund.js').RefundQuote, ctx: RefundTextContext): import('./refund.js').RefundTexts;
+    noticeText(order: Order, kind: 'settled' | 'rejected', ctx: RefundTextContext): string;
+  };
+}
+
+export interface RefundTextContext {
+  policy: unknown;
+  channel: string;
+  brand: BrandProfile | null;
 }
 
 /** 客户出口；模板用 {BrandProfile 字段名}，不做递归替换。 */

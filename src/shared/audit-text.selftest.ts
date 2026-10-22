@@ -624,6 +624,18 @@ eq(
   ],
 );
 
+for (const [action, verb] of [
+  ['order.refund_request', '提交了'],
+  ['order.refund_approve', '批准了'],
+  ['order.refund_reject', '驳回了'],
+  ['order.refund_settle', '确认退回了'],
+]) {
+  const described = describeAudit(entry({ action: action!, diff: { shortId: 'F01', amount: 40000, reason: '合成原因' } }), TRAVEL);
+  check(`${action} 有人话审计`, described.text.includes(verb!) && described.text.includes('F01') && described.group === 'conversation');
+  if (action === 'order.refund_reject') eq('退款驳回审计记录原因', described.summary, '原因：合成原因');
+  else check(`${action} 金额以元显示`, described.text.includes('40,000元'));
+}
+
 if (fails.length) {
   console.error(`AUDIT TEXT SELFTEST FAIL: ${fails.length} 项\n  ${fails.join('\n  ')}`);
   process.exit(1);

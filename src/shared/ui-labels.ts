@@ -110,6 +110,10 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'conversation.release': { label: '交还AI', group: 'conversation', icon: 'bot' },
   'order.confirm': { label: '确认价格', group: 'conversation', icon: 'badge-check' },
   'order.mark_paid': { label: '确认收款', group: 'conversation', icon: 'banknote' },
+  'order.refund_request': { label: '提交退款申请', group: 'conversation', icon: 'banknote' },
+  'order.refund_approve': { label: '批准退款', group: 'conversation', icon: 'badge-check' },
+  'order.refund_reject': { label: '驳回退款', group: 'conversation', icon: 'circle-x' },
+  'order.refund_settle': { label: '确认已退款', group: 'conversation', icon: 'banknote' },
   'order.cancel': { label: '取消订单', group: 'conversation', icon: 'circle-x' },
   // 快捷回复（J 页右栏插进输入框的模板）随会话工作台归在「会话与订单」一类。第 13 步先写「常用回复」（那时「快捷」两字
   // 还不在 UI 优先片里）；J 页右栏卡片标题（第 20.2 步）已经用上「快捷回复」，字已经在优先片里了，这里改回 spec 原词

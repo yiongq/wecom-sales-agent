@@ -35,6 +35,7 @@ import { travelTemplates } from './templates.js';
 import { travelQuickReplyDefaults } from './quick-reply-defaults.js';
 import { createTravelShapePolicy } from './shape-words.js';
 import { createTravelConsistency } from './consistency.js';
+import { refundQuoteText, refundChooseText, refundTexts, refundNoticeText } from './refund-words.js';
 import { paidOrderText } from './order-words.js';
 import { travelPolicy } from './policy.js';
 
@@ -160,6 +161,7 @@ export function createTravelRuntime(sources: PackSources) {
         session.recommendedRoutes = undefined;
       },
       paidText: paidOrderText,
+      refund: { quoteText: refundQuoteText, chooseText: refundChooseText, texts: refundTexts, noticeText: refundNoticeText },
     },
     vocab: { handoff: handoffVocab, dejargon: dejargonVocab },
     thresholds: runtimeThresholds,

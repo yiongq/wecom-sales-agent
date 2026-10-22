@@ -278,6 +278,17 @@ function single(entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups
       return { parts: [plain('确认了'), ...conv(diff), plain('的订单价格')], ...amount(diff) };
     case 'order.mark_paid':
       return { parts: [plain('确认收到了'), ...conv(diff), plain('的付款')], ...amount(diff) };
+    case 'order.refund_request':
+      return { parts: [plain('提交了'), ...conv(diff), plain('的退款申请')], ...amount({ totalPrice: diff.amount }) };
+    case 'order.refund_approve':
+      return { parts: [plain('批准了'), ...conv(diff), plain('的退款申请')], ...amount({ totalPrice: diff.amount }) };
+    case 'order.refund_reject':
+      return {
+        parts: [plain('驳回了'), ...conv(diff), plain('的退款申请')],
+        ...(str(diff.reason) ? { summary: `原因：${str(diff.reason)}` } : {}),
+      };
+    case 'order.refund_settle':
+      return { parts: [plain('确认退回了'), ...conv(diff), plain('的款项')], ...amount({ totalPrice: diff.amount }) };
     case 'order.cancel': {
       const reason = str(diff.reason);
       return { parts: [plain('取消了'), ...conv(diff), plain('的订单')], ...(reason ? { summary: `原因：${reason}` } : {}) };
