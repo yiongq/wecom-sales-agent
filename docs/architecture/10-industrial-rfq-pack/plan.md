@@ -7,7 +7,7 @@
 缺一条就停下，告诉 owner：
 
 1. 08、09 都已 `implemented` 并上线。
-2. 本 spec `Status: ready`；开放问题 1、2 已定；ADR-005 与主参考拍板表的修订，随本 spec 的 docs PR 合入。
+2. 本 spec `Status: ready`（开放问题 2026-10-23 已定）；ADR-005 与主参考拍板表的修订，随本 spec 翻 `ready` 的 docs PR 合入。
 3. 本机能跑 format / lint / typecheck、`test:locked`、受影响的自测、v2 假模型回归（文件与 PGlite 两条），能起一次性 `pgvector/pgvector:pg17` 容器。
 4. 真实模型评测只由协调者在沙箱外跑（第 15 步），整份 ≤¥10。
 5. 部署与演示租户的开通要 owner 当次授权（第 16 步）；演示租户的域名另记，不进仓库。
@@ -74,4 +74,5 @@
 ### 交接（2026-10-23，起草）
 
 - 原「09 · 工业品询价包」经 Opus 评审后拆成 [09](../09-quote-approval/spec.md)（核心）与本 spec（工业包与演示）。起草稿在分支 `docs/08-spec`，没推。
-- 下一步：评审复核 → owner 定开放问题 1–6 → 08、09 实现之后翻 `ready`。
+- 经三轮 Opus 评审修订；开放问题 1–6 owner 2026-10-23 全部照推荐定，品牌名「衡石工业品」（spec 第三条 `Revisions:`）。`Status` 仍是 `draft`。
+- 下一步：08、09 实现并上线之后，owner 翻 `ready`，同一个 docs PR 带上 ADR-005 与主参考拍板表的修订，再补「工作量、依赖与并行」。
