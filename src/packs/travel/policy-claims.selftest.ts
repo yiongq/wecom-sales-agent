@@ -1,4 +1,4 @@
-// 07 R22 政策陈述护栏（policy_claims）的纯函数部分：三条规则各一正一反（含否定句）、与默认 policy 相等的各种写法一字不改、
+// 07 R22 政策陈述护栏（policy_claims）的纯函数部分：四条规则各一正一反（含否定句）、与默认 policy 相等的各种写法一字不改、
 // 链接句不动、租户的 policy 档位被认、线路事实的出处、被换上去的文字都登记过。引擎一侧的接线（客户最终收到什么、后台记了几条备注、
 // 有没有转人工）在 src/policy-claims.selftest.ts。
 import assert from 'node:assert/strict';
@@ -241,6 +241,37 @@ same('规则 2：链接句不动', '4 人及以上每人打 9 折，点此完成
   );
 }
 
+// ---------------- 规则 4：改期、退款不说「免费」 ----------------
+// 07 第 19 步 k=5：模型照条款答改期时加了条款里没有的「免费」
+const CHANGE = '出发前15天及以上可以改期一次，由顾问为您办理（改期条款）';
+becomes(
+  '规则 4 正例：免费改期 → 删掉「免费」',
+  '改期：出发前 15 天及以上可以免费改期一次，由顾问为您办理。',
+  '改期：出发前 15 天及以上可以改期一次，由顾问为您办理。',
+  'free',
+);
+becomes('规则 4 正例：整个小句就是「免费」→ 删掉这个小句', '改期一次，免费，由顾问为您办理。', '改期一次，由顾问为您办理。', 'free');
+becomes('规则 4 正例：无损退款 → 删掉「无损」', '取消可以无损退款。', '取消可以退款。', 'free');
+becomes('规则 4 正例：删完只剩动作 → 改期条款原句', '改期是免费的。', `${CHANGE}。`, 'free');
+becomes('规则 4 正例：退款也一样，换成全部档位', '退款免费。', `${[T1, T2, T3, T4].join('；')}。`, 'free');
+{
+  // 同一句还会补退改出处（规则 1 的 patch）：两条规则各记一笔
+  const out = run('出发前30天及以上取消，退全款，不收手续费。');
+  check(
+    '规则 4 正例：不收手续费的小句删掉，同句照常补出处',
+    out.text === `${T1}。` && out.edits.some((e) => e.rule === 'free') && out.edits.some((e) => e.rule === 'cite'),
+    `${JSON.stringify(out.text)} / ${out.edits.map((e) => e.rule)}`,
+  );
+}
+same('规则 4 反例：否定句不动', '出发前15天以内不能免费改期，由顾问为您办理。');
+same('规则 4 反例：问句不动', '能免费改期吗？');
+same('规则 4 反例：不在改期、退款语境', '酒店早餐免费，接送机也免费。');
+same('规则 4 反例：退全款是条款原话', `${T1}。`);
+same('规则 4：链接句不动', '可以免费改期，点此完成支付 /pay/ord_abc123');
+same('规则 4：租户条款写了免费就放行', '出发前15天及以上可以免费改期一次，由顾问为您办理。', {
+  policy: { ...policy, change: '出发前15天及以上可以免费改期一次，由顾问为您办理' },
+});
+
 // ---------------- 规则 3：保险、费用含不含 ----------------
 const askIns = '这条线含保险吗';
 becomes('规则 3 正例：线路「含」里没有保险，模型说「含的」', '含的～', INSURANCE_REPLY, 'unbacked', { input: askIns, scope: [guizhou] });
@@ -397,13 +428,15 @@ becomes('线路出处：多条线只有最近报价那条支持', '含保险的�
 {
   const texts = policyReplacementTexts(policy);
   check(
-    '登记的替换文字（由条款推出的）：每档条款、列全部、不带月份的上浮',
-    texts.map((x) => x.id).join() === 'refund-tier.d30,refund-tier.d15,refund-tier.d7,refund-tier.below-min,refund-all,peak-no-month',
+    '登记的替换文字（由条款推出的）：每档条款、列全部、改期条款、不带月份的上浮',
+    texts.map((x) => x.id).join() ===
+      'refund-tier.d30,refund-tier.d15,refund-tier.d7,refund-tier.below-min,refund-all,change,peak-no-month',
     texts.map((x) => x.id).join(),
   );
   check(
     '登记的替换文字：和步骤用的是同一批函数',
     texts.find((x) => x.id === 'refund-tier.d7')!.text === T3 &&
+      texts.find((x) => x.id === 'change')!.text === CHANGE &&
       texts.find((x) => x.id === 'peak-no-month')!.text === segments['note:peak'](policy).replace('{month}月为', ''),
   );
   check(
@@ -422,6 +455,6 @@ if (failures.length) {
 }
 assert.ok(passed > 100);
 console.log(
-  `POLICY CLAIMS SELFTEST PASS: ${passed} 项断言全通（三条规则各一正一反含否定句 / 默认 policy 相等写法不改 / 链接句不动 / 租户档位 / 线路出处 / 替换文字登记）`,
+  `POLICY CLAIMS SELFTEST PASS: ${passed} 项断言全通（四条规则各一正一反含否定句 / 默认 policy 相等写法不改 / 链接句不动 / 租户档位 / 线路出处 / 替换文字登记）`,
 );
 process.exit(0);

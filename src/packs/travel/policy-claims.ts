@@ -9,6 +9,7 @@
 //   3 客户这句是政策问法（保险、费用含不含），回复里有这一主题的肯定说法，而会话里出现过的线路在产品库里的「含」都没有这个说法
 //     → 换成 claim-words.ts 的口径句。「待顾问确认」备注由后面的 system_note 记：口径句带「由顾问跟您确认」，它按
 //     DEFER_TO_CONSULTANT 记一条，这里不另记，免得一轮两条（K18：别的轮次不记）。否定说法（不含、要另付）一律不动（K14）。
+//   4 改期、退款语境里「免费」「无损」「不收手续费」这类说法，条款原文里没有 → 删掉修饰词或这个小句（否定与问句不动）。
 //   另：回复里有被产品库「含」支持的肯定说法、句末没写出处时，补「（《线路名》费用说明）」（动作 patch）。
 //
 // 不改 dropUnbackedClaims 与 claim_words：本文件只做纯文字变换，由 reply-steps.ts 的步骤接线。
@@ -33,7 +34,7 @@ export interface PolicyClaimsDeps {
 
 /** 一处改动，供日志与自测归因 */
 export interface PolicyEdit {
-  rule: 'refund' | 'pricing' | 'booking' | 'unbacked' | 'cite';
+  rule: 'refund' | 'pricing' | 'booking' | 'free' | 'unbacked' | 'cite';
   action: 'replace' | 'patch';
   before: string;
   after: string;
@@ -445,6 +446,60 @@ function pricingEdits(parts: UnitParts, p: TravelPolicy): Edit[] {
   return edits;
 }
 
+// ---------------- 规则 4：改期、退款不说「免费」 ----------------
+
+/** 改期语境；退款语境沿用 REFUND_CTX */
+const CHANGE_CTX = /改期|改日期|改时间|换日期|延期|改签/;
+const FREE_WORD = '(?:免费|无损|免手续费|零手续费)';
+const REDO = '(?:改期|改日期|改时间|换日期|延期|改签|退款|退订|退团|退费|取消|退)';
+/** 「免费改期」「无损退款」：修饰词贴在动作前面，删掉修饰词（带 g 的正则有游标，每次现建） */
+const freeBefore = (): RegExp => new RegExp(`${FREE_WORD}(?:地)?(?=${REDO})`, 'gu');
+/** 「改期免费」「退款也免费的」：修饰词跟在动作后面，删掉修饰词 */
+const freeAfter = (): RegExp => new RegExp(`(${REDO}(?:一次)?)(?:是|也|都)?(?:完全)?免费(?:的)?`, 'gu');
+/** 整个小句就是「免费」「不收手续费」：删掉这个小句 */
+const FREE_PIECE =
+  /^(?:而且|并且|且|也|都|还)?(?:完全|全程)?(?:免费|不收(?:取)?(?:任何)?(?:手续费|费用|钱)|免(?:收)?手续费|零手续费|没有手续费|无(?:需)?手续费|不扣(?:钱|费|手续费))(?:的|哦|哈)?$/u;
+
+/**
+ * 条款原文里没有「免费」「无损」「手续费」这类说法时，模型在改期、退款语境里自己加上的就去掉（07 第 19 步 k=5 里的「免费改期」）。
+ * 租户把条款写成「可免费改期一次」时照旧放行。否定（「不能免费改期」）与问句不动。
+ */
+/** 改期条款原句加出处 */
+function changeLine(p: TravelPolicy): string {
+  const change = policyClauses(p).find((c) => c.topic === 'change')!;
+  return `${change.text}（${change.title}）`;
+}
+/** 改期说改期条款，其余（退款、取消）说全部退改档位；都带出处 */
+function clauseFor(text: string, p: TravelPolicy): string {
+  return CHANGE_CTX.test(text) ? changeLine(p) : refundTable(p).map(tierLine).join('；');
+}
+
+function freeEdits(parts: UnitParts, unit: string, p: TravelPolicy): Edit[] {
+  if (!CHANGE_CTX.test(unit) && !REFUND_CTX.test(unit)) return [];
+  const clauseText = policyClauses(p)
+    .filter((c) => c.topic === 'refund' || c.topic === 'change')
+    .map((c) => c.text)
+    .join('');
+  if (/免费|无损|手续费/.test(clauseText)) return [];
+  const edits: Edit[] = [];
+  for (const [i, piece] of parts.pieces.entries()) {
+    if (asking(parts, i)) continue;
+    const text = piece.text;
+    if (FREE_PIECE.test(text.trim())) {
+      edits.push({ from: i, to: i, kind: 'drop', rule: 'free' });
+      continue;
+    }
+    const keep = (at: number): boolean => negatedAt(text, at);
+    let next = text.replace(freeBefore(), (m, at: number) => (keep(at) ? m : ''));
+    next = next.replace(freeAfter(), (m, verb: string, at: number) => (keep(at + verb.length) ? m : verb));
+    if (next === text) continue;
+    // 删完只剩动作（「改期是免费的」→「改期」）：整小句换成条款原句
+    const bare = new RegExp(`^${REDO}(?:一次)?$`, 'u').test(next.trim());
+    edits.push({ from: i, to: i, kind: 'replace', text: bare ? clauseFor(next, p) : next, rule: 'free' });
+  }
+  return edits;
+}
+
 // ---------------- 规则 3：保险、费用含不含 ----------------
 
 const INS = '(?:保险|意外险|医疗险|责任险|高原险|旅游险|旅行险|救援险)';
@@ -702,6 +757,7 @@ export function rewritePolicyClaims(
     };
     claim(refundEdits(parts, unit, table));
     claim(pricingEdits(parts, policy));
+    claim(freeEdits(parts, unit, policy));
     let backed: Claim[] = [];
     if (asked.size) {
       const r = unbackedEdits(parts, unit, { asked, askedFee, scope: env.scope, first: firstUnit, replyText: text, used });
@@ -755,7 +811,7 @@ export function rewritePolicyClaims(
 
 /**
  * 步骤会换上去、由条款推出的话（给 fixed-replies 登记、一致性检查用）：每一档的条款原句加出处、列全部档位的一句、
- * 不带月份的上浮说明。文字取自与步骤同一批函数，不另抄一份。
+ * 改期条款原句加出处（规则 4）、不带月份的上浮说明。文字取自与步骤同一批函数，不另抄一份。
  * 上浮（带月份）、团队优惠、预订月数三句是 policy.ts 的生成段（note:peak、note:group、note:far-future），登记时直接引用生成段
  */
 export function policyReplacementTexts(p: TravelPolicy): { id: string; text: string }[] {
@@ -763,6 +819,7 @@ export function policyReplacementTexts(p: TravelPolicy): { id: string; text: str
   return [
     ...table.map((t) => ({ id: `refund-tier.${t.id}`, text: tierLine(t) })),
     { id: 'refund-all', text: table.map(tierLine).join('；') },
+    { id: 'change', text: changeLine(p) },
     { id: 'peak-no-month', text: segments['note:peak'](p).replace('{month}月为', '') },
   ];
 }
