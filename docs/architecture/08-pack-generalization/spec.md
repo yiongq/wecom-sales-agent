@@ -3,6 +3,7 @@
 Status: draft
 Revisions: 2026-10-23 起草期评审（一路 Claude Opus，对照 e1433e0 的代码）之后就地修订，尚无代码依赖。一、订单：旧访问器只返回旧版旅游单，另加新访问器；逐个写出读订单的地方的去向；单价改由包的确定性函数算，`createLineOrder` 不收价格；补上通用单的改单作废规则，并规定通用单不进退款（R3）。二、新增 R10「SOP 子系统按包」和 R11「文件模式的产品库」：原稿没写，证明包在 DB 模式下发布不了 SOP，在文件模式下也读不到产品库。三、旅游不经视图，保留原有渲染路径，去掉逐像素比对；视图改名 `OrderDisplay`，只给通用单用（R12）。四、金额出处步骤的放行集合只认工具声明的金额与包的静态金额，去掉「在场条目」和「客户说过的数」；补跟进路径；定死步骤位置（R8）。五、补金额解析表与反例（R6）、money 字段的 CSV、上架检查与显示（R7）。六、写路径与写死处补全，包括沙箱条目上限、按 kind 的进程缓存、闸的缓存键（R2）；知识库每个包至多一个可检索的 kind（R9）。七、回滚检查的退出码改为 9，判定方式照 `rollback-guard.sh` 现有的写法（R13）。八、改写顶部的取代与修订清单。九、沙箱按包移到后续 spec。
 Revisions: 2026-10-23 owner 定开放问题 1–7，全部照推荐：金额出处步骤放本 spec；旧版旅游单不迁；产品库金额存元、最多两位小数；通用单的 `total_price` 写 `round(total_fen / 100)`；非旅游包只支持模板模式；同一会话最多一张待付的通用单；沙箱按包出种子移到后续 spec。正文的裁决与这些推荐本来一致，没有其他改动。`Status` 仍是 `draft`。
+Revisions: 2026-10-23 为 09、10 的起草补两处，尚无代码依赖：`priceLine` 可以返回 `{ reject, detail }`，表示这一行不定价，例如低于起订量（旧的写法只能返回单价）；「后续」一节改成 09–12 的编号与链接。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8 候选「第二个真实行业包：模板机制要靠它来验证」的前半段。本 spec 只改核心，并用证明包验证；第二个真实行业包另起一份 spec。
 Depends on: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md)（开工时须已 implemented、发版到 `main`）；[04](../04-industry-packs/spec.md)：`PackRuntime`、门面（R1）、步骤表（R7）、假包（R16）、回滚检查（R14）；[05](../05-tenancy-sandbox/spec.md)：租户运行时、进程内状态清单（R5）、沙箱写限额；[06](../06-reply-quality/spec.md)：cases v2 快照、模拟客户；[02](../02-conversations-workbench/spec.md)：订单、工作台、看板、公开订单接口（R22）。
 Supersedes in part: [01](../01-pg-config-console/spec.md) 产品库 `kind` 只能是 `route` / `hotel` 的 CHECK 与 `/catalog/:kind` 的取值、启动时「没有 active 线路就拒绝」——kind 改由包定义，启动检查改由包给出，旅游的错误码与文案不变（R2）。[02](../02-conversations-workbench/spec.md) R22 与不变量 43「`/api/orders/:id` 的键集合恰为白名单」——通用单另有一份白名单，旧版旅游单不变（R12）。[04](../04-industry-packs/spec.md) R16 假包的能力范围（升级为证明包，R14）；「`PackRuntime`」一节「画像字段仍是现有 8 个」（加 `attrs`，R4）。[07](../07-knowledge-aftersales/spec.md)「知识库只收线路」与 `kb_chunks.source` 的 DDL（source 存 kind，R9）。[ADR-004](../../adr/adr-004-pack-field-rendering.md) 决策 4「服务端用 `RouteSchema` / `HotelSchema` 校验写入」——改为用包的 schema，旅游仍是这两个（R2）。[设计系统](../../features/console-ux/design-system.md)「money 只收整数（元）」——`decimals: 2` 的 money 字段收两位小数；「金额写『42,800 元』、全站不出现『¥』」不变（R7）。被取代条款的行号在开工核对时补上，随 `Status: ready` 一起写进被改 spec 的顶部。
@@ -153,12 +154,12 @@ export interface PackRuntime {
   catalog: Readonly<Record<string, CatalogKindSpec>>;
   catalogStartupCheck?(snapshot: CatalogSnapshot): string | null; // 拒绝原因；旅游另走 no_active_routes
   money?: MoneyParseOptions; // R6
-  /** R3：确定性单价（整数分），必须有自测；没有这个钩子的包不能建通用单 */
+  /** R3：确定性单价（整数分），必须有自测；没有这个钩子的包不能建通用单。返回 reject 时这一行不定价，createLineOrder 整单拒绝并带回每行的原因 */
   priceLine?(
     item: Readonly<Record<string, unknown>>,
     qty: number,
     ctx: { kind: string; session: Session },
-  ): { unitPriceFen: number; unit: string; attrs?: Record<string, string> };
+  ): { unitPriceFen: number; unit: string; attrs?: Record<string, string> } | { reject: string; detail?: Record<string, unknown> }; // 如 { reject: 'below_moq', detail: { moq: 100 } }
   maxQty?: number; // 缺省 100000
   sessionState?: { schema: z.ZodType<Record<string, unknown>>; resetKeys: readonly string[] };
   profileFields?: readonly { key: string; label: string }[];
@@ -218,7 +219,12 @@ export interface OrderDisplay {
 export function isLineOrder(o: AnyOrder): o is LineOrder;
 export function orderTotalFen(o: AnyOrder): number;
 export function orderDisplay(o: LineOrder): OrderDisplay; // 只收通用单
-export function createLineOrder(session: Session, picks: readonly LinePick[]): Promise<LineOrder>;
+export function createLineOrder(
+  session: Session,
+  picks: readonly LinePick[],
+): Promise<
+  { order: LineOrder; reused: boolean } | { rejected: { kind: string; code: string; reason: string; detail?: Record<string, unknown> }[] } // 有任一行被 priceLine 拒绝
+>;
 
 /** /api/orders/:id 对通用单的白名单（R12） */
 export interface PublicLineOrder {
@@ -400,9 +406,9 @@ export interface PublicLineOrder {
 
 ## 后续（下一份 spec）
 
-- **第二个真实行业包：工业品询价。** 产品库导入、阶梯价与起订量、替代型号、非标件转人工，连同 ADR-003 的公开包白名单与主参考「场景模板」一条（第二个公开参考包）的改动。
-- **报价人工审批与报价单页。** AI 出报价草稿，顾问在工作台批准后才发；报价单做成一个页面链接，以适应微信客服「客户发一条消息后 48 小时内最多回 5 条」的限制。
-- **外部业务系统连接器。** 第一家是 Odoo；同时修订 AGENTS.md 里密钥存放的硬规则，并为按租户配置的出站地址加防护（SSRF）。
-- **客户发来的图片与文件。** 下载、解析、大小限制（图片 2MB）、费用计量。
+- **[09 · 报价审批、报价单页与站内链接](../09-quote-approval/spec.md)。** 核心能力，用本 spec 的证明包验证。
+- **[10 · 第二个真实行业包：工业品询价](../10-industrial-rfq-pack/spec.md)。** 连同演示租户，以及 ADR-003 与主参考「场景模板」一条（第二个公开参考包）的修订。
+- **11 · 外部业务系统连接器。** 第一家是 Odoo；同时修订 AGENTS.md 里密钥存放的硬规则，并为按租户配置的出站地址加防护（SSRF）。
+- **12 · 客户发来的图片与文件。** 下载、解析、大小限制（图片 2MB）、费用计量。
 - **沙箱多模板与按包出种子。**
 - **渠道接入。** 企业微信代开发应用的授权接入（渠道层，公开）。
