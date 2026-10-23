@@ -718,3 +718,7 @@ aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.jso
 - 发版：release 分支 #286 合入 `main`（`4e270eb`），annotated tag `demo-v8` 已推。07 全部 25 步完成，spec `implemented`。
 - 线上仍是同一份代码的 `demo-v8-rc2`（rc2 之后只有文档 #282–#285）；要不要把线上换成 `demo-v8` 等 owner 说，换前照惯例另存当天备份再手动备份。
 - 还开着、不挡收尾的：Open 4（走查记下的体验小问题）、5（SOP 页自测偶发）、7（出处补错位置），以后另起一步或并进下一份 spec。本地 rc tag `demo-v8-rc1`、`demo-v8-rc2` 照惯例保留、不推。
+
+### 交接（2026-10-23，线上换成 `demo-v8`）
+
+- owner 说换后：当天备份另存为 `2026-10-23-pre-v8`，再手动 `backup.sh`（sop_versions 7、catalog_items 43），已复制到异地；`TZ=UTC bash deploy.sh demo-v8` 一次成功。宿主与沙箱 `revision demo-v8`；`sopVersion 7`，`promptHash` `cf3b163c9f69`、`toolsHash` `59e071568f5d`、`prefixHash` `6630127f79d7` 与 rc2 发布 v7 之后相同，同代码没有新的 `sop.rerender`；四个闸变量在容器里；两边 0 条 error，入口照常；网页试聊一句一回。07 至此全部结束。
