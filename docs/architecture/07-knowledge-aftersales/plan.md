@@ -175,7 +175,7 @@
 - [x] 22. 清理（协调者）——见「实施记录」第 22 步
   - 做：本机残留的容器、worktree、分支、临时目录；`.env.example` 与部署说明核对四个闸变量。
   - 依赖：21。
-- [ ] 23. 更新 Status（协调者，owner 确认）
+- [x] 23. 更新 Status（协调者，owner 确认）——owner 2026-10-23 确认
   - 做：owner 确认后翻 `implemented`。
   - 依赖：22。
 - [ ] 24. 发版到 `main`（协调者，owner 当次授权）
@@ -707,3 +707,8 @@ aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.jso
 ### 交接（2026-10-23，第 22 步完成）
 
 - 清理完成，`.env.example`、README 与 `extensions.sql` 注释已对齐。下一步第 23 步：owner 确认后把 spec 翻 `implemented`（核对第 0.1 步加的反向引用）；然后第 24 步发版 `demo-v8` 到 `main`（owner 当次授权）。
+
+### 交接（2026-10-23，第 23 步完成）
+
+- owner 确认收尾，spec `Status: implemented`（第十条 `Revisions:`）；第 0.1 步加的反向引用核过：00、01、02、04、06 顶部有 `Superseded in part by:`，01、02、04、05 顶部有 `Amended by:`；master-reference 阶段 7 补一行 implemented。
+- 下一步第 24 步：release 分支进 `main`、打 `demo-v8`。线上现在是同一份代码的 `demo-v8-rc2`，要不要把线上换成 `demo-v8` 等 owner 说。
