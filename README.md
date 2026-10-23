@@ -242,7 +242,7 @@ glm-5.3 系列是强制思考模型，发 disabled 会 400，改发 enabled 并�
 
 （下表的「回归」一栏同样是当时的回归集：23 用例 / 54 断言。）
 
-架构对模型无绑定：`LLM_PROVIDER=zhipu|deepseek` 一行切换**对话**供应商（各读自己的 `ZHIPU_*` / `DEEPSEEK_*` 变量），或不设 `LLM_PROVIDER` 直接用 `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` 指向任意 OpenAI 兼容端点。两点要知道：语义召回的 embedding 默认仍走智谱（DeepSeek 没有 embeddings 接口），切过去后要保留 `ZHIPU_API_KEY` 或配 `EMBED_BASE_URL`/`EMBED_API_KEY`，否则 `search_routes` 退回关键词匹配；`LLM_MODEL_CHEAP` 填的 `glm-` 模型在 deepseek 下会被忽略。实测对比（同一销售场景，含工具调用）：
+架构对模型无绑定：`LLM_PROVIDER=zhipu|deepseek` 一行切换**对话**供应商（各读自己的 `ZHIPU_*` / `DEEPSEEK_*` 变量），或不设 `LLM_PROVIDER` 直接用 `LLM_BASE_URL`/`LLM_API_KEY`/`LLM_MODEL` 指向任意 OpenAI 兼容端点。两点要知道：语义召回的 embedding 默认走智谱（DeepSeek 没有 embeddings 接口），切过去后要保留 `ZHIPU_API_KEY` 或配 `EMBED_API_KEY`，否则 `search_routes` 退回关键词匹配；客户原文会作为检索查询发给嵌入服务，所以嵌入只发往代码里写死的境内端点（`src/core/llm/endpoints.ts`，本期只有智谱 `open.bigmodel.cn`，必须 https），没有环境变量能放宽：`EMBED_BASE_URL`（没配时旧写法跟着 `LLM_BASE_URL`）指向清单外的主机，DB 模式拒绝启动，其他模式不发请求、退回关键词匹配；非 prod 另允许本机回环（`127.0.0.1`、`localhost`，给本机假服务）。`LLM_MODEL_CHEAP` 填的 `glm-` 模型在 deepseek 下会被忽略。实测对比（同一销售场景，含工具调用）：
 
 | 模型                     | P50 / P90                 | 说明                                                                            |
 | ------------------------ | ------------------------- | ------------------------------------------------------------------------------- |
@@ -382,6 +382,9 @@ CONFIG_SOURCE=file PARITY_CLOCK_MS=1790913600000 pnpm exec tsx --import ./src/st
 2. 服务器上创建 `/opt/wecom-sales-agent/.env`（参考 `.env.example`）：至少填 `LLM_API_KEY`、`ADMIN_PASS`、`PUBLIC_BASE_URL`（发给微信客户的支付链接靠它拼完整 URL），并**显式写明 `DEPLOY_PROFILE=demo` 或 `DEPLOY_PROFILE=prod`**（不带引号）。deploy.sh 在同步之前检查它，缺 `.env` 或没写明 profile 会直接中止，不会打掉在跑的旧容器。
 3. 同一目录下还有 `.env.db`、`.env.migrate`（数据库容器与迁移各自的凭据，写法见 [deploy/compose.yml](deploy/compose.yml) 开头），跑平台命令行时再加 `.env.platform`。应用的 `.env` 里不能有 owner、platform 或超级用户的口令，查到就拒绝启动。这几个文件都按 `docker run --env-file` 的规则读：值是 `=` 后面的整行，引号、`$`、`#` 都原样进容器，所以不要加引号和行尾注释。deploy.sh 也会查 `.env.db` 里四个口令都有、没有 `POSTGRES_DB`。
 4. HTTPS 用 Caddy 反代到宿主机 3210 端口（Compose 仅绑定本机回环地址），SSE 透传；云防火墙放行 80/443。站点地址仅在服务器配置，不写入仓库。
+5. 应用库里要有 **vector 扩展**（07 起，迁移 0016 的 `kb_vectors` 用 pgvector 的 `halfvec`）。它不是 trusted 扩展，迁移用的 `agent_owner` 不是超级用户，建不了：新库首次初始化时 `deploy/db-init/roles.sh` 建完库会顺带调 `extensions.sh` 建好；**现有的线上库在第一次部署含迁移 0016 的版本之前，由 owner 手工执行一次**：`docker compose -f deploy/compose.yml exec db /db-init/extensions.sh`（可重复执行，用超级用户连应用库执行 `deploy/db-init/extensions.sql`）。没做这一步，migrate 服务报「先由超级用户在应用库里建 vector 扩展」并整批回退，部署停在切换之前，旧容器照常运行；`deploy.sh` 此时已把 `deploy/` 同步到服务器，补做上面那条命令后重新部署即可。也可以在第一次部署之前直接执行同一句 SQL（这时 `extensions.sh` 还不在服务器上）：`docker compose -f deploy/compose.yml exec -T db psql -X -v ON_ERROR_STOP=1 -U postgres -d agent -c 'CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;'`（库名按 `.env.db` 的 `AGENT_DB`，缺省 `agent`）。
+
+DB 模式的 prod 与 demo 宿主在应用环境中设置 `SOP_GATE=required`；开发与 CI 默认 `off`，沙箱忽略此开关。可调参数为 `SOP_GATE_BUDGET_CNY=2`（元）、`SOP_GATE_DAILY_RUNS=3`（每租户每天）、`SOP_GATE_TIMEOUT_MS=1800000`（30 分钟）。启用后必须配置模型密钥且不能使用 `LLM_MOCK=1`，否则以 `gate_unavailable` 拒绝启动。回归在后台单独运行，发布只认对应草稿和哈希的通过记录；所有者可填写原因强发，回滚、首次导入与启动重渲染跳过闸。预算达到上限后不发新请求，最后一次请求的费用如实记录，最多超出这一笔费用；中途取消、超时或子进程出错时，报告里已经出来的那部分花费照样记进 `gate` 用量（正在跑的那个目标还没出报告，拿不到）。报告保留在 `VAR_DIR/gate/<runId>/`，每次结束清理临时状态和配置副本；运维可按保留期删除旧报告，数据库结果不受影响。
 
 之后每次发布：给要上线的提交打 tag，再按 tag 部署。
 
@@ -407,7 +410,7 @@ bash deploy.sh demo-v1.2   # SERVER 由已忽略的 .deploy.env 或环境变量�
 演练回滚可以在同一台服务器上起一个旁路实例：`NAME`、`REMOTE_DIR`、`HOST_PORT` 三个环境变量同时换成和线上不同的值（只换一两个会被拒绝，免得打到线上），它的 `.env` 不能配企微凭据，否则会和线上实例抢同一个客服账号的消息。
 
 - **密钥**：`LLM_API_KEY`、`WECOM_*` 全在服务器 `.env`，不在仓库、脚本不碰。
-- **数据**：DB 模式下真实会话、消息、订单在数据库卷；`var/` 保留种子、访客、企微 cursor、spill、用量与客服二维码。文件存储下会话与订单也在 `var/`；rsync 既不同步也不删除它。
+- **数据**：DB 模式下真实会话、消息、订单在数据库卷；`var/` 保留种子、访客、企微 cursor、spill、用量与客服二维码。文件存储下会话与订单也在 `var/`；rsync 既不同步也不删除它。DB 模式下线路的检索向量在库里（`kb_chunks`、`kb_vectors`），不再读写 `var/route-vectors.json`（文件模式照旧）；回滚到 07 之前的镜像时，旧代码照旧用那个文件，回滚后重建一次索引。
 - **鉴权**：demo 作战室匿名只读，旧写接口要 `ADMIN_PASS`；成员工作台使用独立账号与角色权限（见上节）。改了服务器 `.env` 要 `docker compose -f deploy/compose.yml up -d app`（或重新部署）重建容器才生效：env 只在创建容器时读一次，`docker restart` 读不到新值。
 - **后台**：`/console/` 要求 `CONFIG_SOURCE=db`，并配置 `DATABASE_URL`、`DEFAULT_TENANT_SLUG`。平台凭据仅给 `platform` 服务；初始化命令见下，账号口令从 stdin 输入，勿写入命令历史。
 - **备份**：宿主机 cron 每晚跑部署时装好的那一份 [deploy/backup.sh](deploy/backup.sh)：`15 3 * * * bash /usr/local/lib/wecom-sales-agent/backup.sh /opt/wecom-sales-agent >>/var/log/wecom-backup.log 2>&1`。导出数据库并校验、打包 `var/`，用 age 公钥加密后按日期存 7 天，配了异地目标再复制一份存 30 天。配置写在 `.env.backup`，恢复步骤写在脚本开头。装在部署目录之外，是为了回到旧版本时 cron 照样能跑。

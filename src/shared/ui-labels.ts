@@ -2,7 +2,7 @@
 // 话术检查项名、角色、审计动作（中文、分组、图标名）、错误文案。前后端共用，不依赖 React。
 // 行业相关的词（实体名、字段名、阶段名、客户的叫法）不在这里，都来自行业包（src/shared/pack.ts）。
 // 这里的字符串会显示在后台上，也是 UI 优先片的用字来源（scripts/fonts/ui-text.ts）：改了文案要重跑 scripts/fonts/build.ts。
-import type { ApiError, Role, ViolationCode } from './console-api.js';
+import type { ApiError, Role, TraceOutcome, ViolationCode } from './console-api.js';
 import { QUOTA_EXHAUSTED_TEXT, WINDOW_CLOSED_TEXT } from './conversation-types.js';
 import type { IndustryPack } from './pack.js';
 
@@ -26,7 +26,7 @@ export const roleLabel = (role: unknown): string =>
 /** 06 R21 的第 8 项：话术与包登记的对客固定文字不冲突（违规码 `consistency`） */
 export const CONSISTENCY_CHECK_LABEL = '话术与固定文字不冲突';
 
-/** 发布前检查的 8 项，名字固定，与 ViolationCode 一一对应，按这个顺序列（设计系统 §5.17）；「字数在额度内」仍是最后一项 */
+/** 发布前检查的 10 项，名字固定，与 ViolationCode 一一对应，按这个顺序列（设计系统 §5.17）；「字数在额度内」仍是最后一项 */
 export const SOP_CHECK_LABEL: Readonly<Record<ViolationCode, string>> = {
   structure: '结构完整',
   locked_changed: '固定规则节没改',
@@ -35,6 +35,8 @@ export const SOP_CHECK_LABEL: Readonly<Record<ViolationCode, string>> = {
   unknown_tool: '工具名都存在',
   unknown_field: '字段名都存在',
   consistency: CONSISTENCY_CHECK_LABEL,
+  policy_invalid: '退改条款有效',
+  policy_mismatch: '话术与退改条款一致',
   over_budget: '字数在额度内',
 };
 
@@ -78,6 +80,7 @@ export interface AuditActionDef {
  * 顺序照原来审计页的动作下拉（第 14 步换成类别筛选之前，下拉按这里的顺序列）。图标不取设计系统 §7 的实体图标集合里的名字
  */
 export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
+  'sop.policy_draft': { label: '修改退改条款草稿', group: 'sop', icon: 'file-pen' },
   'sop.publish': { label: '发布话术', group: 'sop', icon: 'message-square-text' },
   'sop.rollback': { label: '回滚话术', group: 'sop', icon: 'undo-2' },
   'sop.discard': { label: '丢弃话术草稿', group: 'sop', icon: 'trash-2' },
@@ -107,7 +110,13 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'conversation.release': { label: '交还AI', group: 'conversation', icon: 'bot' },
   'order.confirm': { label: '确认价格', group: 'conversation', icon: 'badge-check' },
   'order.mark_paid': { label: '确认收款', group: 'conversation', icon: 'banknote' },
+  'order.refund_request': { label: '提交退款申请', group: 'conversation', icon: 'banknote' },
+  'order.refund_approve': { label: '批准退款', group: 'conversation', icon: 'badge-check' },
+  'order.refund_reject': { label: '驳回退款', group: 'conversation', icon: 'circle-x' },
+  'order.refund_settle': { label: '确认已退款', group: 'conversation', icon: 'banknote' },
   'order.cancel': { label: '取消订单', group: 'conversation', icon: 'circle-x' },
+  // 07 R24：AI 记录里「存为回归用例」每下载一次草稿记一行，target 是会话行的 ref，diff 带短码与轮次 id
+  'trace.export': { label: '下载回归用例草稿', group: 'conversation', icon: 'file-down' },
   // 快捷回复（J 页右栏插进输入框的模板）随会话工作台归在「会话与订单」一类。第 13 步先写「常用回复」（那时「快捷」两字
   // 还不在 UI 优先片里）；J 页右栏卡片标题（第 20.2 步）已经用上「快捷回复」，字已经在优先片里了，这里改回 spec 原词
   'quick_reply.create': { label: '新建快捷回复', group: 'conversation', icon: 'message-square-plus' },
@@ -168,7 +177,68 @@ export const RERENDER_CAUSE_LABEL: Readonly<Record<string, string>> = {
   locked_sections: '固定规则节',
   section_table: '话术分节',
   tools: '工具定义',
+  policy: '退改条款',
 };
+
+// ---------------- AI 记录（07 R24） ----------------
+
+/** 一轮的结果的中文（AI 记录列表与详情）；键与 TRACE_OUTCOMES 一一对应，少写一个编译不过 */
+export const TURN_OUTCOME_LABEL: Readonly<Record<TraceOutcome, string>> = {
+  replied: 'AI回复',
+  silent: '没有回复',
+  handoff: '转人工',
+  deterministic: '固定回复',
+  reset: '重置会话',
+  budget: '额度用完',
+  error: '出错',
+};
+
+/** 结果的中文；trace 详情里的 outcome 是字符串，库里认不得的（以后新增的）原样写不出来，写「其他」。只认自有属性 */
+export const outcomeLabel = (outcome: string): string =>
+  Object.hasOwn(TURN_OUTCOME_LABEL, outcome) ? TURN_OUTCOME_LABEL[outcome as TraceOutcome] : '其他';
+
+/**
+ * 主回复流水线里各步的中文（guard_verdicts 的步骤 id，04 开工表加 06、07 新增的步骤）：AI 记录的「触发的护栏」列、筛选和详情都写这个名字，
+ * 步骤 id 只进技术详情（不变量 7）。表里没有的 id（以后新增的步骤）写「其他护栏」
+ */
+export const GUARD_STEP_LABEL: Readonly<Record<string, string>> = {
+  pre_clean: '清理模型输出',
+  'takeover_check:pre': '接手检查（前）',
+  stage_advance: '阶段推进',
+  other_order: '替别人订',
+  order_net: '成单安全网',
+  link_whitelist: '站外链接',
+  markdown: '去格式符号',
+  'repair_links:mark': '链接补全',
+  dejargon: '去术语',
+  'custom_promise-a': '改行程承诺',
+  'repair_links:fill': '链接补全（填空）',
+  handoff_claims: '转接说法',
+  injection: '提示词攻击',
+  encyclopedia: '百科式回答',
+  unbacked_claims: '价格规则与服务承诺',
+  claim_words: '越权说法',
+  policy_claims: '政策陈述',
+  price: '价格核对',
+  stranded: '残句兜底',
+  adults: '人数口径',
+  dangling: '半截句',
+  advisor_prefix: '顾问前缀',
+  identity: '身份说明',
+  'custom_promise-b': '改行程承诺（补说明）',
+  post_handoff: '转人工后的承诺',
+  proposal_suffix: '方案书链接',
+  closing: '收尾结束语',
+  shape_check: '篇幅检查',
+  'takeover_check:post': '接手检查（后）',
+  turn_failure: '交互失败',
+  final_clean: '收尾清理',
+  system_note: '待跟进备注',
+  note_reply: '会话记录',
+};
+
+/** 护栏步骤的中文名；表里没有的步骤 id 写「其他护栏」。只认自有属性，toString 这类原型上的名字查不到 */
+export const guardLabel = (id: string): string => (Object.hasOwn(GUARD_STEP_LABEL, id) ? GUARD_STEP_LABEL[id]! : '其他护栏');
 
 // ---------------- 错误文案 ----------------
 
@@ -211,6 +281,12 @@ const issueCount = (b: ApiError): number => count(b.issues?.length) + (b.rows ??
  * detail 与原码只进「技术详情」。spec 表之外多一条 invalid_credentials（登录页的「文案取 ERROR_COPY」，spec 顶部 Revisions）
  */
 export const ERROR_COPY: Readonly<Record<string, ErrorEntry>> = {
+  gate_required: { title: '发布前要先跑一次回归', next: '保存草稿后运行回归，通过后再发布', place: 'banner', tone: 'caution' },
+  gate_failed: { title: '回归没有通过', next: '查看拦发布的目标，修改后重新运行', place: 'banner', tone: 'danger' },
+  gate_active: { title: '已有一次回归在排队或运行', next: '等待这次回归结束', place: 'banner', tone: 'neutral' },
+  gate_quota: { title: '今天的回归次数已用完', next: '明天再试，或请所有者填写原因强发', place: 'banner', tone: 'caution' },
+  gate_skipped: { title: '沙箱不需要运行发布回归', next: '静态检查通过后可以发布', place: 'banner', tone: 'neutral' },
+  override_forbidden: { title: '只有所有者可以强发', next: '请所有者填写原因后发布', place: 'page', tone: 'caution' },
   unauthorized: { title: '登录已过期', next: '重新登录后接着刚才的操作', place: 'relogin', tone: 'neutral', action: 'relogin' },
   forbidden: { title: '你的角色无法执行这项操作', next: '需要所有者或管理员', place: 'page', tone: 'caution' },
   csrf: { title: '页面已过期', next: '刷新后重试', place: 'page', tone: 'danger', action: 'refresh' },

@@ -19,8 +19,12 @@ import {
 import type { TravelParts } from './runtime.js';
 import { shanhaiBrand } from './brand-fixture.js';
 import { type ContactMode, paymentPendingReply } from './contact-words.js';
+import { refundQuoteText, refundChooseText, refundTexts, refundNoticeText } from './refund-words.js';
+import { quoteRefund } from '../../core/pack-api.js';
 import { closingLine } from './closing-words.js';
 import { claimWordsTest } from './claim-words.js';
+import { policyReplacementTexts } from './policy-claims.js';
+import { defaultTravelPolicy, segments } from './policy.js';
 import { followupTemplates } from './followup.js';
 import { identityAnswer, offTopicReply, welcomeBackText, welcomeText, webWelcome } from './legacy.js';
 import { createdOrderText, existingOrderText, paidOrderText, STRANDED_LEAD } from './order-words.js';
@@ -121,10 +125,15 @@ const ORIGINS: readonly (readonly [string, FixedReplyOrigin])[] = Object.freeze(
   ['order.other-order-ask', reply('other_order')],
   ['order.net.', reply('order_net')],
   ['order.resend.', outside('客户要重发链接时模型前的确定性回复（core/engine 的 preModel 路径），不经出口护栏')],
+  ['refund.', outside('售后确定性回复与后台退款通知，在模型回复管线之外')],
   ['payment.paid', outside('到账通知由支付回调直发（core/engine 的 paidText 路径），在回复管线之外')],
   ['payment.pending-reply', reply('claim_words')],
   ['payment.chitchat.', outside('付款后寒暄由模型前的确定性回复直发（preModel 路径），不经出口护栏')],
   ['closing.line', reply('closing')],
+  // 07 R22：保险、费用两句口径由 policy_claims 换上去（第 10 步先登记在 claim_words 名下），要排在 replace.claim. 前缀之前
+  ['replace.claim.insurance', reply('policy_claims')],
+  ['replace.claim.fees', reply('policy_claims')],
+  ['replace.policy.', reply('policy_claims')],
   ['replace.claim.', reply('claim_words')],
   ['replace.guard.', reply('unbacked_claims')],
   ['followup.', { pipeline: 'followup', step: null }],
@@ -172,6 +181,69 @@ export function createTravelFixedReplies(world: World): readonly FixedReply[] {
     const byId = new Map(orders.map((o) => [o.id, o]));
     return world({ getOrder: (id) => byId.get(id), paymentMode: () => pay });
   };
+
+  const refundOrder = fixtureOrder({ id: 'ord_a1b2c3', status: 'paid', paidAt: 0 });
+  const quote = quoteRefund(refundOrder, defaultTravelPolicy.refund, 'fixture', '2099-01-14');
+  if ('ineligible' in quote) throw new Error('退款固定文字样例不能报价');
+  const refundCtx = (m: ModeCtx) => ({ policy: defaultTravelPolicy, brand: m.brand, channel: m.channel });
+  add(
+    reg(
+      'refund.quote',
+      'refund-words.ts',
+      'rich',
+      each((m) => refundQuoteText(refundOrder, quote, refundCtx(m))),
+    ),
+    reg(
+      'refund.choose',
+      'refund-words.ts',
+      'rich',
+      each(() => refundChooseText([refundOrder, fixtureOrder({ id: 'ord_d4e5f6' })])),
+    ),
+  );
+  for (const key of ['done', 'submitted', 'duplicate', 'busy', 'delayed'] as const) {
+    add(
+      reg(
+        `refund.${key}`,
+        'refund-words.ts',
+        'plain',
+        each((m) => refundTexts(quote, refundCtx(m))[key]),
+      ),
+    );
+  }
+  add(
+    reg(
+      'refund.submitted-auto',
+      'refund-words.ts',
+      'plain',
+      each((m) => refundTexts({ ...quote, amount: 10000 }, refundCtx(m)).submitted),
+    ),
+  );
+  for (const settlement of ['mock', 'advisor'] as const) {
+    const order: Order = {
+      ...refundOrder,
+      refund: {
+        id: 'rf_000000000001',
+        requestedAt: 0,
+        daysBefore: quote.daysBefore,
+        tierId: quote.tier.id,
+        percent: quote.tier.percent,
+        amount: quote.amount,
+        policyHash: quote.policyHash,
+        approval: 'approved',
+        settlement,
+      },
+    };
+    for (const kind of ['settled', 'rejected'] as const) {
+      add(
+        reg(
+          `refund.notice.${settlement}.${kind}`,
+          'refund-words.ts',
+          'plain',
+          each((m) => refundNoticeText(order, kind, refundCtx(m))),
+        ),
+      );
+    }
+  }
 
   // ---------------- 身份、欢迎、快捷回复（legacy.ts / templates.ts） ----------------
   add(
@@ -584,10 +656,25 @@ export function createTravelFixedReplies(world: World): readonly FixedReply[] {
   add(
     reg('replace.claim.policy', 'claim-words.ts', 'plain', () => same(cw.POLICY_REPLY)),
     reg('replace.claim.visa', 'claim-words.ts', 'plain', () => same(cw.VISA_REPLY)),
+    // 07 R4、R22：保险、费用两句口径。文字在 claim-words.ts（条款出处与护栏共用），由 policy_claims 换进回复
+    reg('replace.claim.insurance', 'claim-words.ts', 'plain', () => same(cw.INSURANCE_REPLY)),
+    reg('replace.claim.fees', 'claim-words.ts', 'plain', () => same(cw.FEES_REPLY)),
     reg('replace.claim.invoice', 'claim-words.ts', 'plain', () => same(cw.INVOICE_REPLY)),
     reg('replace.claim.hotel', 'claim-words.ts', 'plain', () => same(cw.HOTEL_REPLY)),
     reg('replace.claim.media', 'claim-words.ts', 'plain', () => same(cw.MEDIA_REPLY)),
     reg('replace.claim.old-order', 'claim-words.ts', 'plain', () => same(cw.OLD_ORDER_REPLY)),
+  );
+  // 07 R22：政策陈述护栏换上去的话，取默认 policy 渲染。条款原句（每一档加出处）与列全部档位由条款推出；
+  // 上浮、团队优惠、预订月数三句直接引用 policy.ts 的生成段，文字只有一份
+  add(
+    ...policyReplacementTexts(defaultTravelPolicy).map(({ id, text }) =>
+      reg(`replace.policy.${id}`, 'policy-claims.ts', 'plain', () => same(`${text}。`)),
+    ),
+    reg('replace.policy.peak', 'policy.ts', 'plain', () =>
+      same(`${segments['note:peak'](defaultTravelPolicy).replace('{month}', '10')}。`),
+    ),
+    reg('replace.policy.group', 'policy.ts', 'plain', () => same(`${segments['note:group'](defaultTravelPolicy)}。`)),
+    reg('replace.policy.far-future', 'policy.ts', 'plain', () => same(`${segments['note:far-future'](defaultTravelPolicy)}。`)),
   );
   // price-rules.ts 的换句住在闭包里，用能触发它的原话让真实护栏吐出来；触发不了就是登记错了，自测会失败
   const viaGuard = (id: string, trigger: string, pay: 'online' | 'advisor' = 'online'): FixedReply =>

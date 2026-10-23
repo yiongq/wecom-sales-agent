@@ -4,7 +4,7 @@ import type { GuardStep } from '../pack-api.js';
 import { loadGuardPipeline } from './execute.js';
 import { GuardStepValidationError, validateGuardSteps } from './validate.js';
 
-// plan「实施记录 · 第 1 步」主回复 28 行，加 06 第 1 步的四个放行步骤共 32 行，标识与顺序逐行保留。
+// plan「实施记录 · 第 1 步」主回复 28 行，加 06 第 1 步的四个放行步骤共 32 行，再加 07 R22 的 policy_claims 共 33 行，标识与顺序逐行保留。
 // reads/writes 仅登记跨步骤的 flags；visible → ctx.text，calls → toolSources，
 // 会话与订单不算 flags；raw、客户原话、turnGen 等为捕获的输入。
 // customHandoff → customPromise，beforeGuards → preDropSnapshot。
@@ -25,6 +25,7 @@ const replyTable: GuardStep[] = [
   { id: 'encyclopedia', reads: ['customPromise'] },
   { id: 'unbacked_claims', reads: ['customPromise'], writes: ['preDropSnapshot', 'saidAll'] },
   { id: 'claim_words' },
+  { id: 'policy_claims', reads: ['customPromise'] },
   { id: 'price', reads: ['customPromise', 'guardHit'], writes: ['guardHit'] },
   { id: 'stranded', reads: ['preDropSnapshot', 'customPromise'] },
   { id: 'adults', reads: ['saidAll'] },
@@ -81,7 +82,7 @@ function rejects(steps: GuardStep[], reader: string, conflict: string, reason: s
 }
 const step = (id: string, declarations: Partial<GuardStep> = {}): GuardStep => ({ id, run: () => ({ action: 'pass' }), ...declarations });
 
-assert.equal(replyTable.length, 32);
+assert.equal(replyTable.length, 33);
 validateGuardSteps(replyTable);
 accepts(replyTable);
 accepts([]);
@@ -134,4 +135,19 @@ rejects(
   'flags.preDropSnapshot',
 );
 
-console.log(`guard validation selftest: ${count} 项通过（含开工主回复 32 行夹具）`);
+// 07 R22（不变量 19）：policy_claims 在 claim_words 之后、price 之前。price 的 after 指向它，两者对调、或它的 after 指向后面的步骤，装载就失败
+{
+  const swapped = [...replyTable];
+  const a = swapped.findIndex((row) => row.id === 'policy_claims');
+  const b = swapped.findIndex((row) => row.id === 'price');
+  [swapped[a], swapped[b]] = [swapped[b]!, swapped[a]!];
+  rejects(swapped, 'price', 'policy_claims', 'after');
+}
+rejects(
+  replyTable.map((row) => (row.id === 'policy_claims' ? { ...row, after: ['stranded'] } : row)),
+  'policy_claims',
+  'stranded',
+  'after',
+);
+
+console.log(`guard validation selftest: ${count} 项通过（含主回复 33 行夹具）`);

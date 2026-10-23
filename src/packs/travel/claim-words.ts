@@ -40,7 +40,10 @@ export interface ClaimWordsDeps {
 // ---------------- 固定话术 ----------------
 
 const POLICY_REPLY = '这块政策会变，由顾问按您的出行时间确认。';
-const VISA_REPLY = '签证怎么办、要多久，由顾问跟您确认。';
+export const VISA_REPLY = '签证怎么办、要多久，由顾问跟您确认。';
+// 07 R4 第 2 条：保险与费用含不含的口径句。照线路的费用说明说，说明里没有的由顾问确认；条款出处（R14）与护栏（R22）共用这两句
+export const INSURANCE_REPLY = '保险含不含、保哪些，要看这条线的费用说明；说明里没写的，由顾问跟您确认。';
+export const FEES_REPLY = '费用里含不含哪些项目，要看这条线的费用说明；说明里没写的，由顾问跟您确认。';
 /** 与 price-rules 的专票句同一句 */
 const INVOICE_REPLY = '发票（含专票）怎么开，由顾问跟您确认。';
 const HOTEL_REPLY = '酒店我可以推荐，要订请顾问确认房态。';
@@ -72,9 +75,9 @@ const HYPOTHETICAL = /如果|要是|假如|若是|倘若|是否|能不能|可不
 const ALREADY_DEFERS = /由顾问|顾问[^，。！？!?\n]{0,10}(?:确认|核实|为准|说明|答复)|以[^，。！？!?\n]{0,12}为准|政策会变/;
 const NEGATE_BEFORE = /(?:没法|无法|不能|不用|不必|不需要|不会|不|没|未|别)[^，。！？!?\n]{0,6}$/;
 
-const hasPaidOrder = (ctx: ClaimWordsContext): boolean => ctx.orders.some((o) => o.status === 'paid');
+const hasPaidOrder = (ctx: ClaimWordsContext): boolean => ctx.orders.some((o) => ['paid', 'refund_pending', 'refunded'].includes(o.status));
 const hasConfirmedOrder = (ctx: ClaimWordsContext): boolean =>
-  ctx.orders.some((o) => (o.status === 'pending_payment' || o.status === 'paid') && !!o.confirmedAt);
+  ctx.orders.some((o) => (o.status === 'pending_payment' || ['paid', 'refund_pending', 'refunded'].includes(o.status)) && !!o.confirmedAt);
 /** 会话里有别的线路的待付款单：最近一次报价（没有就取最新一张订单）指的不是它 */
 function hasOtherPending(ctx: ClaimWordsContext): boolean {
   const live = ctx.orders.filter((o) => o.status === 'pending_payment');
@@ -420,6 +423,8 @@ export function claimWordsTest() {
     rules: buildRules(),
     POLICY_REPLY,
     VISA_REPLY,
+    INSURANCE_REPLY,
+    FEES_REPLY,
     INVOICE_REPLY,
     HOTEL_REPLY,
     MEDIA_REPLY,

@@ -61,6 +61,8 @@ import type {
   AnonSopOverview,
   ContractViolation,
   DraftCheck,
+  GateRunView,
+  GateGoalResult,
   SectionSpecView,
   SopOverview,
   SopSectionText,
@@ -69,6 +71,7 @@ import type {
 import type { IndustryPack, SopSectionDef } from '../../../src/shared/pack.js';
 import { canonicalBody, editableChars } from '../../../src/shared/sop-sections.js';
 import { HttpError } from '../api.js';
+import { GATE_POLL_MS, gateError } from './gate.js';
 import { SopPage } from '../pages/SopPage.js';
 import { SectionDiff } from '../SectionDiff.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
@@ -219,7 +222,7 @@ import {
 import { MergeEditor, REVERT_LABEL } from './MergeParts.js';
 import { ChangesDrawer, PublishDrawer, type PublishDrawerProps, useShownWhileClosing } from './PublishParts.js';
 import { QuotaBar } from './QuotaBar.js';
-import { checkItems } from './SideCards.js';
+import { checkItems, PolicyCard } from './SideCards.js';
 import { cmPhrases, SectionPane, SopEditor } from './SopEditor.js';
 import { SopSkeleton } from './SopSkeleton.js';
 import { sopSearch } from './search.js';
@@ -1238,6 +1241,7 @@ const version = (versionNo: number | null, secs: SopSectionText[], extra: Partia
   sections: secs,
   basedOn: null,
   rev: 0,
+  policyHash: null,
   promptHash: 'a'.repeat(64),
   toolsHash: null,
   prefixHash: null,
@@ -2642,7 +2646,11 @@ function fakeServer(start: SopOverview, defs: readonly SopSectionDef[] = TRAVEL)
       if (srv.publishFails) return json(422, { error: 'contract', detail: '没过', violations: srv.publishFails.contract });
       const no = (srv.state.published.versionNo ?? 0) + 1;
       // basedOn 是被替换下来的线上版本（同 src/config/sop.ts 的 publishSopDraft）
-      const v = version(no, rebased(srv.state.draft!), { basedOn: srv.state.published.id, publishedAt: '2026-09-26T06:31:00Z' });
+      const v = version(no, rebased(srv.state.draft!), {
+        basedOn: srv.state.published.id,
+        publishedAt: '2026-09-26T06:31:00Z',
+        policy: srv.state.draft!.policy,
+      });
       srv.state = { ...srv.state, draft: null };
       return json(200, release(v));
     }
@@ -2977,7 +2985,7 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     [true, 'false', ['草稿刚被别人改过', '服务暂时连不上'], null],
   );
   srv.getFails = false;
-  eq('409 停住时：检查结果还在（还是存上的那份草稿）', text(m.box.querySelector('.sop-col-check .check-list-summary')), '7/8通过');
+  eq('409 停住时：检查结果还在（还是存上的那份草稿）', text(m.box.querySelector('.sop-col-check .check-list-summary')), '9/10通过');
   const gets = calls.filter((c) => c.method === 'GET' && c.path === '/api/console/sop').length;
   await clickEv(banner?.querySelector('.ant-alert-actions button'));
   await waitFor(() => !!m.box.querySelector('.sop-lost'));
@@ -3358,9 +3366,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
     'sop-col-tools',
   ]);
   eq(
-    '检查清单在右栏那一格：没有草稿时不检查，8 项都是「还没跑」，没有通过数',
+    '检查清单在右栏那一格：没有草稿时不检查，10 项都是「还没跑」，没有通过数',
     [all(m.box, '.sop-col-check .check-item-pending').length, m.box.querySelector('.sop-col-check .check-list-summary'), srv.checks()],
-    [8, null, 0],
+    [10, null, 0],
   );
   eq(
     '工具卡片：标题、每行一个芯片（中文名、原名取行业包）、卡底说明',
@@ -3387,9 +3395,9 @@ const editorEditable = (m: PageBox): string | null | undefined =>
   const again = await mountPage('/console/sop?section=tone', owner, MEMBER_SOP, FAST);
   await waitFor(() => !!again.box.querySelector('.sop-col-check .check-list-summary'));
   eq(
-    '打开时已有草稿：自动检查，结果列在右栏的清单里（7/8通过，没过的写几处、哪一节）',
+    '打开时已有草稿：自动检查，结果列在右栏的清单里（9/10通过，没过的写几处、哪一节）',
     [text(again.box.querySelector('.sop-col-check .check-list-summary')), text(again.box.querySelector('.sop-col-check .check-item-fail'))],
-    ['7/8通过', '工具名都存在1处·话术原则'],
+    ['9/10通过', '工具名都存在1处·话术原则'],
   );
   await again.unmount();
   const agent: Viewer = { ...owner, me: { ...(owner as Extract<Viewer, { kind: 'member' }>).me, role: 'agent' } };
@@ -3597,6 +3605,8 @@ respond = null;
       ['unknown_tool', 'fail', ['2处', '话术原则'], 'function'],
       ['unknown_field', 'fail', ['1处', '异议处理'], 'function'],
       ['consistency', 'pass', null, 'undefined'],
+      ['policy_invalid', 'pass', null, 'undefined'],
+      ['policy_mismatch', 'pass', null, 'undefined'],
       ['over_budget', 'fail', ['1处'], 'function'],
     ],
   );
@@ -3619,13 +3629,13 @@ respond = null;
   eq(
     '全过：只有「字数在额度内」写百分比（B 页的 87%）',
     passed.map((i) => [i.state, i.note ?? null]),
-    [...Array.from({ length: 7 }, () => ['pass', null]), ['pass', '87%']],
+    [...Array.from({ length: 9 }, () => ['pass', null]), ['pass', '87%']],
   );
   eq('没有字数：百分比不写', checkItems(SPEC, [], null).at(-1)?.note, undefined);
   eq(
-    '还没跑：8 项都是「还没跑」，没有说明、不能点',
+    '还没跑：10 项都是「还没跑」，没有说明、不能点',
     checkItems(SPEC, null, null, noop).map((i) => [i.state, i.note, i.onClick]),
-    Array.from({ length: 8 }, () => ['pending', undefined, undefined]),
+    Array.from({ length: 10 }, () => ['pending', undefined, undefined]),
   );
   eq('不给 onLocate：没过的项不能点', checkItems(SPEC, located, null).filter((i) => i.onClick).length, 0);
   const nowhere = checkItems(SPEC, locateViolations([vs[1]!], []), null, noop)[0]!;
@@ -3926,9 +3936,9 @@ function recordScroll(): { calls: string[]; restore(): void } {
   const m = await mountPage('/console/sop?section=preamble', travelOwner, BAD_SOP, { ...FAST, debounce: 60_000, now: () => clock });
   await waitFor(() => summaryOf(m) !== '');
   eq(
-    '打开时已有草稿：检查一次，5/8通过，下一行「每次自动保存都会跑 · 上次14:30」',
+    '打开时已有草稿：检查一次，7/10通过，下一行「每次自动保存都会跑 · 上次14:30」',
     [srv.checks(), summaryOf(m), metaOf(m)],
-    [1, '5/8通过', '每次自动保存都会跑·上次14:30'],
+    [1, '7/10通过', '每次自动保存都会跑·上次14:30'],
   );
   eq(
     '没过的项写处数和节（必需说法落在线上版本里含这句的节）；没过的整行是按钮，通过的不是',
@@ -4034,11 +4044,11 @@ function recordScroll(): { calls: string[]; restore(): void } {
     [all(m.box, '.sop-hint-wrap').length, all(m.box, '.sop-bad').map((e) => e.textContent), document.activeElement === cmOf(m)],
     [0, ['缩短天数重新报价'], true],
   );
-  await waitFor(() => summaryOf(m) === '6/8通过');
+  await waitFor(() => summaryOf(m) === '8/10通过');
   eq(
     '存上以后再检查一次：工具名都存在通过了，「上次」跟着更新',
     [srv.checks(), summaryOf(m), itemOf(m, '工具名都存在')?.classList.contains('check-item-pass'), metaOf(m)],
-    [2, '6/8通过', true, '每次自动保存都会跑·上次14:31'],
+    [2, '8/10通过', true, '每次自动保存都会跑·上次14:31'],
   );
   scroll.restore();
   await m.unmount();
@@ -4049,7 +4059,7 @@ function recordScroll(): { calls: string[]; restore(): void } {
   const scroll2 = recordScroll();
   const o = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, FAST);
   await waitFor(() => summaryOf(o) !== '');
-  eq('超了额度：写「超出42字」', [summaryOf(o), noteOf(o, '字数在额度内')], ['4/8通过', '超出42字']);
+  eq('超了额度：写「超出42字」', [summaryOf(o), noteOf(o, '字数在额度内')], ['6/10通过', '超出42字']);
   await clickEv(itemOf(o, '字数在额度内'));
   await settle();
   const quota = o.box.querySelector('.sop-quota');
@@ -4070,21 +4080,21 @@ function recordScroll(): { calls: string[]; restore(): void } {
   const m = await mountPage('/console/sop?section=tone', travelOwner, BAD_SOP, FAST);
   await waitFor(() => metaOf(m).includes('没检查上'));
   eq(
-    '打开时没跑成：8 项还没跑，下一行写 danger 的「没检查上 · 重试」',
+    '打开时没跑成：10 项还没跑，下一行写 danger 的「没检查上 · 重试」',
     [all(checkCard(m), '.check-item-pending').length, metaOf(m), !!checkCard(m).querySelector('.sop-check-failed button')],
-    [8, '每次自动保存都会跑·没检查上·重试', true],
+    [10, '每次自动保存都会跑·没检查上·重试', true],
   );
   srv.checkFails = false;
   await clickEv(checkCard(m).querySelector('.sop-check-failed button'));
   await waitFor(() => summaryOf(m) !== '');
-  eq('点「重试」：再跑一次，跑成了', [srv.checks(), summaryOf(m), metaOf(m)], [2, '5/8通过', '每次自动保存都会跑·上次14:30']);
+  eq('点「重试」：再跑一次，跑成了', [srv.checks(), summaryOf(m), metaOf(m)], [2, '7/10通过', '每次自动保存都会跑·上次14:30']);
   srv.checkFails = true;
   await typeAtEnd(m, '甲');
   await waitFor(() => metaOf(m).includes('没检查上'));
   eq(
     '存上以后没跑成：上一次的结果留着，写「没检查上」',
     [srv.checks(), summaryOf(m), metaOf(m)],
-    [3, '5/8通过', '每次自动保存都会跑·没检查上·重试'],
+    [3, '7/10通过', '每次自动保存都会跑·没检查上·重试'],
   );
 
   srv.checkFails = false;
@@ -4097,13 +4107,13 @@ function recordScroll(): { calls: string[]; restore(): void } {
   await waitFor(() => srv.checks() === 5);
   srv.checkHold = false;
   await act(async () => srv.checkHeld[1]?.resolve());
-  await waitFor(() => summaryOf(m) === '6/8通过');
+  await waitFor(() => summaryOf(m) === '8/10通过');
   await act(async () => srv.checkHeld[0]?.resolve());
   await rest(60);
   eq(
     '两次检查都在路上：后发的（改好以后的草稿）先回来就用它，先发的晚回来也不认',
     [summaryOf(m), itemOf(m, '工具名都存在')?.classList.contains('check-item-pass'), metaOf(m)],
-    ['6/8通过', true, '每次自动保存都会跑·上次14:30'],
+    ['8/10通过', true, '每次自动保存都会跑·上次14:30'],
   );
   await m.unmount();
 }
@@ -4116,16 +4126,16 @@ function recordScroll(): { calls: string[]; restore(): void } {
   const m = await mountPage('/console/sop?section=tone', travelOwner, noDraft, FAST);
   await rest(100);
   eq(
-    '没有草稿：不检查，8 项还没跑',
+    '没有草稿：不检查，10 项还没跑',
     [srv.checks(), all(checkCard(m), '.check-item-pending').length, metaOf(m)],
-    [0, 8, '每次自动保存都会跑'],
+    [0, 10, '每次自动保存都会跑'],
   );
   await typeAtEnd(m, '甲');
   await waitFor(() => summaryOf(m) !== '');
   eq(
     '第一次存上（新建了草稿）以后检查；线上版本里也没有那句必需说法：不落在节上，只写处数',
     [srv.checks(), summaryOf(m), noteOf(m, '必备短语都在'), all(m.box, '.sop-hint-wrap').length],
-    [1, '5/8通过', '1处', 1],
+    [1, '7/10通过', '1处', 1],
   );
   eq('这一项没有去处：整行不是按钮', itemOf(m, '必备短语都在')?.tagName, 'DIV');
   await discardVia(m);
@@ -4140,7 +4150,7 @@ function recordScroll(): { calls: string[]; restore(): void } {
       all(m.box, '.sop-hint-wrap').length,
       srv.checks(),
     ],
-    ['', 8, 0, 0, 1],
+    ['', 10, 0, 0, 1],
   );
   await m.unmount();
 
@@ -4212,7 +4222,7 @@ function recordScroll(): { calls: string[]; restore(): void } {
   eq(
     '后发的先跑成，先发的晚回来没跑成：不认，不写「没检查上」',
     [metaOf(l), summaryOf(l), !!checkCard(l).querySelector('.sop-check-failed')],
-    ['每次自动保存都会跑·上次14:31', '5/8通过', false],
+    ['每次自动保存都会跑·上次14:31', '7/10通过', false],
   );
   await l.unmount();
 
@@ -4226,9 +4236,9 @@ function recordScroll(): { calls: string[]; restore(): void } {
   await act(async () => gone.checkHeld[0]?.resolve());
   await rest(60);
   eq(
-    '丢弃时还在路上的检查：回来了也不认，清单仍是 8 个还没跑，没有波浪线',
+    '丢弃时还在路上的检查：回来了也不认，清单仍是 10 个还没跑，没有波浪线',
     [summaryOf(g), all(checkCard(g), '.check-item-pending').length, all(g.box, '.sop-bad').length, gone.checks()],
-    ['', 8, 0, 1],
+    ['', 10, 0, 1],
   );
   await g.unmount();
 }
@@ -4825,7 +4835,7 @@ for (const sandbox of [true, false]) {
   const m = await mountPage('/console/sop?section=tone', v, CLEAN_SOP, FAST);
   try {
     const url = m.router.state.location.href;
-    await waitFor(() => summaryOf(m) === '8/8通过');
+    await waitFor(() => summaryOf(m) === '10/10通过');
     await clickEv(barButton(m, '发布…'));
     await waitFor(() => !!drawerOf('发布草稿'));
     const d = drawerOf('发布草稿')!;
@@ -4858,7 +4868,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   eq(
     '发布条：改了哪几节、字数；没有问题时「发布…」能点，旁边不写原因；页头没有「发布」',
     [barText(m), barBlocked(m), !!publishBar(m)?.querySelector('.sop-bar-icon.is-warning'), headerButton(m, '发布')],
@@ -4874,7 +4884,7 @@ for (const sandbox of [true, false]) {
     [0, 1, '检查于14:30'],
   );
   eq(
-    '抽屉：检查清单（8 项）、替换说明、逐节改动只列改过的节、默认行内',
+    '抽屉：检查清单（10 项）、替换说明、逐节改动只列改过的节、默认行内',
     [
       text(d.querySelector('.check-list-summary')),
       all(d, '.check-item').length,
@@ -4884,7 +4894,7 @@ for (const sandbox of [true, false]) {
       all(d, '.sop-diff-view.is-inline').length,
       docsIn(d).map((x) => x.includes('search_routes 查线路') || x.includes('先问预算上限')),
     ],
-    ['8/8通过', 8, '将替换线上v2（老板·9月25日 18:30发布）', ['话术原则', '异议处理'], '行内', 2, [true, true]],
+    ['10/10通过', 10, '将替换线上v2（老板·9月25日 18:30发布）', ['话术原则', '异议处理'], '行内', 2, [true, true]],
   );
   // 第 16 步（axe heading-order、landmark-unique）：节名在「逐节改动」h3 下面是 h4；抽屉里的清单只是一组，页面右栏的才是地标
   const pageList = m.box.querySelector('.sop-col-check .check-list');
@@ -4998,7 +5008,7 @@ for (const sandbox of [true, false]) {
   srv.check = (s) => scan(s);
   srv.rollbackSameHash = false;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => barText(m).summary.startsWith('已发布'));
   await clickEv(barButton(m, '回滚到v2'));
@@ -5028,7 +5038,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => barText(m).summary.startsWith('已发布v3'));
   await settle();
@@ -5049,7 +5059,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, debounce: 60_000 });
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   const checks0 = srv.checks();
   await typeAtEnd(m, '乙');
   srv.mode = 'hold';
@@ -5083,7 +5093,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=preamble', travelOwner, CLEAN_SOP, { ...FAST, debounce: 60_000 });
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   const open = async (): Promise<HTMLTextAreaElement> => {
     await clickEv(barButton(m, '发布…'));
     await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea'));
@@ -5111,7 +5121,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => barText(m).summary.startsWith('已发布'));
   const now = m.qc.getQueryData(['sop']) as SopOverview;
@@ -5132,7 +5142,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, debounce: 60_000, backoff: [60_000] });
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await typeAtEnd(m, '丙');
   srv.mode = 'network';
   await clickEv(barButton(m, '发布…'));
@@ -5157,14 +5167,14 @@ for (const sandbox of [true, false]) {
   srv.check = (s) => scan(s);
   srv.publishFails = { contract: [{ code: 'unknown_tool', sectionKey: 'tone', detail: 'x', match: 'search_routes' }] };
   const m = await mountPage('/console/sop?section=preamble', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => text(drawerOf('发布草稿')?.querySelector('.sop-drawer-reason')) === '改完1个问题即可发布');
   const d = drawerOf('发布草稿')!;
   eq(
-    '发布被拒：抽屉开着，清单 6/7，说明还在',
+    '发布被拒：抽屉开着，清单 9/10，说明还在',
     [text(d.querySelector('.check-list-summary')), d.querySelector('textarea')?.value.endsWith('先问预算')],
-    ['7/8通过', true],
+    ['9/10通过', true],
   );
   await clickEv(all<HTMLElement>(d, 'button.check-item').find((b) => text(b.querySelector('.check-item-label')) === '工具名都存在'));
   await until(() => m.section() === 'tone' && selected(m) === 'search_routes');
@@ -5183,7 +5193,7 @@ for (const sandbox of [true, false]) {
   srv.check = (s) => scan(s);
   srv.publishFails = { contract: [{ code: 'unknown_tool', sectionKey: 'tone', detail: 'x', match: 'search_routes' }] };
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => text(drawerOf('发布草稿')?.querySelector('.sop-drawer-reason')) === '改完1个问题即可发布');
   const d = drawerOf('发布草稿')!;
@@ -5203,7 +5213,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, backoff: [60_000] });
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.mode = 'invalid';
   await typeAtEnd(m, '丙');
   await waitFor(() => saveNow(m).includes('没保存上'));
@@ -5237,7 +5247,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => barText(m).summary.startsWith('已发布v3'));
   await typeAtEnd(m, '甲');
@@ -5258,7 +5268,7 @@ for (const sandbox of [true, false]) {
   srv.check = (s) => scan(s);
   srv.publishFails = 'error';
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   const scrolls = recordScroll();
   await publishVia(m, '先问预算');
   await waitFor(() => !!drawerOf('发布草稿')?.querySelector('.sop-publish .ant-alert-error'));
@@ -5309,7 +5319,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.checkHold = true;
   await clickEv(barButton(m, '发布…'));
   await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea') && srv.checkHeld.length === 1);
@@ -5346,7 +5356,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=preamble', travelOwner, CLEAN_SOP, { ...FAST, debounce: 60_000 });
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   const link = (): HTMLButtonElement | null => m.box.querySelector<HTMLButtonElement>('.sop-pane-meta .sop-text-btn');
   eq('没改过的节（前言）：说明行没有「查看本节改动」', link(), null);
   await typeAtEnd(m, '丁');
@@ -5487,7 +5497,7 @@ for (const sandbox of [true, false]) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.mode = 'conflict';
   await typeAtEnd(m, '戊');
   await waitFor(() => editorEditable(m) === 'false');
@@ -5513,7 +5523,7 @@ const lookups = (): Record<string, string>[] =>
   const srv = fakeServer(CLEAN_SOP);
   srv.check = scanRebase;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长', publishedAt: '2026-09-25T12:00:00Z' });
   srv.getFails = true;
   await clickEv(barButton(m, '发布…'));
@@ -5575,7 +5585,7 @@ for (const lookupFails of [false, true, 'other'] as const) {
   srv.check = scanRebase;
   srv.versionsFail = lookupFails;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await clickEv(barButton(m, '发布…'));
   await waitFor(() => text(drawerOf('发布草稿')?.querySelector('.check-list-meta')) === '检查于14:30');
   const d = drawerOf('发布草稿')!;
@@ -5613,7 +5623,7 @@ for (const lookupFails of [false, true, 'other'] as const) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = scanRebase;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长', publishedAt: '2026-09-25T12:00:00Z' });
   await clickEv(barButton(m, '发布…'));
   await waitFor(() => text(drawerOf('发布草稿')?.querySelector('.check-list-meta')) === '检查于14:30');
@@ -5649,7 +5659,7 @@ for (const lookupFails of [false, true, 'other'] as const) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.getFails = true;
   await publishVia(m, '先问预算');
   await waitFor(() => !!m.box.querySelector('.sop-banners .ant-alert'));
@@ -5691,7 +5701,7 @@ for (const lookupFails of [false, true, 'other'] as const) {
   srv.publishHold = true;
   srv.publishFails = 'error';
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await publishVia(m, '先问预算');
   await waitFor(() => srv.publishHeld.length === 1);
   const d = drawerOf('发布草稿')!;
@@ -5736,7 +5746,7 @@ for (const lookupFails of [false, true, 'other'] as const) {
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, debounce: 60_000 });
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   await typeAtEnd(m, '辛');
   srv.mode = 'conflict';
   await clickEv(barButton(m, '发布…'));
@@ -5776,7 +5786,7 @@ for (const lookupFails of [false, true, 'other'] as const) {
   const srv2 = fakeServer(CLEAN_SOP);
   srv2.check = (s) => scan(s);
   const m2 = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m2) === '8/8通过');
+  await waitFor(() => summaryOf(m2) === '10/10通过');
   await clickEv(barButton(m2, '发布…'));
   await waitFor(() => !!drawerOf('发布草稿')?.querySelector('textarea'));
   const d = drawerOf('发布草稿')!;
@@ -6842,7 +6852,7 @@ async function openHistory(m: PageBox): Promise<void> {
   const bsrv = fakeServer(CLEAN_SOP);
   bsrv.check = (s) => scan(s);
   const b = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(b) === '8/8通过');
+  await waitFor(() => summaryOf(b) === '10/10通过');
   await publishVia(b, '先问预算');
   await waitFor(() => barText(b).summary.startsWith('已发布'));
   await clickEv(barButton(b, '回滚到v2'));
@@ -7987,7 +7997,7 @@ const byIdCalls = (id?: string): number =>
   srv.check = () => FIXED_CHECK();
   // 退避放长：断言时还没自动重试，条上的「重试」是唯一马上存的路
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, { ...FAST, backoff: [10_000] });
-  await waitFor(() => summaryOf(m) === '7/8通过');
+  await waitFor(() => summaryOf(m) === '9/10通过');
   const normal = barText(m).summary;
   srv.mode = 'network';
   await typeAtEnd(m, '加一句。');
@@ -8170,7 +8180,7 @@ const byIdCalls = (id?: string): number =>
   const srv = fakeServer(CLEAN_SOP);
   srv.check = (s) => scan(s);
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   eq('草稿基于线上 v2：不按 id 取版本，目录照旧两节', [byIdCalls(), dotted(m)], [0, ['tone', 'objections']]);
   await m.unmount();
 }
@@ -8181,7 +8191,7 @@ const byIdCalls = (id?: string): number =>
   const srv = fakeServer(CLEAN_SOP);
   srv.check = scanRebase;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长' });
   srv.mode = 'conflict';
   await typeAtEnd(m, '我写的');
@@ -8203,7 +8213,7 @@ const byIdCalls = (id?: string): number =>
   const srv = fakeServer(CLEAN_SOP);
   srv.check = scanRebase;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长' });
   const d = srv.state.draft!;
   srv.state = {
@@ -8264,7 +8274,7 @@ const byIdCalls = (id?: string): number =>
   srv.released = many;
   srv.check = (s) => ({ ...FIXED_CHECK(), violations: [], rebase: { needed: s.draft!.basedOn !== s.published.id, conflicts: [] } });
   const m = await mountPage('/console/sop?section=tone', historyOwner, sop, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.state = {
     ...srv.state,
     draft: {
@@ -8346,7 +8356,7 @@ const byIdCalls = (id?: string): number =>
   const srv = fakeServer(CLEAN_SOP);
   srv.check = scanRebase;
   const m = await mountPage('/console/sop?section=tone', travelOwner, CLEAN_SOP, FAST);
-  await waitFor(() => summaryOf(m) === '8/8通过');
+  await waitFor(() => summaryOf(m) === '10/10通过');
   srv.publishByOther(OTHER_PREAMBLE, { publishedByName: '店长' });
   const d = srv.state.draft!;
   srv.state = {
@@ -8523,6 +8533,387 @@ const byIdCalls = (id?: string): number =>
   const guest = await mountPage('/console/sop?section=preamble', { kind: 'anon', pack: packOf(TRAVEL) }, anon);
   check('匿名 SOP 页显示旧品牌前言提示', text(guest.box).includes('前言节里可能还有旧品牌名'));
   await guest.unmount();
+}
+
+// 07 R4：政策卡只读；出处、原句、金额单位与草稿差异完整呈现。
+{
+  const published = {
+    clauses: [{ id: 'd30', title: '退改条款第1条', text: '出发前30天及以上取消，退全款' }],
+    approvalThresholdYuan: 30000,
+    selfService: true,
+  };
+  const draft = {
+    clauses: [{ id: 'd15', title: '退改条款第1条', text: '出发前15天及以上取消，退80%' }],
+    approvalThresholdYuan: 25000,
+    selfService: false,
+  };
+  const m = await rootFor(<PolicyCard published={published} draft={draft} />);
+  check('政策卡：出处与原句完整展示', text(m.box).includes('退改条款第1条') && text(m.box).includes(published.clauses[0]!.text));
+  check('政策卡：金额用千分位与元，不使用货币符号', text(m.box).includes('30,000 元') && !text(m.box).includes('¥'));
+  check(
+    '政策卡：草稿的档位、阈值、开关差异可展开查看',
+    !!m.box.querySelector('details') &&
+      text(m.box).includes(draft.clauses[0]!.text) &&
+      text(m.box).includes('25,000 元') &&
+      text(m.box).includes('未开启'),
+  );
+  check('政策卡：没有编辑表单', !m.box.querySelector('input,select,textarea,form'));
+  await m.render(<PolicyCard published={published} draft={published} />);
+  check('政策卡：相同草稿显示一致', text(m.box).includes('草稿与已发布一致') && !m.box.querySelector('details'));
+  await m.unmount();
+}
+
+// 07 R4：CLI 只改 policy 时，正文完全相同也能在后台发布，抽屉里有可复核条款。
+{
+  const publishedPolicy = {
+    clauses: [{ id: 'd30', title: '退改条款第1条', text: '出发前30天及以上取消，退全款' }],
+    approvalThresholdYuan: 30000,
+    selfService: true,
+  };
+  const draftPolicy = { ...publishedPolicy, approvalThresholdYuan: 25000 };
+  const state: SopOverview = {
+    ...CLEAN_SOP,
+    published: { ...CLEAN_SOP.published, policy: publishedPolicy },
+    draft: { ...CLEAN_SOP.draft!, sections: CLEAN_SOP.published.sections, policy: draftPolicy },
+  };
+  const srv = fakeServer(state);
+  srv.check = () => ({ ...FIXED_CHECK(), violations: [] });
+  const m = await mountPage('/console/sop?section=tone', travelOwner, state, FAST);
+  await waitFor(() => summaryOf(m) === '10/10通过');
+  check('仅改 policy：发布条识别为可发布改动', !barBlocked(m) && barText(m).summary === '草稿修改了退改条款');
+  await clickEv(barButton(m, '发布…'));
+  await waitFor(() => !!drawerOf('发布草稿'));
+  const d = drawerOf('发布草稿')!;
+  check('仅改 policy：发布抽屉里有条款差异', text(d).includes('25,000 元') && !text(d).includes('草稿和线上一样'));
+  await setText(d.querySelector<HTMLTextAreaElement>('textarea')!, '调整退改条款审批金额');
+  await clickEv(drawerButton(d, '发布'));
+  await waitFor(() => srv.state.draft === null);
+  check('仅改 policy：可以提交后台发布请求', posted('/draft/publish').length === 1);
+  check('仅改 policy：发布后的视图保留政策快照', srv.state.published.policy?.approvalThresholdYuan === 25000);
+  await m.unmount();
+}
+
+// 07 R7–R10：真实话术页接线，全部接口桩；不调用模型。
+const gateView = (patch: Partial<GateRunView> = {}): GateRunView => ({
+  id: 'gate-1',
+  status: 'done',
+  verdict: 'pass',
+  mock: false,
+  progress: null,
+  draft: [],
+  baseline: [],
+  baselineReused: true,
+  blocking: [],
+  costMilli: 375,
+  error: null,
+  finishedAt: null,
+  ...patch,
+});
+function gateServer(view = gateView()) {
+  const srv = fakeServer({ ...CLEAN_SOP, gateRequired: true });
+  srv.check = (s) => scan(s);
+  const fallback: (call: Call) => Promise<Response> = respond!;
+  const gate = { view, startError: null as { error: string; runId?: string } | null, reads: 0 };
+  respond = async (call) => {
+    if (call.path === '/api/console/sop/draft/gate')
+      return gate.startError
+        ? json(gate.startError.error === 'gate_quota' ? 429 : 409, gate.startError)
+        : json(202, { runId: gate.view.id });
+    if (call.path.startsWith('/api/console/sop/gate-runs/')) {
+      gate.reads++;
+      return json(200, gate.view);
+    }
+    return fallback(call);
+  };
+  return { srv, gate };
+}
+const gateButton = (m: PageBox): HTMLButtonElement | null => m.box.querySelector('.sop-gate button');
+const gateTitle = (m: PageBox): string => text(m.box.querySelector('.sop-gate .ant-alert-title'));
+
+// 七种画面，各经 POST + GET 桩加载。
+for (const [status, verdict, title] of [
+  ['idle', null, '发布前要先跑一次回归'],
+  ['queued', null, '回归已排队'],
+  ['running', null, '回归运行中'],
+  ['done', 'pass', '回归通过，可以发布'],
+  ['done', 'fail', '回归没有通过'],
+  ['error', null, '回归出错了'],
+  ['abandoned', null, '服务重启过，请重新跑'],
+] as const) {
+  gateServer(
+    gateView({
+      status: status === 'idle' ? 'queued' : status,
+      verdict,
+      progress: { done: 3, total: 20 },
+      error: status === 'error' ? 'budget_stop' : null,
+    }),
+  );
+  const m = await mountPage('/console/sop?section=tone', travelOwner, { ...CLEAN_SOP, gateRequired: true });
+  if (status !== 'idle') {
+    await clickEv(gateButton(m)!);
+    await waitFor(() => gateTitle(m) === title);
+  }
+  eq(`闸面板七态：${status}/${verdict}`, gateTitle(m), title);
+  if (status === 'running')
+    check(
+      '运行中：目标进度、元与两种等待时间',
+      text(m.box).includes('已完成3 / 共20个目标') &&
+        text(m.box).includes('已花0.375元') &&
+        text(m.box).includes('4分钟') &&
+        text(m.box).includes('8分钟'),
+    );
+  if (status === 'error') check('超预算：人话与重新跑', text(m.box).includes('回归费用已到上限') && !gateButton(m)!.disabled);
+  await m.unmount();
+}
+
+// 两边结果、失败原因与三类不拦发布的目标。
+{
+  const goal = (id: string, result: GateGoalResult['result']): GateGoalResult => ({
+    id,
+    tags: ['regression'],
+    result,
+    attempts: [{ pass: result === 'pass', failures: result === 'fail' ? ['没有确认就下单'] : [], turns: 2, costMilli: 20 }],
+  });
+  gateServer(
+    gateView({
+      verdict: 'fail',
+      blocking: ['new-fail'],
+      draft: [goal('new-fail', 'fail'), goal('known', 'fail'), goal('unstable', 'flaky'), goal('budget', 'skipped_budget')],
+      baseline: [goal('new-fail', 'pass'), goal('known', 'fail'), goal('unstable', 'pass'), goal('budget', 'pass')],
+    }),
+  );
+  const m = await mountPage('/console/sop?section=tone', travelOwner, { ...CLEAN_SOP, gateRequired: true });
+  await clickEv(gateButton(m)!);
+  await waitFor(() => gateTitle(m) === '回归没有通过');
+  const t = text(m.box.querySelector('.sop-gate'));
+  check(
+    '结果：点名新失败及两边结果与失败原因',
+    t.includes('new-fail') && t.includes('草稿：失败；线上：通过') && t.includes('没有确认就下单'),
+  );
+  check(
+    '结果：已知失败、不稳、没跑完各自列出且不拦',
+    ['已知失败（不拦发布）', '不稳（不拦发布）', '没跑完（目标不拦发布）'].every((s) => t.includes(s)),
+  );
+  await m.unmount();
+}
+
+// 通过才能提交，带对应 runId；rev 更新后立刻失效。
+{
+  gateServer();
+  const m = await mountPage('/console/sop?section=tone', travelOwner, { ...CLEAN_SOP, gateRequired: true });
+  await clickEv(gateButton(m)!);
+  await waitFor(() => gateTitle(m) === '回归通过，可以发布');
+  await clickEv(barButton(m, '发布…')!);
+  await waitFor(() => !!drawerOf('发布草稿'));
+  const d = drawerOf('发布草稿')!;
+  await setText(d.querySelector<HTMLTextAreaElement>('textarea')!, '回归通过后发布。');
+  await clickEv(drawerButton(d, '发布'));
+  await waitFor(() => posted('/draft/publish').length > 0);
+  const body = posted('/draft/publish')[0]!.body as Record<string, unknown>;
+  eq('通过发布：带 runId', body.gateRunId, 'gate-1');
+  check('通过发布：没有强发字段', !('override' in body));
+  await m.unmount();
+}
+{
+  gateServer();
+  const state = { ...CLEAN_SOP, gateRequired: true };
+  const m = await mountPage('/console/sop?section=tone', travelOwner, state);
+  await clickEv(gateButton(m)!);
+  await waitFor(() => gateTitle(m) === '回归通过，可以发布');
+  await act(async () => {
+    m.qc.setQueryData(['sop'], { ...state, draft: { ...state.draft!, rev: state.draft!.rev + 1 } });
+  });
+  await waitFor(() => gateTitle(m) === '发布前要先跑一次回归');
+  eq('rev 改了：旧结果失效', gateTitle(m), '发布前要先跑一次回归');
+  await m.unmount();
+}
+
+// 强发：普通发布被拦；只有所有者能看到入口；原因不能为空、限长，并原样带给接口。
+for (const role of ['owner', 'admin'] as const) {
+  const { srv } = gateServer(gateView({ verdict: 'fail' }));
+  const viewer = structuredClone(travelOwner);
+  if (viewer.kind !== 'member') throw new Error('member');
+  viewer.me.role = role;
+  const m = await mountPage('/console/sop?section=tone', viewer, { ...CLEAN_SOP, gateRequired: true });
+  await clickEv(gateButton(m)!);
+  await waitFor(() => gateTitle(m) === '回归没有通过');
+  await clickEv(barButton(m, '发布…')!);
+  await waitFor(() => !!drawerOf('发布草稿'));
+  const d = drawerOf('发布草稿')!;
+  await setText(d.querySelector<HTMLTextAreaElement>('textarea')!, '已核实回归失败原因。');
+  eq(`${role}：闸失败普通发布被禁用`, drawerButton(d, '发布')!.getAttribute('aria-disabled'), 'true');
+  const force = all<HTMLButtonElement>(d, 'button').find((b) => label(b) === '强制发布');
+  eq(`${role}：强发入口权限`, !!force, role === 'owner');
+  if (force) {
+    await clickEv(force);
+    const modal = document.querySelector<HTMLElement>('.ant-modal')!;
+    const confirm = all<HTMLButtonElement>(modal, 'button').find((b) => label(b) === '确认强制发布')!;
+    await clickEv(confirm);
+    eq('空原因：不提交', posted('/draft/publish').length, 0);
+    const input = modal.querySelector<HTMLTextAreaElement>('textarea')!;
+    eq('强发原因长度上限', input.maxLength, 500);
+    await setText(input, '  已核实供应商故障，先恢复服务。  ');
+    srv.publishHold = true;
+    await clickEv(confirm);
+    await waitFor(() => posted('/draft/publish').length > 0);
+    check('强发请求未完成：确认框保留且原因不可改', !!document.querySelector('.ant-modal') && input.disabled);
+    srv.publishHold = false;
+    await act(async () => srv.publishHeld.splice(0).forEach((h) => h.resolve()));
+    eq('所有者强发：带必填原因', (posted('/draft/publish')[0]!.body as { override?: unknown }).override, {
+      reason: '已核实供应商故障，先恢复服务。',
+    });
+  }
+  await m.unmount();
+}
+
+// off 与沙箱沿用原发布路径，面板不出现。
+for (const sandbox of [false, true]) {
+  const srv = fakeServer({ ...CLEAN_SOP, gateRequired: false });
+  srv.check = (s) => scan(s);
+  const viewer = structuredClone(travelOwner);
+  if (sandbox && viewer.kind === 'member')
+    viewer.me.sandbox = { ownConversationId: null, expiresAt: '2027-01-01T00:00:00Z', wechat: 'off', steps: [true, true, true, false] };
+  const m = await mountPage('/console/sop?section=tone', viewer, srv.state);
+  check(`不用闸（sandbox=${sandbox}）：无面板`, !m.box.querySelector('.sop-gate'));
+  await clickEv(barButton(m, '发布…')!);
+  await waitFor(() => !!drawerOf('发布草稿'));
+  const d = drawerOf('发布草稿')!;
+  await setText(d.querySelector<HTMLTextAreaElement>('textarea')!, '沿用静态检查发布。');
+  await clickEv(drawerButton(d, '发布'));
+  await waitFor(() => posted('/draft/publish').length > 0);
+  check(`不用闸（sandbox=${sandbox}）：发布不带 runId`, !('gateRunId' in (posted('/draft/publish')[0]!.body as object)));
+  await m.unmount();
+}
+
+// 每3秒查询；结束、rev 变化、卸载都清理定时器。仅替换闸的计时器，不影响 React/antd。
+{
+  const clock = fakeClock();
+  const nativeSet = globalThis.setTimeout;
+  const nativeClear = globalThis.clearTimeout;
+  globalThis.setTimeout = ((fn: () => void, ms: number, ...args: unknown[]) =>
+    ms === GATE_POLL_MS ? clock.set(fn, ms) : nativeSet(fn, ms, ...args)) as typeof setTimeout;
+  globalThis.clearTimeout = ((id: ReturnType<typeof setTimeout>) =>
+    typeof id === 'number' ? clock.clear(id) : nativeClear(id)) as typeof clearTimeout;
+  try {
+    const { gate } = gateServer(gateView({ status: 'queued', verdict: null }));
+    const state = { ...CLEAN_SOP, gateRequired: true };
+    const m = await mountPage('/console/sop?section=tone', travelOwner, state);
+    await clickEv(gateButton(m)!);
+    await waitFor(() => gate.reads === 1);
+    await act(() => clock.advance(2999));
+    eq('排队：不足3秒不轮询', gate.reads, 1);
+    gate.view = gateView({ status: 'running', verdict: null });
+    await act(() => clock.advance(1));
+    eq('运行中：3秒轮询一次', gate.reads, 2);
+    await act(() => clock.advance(3000));
+    eq('运行中：再3秒再查', gate.reads, 3);
+    gate.view = gateView();
+    await act(() => clock.advance(3000));
+    await act(() => clock.advance(9000));
+    eq('完成即停', [gate.reads, clock.timers()], [4, 0]);
+    gate.view = gateView({ status: 'running', verdict: null });
+    await clickEv(gateButton(m)!);
+    await waitFor(() => gate.reads === 5);
+    await act(async () => {
+      m.qc.setQueryData(['sop'], { ...state, draft: { ...state.draft!, rev: state.draft!.rev + 1 } });
+    });
+    await waitFor(() => gateTitle(m) === '发布前要先跑一次回归');
+    await act(() => clock.advance(6000));
+    eq('rev 变化即停', [gate.reads, clock.timers()], [5, 0]);
+    await clickEv(gateButton(m)!);
+    await waitFor(() => gate.reads === 6);
+    await m.unmount();
+    await act(() => clock.advance(6000));
+    eq('卸载即停', [gate.reads, clock.timers()], [6, 0]);
+  } finally {
+    globalThis.setTimeout = nativeSet;
+    globalThis.clearTimeout = nativeClear;
+  }
+}
+
+for (const [code, copy] of [
+  ['gate_required', '发布前要先跑一次回归'],
+  ['gate_failed', '回归没有通过'],
+  ['gate_quota', '今天的回归次数已用完'],
+  ['gate_active', '已有一次回归在排队或运行'],
+  ['override_forbidden', '只有所有者可以强发'],
+  ['gate_skipped', '沙箱不需要运行发布回归'],
+]) {
+  const { gate } = gateServer();
+  gate.startError = { error: code! };
+  const m = await mountPage('/console/sop?section=tone', travelOwner, { ...CLEAN_SOP, gateRequired: true });
+  await clickEv(gateButton(m)!);
+  await waitFor(() => text(m.box.querySelector('.sop-gate')).includes(copy!));
+  check(`接口错误文案：${code}`, text(m.box.querySelector('.sop-gate')).includes(copy!));
+  await m.unmount();
+}
+for (const [code, copy] of [
+  ['budget_stop', '回归费用已到上限'],
+  ['timeout', '回归等待太久，已停止'],
+  ['child_exit', '回归进程意外退出'],
+  ['child_spawn', '回归暂时启动不了'],
+  ['report_invalid', '回归结果不完整'],
+  ['cancelled', '回归已取消'],
+  ['gate_error', '回归出错了'],
+])
+  check(`运行错误文案：${code}`, gateError(code!).includes(copy!));
+
+// gate_active 的运行身份未知，不能拿旧草稿通过结果发布。
+{
+  const { gate } = gateServer();
+  gate.startError = { error: 'gate_active', runId: 'gate-1' };
+  const m = await mountPage('/console/sop?section=tone', travelOwner, { ...CLEAN_SOP, gateRequired: true });
+  await clickEv(gateButton(m)!);
+  await waitFor(() => gate.reads > 0);
+  check(
+    '已有运行：显示提示而非当本草稿通过',
+    gateTitle(m) === '回归已结束，请为当前草稿重新跑' && text(m.box).includes('这次回归可能对应先前的草稿'),
+  );
+  await m.unmount();
+}
+
+// 服务端发现合并后的草稿与结果不匹配：撤销已通过的凭证，不能继续普通发布。
+for (const code of ['gate_required', 'gate_failed']) {
+  gateServer();
+  const fallback: (call: Call) => Promise<Response> = respond!;
+  respond = async (call) => (call.path.endsWith('/draft/publish') ? json(409, { error: code, runId: 'gate-1' }) : fallback(call));
+  const m = await mountPage('/console/sop?section=tone', travelOwner, { ...CLEAN_SOP, gateRequired: true });
+  await clickEv(gateButton(m)!);
+  await waitFor(() => gateTitle(m) === '回归通过，可以发布');
+  await clickEv(barButton(m, '发布…')!);
+  await waitFor(() => !!drawerOf('发布草稿'));
+  const d = drawerOf('发布草稿')!;
+  await setText(d.querySelector<HTMLTextAreaElement>('textarea')!, '合并后重新核对。');
+  await clickEv(drawerButton(d, '发布'));
+  await waitFor(() => !!d.querySelector('.sop-gate .ant-alert-error'));
+  eq(`${code}：拒绝后普通发布不再可用`, drawerButton(d, '发布')!.getAttribute('aria-disabled'), 'true');
+  await clickEv(drawerButton(d, '发布'));
+  eq(`${code}：不能重复提交旧通过结果`, posted('/draft/publish').length, 1);
+  await m.unmount();
+}
+
+// 启动接口迟到，草稿已经换 rev：既不轮询旧运行，也不恢复旧结果。
+{
+  const { gate } = gateServer();
+  const fallback: (call: Call) => Promise<Response> = respond!;
+  let resolve: ((r: Response) => void) | undefined;
+  respond = (call) =>
+    call.path.endsWith('/draft/gate')
+      ? new Promise<Response>((done) => {
+          resolve = done;
+        })
+      : fallback(call);
+  const state = { ...CLEAN_SOP, gateRequired: true };
+  const m = await mountPage('/console/sop?section=tone', travelOwner, state);
+  await clickEv(gateButton(m)!);
+  await act(async () => {
+    m.qc.setQueryData(['sop'], { ...state, draft: { ...state.draft!, rev: state.draft!.rev + 1 } });
+  });
+  await waitFor(() => gateTitle(m) === '发布前要先跑一次回归');
+  await act(async () => resolve!(json(202, { runId: 'gate-old' })));
+  await settle();
+  eq('旧 rev 的迟到启动响应被忽略', [gate.reads, gateTitle(m)], [0, '发布前要先跑一次回归']);
+  await m.unmount();
 }
 
 respond = null;

@@ -59,6 +59,9 @@ const goal = (predicates: Predicate[] = []): SimGoal => ({
   predicates: predicates.length ? predicates : [{ kind: 'order', count: 0 }],
   forbidden: [],
 });
+check('目标支持 tags', validateGoal({ ...goal(), tags: ['regression'] }, 'test.json').tags?.[0] === 'regression');
+assert.throws(() => validateGoal({ ...goal(), tags: [''] }, 'test.json'), /tags/);
+assert.throws(() => validateGoal({ ...goal(), unknown: true }, 'test.json'), /Unrecognized key/);
 const orders = { ...initial, orders: [order] };
 const yesNo = (p: Predicate, yes: Evidence, no: Evidence): void => {
   check(`${p.kind} ${'scope' in p ? p.scope : ''} 通过`, judge(goal([p]), yes)[0]!.passed);
@@ -185,9 +188,16 @@ check(
   quality.every((g) => g.predicates.every((p) => p.kind !== 'shape' || p.minShare === 0.7)),
 );
 check('回归集不带本机路径', !JSON.stringify(quality).includes('/Users/'));
+// 07 R8：只有带 regression 标签的目标进发布闸。06 的 safety 目标全部在内，加上之后各批加的回归目标；总数不写死（各批合并后会变）
+const safetyGoals = quality.filter((g) => g.severity === 'safety');
+const regressionGoals = quality.filter((g) => g.tags?.includes('regression'));
+check('06 的 16 个 safety 目标都带 regression 标', safetyGoals.length >= 16 && safetyGoals.every((g) => g.tags?.includes('regression')));
+check('带 regression 标的目标至少 18 个（16 个 safety + 第 10、11 步的 2 个）', regressionGoals.length >= 18);
+check('带 regression 标的目标 id 不重复', new Set(regressionGoals.map((g) => g.id)).size === regressionGoals.length);
 const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'sim-goals-test-'));
 try {
-  await fs.writeFile(path.join(temp, 'one.json'), JSON.stringify(goal()));
+  await fs.writeFile(path.join(temp, 'one.json'), JSON.stringify({ ...goal(), tags: ['regression'] }));
+  check('从文件读取 tags', (await loadGoals(temp))[0].tags?.[0] === 'regression');
   await fs.writeFile(path.join(temp, 'two.json'), JSON.stringify(goal()));
   await assert.rejects(loadGoals(temp), /重复目标/);
   assertions++;
@@ -363,6 +373,15 @@ try {
     initial: { orders: [{ routeId: 'r-sichuan-mid', travelers: 2, departDate: '2027-03-10', status: 'pending_payment' }] },
   });
   check('待付款种子订单与阶段缺省', report.summary[0]!.passK && report.runs[0]!.initial.stage === 'greeting');
+
+  for (const status of ['refund_pending', 'refunded'] as const) {
+    const started = runtime.deps.start({ orders: [{ routeId: 'r-sichuan-mid', travelers: 2, departDate: '2027-03-10', status }] });
+    check(
+      `07：${status} 初始订单带 paidAt，阶段仍 paid`,
+      started.initial.orders[0]?.status === status && started.initial.orders[0]?.paidAt !== undefined && started.initial.stage === 'paid',
+    );
+    await runtime.deps.end(started.id);
+  }
   const probe = runtime.deps.start();
   check('每遍结束清掉种子订单', report.runs[0]!.initial.orders.length === 1 && probe.initial.orders.length === 0);
   await runtime.deps.end(probe.id);
@@ -389,9 +408,16 @@ try {
     const scripted = g.customerScript ?? [];
     sales.script.push(...Array.from({ length: g.maxTurns ?? 12 }, () => ({ content: '好的。' })));
     if (scripted.length < (g.maxTurns ?? 12)) customer.script.push(say('', true));
+    const salesRequestsBefore = sales.requests.length;
     const smoke = await simulate([g], 1, meter, runtime.deps);
     const said = smoke.runs[0]!.turns.map((t) => t.customer.say);
     check(`${g.id} 固定话术读完`, scripted.every((line, i) => said[i] === line) && smoke.runs[0]!.status !== 'customer_protocol');
+    if (g.id === 'qa-self-refund-auto' || g.id === 'qa-self-refund-approval') {
+      check(
+        `${g.id} 退款回归全部谓词通过且零模型请求：${JSON.stringify(smoke.runs[0]!.reasons)}`,
+        smoke.summary[0]!.passK && sales.requests.length === salesRequestsBefore,
+      );
+    }
   }
   sales.script.length = 0;
   customer.script.length = 0;

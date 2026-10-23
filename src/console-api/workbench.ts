@@ -2,7 +2,7 @@
 // 读接口只读内存（identity map、发送账本）；例外只有 spec 写明的 trace 类读法（护栏改写的句数、更早的消息、步骤摘要与改写对照），
 // 它们只在 db 存储的真实会话上查库，文件存储与 demo 类会话不查（返回 null、空或 503，见 app.ts）。
 // 不把 store 里的活对象原样返回：每个字段都投影一遍，只读成员（viewer）看到的正文与客户原话打码（mask.ts）
-import { currentCatalog, currentTenant } from '../config/source.js';
+import { currentCatalog, currentTenant, currentPack, currentPolicy } from '../config/source.js';
 import type { AuthedUser } from '../auth/session.js';
 import { type Actor, assigneeOf, consentDeclined, handlesConversations, isAssignee, supervisesConversations } from '../handoff/takeover.js';
 import { paymentMode } from '../payment/mode.js';
@@ -228,6 +228,22 @@ export function orderView(o: Order): OrderView {
     paidAt: o.paidAt != null ? iso(o.paidAt) : null,
     confirmed: o.confirmedAt != null ? { at: iso(o.confirmedAt), by: o.confirmedBy?.name ?? '' } : null,
     handoffBeforePaid: o.handoffBeforePaid ?? null,
+    ...(o.refund
+      ? {
+          refund: {
+            amount: o.refund.amount,
+            tierId: o.refund.tierId,
+            percent: o.refund.percent,
+            approval: o.refund.approval,
+            settlement: o.refund.settlement,
+            requestedAt: o.refund.requestedAt,
+            settledAt: o.refund.settled?.at ?? null,
+            tierTitle: currentPack()
+              .runtime.policy?.clauses(currentPolicy().policy)
+              .find((c) => c.id === o.refund!.tierId)?.title,
+          },
+        }
+      : {}),
     conversation: orderConversation(o),
   };
 }

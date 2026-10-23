@@ -176,6 +176,17 @@ function ensureRoles(): void {
   console.log('[load] 角色与库建好');
 }
 
+/** 07 R12：迁移 0016 要求应用库里已有 vector 扩展，agent_owner 建不了；超级用户连应用库执行 extensions.sql，可重复执行 */
+function ensureExtensions(): void {
+  const r = spawnSync(
+    'docker',
+    ['exec', '-i', PG_CONTAINER, 'psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'agent'],
+    { input: fs.readFileSync(path.join(REPO_ROOT, 'deploy', 'db-init', 'extensions.sql'), 'utf8'), encoding: 'utf8', timeout: 30_000 },
+  );
+  mustOk(r, 'extensions.sql');
+  console.log('[load] vector 扩展就绪');
+}
+
 function ensureMigrated(): void {
   const r = sh('npx', ['tsx', 'src/db/migrate.ts'], { env: { DATABASE_OWNER_URL: OWNER_URL }, timeoutMs: 60_000 });
   mustOk(r, 'migrate');
@@ -381,7 +392,8 @@ async function runScenario(): Promise<ScenarioResult> {
   process.env.LLM_BASE_URL = `http://${LLM_HOST}/v1`;
   process.env.LLM_API_KEY = 'loadtest-fake-key';
   process.env.LLM_MODEL = 'glm-5.3-flashx';
-  process.env.EMBED_BASE_URL = `http://${LLM_HOST}/v1`;
+  // 07 R15：嵌入端点只放行境内清单里的主机（智谱，https）；假 fetch 在 fake-upstream.ts 里按这个主机接住 /embeddings
+  process.env.EMBED_BASE_URL = 'https://open.bigmodel.cn/api/paas/v4';
   process.env.EMBED_API_KEY = 'loadtest-fake-key';
   process.env.FOLLOWUP_ENABLED = '';
   process.env.ALERT_WEBHOOK_URL = '';
@@ -668,6 +680,7 @@ async function main(): Promise<void> {
   try {
     ensurePg();
     ensureRoles();
+    ensureExtensions();
     ensureMigrated();
     ensureTenant(CHAT_TENANT, '压测租户');
     ensureTenant(PRELOAD_TENANT, '压测预载租户');

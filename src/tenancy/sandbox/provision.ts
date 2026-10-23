@@ -1,7 +1,7 @@
 // 05 第 14 步：HTTP / cookie 之外的开通核心。第 15 步直接调用，只有成功装载才交出登录令牌。
 import { createHash, randomBytes } from 'node:crypto';
-import { ConfigStartupError, type ConfigDeps } from '../../config/source.js';
-import { publishedBrand } from '../../config/hashes.js';
+import { ConfigStartupError, packSources, type ConfigDeps } from '../../config/source.js';
+import { publishedBrand, publishedPolicy } from '../../config/hashes.js';
 import { writeTemplateConfig } from '../../config/transfer.js';
 import { writeSeedSessions } from '../../cli/session-transfer.js';
 import { withNewSandboxTenant, type NewSandboxTenant, type TenantLock } from '../../db/client.js';
@@ -9,15 +9,18 @@ import { expireBrokenSandbox, sandboxStartupRows, sandboxPoolHealth } from '../.
 import { writeAudit } from '../../db/repo/audit.js';
 import { readSandboxTemplate, insertSandboxWechat, seedSandboxPrivacy } from '../../db/repo/sandbox.js';
 import { copyQuickReplies } from '../../db/repo/quick-replies.js';
+import { copyKbSnapshot } from '../../db/repo/kb.js';
 import { alert } from '../../ops/alert.js';
 import { SessionStoreStartupError } from '../../store/backend.js';
 import { withoutTenantScope } from '../runtime.js';
 import { assertSandboxRunning } from './lifecycle.js';
 import { loadSandboxRuntime } from './load.js';
-import { sandboxSeeds } from './seeds.js';
+import { sandboxSeeds, type SeedContext } from './seeds.js';
 import { assertSandboxProvisionAllowed, recordSandboxProvision, sandboxWriteLimits, SandboxLimitError } from './limits.js';
 import { initializeSandboxPool, sandboxPoolAvailable, notifySandboxProvisionLimited } from './budget.js';
 import { todayIso } from '../../env.js';
+import { runtimeById } from '../../packs/registry.js';
+import { paymentMode } from '../../payment/mode.js';
 
 // 实例互斥链：包括判限额、读快照、提交与预载；失败不能毒化下一次开通。
 let provisioning: Promise<void> = Promise.resolve();
@@ -104,6 +107,32 @@ function reportFailure(stage: 'provision' | 'expire', error: unknown): void {
   alert('store', `${text}（${code}）`, { instance: true, scope: `sandbox_${stage}:${code}` });
 }
 
+/**
+ * 07 R21：种子里的退款要按沙箱里已发布的 policy 与品牌算（开通复制的就是模板这一份），支付模式取进程的收款开关。
+ * 包没有退款能力（没有 policy 或没有退款文字）就不给，G01 不生成。
+ */
+function seedContext(pub: Parameters<typeof publishedPolicy>[1] & { packId: string }, today: string): SeedContext {
+  const runtime = runtimeById(pub.packId, packSources());
+  const words = runtime?.engineHooks.refund;
+  if (!runtime?.policy || !words) return { today, refund: null };
+  const pack = runtime.policy;
+  const { policy, policyHash } = publishedPolicy(pack, pub);
+  const terms = pack.refund(policy);
+  if (!terms) return { today, refund: null };
+  return {
+    today,
+    refund: {
+      terms,
+      policy,
+      policyHash,
+      brand: publishedBrand(pub.renderInputs).brand,
+      paymentMode: paymentMode(),
+      words,
+      clauseTitle: (tierId) => pack.clauses(policy).find((c) => c.id === tierId)?.title ?? '退改条款',
+    },
+  };
+}
+
 async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
   try {
     assertSandboxRunning();
@@ -134,7 +163,10 @@ async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
         await writeTemplateConfig(tx, template.pub, template.items, o.deps.imageSop);
         if (template.privacy) await seedSandboxPrivacy(tx, template.privacy.body);
         await copyQuickReplies(tx, template.replies);
-        const seeds = sandboxSeeds(tenant.expiresAt.getTime() - 24 * 60 * 60_000);
+        // 07 R13：块与向量跟着同一个只读快照走，开通不发嵌入请求
+        await copyKbSnapshot(tx, template.kb);
+        const seedAt = tenant.expiresAt.getTime() - 24 * 60 * 60_000;
+        const seeds = sandboxSeeds(seedAt, seedContext(template.pub, todayIso(new Date(seedAt))));
         await writeSeedSessions(tx, seeds.sessions, seeds.orders);
         await insertSandboxWechat(tx, randomBytes(32).toString('base64url'));
         await writeAudit(tx, {

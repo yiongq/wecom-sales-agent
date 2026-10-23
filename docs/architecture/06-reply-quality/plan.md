@@ -406,7 +406,7 @@ contextNote、`preModel`、`planPrefetch` 都在 `src/packs/travel/turn.ts`，�
   - 第一批回滚：旧镜像不写 `rewrite`、不读新列，不需要新的风险类。
   - 第二批回滚：旧镜像会反向重渲染锁定节；可编辑节要在后台回滚到上一版（R19 第 6 项）。
   - 协调者（owner 授权）；需要时。
-- [ ] 发版：第 22 步之后 release 分支 → main，打 `demo-v7`；owner 说换后手动备份，部署。协调者；第 22 步。
+- [x] 发版：第 22 步之后 release 分支 → main，打 `demo-v7`；owner 说换后手动备份，部署。协调者；第 22 步。
 - [ ] 上线一周后，用第 0.6 步的同一查询再看超 8 秒占比与 p90，建议做。协调者（owner 授权）。
 
 ## 实施记录
@@ -716,6 +716,7 @@ Claude 子 agent 实现，叠在第 16 步上；协调者核对锁定文件的 d
 - owner 2026-10-16 确认收尾（第 20 步结果与 Open 7），spec 改为 `Status: implemented`，并在顶部加一条 `Revisions:`。
 - 核对第 0.1 步的反向引用：04 spec 顶部的 `Superseded in part by: 06` 还在；master-reference 阶段 6 一节把「出口裁剪与限时重写」改成「出口裁剪（限时重写推到后续）」，与 R11 推后一致。
 - 之后照 05：release 分支进 `main`，打 annotated tag `demo-v7`；owner 说换后手动备份，再部署 `demo-v7`。
+- 发版（2026-10-16）：#246 合入 `main` `d030f77`，annotated tag `demo-v7` 已推。owner 说「部署」后，先另存当天备份并手动备份到异地，再 `deploy.sh demo-v7` 一次成功。宿主与沙箱都是 `revision demo-v7`，`promptHash` `fab15319b779` 与 rc2 相同，没有新的 `sop.rerender`，部署后两边没有错误日志，入口照常。
 
 ## 费用记录
 

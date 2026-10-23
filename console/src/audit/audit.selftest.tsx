@@ -291,6 +291,7 @@ const lookups = { itemName: (kind: string, code: string) => (kind === 'route' &&
   eq('类别：全部且不显示登录记录 = 表里的全部动作去掉登录', actionsOf({}), auditActionsParam('all', false));
   eq('类别：全部且显示登录记录时不带 actions（表外的新动作也列得出来）', actionsOf({ login: 1 }), undefined);
   eq('类别：销售话术只列 sop 的动作', actionsOf({ cat: 'sop' })?.split(','), [
+    'sop.policy_draft',
     'sop.publish',
     'sop.rollback',
     'sop.discard',

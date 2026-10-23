@@ -15,7 +15,7 @@ export const isEditor = (v: ShellViewer): boolean => v.kind === 'member' && (v.m
 // ---------------- 侧栏 ----------------
 
 /** 导航项的图标：固定页面用自己的图标，实体用行业包给的 lucide 名称 */
-export type NavIcon = { page: 'overview' | 'sop' | 'conversations' | 'audit' } | { entity: string };
+export type NavIcon = { page: 'overview' | 'sop' | 'conversations' | 'traces' | 'audit' } | { entity: string };
 
 export interface NavItem {
   /** 按它匹配当前路由：不带 /console 的路径 */
@@ -66,6 +66,8 @@ export function buildNav(pack: IndustryPack, viewer: ShellViewer): NavGroup[] {
   ];
   const ops: NavItem[] = [];
   if (viewer.kind === 'member') ops.push({ key: '/conversations', label: '会话', icon: { page: 'conversations' }, waiting: true });
+  // AI 记录（07 R24）和 trace 详情一个权限：只给所有者、管理员，别的角色导航里没有这一页
+  if (isEditor(viewer)) ops.push({ key: '/traces', label: 'AI记录', icon: { page: 'traces' } });
   if (isEditor(viewer)) ops.push({ key: '/audit', label: '审计日志', icon: { page: 'audit' } });
   if (ops.length) groups.push({ key: 'ops', title: '运营', items: ops });
   return groups.filter((g) => g.items.length > 0);

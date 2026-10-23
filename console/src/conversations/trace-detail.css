@@ -1,0 +1,58 @@
+/*
+ * 「AI为什么这么回」（trace 详情，TraceDetail.tsx）：会话工作台右栏的页签和 AI 记录页的抽屉共用。
+ * 颜色只取 brand.css 的变量。由 pages/conversations-id.lazy.tsx 与 pages/traces.lazy.tsx 引入，组件本身不 import CSS，
+ * 自测才能在 Node 里直接 import 它
+ */
+.td {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.td-block p {
+  margin: 0 0 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.td-block p:last-child {
+  margin-bottom: 0;
+}
+.td-h {
+  margin: 0 0 4px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text);
+}
+/* 客户原话：照原样分行，左侧一道细线；长的一句自己换行 */
+.td-block p.td-quote {
+  padding: 6px 10px;
+  border-left: 2px solid var(--border);
+  background: var(--subtle);
+  border-radius: 0 var(--r-sm) var(--r-sm) 0;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.td-save {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.td-block p.td-hint {
+  color: var(--text-3);
+}
+.td-empty {
+  margin: 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.td-error,
+.td-block p.td-error {
+  margin: 6px 0 0;
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--danger);
+}

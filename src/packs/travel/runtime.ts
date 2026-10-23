@@ -30,11 +30,15 @@ import { retrievalText } from './retrieval.js';
 import { retrievalEmpty } from './retrieval-empty.js';
 import { travelMock } from './mock.js';
 import * as legacy from './legacy.js';
+import { demoBrand } from './demo-brand.js';
 import { travelTemplates } from './templates.js';
 import { travelQuickReplyDefaults } from './quick-reply-defaults.js';
 import { createTravelShapePolicy } from './shape-words.js';
 import { createTravelConsistency } from './consistency.js';
+import { refundQuoteText, refundChooseText, refundTexts, refundNoticeText } from './refund-words.js';
 import { paidOrderText } from './order-words.js';
+import { travelPolicy } from './policy.js';
+import { createTravelAfterSales } from './after-sales.js';
 
 const thresholds = { ...travelPriceThresholds, dates: travelDateThresholds, search: travelSearchThresholds };
 interface TravelRuntimeTypes extends PackRuntimeTypes {
@@ -86,13 +90,8 @@ export function createTravelRuntime(sources: PackSources) {
   const consistency = createTravelConsistency((over) => assemble({ ...sources, ...over }));
   const runtime: PackRuntime<TravelRuntimeTypes> = {
     id: 'travel',
-    defaultBrand: {
-      brandName: '云途定制旅行',
-      advisorTitle: '旅行顾问',
-      aiTitle: 'AI 旅行顾问',
-      scopeNoun: '旅行',
-      identityLine: helpers.IDENTITY_ANSWER.replace(/～$/, ''),
-    },
+    policy: travelPolicy,
+    defaultBrand: demoBrand,
     legacy: {
       ...legacy,
       quickReplies: travelQuickReplyDefaults,
@@ -141,6 +140,9 @@ export function createTravelRuntime(sources: PackSources) {
       stripAdvisorPrefix,
     }),
     engineHooks: {
+      afterSales: createTravelAfterSales(sources, (input) =>
+        helpers.handoffReply(input.session, input.text, 'refund', { brand: input.brand }),
+      ),
       isComplaint: turnHooks.isComplaint,
       isHandoffIntent: turnHooks.isHandoffIntent,
       safetyNetKind: helpers.safetyNetKind,
@@ -161,8 +163,10 @@ export function createTravelRuntime(sources: PackSources) {
         session.missedDestinations = undefined;
         session.reminders = undefined;
         session.recommendedRoutes = undefined;
+        delete session.afterSale;
       },
       paidText: paidOrderText,
+      refund: { quoteText: refundQuoteText, chooseText: refundChooseText, texts: refundTexts, noticeText: refundNoticeText },
     },
     vocab: { handoff: handoffVocab, dejargon: dejargonVocab },
     thresholds: runtimeThresholds,

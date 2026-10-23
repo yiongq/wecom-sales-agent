@@ -144,6 +144,15 @@ function live(): Holder | null {
 }
 
 /**
+ * 正在处理这个会话的那一轮的 trace id（turn_traces.id）；不在轮次里、或这一轮处理的是别的会话时为 null。
+ * 07 R23：enterHandoff 把它记进 Session.handoffLog，按原因的转人工率与 trace 列表据此对上
+ */
+export function currentTurnId(conversationId: string): string | null {
+  const h = live();
+  return h && h.ctx!.conversationId === conversationId ? h.ctx!.turnId : null;
+}
+
+/**
  * 引擎在 handleMessageInner 开头调；两种存储都收集（只在内存）。不在 withTurnScope 里（不经 handleMessage）时什么都不做。
  * input 是本轮客户原话：只留在内存、交给 onTurnEnd 的订阅者（OTEL_CAPTURE_CONTENT=1 时导出），不进 trace 行
  */

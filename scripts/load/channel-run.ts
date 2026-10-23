@@ -140,6 +140,17 @@ function ensureRoles(): void {
   console.log('[channel-run] 角色与库建好');
 }
 
+/** 07 R12：迁移 0016 要求应用库里已有 vector 扩展，agent_owner 建不了；超级用户连应用库执行 extensions.sql，可重复执行 */
+function ensureExtensions(): void {
+  const r = spawnSync(
+    'docker',
+    ['exec', '-i', PG_CONTAINER, 'psql', '-X', '-q', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'agent'],
+    { input: fs.readFileSync(path.join(REPO_ROOT, 'deploy', 'db-init', 'extensions.sql'), 'utf8'), encoding: 'utf8', timeout: 30_000 },
+  );
+  mustOk(r, 'extensions.sql');
+  console.log('[channel-run] vector 扩展就绪');
+}
+
 function ensureMigrated(): void {
   // 03 的迁移只在 03（本 worktree）跑；baseline 组不建渠道层的表，产品代码本来就不用它们
   const r = sh('npx', ['tsx', 'src/db/migrate.ts'], { cwd: REPO_ROOT, env: { DATABASE_OWNER_URL: OWNER_URL }, timeoutMs: 60_000 });
@@ -258,7 +269,8 @@ function runOneRepeat(repeatIdx: number): ScenarioOut {
       LLM_BASE_URL: `http://${LLM_HOST}/v1`,
       LLM_API_KEY: 'loadtest-fake-key',
       LLM_MODEL: 'glm-5.3-flashx',
-      EMBED_BASE_URL: `http://${LLM_HOST}/v1`,
+      // 07 R15：嵌入端点只放行境内清单里的主机（智谱，https）；假 fetch 在 channel-fake-upstream.ts 里按这个主机接住 /embeddings
+      EMBED_BASE_URL: 'https://open.bigmodel.cn/api/paas/v4',
       EMBED_API_KEY: 'loadtest-fake-key',
       LLM_HEDGE_MODEL: '',
       LLM_HEDGE_MS: '',
@@ -279,6 +291,7 @@ function runOneRepeat(repeatIdx: number): ScenarioOut {
       });
     } else {
       ensureRoles();
+      ensureExtensions();
       ensureMigrated();
       ensureTenant(CHAT_TENANT, '压测渠道层租户');
       ensureConfig(CHAT_TENANT);

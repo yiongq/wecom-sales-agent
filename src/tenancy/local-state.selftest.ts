@@ -16,7 +16,8 @@ Object.assign(process.env, {
   LLM_MODEL_CHEAP: 'local-model',
   LLM_MAX_RETRY: '0',
   LLM_HEDGE_MODEL: '',
-  EMBED_BASE_URL: 'http://model.example',
+  // 07 R15：嵌入端点只放行境内清单里的主机与非 prod 的本机回环。fetch 下面被整个替换，地址只要过得了白名单
+  EMBED_BASE_URL: 'http://127.0.0.1:9',
   EMBED_API_KEY: 'local-model',
   ALERT_WEBHOOK_URL: '',
 });

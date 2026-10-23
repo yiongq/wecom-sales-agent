@@ -73,8 +73,11 @@ const bodyOf = (init?: RequestInit): Record<string, unknown> => {
   }
 };
 
+/** 嵌入地址的主机：代码里写死的境内清单里唯一一家（src/core/llm/endpoints.ts），压测的 EMBED_BASE_URL 指向 https://<它>/api/paas/v4 */
+const EMBED_HOST = 'open.bigmodel.cn';
+
 /**
- * 装上假 fetch。llmHost 是选定的假模型主机名（LLM_BASE_URL、EMBED_BASE_URL 都指向它）。按 open_kfid 分开排队与
+ * 装上假 fetch。llmHost 是选定的假模型主机名（LLM_BASE_URL 指向它；EMBED_BASE_URL 指向上面的智谱主机）。按 open_kfid 分开排队与
  * 发送记录：sync_msg、send_msg 的请求体里都带 open_kfid（企微真实接口形状，src/adapters/wecom.ts 已经这样发），
  * 不需要靠 access_token 区分账号。seed 固定模型延迟的伪随机序列，方便几次复测互相比较。
  */
@@ -144,15 +147,19 @@ export function installChannelFakeUpstream(opts: { llmHost: string; seed: number
       return json({ errcode: 40001, errmsg: `loadtest: 未模拟的企微接口 ${ep}` });
     }
 
+    // 嵌入请求：07 R15 起 EMBED_BASE_URL 只能指向智谱的主机（https），压测的嵌入地址指向它，这里接住，不出本机
+    const embeddings = (): Response => {
+      const body = bodyOf(init);
+      const input_ = Array.isArray((body as { input?: unknown }).input) ? ((body as { input: unknown[] }).input as unknown[]) : [];
+      return json({
+        data: input_.map((_, i) => ({ embedding: [1, i % 3, (i * 7) % 5] })),
+        usage: { prompt_tokens: 11 * input_.length + 3, completion_tokens: 0 },
+      });
+    };
+    if (url.hostname === EMBED_HOST && url.pathname.endsWith('/embeddings')) return embeddings();
+
     if (url.hostname === opts.llmHost) {
-      if (url.pathname.endsWith('/embeddings')) {
-        const body = bodyOf(init);
-        const input_ = Array.isArray((body as { input?: unknown }).input) ? ((body as { input: unknown[] }).input as unknown[]) : [];
-        return json({
-          data: input_.map((_, i) => ({ embedding: [1, i % 3, (i * 7) % 5] })),
-          usage: { prompt_tokens: 11 * input_.length + 3, completion_tokens: 0 },
-        });
-      }
+      if (url.pathname.endsWith('/embeddings')) return embeddings();
       if (url.pathname.endsWith('/chat/completions')) {
         stats.chatCalls += 1;
         const n = stats.chatCalls;

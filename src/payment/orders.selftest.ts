@@ -401,6 +401,119 @@ await inAdvisor(async () => {
   );
 }
 
+// 07 R20：退款订单在旧支付卡片仍显示已付，支付页单独呈现退款状态，不能再次支付。
+{
+  const pay = fs.readFileSync(path.resolve('public/pay.html'), 'utf8');
+  const chat = fs.readFileSync(path.resolve('public/chat.html'), 'utf8');
+  const fn = (name: string) => new RegExp(`(?:async )?function ${name}\\([^]*?\\n  }`).exec(pay)![0];
+  const fillSrc = /async function fillPayCard\(card, pay\) \{[\s\S]*?\n {2}\}/.exec(chat)![0];
+  for (const [status, refund, label] of [
+    ['refund_pending', 'pending', '退款中'],
+    ['refunded', 'refunded', '已退款'],
+  ] as const) {
+    const { sid, o } = pendingOrderSession(`-${status}`);
+    store.markOrderPaid(o.id);
+    o.status = status;
+    o.refund = {
+      id: 'rf_000000000001',
+      requestedAt: Date.now(),
+      daysBefore: 40,
+      tierId: 'test',
+      percent: 100,
+      amount: o.totalPrice,
+      policyHash: 'a'.repeat(64),
+      approval: 'auto',
+      settlement: 'mock',
+    };
+    store.saveOrder(o);
+    const session = store.getSession(sid)!;
+    session.stage = 'paid';
+    const get = await app.request(`/api/orders/${o.id}`);
+    const projected = await get.json();
+    check(
+      `${status}：公开投影保持 paid、只给退款状态`,
+      projected.status === 'paid' && projected.refund === refund && !JSON.stringify(projected).includes('policyHash'),
+    );
+    const before = JSON.stringify(o);
+    const paidAt = o.paidAt;
+    const res = await app.request(`/api/orders/${o.id}/pay`, { method: 'POST' });
+    const denied = await res.json();
+    check(`${status}：模拟支付 409，订单不变`, res.status === 409 && denied.order.refund === refund && JSON.stringify(o) === before);
+    const html = await (await app.request(`/pay/${o.id}`)).text();
+    check(
+      `${status}：支付页标题、摘要有状态`,
+      html.includes(`<title>${route.title} · ${label}</title>`) && html.includes(`<meta name="description" content="${label}">`),
+    );
+    for (const mode of ['online', 'advisor']) {
+      const elements = new Map<string, { textContent: string; style: { display: string } }>();
+      const $ = (id: string) => {
+        if (!elements.has(id)) elements.set(id, { textContent: '', style: { display: '' } });
+        return elements.get(id)!;
+      };
+      const load = new Function(
+        '$',
+        'fetch',
+        'orderId',
+        'paymentMode',
+        'fmt',
+        `let order; ${fn('show')}; ${fn('advisorStatusText')}; ${fn('renderAdvisor')}; ${fn('load')}; return load;`,
+      )($, async () => ({ ok: true, json: async () => projected }), o.id, mode, String) as () => Promise<void>;
+      await load();
+      check(
+        `${status} ${mode}：支付页显示状态且隐藏付款按钮`,
+        $('advisorStatus').textContent === label && $('advisorView').style.display === 'block' && $('payView').style.display === 'none',
+      );
+    }
+    const els = new Map<string, { textContent: string; hidden: boolean; classList: { add(): void } }>();
+    const card = {
+      querySelector: (sel: string) => {
+        if (!els.has(sel)) els.set(sel, { textContent: '', hidden: true, classList: { add() {} } });
+        return els.get(sel)!;
+      },
+    };
+    const fill = new Function('fetch', 'cnDate', `${fillSrc}; return fillPayCard;`)(
+      async () => ({ ok: true, json: async () => projected }),
+      String,
+    );
+    await fill(card, { orderId: o.id });
+    check(`${status}：聊天历史卡片仍已支付 · 查看订单`, card.querySelector('.pc-btn').textContent === '已支付 · 查看订单');
+    __profileTest.use({ DEPLOY_PROFILE: 'prod' });
+    try {
+      await handleMessage(sid, '重新开始', 'wecom');
+      check(
+        `${status}：prod 重置关闭，订单、paidAt 与终态保留`,
+        store.getOrder(o.id)?.status === status && o.paidAt === paidAt && session.stage === 'paid',
+      );
+    } finally {
+      __profileTest.reset();
+    }
+    await handleMessage(sid, '重新开始', 'wecom');
+    check(`${status}：demo 重置作废订单`, store.getOrder(o.id) === undefined && session.orderIds.length === 0);
+  }
+}
+
+// 成交凭证保护访客会话：退款中的与已退款的同样不能按闲置访客淘汰。
+for (const status of ['refund_pending', 'refunded'] as const) {
+  const sid = `sim-07-${status}`;
+  const session = store.getOrCreateSession(sid, 'simulator');
+  const o = store.createOrder({
+    sessionId: sid,
+    routeId: route.id,
+    routeTitle: route.title,
+    travelers: 1,
+    departDate: '2026-12-10',
+    totalPrice: 10000,
+  });
+  session.orderIds.push(o.id);
+  store.markOrderPaid(o.id);
+  o.status = status;
+  store.saveOrder(o);
+  session.updatedAt = Date.now() - 48 * 3_600_000;
+  store.saveSession(session, false);
+  store.pruneStaleVisitorData();
+  check(`${status}：闲置访客仍保留成交凭证`, store.getSession(sid) !== undefined && store.getOrder(o.id)?.status === status);
+}
+
 fake.close();
 if (fails.length) {
   console.error(`PAYMENT ORDERS SELFTEST FAIL: ${fails.length} 项未通过（通过 ${pass}）`);

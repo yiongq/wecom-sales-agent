@@ -181,7 +181,7 @@ export function sandboxCostOf(model: string, promptTokens: number, completionTok
 }
 
 /** 这次调用的用途（02 spec「逐轮 trace、护栏事件与用量」）：usage_daily 按它分列，与库里 purpose 的 CHECK 同一组值 */
-export type UsagePurpose = 'chat' | 'followup' | 'insight' | 'suggestion' | 'draft' | 'embedding';
+export type UsagePurpose = 'chat' | 'followup' | 'insight' | 'suggestion' | 'draft' | 'embedding' | 'gate';
 
 /** recordUsage 记下的一笔，交给 onUsage 的订阅者（轮次的 trace、usage_daily 的累加器）。token 是夹过上下界之后计入 usage.json 的那份 */
 export interface UsageEvent {

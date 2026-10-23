@@ -1,7 +1,8 @@
 // 旅游包的界面配置（docs/features/console-ux/spec.md「行业包通用架构」，取值见设计系统 §9.1）。
-// 纯数据，只 import 类型：取值照抄真实代码（各处注释写了出处），由 src/packs/packs.selftest.ts 逐项核对（不变量 14，plan 第 3.1 步）。
+// 静态界面配置，政策帮助由默认 policy 生成：取值照抄真实代码（各处注释写了出处），由 src/packs/packs.selftest.ts 逐项核对（不变量 14，plan 第 3.1 步）。
 // 这里的标签、帮助、原因都会显示在后台上，也是 UI 优先片的用字来源（scripts/fonts/ui-text.ts）：改了文案要重跑 scripts/fonts/build.ts。
 import type { EntityType, IndustryPack, SalesStage } from '../../core/pack-api.js';
+import { defaultTravelPolicy, segments } from './policy.js';
 
 // 锁定表来自 src/shared/catalog.ts 的 LOCKED_WHEN_ACTIVE；字段来自 data/routes.json 与 RouteSchema
 const route: EntityType = {
@@ -86,7 +87,7 @@ const route: EntityType = {
       label: '每人起价',
       group: 'price',
       reprices: true,
-      help: '填淡季、4人以下的价；旺季上浮10%、4人及以上95折由系统算',
+      help: segments['help:price'](defaultTravelPolicy),
     },
     {
       key: 'bestSeason',
@@ -94,7 +95,7 @@ const route: EntityType = {
       label: '最佳季节',
       group: 'price',
       reprices: true,
-      monthMeaning: '这些月份出发报价上浮10%，「全年」不加价',
+      monthMeaning: segments['help:season'](defaultTravelPolicy),
       yearRoundLabel: '全年（不加价）',
     },
     {

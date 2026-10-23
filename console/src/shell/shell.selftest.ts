@@ -178,13 +178,13 @@ check(
 const shape0 = (pack: IndustryPack, v: ShellViewer): string[] =>
   buildNav(pack, v).map((g) => `${g.title ?? '-'}:${g.items.map((i) => `${i.label}${i.entity ? `(${i.entity})` : ''}`).join(',')}`);
 const shape = (v: ShellViewer): string[] => shape0(PACK, v);
-const EDITOR_NAV = ['-:总览,销售话术', '产品库:线路(route),酒店(hotel)', '运营:会话,审计日志'];
+const EDITOR_NAV = ['-:总览,销售话术', '产品库:线路(route),酒店(hotel)', '运营:会话,AI记录,审计日志'];
 eq('侧栏：所有者', shape(member('owner')), EDITOR_NAV);
 eq('侧栏：管理员', shape(member('admin')), EDITOR_NAV);
 for (const r of ['supervisor', 'agent', 'viewer'] as const) {
-  eq(`侧栏：${r} 没有审计日志`, shape(member(r)), ['-:总览,销售话术', '产品库:线路(route),酒店(hotel)', '运营:会话']);
+  eq(`侧栏：${r} 没有审计日志，也没有 AI 记录`, shape(member(r)), ['-:总览,销售话术', '产品库:线路(route),酒店(hotel)', '运营:会话']);
 }
-eq('侧栏：匿名没有会话、审计入口（也没有「运营」组）', shape(ANON), ['-:总览,销售话术', '产品库:线路(route),酒店(hotel)']);
+eq('侧栏：匿名没有会话、AI 记录、审计入口（也没有「运营」组）', shape(ANON), ['-:总览,销售话术', '产品库:线路(route),酒店(hotel)']);
 {
   const nav = buildNav(PACK, member('owner'));
   const items = nav.flatMap((g) => g.items);
@@ -228,6 +228,7 @@ eq('侧栏：匿名没有会话、审计入口（也没有「运营」组）', s
     ['/console/catalog/hotel', '/catalog/hotel'],
     ['/console/catalog/hotel/h-1', '/catalog/hotel'],
     ['/console/conversations', '/conversations'],
+    ['/console/traces', '/traces'],
     ['/console/audit', '/audit'],
     ['/console', '/'],
     ['/console/', '/'],
@@ -272,7 +273,7 @@ eq('搜索占位：匿名没有会话', searchPlaceholder(PACK, ANON), '搜索�
   eq('别的行业包：侧栏', shape0(home, member('owner')), [
     '-:总览,销售话术',
     '产品库:装修套餐(package),主材(material)',
-    '运营:会话,审计日志',
+    '运营:会话,AI记录,审计日志',
   ]);
   eq('别的行业包：搜索占位', searchPlaceholder(home, member('owner')), '搜索装修套餐、主材、会话…');
   eq(

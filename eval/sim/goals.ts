@@ -57,7 +57,7 @@ const initialSchema = z
             routeId: z.string().min(1),
             travelers: z.number().int().positive(),
             departDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '需要 YYYY-MM-DD'),
-            status: z.enum(['pending_payment', 'paid', 'cancelled']),
+            status: z.enum(['pending_payment', 'paid', 'cancelled', 'refund_pending', 'refunded']),
           })
           .strict(),
       )
@@ -75,6 +75,7 @@ export const goalSchema = z
     predicates: z.array(predicateSchema).min(1),
     forbidden: z.array(z.string().min(1)),
     severity: z.enum(['safety', 'quality']).optional(), // 缺省 quality
+    tags: z.array(z.string().min(1)).optional(),
     covers: z.array(z.string().min(1)).optional(), // 问题表里的 ID
     initial: initialSchema.optional(), // 初始会话与订单（真 paid 走订单状态）
     customerScript: z.array(z.string().min(1)).optional(), // 前几轮客户原话固定，之后交给客户模型
@@ -115,4 +116,11 @@ export async function loadGoals(input: string): Promise<SimGoal[]> {
     ids.add(g.id);
   }
   return goals;
+}
+
+/** 只留 tags 含 tag 的目标（07 R8：只有带 regression 的目标进闸）。一个都没有就抛错，不让闸空跑成「通过」。 */
+export function selectByTag(goals: SimGoal[], tag: string): SimGoal[] {
+  const selected = goals.filter((g) => g.tags?.includes(tag));
+  if (!selected.length) throw new Error(`没有目标带标签 ${tag}`);
+  return selected;
 }

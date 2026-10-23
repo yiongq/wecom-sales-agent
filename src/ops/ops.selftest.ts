@@ -3,6 +3,8 @@
 // 运行数字：PGlite 上造 trace 与 usage_daily 行，逐字段核对口径（p90 只算 replied、转人工率按会话、出错率含 llm 里的 error、
 // 今天按服务器时区）、窗口按租户的 trace 保留期截断、60 秒缓存、文件存储 503、角色 403；带 PG_TEST_URL 时同一份数据在真实
 // Postgres 上（agent_app、RLS）再算一遍。
+// 07 R23（第 15 步）：同一份数据上再造会话的 handoffLog 与种子标记，核对按原因的转人工率、顾问主动接手次数和来源拆分；
+// 成交拆分从内存订单算：宿主种子与访客不进「真实客户」，AI 独立与人机协同之和等于窗口内付过款的订单数，后台接手一次加 1。
 // OpenTelemetry：子进程里没设端点时一个 @opentelemetry/* 都没加载（加载钩子与 require.cache）、不向外连接；设了端点时进程内的
 // 假 OTLP/HTTP 接收端收到的 span 名字、父子关系、起止时刻与属性逐项对，默认没有原文与 external_userid，OTEL_CAPTURE_CONTENT=1
 // 时才有；没有 ref 的会话用不会撞的匿名引用；出错的模型调用、执行时抛错的工具与出错的轮次带 error.type；导出端点挂掉时对话照常、
@@ -219,13 +221,21 @@ if (CHILD === 'json-logs') {
   });
   await new Promise<void>((r) => llm.listen(0, '127.0.0.1', r));
   const llmUrl = `http://127.0.0.1:${(llm.address() as AddressInfo).port}`;
+  // 07 R15：这个子进程是 prod，嵌入端点只放行境内清单里的主机，本机回环不行。地址写智谱的，请求在 fetch 里改道到本机假服务，不出本机
+  const zhipuEmbed = 'https://open.bigmodel.cn/api/paas/v4';
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit) =>
+    realFetch(
+      typeof input === 'string' && input.startsWith(zhipuEmbed) ? llmUrl + input.slice(zhipuEmbed.length) : input,
+      init,
+    )) as typeof fetch;
   Object.assign(process.env, {
     LLM_MOCK: '0',
     LLM_PROVIDER: '',
     LLM_BASE_URL: llmUrl,
     LLM_API_KEY: 'selftest-fake-key',
     LLM_MODEL: 'glm-5.3-flashx',
-    EMBED_BASE_URL: llmUrl,
+    EMBED_BASE_URL: zhipuEmbed,
     EMBED_API_KEY: 'selftest-fake-key',
     LLM_HEDGE_MODEL: '',
     LLM_MAX_RETRY: '0',
@@ -740,7 +750,8 @@ const store = await withoutTenantScope(() => import('../store.js'));
 const recorder = await withoutTenantScope(() => import('../trace/recorder.js'));
 const { openTestDb, installSeededConfig, installPgSessionStore, fakeLock } = await withoutTenantScope(() => import('../db/testing.js'));
 const { withTenant, queryCount } = await withoutTenantScope(() => import('../db/client.js'));
-const { readMetrics, readTraceRetentionDays } = await withoutTenantScope(() => import('../db/repo/metrics.js'));
+const { readHandoffRows, readMetrics, readTraceRetentionDays } = await withoutTenantScope(() => import('../db/repo/metrics.js'));
+const { handoffStats } = await withoutTenantScope(() => import('./board.js'));
 const { shortIdOf } = await withoutTenantScope(() => import('../shared/conversation.js'));
 const accounts = await withoutTenantScope(() => import('../auth/accounts.js'));
 const { SESSION_COOKIE } = await withoutTenantScope(() => import('../auth/session.js'));
@@ -803,9 +814,10 @@ interface Res {
   status: number;
   body: Record<string, unknown>;
 }
-async function api(method: string, url: string, o: { token?: string; json?: unknown; ip?: string } = {}): Promise<Res> {
+async function api(method: string, url: string, o: { token?: string; json?: unknown; ip?: string; csrf?: string } = {}): Promise<Res> {
   const headers: Record<string, string> = { 'x-forwarded-for': o.ip ?? '203.0.113.90' };
   if (o.token) headers.cookie = `${SESSION_COOKIE}=${o.token}`;
+  if (o.csrf) headers['x-csrf'] = o.csrf;
   let body: string | undefined;
   if (o.json !== undefined) {
     body = json(o.json);
@@ -897,6 +909,44 @@ async function seedMetrics(exec: (text: string, params: unknown[]) => Promise<un
   await turn(tenant, 'wecom:wmMetricD', since - 6 * h, 200_000, 'replied', [{ model: 'm', error: 'timeout' }]);
   await turn(other, 'wecom:wmMetricX', NOW - h, 999_000, 'replied', ok);
   await turn(other, 'wecom:wmMetricX', NOW - h, 999_000, 'handoff', [{ model: 'm', error: 'timeout' }]);
+  // 07 R23：会话的 state 里带 handoffLog（Session.handoffLog）。窗口 = 近 7 天，四个有轮次的会话 A–D 是分母：
+  //   A：窗口内一次 request；B：窗口前一次 model（不算）、窗口内一次 complaint；C：两次 request（只算一个会话）加一次 emergency；
+  //   D：打了种子标记（state.seed），窗口内一次 sentiment。
+  //   E：窗口内没有轮次、只被顾问接手过（一次在窗口内，一次在窗口前），会话在窗口内更新过；别的租户的 X 也有一次 agent，不能算进来
+  const setState = (tid: string, id: string, extra: Record<string, unknown>): Promise<unknown> =>
+    exec(`update conversations set state = $3::json where tenant_id = $1 and id = $2`, [tid, id, json({ id, ...extra })]);
+  await setState(tenant, 'wecom:wmMetricA', { handoffLog: [{ kind: 'request', at: NOW - 3 * h, turnId: 'a-turn' }] });
+  await setState(tenant, 'wecom:wmMetricB', {
+    handoffLog: [
+      { kind: 'model', at: since - 1000 },
+      { kind: 'complaint', at: NOW - 48 * h },
+    ],
+  });
+  await setState(tenant, 'wecom:wmMetricC', {
+    handoffLog: [
+      { kind: 'request', at: NOW - 98 * h },
+      { kind: 'request', at: NOW - 97 * h },
+      { kind: 'emergency', at: NOW - 96 * h },
+    ],
+  });
+  await setState(tenant, 'wecom:wmMetricD', { seed: true, handoffLog: [{ kind: 'sentiment', at: NOW - 2 * h }] });
+  await exec(
+    `insert into conversations (tenant_id, id, channel, stage, handed_over, state, created_at, updated_at)
+     values ($1, 'wecom:wmMetricE', 'wecom', 'handoff', true, $2::json, $3, $4)`,
+    [
+      tenant,
+      json({
+        id: 'wecom:wmMetricE',
+        handoffLog: [
+          { kind: 'agent', at: NOW - h },
+          { kind: 'agent', at: since - 5000 },
+        ],
+      }),
+      at(since - 86_400_000),
+      at(NOW - h),
+    ],
+  );
+  await setState(other, 'wecom:wmMetricX', { handoffLog: [{ kind: 'agent', at: NOW - h }] });
   const cost = async (tid: string, day: string, purpose: string, milli: number): Promise<void> => {
     await exec(`insert into usage_daily (tenant_id, day, model, purpose, calls, cost_milli_cny) values ($1, $2::date, 'm', $3, 1, $4)`, [
       tid,
@@ -923,8 +973,11 @@ const WANT7 = {
   costRangeYuan: 3.8,
 };
 const close = (a: unknown, b: number | null): boolean => (b === null ? a === null : typeof a === 'number' && Math.abs(a - b) < 1e-9);
+/** 07 R23 新增的四个键（成交拆分、按原因的转人工率）另有专门的核对，这里只比运行数字原有的几项 */
+const R23_KEYS = new Set(['deals', 'handoffByKind', 'takeovers', 'handoffByOrigin']);
 const sameView = (got: Record<string, unknown>, want: Record<string, number | null>): boolean =>
-  Object.keys(want).every((k) => close(got[k], want[k]!)) && Object.keys(got).length === Object.keys(want).length;
+  Object.keys(want).every((k) => close(got[k], want[k]!)) &&
+  Object.keys(got).filter((k) => !R23_KEYS.has(k)).length === Object.keys(want).length;
 
 await seedMetrics((text, params) => su(text, params), DEMO, OTHER);
 
@@ -981,6 +1034,50 @@ __metricsTest.reset();
     'days=1：只有上海时区今天 0 点（UTC 前一天 16:00）之后的轮次（一轮）与今天的用量',
     today.status === 200 && today.body.turns === 1 && close(today.body.costRangeYuan, 1.3) && close(today.body.costTodayYuan, 1.3),
     json(today.body),
+  );
+}
+
+// ---------------- 07 R23：按原因的转人工率、顾问主动接手次数（handoffLog 在会话 state 里，SQL 读） ----------------
+/** 键的顺序随 SQL 返回的顺序，比较前排一下；数值允许浮点误差 */
+const sameKinds = (got: unknown, want: Record<string, number>): boolean => {
+  const g = (got ?? {}) as Record<string, number>;
+  return Object.keys(want).length === Object.keys(g).length && Object.keys(want).every((k) => close(g[k], want[k]!));
+};
+{
+  const r = await api('GET', '/metrics?days=7', { token: tokens.owner });
+  const by = r.body.handoffByOrigin as Record<string, { sessions: number; byKind: unknown; takeovers: number }>;
+  check(
+    '按原因的转人工率（全部来源）：分母是 4 个有轮次的会话；request（A、C 两个会话，C 记了两次只算一个）、complaint、emergency、sentiment 各自手算；窗口前的 model 不算',
+    sameKinds(r.body.handoffByKind, { request: 2 / 4, complaint: 1 / 4, emergency: 1 / 4, sentiment: 1 / 4 }),
+    json(r.body.handoffByKind),
+  );
+  check(
+    '顾问主动接手：E 窗口内一次（窗口前的一次不算）、没有轮次也数得到；别的租户的那一次不算',
+    r.body.takeovers === 1 && by.customer?.takeovers === 1,
+    json(r.body.takeovers),
+  );
+  check(
+    '来源：打了种子标记的 D 进「种子」，其余是真实客户；宿主里没有访客的会话',
+    by.customer?.sessions === 3 &&
+      sameKinds(by.customer.byKind, { request: 2 / 3, complaint: 1 / 3, emergency: 1 / 3 }) &&
+      by.seed?.sessions === 1 &&
+      sameKinds(by.seed.byKind, { sentiment: 1 }) &&
+      by.seed.takeovers === 0 &&
+      by.visitor?.sessions === 0 &&
+      sameKinds(by.visitor.byKind, {}) &&
+      by.visitor.takeovers === 0,
+    json(by),
+  );
+  check(
+    '比率都在 0–1 之间（分子只数有轮次的会话）',
+    Object.values(by).every((o) => Object.values(o.byKind as Record<string, number>).every((x) => x >= 0 && x <= 1)),
+  );
+  const month = await api('GET', '/metrics?days=30', { token: tokens.owner });
+  check(
+    'days=30：窗口前的 model（B）与 E 窗口前的那次接手进来了，分母仍是 4 个会话',
+    sameKinds(month.body.handoffByKind, { request: 2 / 4, complaint: 1 / 4, emergency: 1 / 4, sentiment: 1 / 4, model: 1 / 4 }) &&
+      month.body.takeovers === 2,
+    json({ k: month.body.handoffByKind, t: month.body.takeovers }),
   );
 }
 
@@ -1103,6 +1200,31 @@ __metricsTest.reset();
             m.costRangeMilliCny === 3800,
           json(m),
         );
+        // 07 R23：转人工的行（会话 state 里的 handoffLog）经 agent_app 与 RLS 读：别的租户的 X 看不到，窗口外的记录被 SQL 筛掉
+        const hrows = await withTenant(app.db, ctx, (tx) => readHandoffRows(tx, metricsWindow(NOW, 7)), { readOnly: true });
+        const hById = new Map(hrows.map((r) => [r.id, r]));
+        check(
+          '真实 PG：转人工的行与手算一致（A–E 五个会话，X 被 RLS 挡住；D 带种子标记；E 没有轮次；B 窗口前的 model 被筛掉；kinds 按记录顺序）',
+          hrows.length === 5 &&
+            json(hById.get('wecom:wmMetricA')) === json({ id: 'wecom:wmMetricA', seed: false, active: true, kinds: ['request'] }) &&
+            json(hById.get('wecom:wmMetricB')) === json({ id: 'wecom:wmMetricB', seed: false, active: true, kinds: ['complaint'] }) &&
+            json(hById.get('wecom:wmMetricC')?.kinds) === json(['request', 'request', 'emergency']) &&
+            hById.get('wecom:wmMetricD')?.seed === true &&
+            json(hById.get('wecom:wmMetricE')) === json({ id: 'wecom:wmMetricE', seed: false, active: false, kinds: ['agent'] }) &&
+            !hById.has('wecom:wmMetricX'),
+          json(hrows),
+        );
+        const hs = handoffStats(hrows, 'standard');
+        check(
+          '真实 PG：按原因的转人工率与接手次数同 PGlite（request 2/4，接手 1；真实客户 3 个会话、种子 1 个）',
+          hs.all.sessions === 4 &&
+            close(hs.all.byKind.request ?? null, 0.5) &&
+            hs.all.takeovers === 1 &&
+            hs.byOrigin.customer.sessions === 3 &&
+            hs.byOrigin.seed.sessions === 1 &&
+            hs.byOrigin.visitor.sessions === 0,
+          json(hs),
+        );
         const keep = await withTenant(app.db, ctx, (tx) => readTraceRetentionDays(tx, fxr.tenantId), { readOnly: true });
         await fxr.query('update tenants set retention_trace_days = 30 where id = $1', [fxr.tenantId]);
         const keep30 = await withTenant(app.db, ctx, (tx) => readTraceRetentionDays(tx, fxr.tenantId), { readOnly: true });
@@ -1133,6 +1255,174 @@ __metricsTest.reset();
       await fxr.drop();
     }
   }
+}
+// ---------------- 07 R23：成交拆分（内存订单）与来源、后台接手加一 ----------------
+// 成交数从内存里的全部订单算（含 demo 类会话，种子与网页访客也在），所以宿主的种子、sim- 访客有数；转人工从库里的会话算
+{
+  const mk = (sid: string, handoffFirst: boolean, price: number, final?: 'refunded' | 'refund_pending', seed = false) => {
+    const sess = store.getOrCreateSession(sid, sid.startsWith('sim-') ? 'simulator' : 'wecom');
+    if (handoffFirst) sess.firstHandoffAt = Date.now() - 1000;
+    if (seed) sess.seed = true;
+    const o = store.createOrder({
+      sessionId: sid,
+      routeId: 'r-test',
+      routeTitle: '测试线路',
+      travelers: 2,
+      departDate: '2099-01-01',
+      totalPrice: price,
+    });
+    sess.orderIds.push(o.id);
+    store.saveSession(sess);
+    store.markOrderPaid(o.id);
+    // 付款时刻钉在后台时钟 NOW 的前半小时：/orders/summary 按后台时钟的自然月算，登录的会话在 NOW 才有效（空闲 12 小时过期），
+    // 时钟不能拨到真实的现在（离 NOW 超过 12 小时就 401）；paid_at 写进库之后不能改，所以在落库（flush）之前改
+    o.paidAt = NOW - 30 * 60_000;
+    if (final) o.status = final;
+    store.saveOrder(o);
+    return o;
+  };
+  const visitorA = `sim-${'1'.repeat(24)}`;
+  const visitorB = `sim-${'2'.repeat(24)}`;
+  mk('wecom:wmBoard01', false, 10_000);
+  mk('wecom:wmBoard02', true, 20_000);
+  mk('wecom:wmBoard03', false, 5_000, 'refunded');
+  mk(visitorA, false, 3_000);
+  mk(visitorB, true, 4_000, 'refund_pending');
+  mk('wecom:cust_BOARD1', true, 105_600);
+  mk('wecom:wmBoardSeed', false, 6_000, undefined, true);
+  // 待付款的单不算成交
+  {
+    const sess = store.getSession('wecom:wmBoard01')!;
+    const pending = store.createOrder({
+      sessionId: sess.id,
+      routeId: 'r-test',
+      routeTitle: '测试线路',
+      travelers: 2,
+      departDate: '2099-01-01',
+      totalPrice: 7_000,
+    });
+    sess.orderIds.push(pending.id);
+    store.saveSession(sess);
+  }
+  for (const sid of ['wecom:wmBoard01', 'wecom:wmBoard02', 'wecom:wmBoard03', 'wecom:wmBoardSeed']) await store.flushSession(sid);
+
+  __metricsTest.reset();
+  clockAt = NOW;
+  const r = await api('GET', '/metrics?days=7', { token: tokens.owner });
+  const none = { aiOnly: 0, aiOnlyAmount: 0, aiOnlyRefunded: 0, assisted: 0, assistedAmount: 0, assistedRefunded: 0, refunded: 0 };
+  const deals = r.body.deals as Record<string, typeof none>;
+  check(
+    '成交拆分：真实客户 2 单 AI 独立（含 1 单已退款）加 1 单协同；宿主的 sim- 访客与种子（wecom:cust_、打了 seed 标记的）不进真实客户',
+    json(deals?.customer) ===
+      json({ aiOnly: 2, aiOnlyAmount: 15_000, aiOnlyRefunded: 1, assisted: 1, assistedAmount: 20_000, assistedRefunded: 0, refunded: 1 }) &&
+      json(deals?.visitor) === json({ ...none, aiOnly: 1, aiOnlyAmount: 3_000, assisted: 1, assistedAmount: 4_000 }) &&
+      json(deals?.seed) === json({ ...none, aiOnly: 1, aiOnlyAmount: 6_000, assisted: 1, assistedAmount: 105_600 }),
+    json(deals),
+  );
+  const paidOrders = store.listOrders().filter((o) => o.paidAt != null && ['paid', 'refund_pending', 'refunded'].includes(o.status));
+  const sum = Object.values(deals).reduce((n, d) => n + d.aiOnly + d.assisted, 0);
+  check(
+    'AI 独立成交与人机协同成交之和等于窗口内付过款的订单数（含退款中、已退款，不含待付款）',
+    sum === paidOrders.length && sum === 7,
+    `${sum} / ${paidOrders.length}`,
+  );
+  check(
+    '成交拆分：金额是元，已退款的单按原成交额算在里面（其中已退款单列）；退款中（visitorB）算成交、不算已退款',
+    deals?.customer?.aiOnlyAmount === 15_000 &&
+      deals.customer.refunded === 1 &&
+      deals.visitor?.refunded === 0 &&
+      deals.visitor.assisted === 1,
+  );
+
+  // 成交拆分是内存订单现算的，不进 60 秒缓存：同一个后台时钟下紧接着再取，订单变了数字立刻跟着变；转人工那部分走库，照旧缓存
+  {
+    const vb = store.listOrders().find((o) => o.sessionId === visitorB)!;
+    vb.status = 'refunded';
+    const again = await api('GET', '/metrics?days=7', { token: tokens.owner });
+    vb.status = 'refund_pending';
+    const d = again.body.deals as Record<string, typeof none>;
+    check(
+      '成交拆分不进缓存：同一时钟下紧接着再取 /metrics，访客那张退款中的单改成已退款后「其中已退款」立刻 0 → 1，种子与真实客户不动',
+      again.status === 200 &&
+        d.visitor?.refunded === 1 &&
+        d.visitor.assistedRefunded === 1 &&
+        d.seed?.refunded === 0 &&
+        d.customer?.refunded === 1 &&
+        json({ ...again.body, deals: null }) === json({ ...r.body, deals: null }),
+      json(d),
+    );
+  }
+
+  // /orders/summary 也按来源拆：顶层口径不变（全部来源），三类之和等于顶层（时钟仍是 NOW，付款都在 NOW 的自然月里）
+  clockAt = NOW;
+  const sum2 = await api('GET', '/orders/summary', { token: tokens.owner });
+  const top = sum2.body as Record<string, unknown>;
+  const byO = (top.byOrigin ?? {}) as Record<string, Record<string, number>>;
+  check(
+    '/orders/summary：顶层是全部来源（成交额含退款中，已退款单列，退款中与待付款不限月）',
+    sum2.status === 200 &&
+      top.paidTotal === 148_600 &&
+      top.paidCount === 6 &&
+      top.refundedTotal === 5_000 &&
+      top.refundedCount === 1 &&
+      top.refundPendingCount === 1 &&
+      top.pendingTotal === 7_000 &&
+      top.pendingCount === 1,
+    json(top),
+  );
+  check(
+    '/orders/summary：byOrigin 按来源拆开——真实客户 30,000 另有待付 7,000，访客 7,000（含 1 单退款中），种子 111,600；三类之和等于顶层',
+    byO.customer?.paidTotal === 30_000 &&
+      byO.customer.refundedTotal === 5_000 &&
+      byO.customer.pendingTotal === 7_000 &&
+      byO.visitor?.paidTotal === 7_000 &&
+      byO.visitor.refundPendingCount === 1 &&
+      byO.seed?.paidTotal === 111_600 &&
+      ['paidTotal', 'paidCount', 'refundedTotal', 'refundedCount', 'refundPendingCount', 'pendingTotal', 'pendingCount'].every(
+        (k) => (byO.customer?.[k] ?? 0) + (byO.visitor?.[k] ?? 0) + (byO.seed?.[k] ?? 0) === top[k],
+      ),
+    json(byO),
+  );
+
+  // 后台接手一次：未转人工的会话以 kind=agent 进入，handoffLog 追加一条随 state 落库，/metrics 的 takeovers 加 1
+  const sid = 'wecom:wmBoardTk01';
+  const tk = store.getOrCreateSession(sid, 'wecom');
+  tk.messages.push({ role: 'customer', content: '你好', at: Date.now() });
+  store.saveSession(tk);
+  await store.flushSession(sid);
+  const before = await api('GET', '/metrics?days=7', { token: tokens.owner });
+  const me = await api('GET', '/me', { token: tokens.owner });
+  const took = await api('POST', `/conversations/${encodeURIComponent(sid)}/takeover`, {
+    token: tokens.owner,
+    csrf: String(me.body.csrf),
+    json: {},
+  });
+  __metricsTest.reset();
+  const after = await api('GET', '/metrics?days=7', { token: tokens.owner });
+  check('后台接手一次：接口 200', took.status === 200, json(took));
+  check(
+    '后台接手一次：takeovers 加 1（1 → 2），真实客户的接手次数同步；窗口内没有轮次的会话不进分母，各原因的比率不变',
+    before.body.takeovers === 1 &&
+      after.body.takeovers === 2 &&
+      (after.body.handoffByOrigin as Record<string, { takeovers: number; sessions: number }>).customer?.takeovers === 2 &&
+      sameKinds(after.body.handoffByKind, { request: 2 / 4, complaint: 1 / 4, emergency: 1 / 4, sentiment: 1 / 4 }),
+    json({ b: before.body.takeovers, a: after.body.takeovers }),
+  );
+  const [row] = await su<{ log: { kind: string; at: number; turnId?: string }[] | null }>(
+    `select state->'handoffLog' as log from conversations where id = $1`,
+    [sid],
+  );
+  check(
+    'handoffLog 随会话的 state json 进库：一条 agent，没有 turnId（接手不在轮次里）',
+    row?.log?.length === 1 && row.log[0]!.kind === 'agent' && typeof row.log[0]!.at === 'number' && !('turnId' in row.log[0]!),
+    json(row),
+  );
+  // 再接手一次（已是自己的）：什么都不加
+  await api('POST', `/conversations/${encodeURIComponent(sid)}/takeover`, { token: tokens.owner, csrf: String(me.body.csrf), json: {} });
+  __metricsTest.reset();
+  const again = await api('GET', '/metrics?days=7', { token: tokens.owner });
+  check('再接手自己已接手的会话：takeovers 不再加', again.body.takeovers === 2, String(again.body.takeovers));
+  __metricsTest.reset();
 }
 __consoleTest.reset();
 

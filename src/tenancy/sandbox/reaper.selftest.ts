@@ -866,7 +866,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
       await exited;
       await q('select pg_terminate_backend($1)', [pid]);
       const [oldRows] = await q<{ n: string }>('select count(*) as n from conversations where tenant_id=$1', [crash.rt.id]);
-      check(Number(oldRows!.n) === 5, 'SIGKILL 后附属删除整笔回滚');
+      check(Number(oldRows!.n) === 6, 'SIGKILL 后附属删除整笔回滚');
     } finally {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
       await exited;

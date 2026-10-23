@@ -17,7 +17,7 @@ import { toolDefs } from '../tool-defs.js';
 import { runtimeById } from '../packs/registry.js';
 import { packSources } from './source.js';
 import { tenantImage, tenantRenderer, switchPreamble } from './brand.js';
-import { promptHashes, publishedBrand, renderInputsFor, type PromptHashes } from './hashes.js';
+import { promptHashes, publishedBrand, policySnapshot, publishedPolicy, renderInputsFor, type PromptHashes } from './hashes.js';
 
 export const EXIT = { ok: 0, error: 1, inconsistent: 2, locked: 3 } as const;
 export type ExitCode = (typeof EXIT)[keyof typeof EXIT];
@@ -26,7 +26,7 @@ export interface TransferResult {
   code: ExitCode;
   /** 给人看的一句话，命令行原样打印 */
   message: string;
-  hashes?: PromptHashes;
+  hashes?: PromptHashes & { policyHash?: string };
   versionNo?: number;
 }
 
@@ -84,6 +84,7 @@ export async function writeTemplateConfig(
   const runtime = runtimeById(pub.packId, packSources());
   if (!runtime) throw new Error('pack_unknown');
   const brand = publishedBrand(pub.renderInputs).brand;
+  const policy = publishedPolicy(runtime.policy, pub);
   const render = brand ? tenantRenderer(runtime, brand) : (sop: string) => renderPackSystemPrompt(sop, runtime.legacy.hardRequirements);
   const imageSections = tenantImage(runtime, imageSop, brand);
   const merged = mergeWithImage(pub.sections, imageSections);
@@ -103,6 +104,7 @@ export async function writeTemplateConfig(
     rules: runtime.contractRules(brand ? { brand } : 'legacy'),
     brand,
     hardRequirements: render(''),
+    policy: policy.policy,
   });
   if (violations.length) throw new Error('sandbox_template_contract_failed');
   await insertPublishedSop(tx, {
@@ -114,7 +116,8 @@ export async function writeTemplateConfig(
     basedOn: null,
     renderedPrompt: rendered,
     ...hashes,
-    renderInputs: renderInputsFor(render, joinSop(imageSections), toolsJson, runtime.sopSections, brand),
+    policy: policy.policy,
+    renderInputs: renderInputsFor(render, joinSop(imageSections), toolsJson, runtime.sopSections, brand, policy.policyHash),
     changeNote: null,
     createdBy: null,
     createdByName: null,
@@ -175,6 +178,16 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
     let routes: Record<string, unknown>[];
     let hotels: Record<string, unknown>[];
     let imageSections: SopSection[];
+    let policy: ReturnType<typeof policySnapshot>;
+    try {
+      const file = path.join(o.dataDir, 'policy.json');
+      const raw = fs.existsSync(file)
+        ? JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file)))
+        : runtime.policy?.defaults;
+      policy = policySnapshot(runtime.policy, raw);
+    } catch {
+      return fail('policy_invalid：policy.json 不合格');
+    }
     try {
       imageSections = tenantImage(runtime, o.imageSop, brand);
       sections = splitSop(decodeSopFile(fs.readFileSync(path.join(o.dataDir, 'sop.md'))));
@@ -205,10 +218,11 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
       rules: runtime.contractRules(brand ? { brand } : 'legacy'),
       brand,
       hardRequirements: code.render(''),
+      policy: policy.policy,
     });
     if (violations.length)
       return fail(`contract_failed：${violations.map((v) => `${v.code}${v.sectionKey ? `@${v.sectionKey}` : ''} ${v.detail}`).join('；')}`);
-    const hashes = promptHashes(rendered, code.toolsJson, sopText);
+    const hashes = { ...promptHashes(rendered, code.toolsJson, sopText), policyHash: policy.policyHash };
 
     return await withTenant(o.db, platformCtx(tenant.id, 'import-config'), async (tx) => {
       await lockTenantConfig(tx);
@@ -223,7 +237,8 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
           basedOn: null,
           renderedPrompt: rendered,
           ...hashes,
-          renderInputs: renderInputsFor(code.render, joinSop(imageSections), code.toolsJson, runtime.sopSections, brand),
+          policy: policy.policy,
+          renderInputs: renderInputsFor(code.render, joinSop(imageSections), code.toolsJson, runtime.sopSections, brand, policy.policyHash),
           changeNote: '首次导入',
           createdBy: null,
           createdByName: 'import-config',
@@ -256,7 +271,9 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
       const editable = TRAVEL_SOP_SECTIONS.filter((s) => !s.locked);
       const pubMerged = pub ? mergeWithImage(pub.sections, imageSections) : [];
       const sopSame =
-        !!pub && editable.every((s) => pubMerged.find((x) => x.key === s.key)?.text === merged.find((x) => x.key === s.key)?.text);
+        !!pub &&
+        publishedPolicy(runtime.policy, pub).policyHash === policy.policyHash &&
+        editable.every((s) => pubMerged.find((x) => x.key === s.key)?.text === merged.find((x) => x.key === s.key)?.text);
       // 两边按同一个顺序排好再逐条比（库里按 kind、ord 读出，hotel 排在 route 前面）
       const inDb = (await readActiveCatalog(tx)).map((r) => itemKey(r.kind, r.code, r.ord, r.payload)).toSorted();
       const inFile = [
@@ -308,6 +325,7 @@ export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
   } catch (e) {
     return fail(`品牌快照不合格：${message(e)}`);
   }
+  const policy = publishedPolicy(runtime.policy, pub);
   if (brand) code = { ...code, render: tenantRenderer(runtime, brand) };
   let target: SopSection[];
   try {
@@ -318,7 +336,7 @@ export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
   const merged = mergeWithImage(pub.sections, target);
   const sopText = joinSop(merged);
   const rendered = code.render(sopText);
-  const hashes = promptHashes(rendered, code.toolsJson, sopText);
+  const hashes = { ...promptHashes(rendered, code.toolsJson, sopText), policyHash: policy.policyHash };
   if (o.targetImageSop !== undefined) {
     // 工具名与字段名按本镜像的代码查；目标版本的代码由它自己的 CI 在提交时再验一遍
     const violations = checkSopContract({
@@ -331,6 +349,7 @@ export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
       rules: runtime.contractRules(brand ? { brand } : 'legacy'),
       brand,
       hardRequirements: code.render(''),
+      policy: policy.policy,
     });
     if (violations.length)
       return fail(
@@ -344,6 +363,7 @@ export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
   fs.writeFileSync(path.join(o.outDir, 'sop.md'), sopText);
   fs.writeFileSync(path.join(o.outDir, 'routes.json'), `${JSON.stringify(payloads('route'), null, 2)}\n`);
   fs.writeFileSync(path.join(o.outDir, 'hotels.json'), `${JSON.stringify(payloads('hotel'), null, 2)}\n`);
+  fs.writeFileSync(path.join(o.outDir, 'policy.json'), `${JSON.stringify(policy.policy, null, 2)}\n`);
   const brandFile = path.join(o.outDir, 'brand.json');
   if (brand) fs.writeFileSync(brandFile, `${JSON.stringify(brand, null, 2)}\n`);
   else fs.rmSync(brandFile, { force: true });

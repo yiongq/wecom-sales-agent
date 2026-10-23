@@ -2,6 +2,7 @@
 // catalog_items.version（docs/architecture/02-conversations-workbench/spec.md「数据库」与各节的 DDL），03 的两张渠道表、
 // outbound_sends 的新列与新状态、conversations.channel_account_id（docs/architecture/03-channels-v2/spec.md「数据库」）。
 // 05 的 tenants 五列、四张沙箱表见 docs/architecture/05-tenancy-sandbox/spec.md「数据库」。
+// 07 的 kb_chunks、kb_vectors 见 docs/architecture/07-knowledge-aftersales/spec.md「数据库」（R11–R13）。
 // 这里只写表、索引和约束，由 drizzle-kit 生成迁移；RLS、策略、触发器、函数、授权，以及 drizzle 表达不了的约束
 // （orders 那条带列清单的 ON DELETE SET NULL (session_id)）在 custom 迁移里。
 // 列名一律显式写 snake_case，不依赖 casing 推导：迁移 SQL 与 spec 的 DDL 逐列对得上。
@@ -16,6 +17,7 @@ import {
   customType,
   date,
   foreignKey,
+  halfvec,
   index,
   inet,
   integer,
@@ -192,6 +194,7 @@ export interface RenderInputs {
   /** 04 R6：旧发布行可缺省（等同旧版）；新行总是写完整快照。 */
   brand?: BrandProfile | null;
   brandHash?: string;
+  policyHash?: string;
 }
 
 export const sopVersions = pgTable(
@@ -217,6 +220,7 @@ export const sopVersions = pgTable(
     toolsHash: text('tools_hash'),
     prefixHash: text('prefix_hash'),
     sopHash: text('sop_hash'),
+    policy: json('policy').$type<unknown>(),
     renderInputs: jsonb('render_inputs').$type<RenderInputs>(),
     changeNote: text('change_note'),
     createdBy: uuid('created_by').references(() => users.id),
@@ -400,7 +404,7 @@ export const orders = pgTable(
     sessionId: text('session_id'),
     /** 不对产品库建外键 */
     routeId: text('route_id').notNull(),
-    status: text('status', { enum: ['pending_payment', 'paid', 'cancelled', 'superseded'] }).notNull(),
+    status: text('status', { enum: ['pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending', 'refunded'] }).notNull(),
     totalPrice: integer('total_price').notNull(),
     createdAt: tstz('created_at').notNull(),
     /** 触发器：写入之后不能改、不能清空 */
@@ -414,7 +418,8 @@ export const orders = pgTable(
   (t) => [
     primaryKey({ columns: [t.tenantId, t.id] }),
     check('orders_id_check', sql`${t.id} ~ '^[A-Za-z0-9_-]{1,64}$'`),
-    check('orders_status_check', sql`${t.status} IN ('pending_payment', 'paid', 'cancelled', 'superseded')`),
+    check('orders_status_check', sql`${t.status} IN ('pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending', 'refunded')`),
+    check('orders_refund_paid_check', sql`${t.status} NOT IN ('refund_pending', 'refunded') OR ${t.paidAt} IS NOT NULL`),
     check('orders_total_price_check', sql`${t.totalPrice} >= 0`),
     check('orders_void_reason_check', sql`${t.voidReason} IN ('reset', 'resync')`),
     check('orders_data_check', sql`json_typeof(${t.data}) = 'object' AND coalesce(${t.data}->>'id' = ${t.id}, false)`),
@@ -497,7 +502,7 @@ export const usageDaily = pgTable(
     /** 服务器时区（TZ）的日期，'YYYY-MM-DD' */
     day: date('day', { mode: 'string' }).notNull(),
     model: text('model').notNull(),
-    purpose: text('purpose', { enum: ['chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding'] }).notNull(),
+    purpose: text('purpose', { enum: ['chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate'] }).notNull(),
     calls: integer('calls').notNull().default(0),
     promptTokens: bigint('prompt_tokens', { mode: 'number' }).notNull().default(0),
     completionTokens: bigint('completion_tokens', { mode: 'number' }).notNull().default(0),
@@ -508,7 +513,7 @@ export const usageDaily = pgTable(
   },
   (t) => [
     primaryKey({ columns: [t.tenantId, t.day, t.model, t.purpose] }),
-    check('usage_daily_purpose_check', sql`${t.purpose} IN ('chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding')`),
+    check('usage_daily_purpose_check', sql`${t.purpose} IN ('chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate')`),
   ],
 );
 
@@ -694,6 +699,57 @@ export const consents = pgTable(
   ],
 );
 
+// ---------------- 07：知识库块与向量（spec R11–R13，迁移 0016） ----------------
+// 两张派生表，都带 tenant_id、套 01 的 RLS 模板（迁移里），agent_app 有 SELECT / INSERT / UPDATE / DELETE：丢了可以按产品库重建。
+// 每轮对话照旧不查库：装载与产品库变化时读进内存，相似度在进程内算，库里没有 HNSW。
+
+/** 目前只收线路：一条线路一块，正文是 PackRuntime.retrievalText 的输出；正文变了换 body_hash，身份是（source, ref） */
+export const kbChunks = pgTable(
+  'kb_chunks',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    id: uuid('id').notNull().defaultRandom(),
+    source: text('source', { enum: ['route'] }).notNull(),
+    ref: text('ref').notNull(),
+    body: text('body').notNull(),
+    /** body 的 sha256 小写十六进制 */
+    bodyHash: text('body_hash').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.id] }),
+    unique('kb_chunks_tenant_id_source_ref_uq').on(t.tenantId, t.source, t.ref),
+    check('kb_chunks_source_check', sql`${t.source} IN ('route')`),
+    check('kb_chunks_body_hash_check', sql`${t.bodyHash} ~ '^[0-9a-f]{64}$'`),
+  ],
+);
+
+/**
+ * 向量：2048 维 halfvec（ADR-001 决策 6），一块一个模型一行；body_hash 是算这个向量时那块正文的哈希，对不上就是过期。
+ * 这张表只在 vector 扩展已装的库里有（迁移 0016 的 DO 块，R12）；PGlite 上没有，所以运行时先问库里有没有（kbVectorsInstalled），
+ * 不能在 PGlite 的路径上查它。这里照常定义，只给真实 Postgres 上的仓储（src/db/repo/kb.ts）用
+ */
+export const kbVectors = pgTable(
+  'kb_vectors',
+  {
+    tenantId: uuid('tenant_id').notNull(),
+    chunkId: uuid('chunk_id').notNull(),
+    model: text('model').notNull(),
+    bodyHash: text('body_hash').notNull(),
+    embedding: halfvec('embedding', { dimensions: 2048 }).notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.chunkId, t.model] }),
+    foreignKey({
+      name: 'kb_vectors_chunk_fk',
+      columns: [t.tenantId, t.chunkId],
+      foreignColumns: [kbChunks.tenantId, kbChunks.id],
+    }).onDelete('cascade'),
+    check('kb_vectors_body_hash_check', sql`${t.bodyHash} ~ '^[0-9a-f]{64}$'`),
+  ],
+);
+
 // ---------------- 03：渠道层 v2（spec「数据库」） ----------------
 // 两张新表都带 tenant_id、套 01 的 RLS 模板（custom 迁移）；agent_app 对它们没有 DELETE，入站行只经 purge_channel_inbox 与
 // 02 的清除、删除函数删除；channel_accounts 的列级 UPDATE、两个触发器也在 custom 迁移里
@@ -852,4 +908,41 @@ export const sandboxProcessEpoch = pgTable(
     epoch: bigint('epoch', { mode: 'bigint' }).notNull(),
   },
   (t) => [check('sandbox_process_epoch_id_check', sql`${t.id} = 1`)],
+);
+
+/** 07 R7：进度不入库，终态结果持久保存。 */
+export const sopGateRuns = pgTable(
+  'sop_gate_runs',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    id: uuid('id').notNull().defaultRandom(),
+    draftId: uuid('draft_id').notNull(),
+    draftRev: integer('draft_rev').notNull(),
+    status: text('status', { enum: ['queued', 'running', 'done', 'error', 'abandoned'] }).notNull(),
+    verdict: text('verdict', { enum: ['pass', 'fail'] }),
+    mock: boolean('mock').notNull(),
+    promptHash: text('prompt_hash').notNull(),
+    policyHash: text('policy_hash').notNull(),
+    draftKey: text('draft_key').notNull(),
+    baselineKey: text('baseline_key').notNull(),
+    results:
+      json('results').$type<Pick<import('../shared/console-api.js').GateRunView, 'draft' | 'baseline' | 'baselineReused' | 'blocking'>>(),
+    costMilli: bigint('cost_milli', { mode: 'number' }).notNull().default(0),
+    error: text('error'),
+    createdBy: uuid('created_by').references(() => users.id),
+    createdByName: text('created_by_name'),
+    createdAt: tstz('created_at').notNull().defaultNow(),
+    finishedAt: tstz('finished_at'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.id] }),
+    foreignKey({ columns: [t.tenantId, t.draftId], foreignColumns: [sopVersions.tenantId, sopVersions.id] }),
+    check('sop_gate_runs_status_check', sql`${t.status} IN ('queued','running','done','error','abandoned')`),
+    check('sop_gate_runs_verdict_check', sql`${t.verdict} IN ('pass','fail')`),
+    uniqueIndex('sop_gate_one_active')
+      .on(t.tenantId)
+      .where(sql`${t.status} IN ('queued','running')`),
+  ],
 );

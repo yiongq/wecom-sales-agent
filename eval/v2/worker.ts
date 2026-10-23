@@ -103,7 +103,7 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
       });
       order.status = fixture.status;
       order.createdAt = fixtureCreatedAt;
-      if (order.status === 'paid') order.paidAt = Date.now();
+      if (['paid', 'refund_pending', 'refunded'].includes(order.status)) order.paidAt = Date.now();
       store.saveOrder(order);
       session.orderIds.push(order.id);
     }

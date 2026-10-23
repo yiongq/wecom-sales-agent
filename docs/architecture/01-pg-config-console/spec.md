@@ -1,6 +1,8 @@
 # 01 · Postgres 底座 + 配置入库 + 后台 v0
 
 Status: implemented
+Superseded in part by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md) — 「启动重渲染」第 5 步「直接用存下的行」的条件加「`policyHash` 也相同」，第 6 步的原因清单与「审计」表 `sop.rerender` 的 `causes` 枚举加 `policy`（07 R1）。
+Amended by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md)（只做新增，全文见该 spec 顶部 `Amends:`：「版本与发布」「渲染与哈希」「导入、导出与回滚」的 `sop_versions.policy` 列、`render_inputs.policyHash`、导出与导入的 `policy.json`、违规码 `policy_invalid` / `policy_mismatch`、发布请求的 `gateRunId` / `override`、审计动作 `sop.policy_draft`，见 07 R1、R4、R5、R7）。
 Superseded in part by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md) — 不变量 3、23、24，R9 末句的单租户装载与公开路由（05 R1、R2、R4、R7）。
 Amended by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md)（「数据库」的 tenants 五列、沙箱表与四个函数及授权、channel_accounts INSERT 触发器，tenant-host / tenant-budget / sandbox 命令与审计动作，见 05 R7、R13、R15、R21、R22）。
 Superseded in part by: [02 · 会话入库 + 坐席工作台](../02-conversations-workbench/spec.md) — 不变量 4（`SESSION_STORE=db` 时改写，见 02「与 01、后台 UX spec 的关系」；文件存储下原文照旧）。按 02 的 plan 落地，原因见 02 顶部 `Supersedes in part:`

@@ -34,10 +34,11 @@ import { tryReserveVisitorLLM } from '../../budget.js';
 import { BudgetExhausted } from '../../llm-gate.js';
 import { numEnv, todayIso } from '../../env.js';
 import { profile } from '../../profile.js';
-import { configMode, currentSop, pinCatalogForTurn, currentPack, fileSopPath, renderFileSop } from '../../config/source.js';
+import { configMode, currentSop, pinCatalogForTurn, currentPack, currentPolicy, fileSopPath, renderFileSop } from '../../config/source.js';
 import { promptHashes } from '../../config/hashes.js';
 import { emergencyReason, HANDOFF_REASON, isTerminalStage, enterHandoff, terminalStageKey } from '../../handoff/record.js';
-import { TAKEN_OVER_NOTE, takeoverGen, prepareChannel, pushToChannel } from '../../handoff/takeover.js';
+import { TAKEN_OVER_NOTE, takeoverGen, prepareChannel, pushToChannel, awaitCommit } from '../../handoff/takeover.js';
+import { requestRefund } from '../../payment/refunds.js';
 import { createHandoffTriggers, type SensitiveCategory } from '../../handoff/trigger-rules.js';
 import {
   awaitingConsent,
@@ -289,7 +290,7 @@ async function handleMessageInner(
   receivedAt: number,
 ): Promise<AgentReply> {
   const state = beginTurn(sessionId, text, channel, opts, receivedAt);
-  const early = preflight(state);
+  const early = await preflight(state);
   if (early) return early;
   const { session, runtime, calls, answerIdentity, done } = state;
   const tools = turnTools(state);
@@ -297,6 +298,8 @@ async function handleMessageInner(
     session,
     text: state.text,
     brand: state.binding.brand,
+    policy: state.policy,
+    policyHash: state.policyHash,
     callTool: async (name, args) => {
       const result = await tools.runTool(name, args, { prefetch: true });
       return { name, args: calls[calls.length - 1]?.args ?? args, result };
@@ -340,6 +343,9 @@ interface TurnState {
   session: Session;
   binding: PackBinding;
   runtime: PackBinding['runtime'];
+  /** 本轮捕获的已发布 policy 与哈希（07 R1），与 binding 同一刻取，整轮沿用 */
+  policy: unknown;
+  policyHash: string;
   triggers: ReturnType<typeof createHandoffTriggers>;
   answerIdentity(text: string, reply: string): string;
   done(outcome: TurnOutcome, reply: AgentReply, message?: ChatMessage): AgentReply;
@@ -353,6 +359,7 @@ interface TurnState {
 function beginTurn(sessionId: string, text: string, channel: string, opts: HandleOpts, receivedAt: number): TurnState {
   const binding = currentPack();
   const { runtime } = binding;
+  const { policy, policyHash } = currentPolicy();
   const texts = brandTexts(runtime, binding.brand);
   text = inboundText(text);
   const session = getOrCreateSession(sessionId, channel);
@@ -385,6 +392,8 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
     session,
     binding,
     runtime,
+    policy,
+    policyHash,
     triggers: createHandoffTriggers(runtime.vocab.handoff),
     answerIdentity: (text, reply) => coreAnswerIdentity(text, reply, texts.identityAnswer),
     done,
@@ -395,7 +404,7 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
   };
 }
 
-function preflight(state: TurnState): AgentReply | null {
+async function preflight(state: TurnState): Promise<AgentReply | null> {
   const { text, opts, session, runtime, triggers, answerIdentity, done } = state;
   const { isComplaint, isHandoffIntent, departNoteForHandoff, safetyNetKind, handoffReply } = runtime.engineHooks;
   const { negativeLevel, pushWindow, SENTIMENT_WINDOW, emergencyOf, consentWithdrawalOf, sentimentThresholdReached } = triggers;
@@ -549,6 +558,64 @@ function preflight(state: TurnState): AgentReply | null {
 
   // 负面情绪：这条客户消息的强弱在入库时已经记进窗口（见上）；企微重放不再记，阈值照现有的窗口判。
   // 交互失败的窗口在回复出来之后才记，重放照常记
+
+  // 07 R18：投诉与已达阈值的负面情绪优先，售后不调用模型、不决定钱。
+  if (!isComplaint(text) && !sentimentThresholdReached(session.negativeHits ?? [])) {
+    const step = runtime.engineHooks.afterSales?.({
+      session,
+      text,
+      policy: state.policy,
+      policyHash: state.policyHash,
+      brand: state.binding.brand,
+      today: todayIso(),
+    });
+    if (step) {
+      let reply: string;
+      if (step.kind === 'reply') reply = step.text;
+      else if (step.kind === 'handoff') {
+        enterHandoff(session, { ...step.record, quote: cleanText(step.record.quote ?? text, 200), at: Date.now() });
+        reply = step.text;
+      } else {
+        const terms = runtime.policy?.refund(state.policy);
+        if (!terms) throw new Error('售后提交缺少退款条款');
+        const result = requestRefund(step.quote, terms);
+        if ('busy' in result) reply = step.texts.busy;
+        else if (!result.created) reply = step.texts.duplicate;
+        else if (result.needsHuman) {
+          const amount = `¥${step.quote.amount.toLocaleString('en-US')}`;
+          const title = runtime.policy!.clauses(state.policy).find((c) => c.id === step.quote.tier.id)?.title ?? '退改条款';
+          const reason =
+            result.order.refund!.approval === 'pending'
+              ? `退款待审批：${amount}（${title}）`
+              : `退款待打款：${amount}（已自动批准，按原付款方式退回）`;
+          enterHandoff(session, { kind: 'refund', reason, quote: cleanText(text, 200), at: Date.now() });
+          reply = step.texts.submitted;
+        } else {
+          // 会话已无法落库（poisoned 或冲突）时 awaitCommit 会抛：与超时一样不说「已办好」，回「正在处理」并转人工（不变量 7）
+          const persisted = await awaitCommit(session.id).then(
+            (r) => r.persisted,
+            () => false,
+          );
+          reply = persisted ? step.texts.done : step.texts.delayed;
+          if (!persisted)
+            enterHandoff(session, { kind: 'refund', reason: step.texts.delayed, quote: cleanText(text, 200), at: Date.now() });
+        }
+      }
+      reply = cleanText(answerIdentity(text, reply));
+      const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+      session.messages.push(msg);
+      saveSession(session);
+      return done(
+        session.handedOver ? 'handoff' : 'deterministic',
+        {
+          text: reply,
+          stage: session.stage,
+          ...(session.handedOver ? { handoff: true } : {}),
+        },
+        msg,
+      );
+    }
+  }
 
   // 转人工安全网：明确要人工/投诉/退款时，引擎确定性转人工，不赌模型是否调工具
   // （模型常「嘴上说转接、实际没调 handoff」，导致下一句又继续卖）。
@@ -771,6 +838,8 @@ async function finishTurn(
     text: raw,
     raw,
     inputText: text,
+    policy: state.policy,
+    policyHash: state.policyHash,
     stageAtStart,
     ordersBefore,
     handoffDeclined,

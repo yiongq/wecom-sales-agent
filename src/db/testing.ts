@@ -19,6 +19,7 @@ import { rebuildSessions, rowToOrder } from '../store/project.js';
 import type { Order, Session } from '../types.js';
 import { assertPgUrl, countingLogger, registerDriver, resetSessionTenant, withTenant, type Db, type TenantLock } from './client.js';
 import { MIGRATIONS_DIR, runMigrations } from './migrate.js';
+import { installVectorExtension } from './testing-extensions.js';
 import { readSessionBatch } from './repo/conversations.js';
 import * as schema from './schema.js';
 
@@ -414,7 +415,8 @@ export interface RealPgFixture {
 
 /**
  * PG_TEST_URL（专用测试集群的超级用户连接串）上建一个临时库：按 deploy/db-init/roles.sql 建角色（角色是集群级的，
- * 已存在就改口令，与 db.selftest 同一做法）、以 agent_owner 跑迁移、以超级用户建租户。不要指向开发或线上用的集群
+ * 已存在就改口令，与 db.selftest 同一做法）、超级用户在应用库里装 extensions.sql 的扩展（07 R12：agent_owner 建不了，集群镜像里没有 vector
+ * 时跳过）、以 agent_owner 跑迁移、以超级用户建租户。不要指向开发或线上用的集群
  */
 export async function createRealPgFixture(superUrl: string, opts: { slug?: string } = {}): Promise<RealPgFixture> {
   assertPgUrl(superUrl);
@@ -465,11 +467,12 @@ export async function createRealPgFixture(superUrl: string, opts: { slug?: strin
       app: urlAs('agent_app', pw.app),
       platform: urlAs('agent_platform', pw.platform),
     };
-    await runMigrations(urls.owner);
     const c = new pg.Client({ connectionString: urls.super });
     withoutTenantScope(() => c.on('error', () => {}));
     await c.connect();
     inDb = c;
+    await installVectorExtension((text) => c.query(text));
+    await runMigrations(urls.owner);
     const slug = opts.slug ?? 'demo';
     const [t] = (await c.query<{ id: string }>(`insert into tenants (slug, name, pack_id) values ($1, $1, 'travel') returning id`, [slug]))
       .rows;

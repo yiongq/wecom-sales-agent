@@ -1,7 +1,7 @@
 // 四个哈希与 render_inputs 的算法（spec「渲染与哈希」）。导入、启动装载、发布、回滚、导出都用这一份，
 // 任何一处算法不同，存下来的哈希就对不上。
 import { createHash } from 'node:crypto';
-import { BrandProfileSchema, type BrandProfile } from '../core/pack-api.js';
+import { BrandProfileSchema, deepFreeze, type BrandProfile, type PackPolicy } from '../core/pack-api.js';
 import type { RenderInputs } from '../db/schema.js';
 import { TRAVEL_SOP_SECTIONS, type SectionSpec } from '../sop/sections.js';
 
@@ -20,6 +20,26 @@ export function publishedBrand(inputs: RenderInputs | null): ReturnType<typeof b
   const snapshot = brandSnapshot(inputs.brand);
   if (snapshot.brandHash !== inputs.brandHash) throw new Error('品牌快照哈希不匹配');
   return snapshot;
+}
+
+/** 07：规范化、复制并冻结，运行时与写入路径共用。无 policy 能力的包取 null。 */
+export function policySnapshot(pack: PackPolicy | undefined, value: unknown = pack?.defaults): { policy: unknown; policyHash: string } {
+  const policy = pack ? pack.schema.parse(value) : null;
+  const canonical = pack ? pack.canonical(policy) : 'null';
+  return deepFreeze({ policy: JSON.parse(canonical), policyHash: sha256(canonical) });
+}
+
+/** 旧行按默认值；已有快照只补新字段，不能被新默认值覆盖。 */
+export function publishedPolicy(
+  pack: PackPolicy | undefined,
+  row: { policy: unknown; renderInputs: RenderInputs | null },
+): ReturnType<typeof policySnapshot> {
+  if (row.policy == null && row.renderInputs?.policyHash === undefined) return policySnapshot(pack);
+  if (row.renderInputs?.policyHash === undefined) throw new Error('政策快照不完整');
+  const parsed = pack?.schema.safeParse(row.policy);
+  const oldCanonical = pack && parsed?.success ? pack.canonical(parsed.data) : JSON.stringify(row.policy);
+  if (sha256(oldCanonical) !== row.renderInputs.policyHash) throw new Error('政策快照哈希不匹配');
+  return policySnapshot(pack, pack ? pack.upgrade(row.policy) : null);
 }
 
 export interface PromptHashes {
@@ -43,6 +63,7 @@ export function renderInputsFor(
   toolsJson: string,
   spec: readonly SectionSpec[] = TRAVEL_SOP_SECTIONS,
   brand: BrandProfile | null = null,
+  policyHash?: string,
 ): RenderInputs {
   return {
     hardRulesHash: sha256(render('')),
@@ -50,5 +71,6 @@ export function renderInputsFor(
     sectionTableHash: sha256(JSON.stringify(spec)),
     toolsHash: sha256(toolsJson),
     ...brandSnapshot(brand),
+    ...(policyHash === undefined ? {} : { policyHash }),
   };
 }

@@ -15,6 +15,8 @@ import {
 
 import type { BrandProfile, SopContractRule } from '../core/pack-api.js';
 import { SOP_CONTRACT } from '../packs/travel/sop.js';
+import { policyViolations } from '../packs/travel/policy-lint.js';
+import { defaultTravelPolicy } from '../packs/travel/policy.js';
 import { sopConsistencyViolations } from '../packs/travel/consistency-sop.js';
 export { SOP_CONTRACT, SOP_KNOWN_FIELDS, KNOWN_FIELD_SOURCES } from '../packs/travel/sop.js';
 export type { SopContractRule as ContractRule } from '../core/pack-api.js';
@@ -50,10 +52,11 @@ export function checkSopContract(input: {
    * 只有自测要单独看别的检查项时才传 false。
    */
   consistency?: boolean;
+  policy?: unknown;
 }): ContractViolation[] {
   const spec = input.spec ?? TRAVEL_SOP_SECTIONS;
   const out: ContractViolation[] = [];
-  // match 是前端在正文里查找、生成说明用的原文（后台 UX spec「检查」）：只有短语与标识符四类有，其余不带这个键
+  // match 是前端在正文里查找、生成说明用的原文（后台 UX spec「检查」）：短语、标识符与一致性检查使用，policy_mismatch 也点名原句
   const add = (code: ViolationCode, sectionKey: string | null, detail: string, match?: string): void => {
     out.push(match === undefined ? { code, sectionKey, detail } : { code, sectionKey, detail, match });
   };
@@ -160,5 +163,6 @@ export function checkSopContract(input: {
       );
     }
   }
+  if (input.policy !== null) out.push(...policyViolations(input.policy === undefined ? defaultTravelPolicy : input.policy, input.sections));
   return out;
 }

@@ -1,6 +1,8 @@
 # 04 · 行业包抽取
 
 Status: implemented
+Superseded in part by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md) — 「主流程」里「紧急、撤回同意、已接管静默、重置口令关着时的回复、明确要人工、负面情绪在记客户消息之后」这一串顺序：在「重置口令关着时的回复」与「明确要人工」之间插入包的售后钩子 `afterSales`（07 R18）；不变量 4 与验收 7（06 已改写）的步骤表再加 07 新增的 `policy_claims`，原有步骤的相对顺序不变（07 R22）。
+Amended by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md)（只做新增，全文见该 spec 顶部 `Amends:`：`PackRuntime` 新增可选成员 `policy`，`EnginePackHooks` 新增可选成员 `afterSales`，`pack-api` 新增纯函数 `quoteRefund`，`SimGoal` 新增 `tags`、`initial.orders.status` 加两个新值，模拟评测运行时新增 `--config-dir`，见 07 R1、R8、R9、R18）。
 Superseded in part by: [06 · AI 回复质量](../06-reply-quality/spec.md) — 不变量 4 与验收 7 的「执行顺序 / 标识顺序等于开工步骤表」改为等于开工步骤表加 06 新增的步骤，原有步骤的相对顺序不变（06 R10–R13、R7）。
 Amended by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md)（R2 的 bindPack 绑定归租户运行时，R14 的回滚检查新增 pre-05，见 05 R3、R18）。
 Phase: 4 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」（2026-10-10 拆分之后的编号）

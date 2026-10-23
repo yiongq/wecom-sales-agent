@@ -1,3 +1,4 @@
+import type { PaymentMode } from '../../../src/shared/conversation-types.js';
 // 会话工作台（J 页，02 spec「后台页面 · 会话工作台（J 页）」，设计系统 §10.2 J 页）。路由 /conversations/$id，$id 经
 // encodeURIComponent。三栏：列表 320（分组：等人接手、顾问处理中、AI接待中、已成交，没有会话的组不画）、对话（自适应）、
 // 「客户与交接」360；进入时侧栏收起（shell/model.ts collapsedByDefault）。
@@ -8,15 +9,7 @@ import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import { Button, Dropdown, Input, Modal, Switch } from 'antd';
 import { Ellipsis, MessagesSquare } from 'lucide-react';
 import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
-import type {
-  ConversationDetail,
-  MessageView,
-  OrderView,
-  Role,
-  TurnDiffView,
-  TurnStepsView,
-  TurnTraceView,
-} from '../../../src/shared/console-api.js';
+import type { ConversationDetail, MessageView, OrderView, Role, TurnDiffView, TurnStepsView } from '../../../src/shared/console-api.js';
 import { conversationState } from '../../../src/shared/conversation.js';
 import { clockTime } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
@@ -27,7 +20,6 @@ import { popupRegion } from '../parts/popupRegion.js';
 import { PrimaryButton } from '../parts/PrimaryButton.js';
 import { EmptyBlock, Skeleton, StateView } from '../parts/StateView.js';
 import { Status } from '../parts/Status.js';
-import { TechDetails } from '../parts/TechDetails.js';
 import { conversationDetailQuery } from '../queries.js';
 import { useDocumentTitle } from '../shell/hooks.js';
 import { Icon } from '../shell/icons.js';
@@ -39,6 +31,7 @@ import { refreshSandboxProgress, usePack, useViewer } from '../viewer.js';
 import { OwnConversationTag, SimulatorLink } from '../sandbox/Sandbox.js';
 import { stageLabel } from './model.js';
 import { QuickRepliesCard } from './QuickReplies.js';
+import { TraceTab } from './TraceDetail.js';
 import {
   advisorLabel,
   CAN_HANDLE_ROLES,
@@ -52,6 +45,8 @@ import {
   ORDER_STATUS_LABEL,
   orderLine,
   quoteLine,
+  refundActions,
+  refundLine,
   sendWindowView,
   type SendWindowView,
   stepsLine,
@@ -616,7 +611,7 @@ function ReplyBox({
 
 // ---------------- 右栏 ----------------
 
-function OrderRow({
+export function OrderRow({
   o,
   canConfirm,
   canMarkPaid,
@@ -626,6 +621,11 @@ function OrderRow({
   confirmError,
   markPaidError,
   cancelError,
+  role = null,
+  mode = 'online',
+  onRefund,
+  refundError,
+  refundPending = false,
 }: {
   o: OrderView;
   canConfirm: boolean;
@@ -636,8 +636,17 @@ function OrderRow({
   confirmError: unknown;
   markPaidError: unknown;
   cancelError: unknown;
+  role?: Role | null;
+  mode?: PaymentMode;
+  onRefund?: (action: 'approve' | 'reject' | 'settle', reason?: string) => void;
+  refundError?: unknown;
+  refundPending?: boolean;
 }) {
   const [cancelOpen, setCancelOpen] = useState(false);
+  const [rejectOpen, setRejectOpen] = useState(false);
+  const [reason, setReason] = useState('');
+  const actions = refundActions(o, role, canMarkPaid, mode);
+  const refund = refundLine(o);
   return (
     <div className="wb-order">
       <p className="wb-order-line">{cjk(orderLine(o))}</p>
@@ -663,6 +672,49 @@ function OrderRow({
           )}
         </div>
       )}
+      {refund && <p>{refund}</p>}
+      {o.status === 'refunded' && o.refund && (
+        <p>{`结算时间：${o.refund.settledAt === null ? '—' : new Date(o.refund.settledAt).toLocaleString('zh-CN')} · ${o.refund.settlement === 'mock' ? '模拟退款' : '顾问退款'}`}</p>
+      )}
+      {actions.approve && (
+        <div className="wb-order-actions">
+          <Button size="small" disabled={refundPending} onClick={() => onRefund?.('approve')}>
+            批准退款
+          </Button>
+          <Button size="small" disabled={refundPending} onClick={() => setRejectOpen(true)}>
+            驳回退款
+          </Button>
+        </div>
+      )}
+      {actions.settle && (
+        <Button size="small" disabled={refundPending} onClick={() => onRefund?.('settle')}>
+          确认已退款
+        </Button>
+      )}
+      <Modal
+        open={rejectOpen}
+        title="驳回退款申请"
+        onCancel={() => setRejectOpen(false)}
+        footer={
+          <>
+            <Button onClick={() => setRejectOpen(false)}>返回</Button>
+            <PrimaryButton
+              disabled={!reason.trim() || refundPending}
+              onClick={() => {
+                onRefund?.('reject', reason.trim());
+                setRejectOpen(false);
+                setReason('');
+              }}
+            >
+              驳回退款
+            </PrimaryButton>
+          </>
+        }
+      >
+        <label htmlFor={`refund-reason-${o.id}`}>驳回原因</label>
+        <Input.TextArea id={`refund-reason-${o.id}`} value={reason} maxLength={200} showCount onChange={(e) => setReason(e.target.value)} />
+      </Modal>
+      <InlineError error={refundError} />
       <InlineError error={confirmError} />
       <InlineError error={markPaidError} />
       <InlineError error={cancelError} />
@@ -679,32 +731,6 @@ function OrderRow({
       >
         取消之后这张订单作废，不能恢复；客户需要新的报价才能再下单。
       </ConfirmDanger>
-    </div>
-  );
-}
-
-function TraceTab({ id, turnId }: { id: string; turnId: string | null }) {
-  const q = useQuery({
-    queryKey: [...CONV_PREFIX, 'turnTrace', id, turnId] as const,
-    queryFn: () => unwrap(api.conversations[':id'].turns[':turnId'].$get({ param: { id, turnId: turnId! } })),
-    enabled: turnId !== null,
-  });
-  if (turnId === null) return <p className="wb-side-empty">选中一条AI回复，看它为什么这么回</p>;
-  if (q.isPending) return <Skeleton rows={4} />;
-  if (q.error) return <InlineError error={q.error} />;
-  const t: TurnTraceView = q.data!;
-  return (
-    <div className="wb-trace">
-      <p>{`模型用了${t.durationMs}毫秒`}</p>
-      <p>{`阶段：${t.stageBefore ?? '—'} → ${t.stageAfter ?? '—'}`}</p>
-      <TechDetails
-        rows={[
-          ['SOP版本', String(t.sopVersion ?? '—')],
-          ['前缀哈希', t.prefixHash],
-          ['产品库版本', JSON.stringify(t.catalogVersions)],
-        ]}
-        json={{ calls: t.calls, llm: t.llm, signals: t.signals, draft: t.draft, finalText: t.finalText }}
-      />
     </div>
   );
 }
@@ -787,6 +813,16 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
     mutationFn: ({ orderId, reason }: { orderId: string; reason: string }) =>
       unwrap(api.orders[':id'].cancel.$post({ param: { id: orderId }, json: { reason } })),
     onSuccess: invalidate,
+  });
+  const refundOrder = useMutation({
+    mutationFn: ({ orderId, action, reason }: { orderId: string; action: 'approve' | 'reject' | 'settle'; reason?: string }) => {
+      const route = api.orders[':id'].refund;
+      const param = { id: orderId };
+      if (action === 'reject') return unwrap(route.reject.$post({ param, json: { reason: reason! } }));
+      if (action === 'approve') return unwrap(route.approve.$post({ param }));
+      return unwrap(route.settle.$post({ param }));
+    },
+    onSettled: invalidate,
   });
   const loadEarlier = useMutation({
     mutationFn: (beforeSeq: number) =>
@@ -963,6 +999,11 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
                     confirmError={confirmOrder.error}
                     markPaidError={markPaid.error}
                     cancelError={cancelOrder.error}
+                    role={me.role}
+                    mode={detail.paymentMode}
+                    onRefund={(action, reason) => refundOrder.mutate({ orderId: o.id, action, reason })}
+                    refundError={refundOrder.variables?.orderId === o.id ? refundOrder.error : null}
+                    refundPending={refundOrder.isPending}
                   />
                 ))
               )}

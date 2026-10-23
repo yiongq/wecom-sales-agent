@@ -120,7 +120,7 @@ function check(name: string, cond: boolean, detail = ''): void {
   } else fails.push(`${name}${detail ? `：${detail}` : ''}`);
 }
 const json = (v: unknown): string => JSON.stringify(v);
-// 04 开工表的 28 个执行位置加 06 第 1 步的四个放行步骤（共 32 个）；中止时只允许这个序列的前缀。
+// 04 开工表的 28 个执行位置加 06 第 1 步的四个放行步骤、07 R22 的 policy_claims（共 33 个）；中止时只允许这个序列的前缀。
 const replyStepIds = [
   'pre_clean',
   'takeover_check:pre',
@@ -138,6 +138,7 @@ const replyStepIds = [
   'encyclopedia',
   'unbacked_claims',
   'claim_words',
+  'policy_claims',
   'price',
   'stranded',
   'adults',
@@ -480,8 +481,8 @@ const YUNNAN = 'r-yunnan-mid';
       json(row.reply_shape),
     );
     check(
-      '04：完整裁决含 32 个步骤（28 个原有加 06 的四个）与放行，旧 guard_events 仍只记一次文字改写',
-      row.guard_verdicts?.length === 32 && row.guard_verdicts.some((v) => v.action === 'pass') && turn.turn.guards.length === 1,
+      '04：完整裁决含 33 个步骤（28 个原有加 06 的四个、07 R22 的 policy_claims）与放行，旧 guard_events 仍只记一次文字改写',
+      row.guard_verdicts?.length === 33 && row.guard_verdicts.some((v) => v.action === 'pass') && turn.turn.guards.length === 1,
     );
     check('trace：outcome=replied，阶段前后', row.outcome === 'replied' && row.stage_before === 'greeting' && !!row.stage_after, json(row));
     check(

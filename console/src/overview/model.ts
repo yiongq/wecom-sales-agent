@@ -10,18 +10,22 @@ import type {
   ContractViolation,
   ConversationCounts,
   ConversationRow,
+  DealsPart,
   DraftCheck,
+  HandoffPart,
   MetricsView,
   OrderSummary,
+  OrderSummaryPart,
   OrderView,
   SopOverview,
   Status,
   ViolationCode,
 } from '../../../src/shared/console-api.js';
 import { auditRuns, describeAudit, type AuditLookups, type AuditPart } from '../../../src/shared/audit-text.js';
-import type { PaymentMode } from '../../../src/shared/conversation-types.js';
+import { isHandoffKind, type PaymentMode } from '../../../src/shared/conversation-types.js';
+import { ORIGINS, type OriginView } from '../../../src/shared/origin.js';
 import { absoluteTime, clockTime, dateText, dayKey, dayTime, digits, money, percent, relativeTime } from '../../../src/shared/format.js';
-import { terminalStages } from '../../../src/shared/conversation.js';
+import { HANDOFF_NOTICE_TEXT, terminalStages } from '../../../src/shared/conversation.js';
 import { checkItem, type CheckIssue, type EntityType, type IndustryPack, valueAt } from '../../../src/shared/pack.js';
 import { sectionBody, SopStructureError } from '../../../src/shared/sop-sections.js';
 import { actorName, SOP_CHECKS } from '../../../src/shared/ui-labels.js';
@@ -299,6 +303,8 @@ export function sopProblemText(v: ContractViolation, pack: IndustryPack, sop: Pi
     unknown_field: `${where}有个字段名写错了`,
     over_budget: '字数超出了额度',
     consistency: `${where}有和固定对客文字矛盾的话`,
+    policy_invalid: '退改条款无效',
+    policy_mismatch: `${where}有和退改条款或定价规则不一致的话`,
   };
   return Object.hasOwn(text, v.code) ? text[v.code] : `${where}有个问题`;
 }
@@ -323,7 +329,11 @@ export function sopTodo(sop: SopOverview, check: DraftCheck | undefined, pack: I
     key: 'sop',
     icon: { page: 'sop' },
     type: { text: '话术草稿' },
-    title: changes.length ? `改了${changes.length}节：${names.join('、')}` : '草稿和线上一样',
+    title: changes.length
+      ? `改了${changes.length}节：${names.join('、')}`
+      : JSON.stringify(sop.draft.policy ?? null) !== JSON.stringify(sop.published.policy ?? null)
+        ? '修改退改条款'
+        : '草稿和线上一样',
     context,
     action: '继续编辑',
     target: { kind: 'sop' },
@@ -400,7 +410,7 @@ export const todoOrder = (attention: readonly TodoRow[], sop: TodoRow | null, ca
 
 // ---------------- A2：本月成交额、运行数字（都不是链接，不用 Kpi/KpiTarget 那一套） ----------------
 
-/** 「本月成交额」与运行数字的四个格：都不点了去哪里（spec 没给「点了去」），数字已经格式化成字符串，没有数据时是「—」 */
+/** 「本月成交额」、运行数字与成交、转人工的格：都不点了去哪里（spec 没给「点了去」），数字已经格式化成字符串，没有数据时是「—」 */
 export interface StaticKpi {
   key: string;
   label: string;
@@ -409,19 +419,23 @@ export interface StaticKpi {
   caption: readonly string[];
   /** 明细行：没有时不画 */
   breakdown: readonly string[] | null;
+  /** 07 R23：几行「名称 → 数」，画在口径下面（成交拆分、按原因的转人工率）；没有时不画。value 数组各段用 Sep 隔开，sub 是缩进的从属行 */
+  rows?: readonly { label: string; value: readonly string[]; sub?: true }[] | null;
 }
 
 /**
  * 「本月成交额（元）」KPI 格（02 spec「后台页面 · 总览 A2」）：只给所有者、管理员。口径固定写死（接口按自然月、
- * 未作废的已付订单算好，这里不重算）；待付款为 0 时不写明细（没有「另有待付0元」这种句子）
+ * 未作废的已付订单算好，这里不重算）；待付款为 0 时不写明细（没有「另有待付0元」这种句子）。
+ * 07 R23：跟着来源视图走（view 不给就是全部，同原来）；不是全部时口径后面标出看的是哪一类
  */
-export function monthlyRevenueKpi(summary: OrderSummary): StaticKpi {
+export function monthlyRevenueKpi(summary: OrderSummary, view: OriginView = 'all'): StaticKpi {
+  const part: OrderSummaryPart = view === 'all' ? summary : summary.byOrigin[view];
   return {
     key: 'monthlyRevenue',
     label: '本月成交额（元）',
-    value: digits(summary.paidTotal),
-    caption: ['本月已付款订单的总额'],
-    breakdown: summary.pendingCount > 0 ? [`另有待付${money(summary.pendingTotal)}`] : null,
+    value: digits(part.paidTotal),
+    caption: view === 'all' ? ['本月已付款订单的总额'] : ['本月已付款订单的总额', originViewLabel(view)],
+    breakdown: part.pendingCount > 0 ? [`另有待付${money(part.pendingTotal)}`] : null,
   };
 }
 
@@ -463,6 +477,104 @@ export function metricsKpis(m: MetricsView): StaticKpi[] {
       breakdown: [`${days}共${m.costRangeYuan.toFixed(2)}元`],
     },
   ];
+}
+
+// ---------------- 07 R23：成交与转人工，按来源看 ----------------
+
+/** 来源视图：真实客户（默认）、访客、种子、全部。「真实客户」不含种子与访客（不变量 20） */
+export const ORIGIN_VIEWS: readonly { key: OriginView; label: string }[] = [
+  { key: 'customer', label: '真实客户' },
+  { key: 'visitor', label: '访客' },
+  { key: 'seed', label: '种子' },
+  { key: 'all', label: '全部' },
+];
+/** 默认视图：standard 租户看真实客户；沙箱里没有真实客户（Me.sandbox 不为空），默认看访客 */
+export const defaultOriginView = (sandbox: boolean): OriginView => (sandbox ? 'visitor' : 'customer');
+export const originViewLabel = (view: OriginView): string => ORIGIN_VIEWS.find((v) => v.key === view)!.label;
+
+/** 一个视图的成交拆分：全部是三类来源相加 */
+export function dealsOfView(deals: MetricsView['deals'], view: OriginView): DealsPart {
+  if (view !== 'all') return deals[view];
+  const sum: DealsPart = {
+    aiOnly: 0,
+    aiOnlyAmount: 0,
+    aiOnlyRefunded: 0,
+    assisted: 0,
+    assistedAmount: 0,
+    assistedRefunded: 0,
+    refunded: 0,
+  };
+  for (const o of ORIGINS) for (const k of Object.keys(sum) as (keyof DealsPart)[]) sum[k] += deals[o][k];
+  return sum;
+}
+
+/** 一个视图的转人工：全部是接口给的合计（会话数是三类相加） */
+export function handoffOfView(m: MetricsView, view: OriginView): HandoffPart {
+  if (view !== 'all') return m.handoffByOrigin[view];
+  return { sessions: ORIGINS.reduce((n, o) => n + m.handoffByOrigin[o].sessions, 0), byKind: m.handoffByKind, takeovers: m.takeovers };
+}
+
+/**
+ * 「成交拆分」格：窗口内付过款的订单，按付款前转没转过人工拆成 AI 独立成交和人机协同成交，各带「其中已退款」。
+ * 没有成交时写 0 和一句说明（空状态）。金额是元，已退款的单按原成交额算在里面
+ */
+export function dealsKpi(m: MetricsView, view: OriginView): StaticKpi {
+  const d = dealsOfView(m.deals, view);
+  const days = `近${m.days}天`;
+  const total = d.aiOnly + d.assisted;
+  const base = { key: 'deals', label: '成交拆分（单）' } as const;
+  if (total === 0) return { ...base, value: '0', caption: [`${days}没有付过款的订单`], breakdown: null };
+  return {
+    ...base,
+    value: digits(total),
+    caption: [`${days}付过款的订单`],
+    breakdown: null,
+    rows: [
+      { label: 'AI独立成交', value: [`${digits(d.aiOnly)}单`, money(d.aiOnlyAmount)] },
+      { label: '其中已退款', value: [`${digits(d.aiOnlyRefunded)}单`], sub: true },
+      { label: '人机协同成交', value: [`${digits(d.assisted)}单`, money(d.assistedAmount)] },
+      { label: '其中已退款', value: [`${digits(d.assistedRefunded)}单`], sub: true },
+    ],
+  };
+}
+
+/** 比率的写法：四舍五入到整数，但有转人工的不写成 0%（写「不到1%」） */
+const rateText = (r: number): string => (r > 0 && r < 0.005 ? '不到1%' : percent(r));
+/** 转人工的原因（接口 kind）的中文，同提醒标题用的那一张表；表里没有的类型不画（库里读回的脏数据） */
+const reasonText = (k: string): string | null => (isHandoffKind(k) ? HANDOFF_NOTICE_TEXT[k] : null);
+/** 格子里最多列几个原因：最多的一个在大数字旁，其余列在下面 */
+const REASON_ROWS = 4;
+
+/**
+ * 「转人工率（按原因）」格：窗口内有这类转人工记录的会话占有轮次会话的比例。大数字是最多的那个原因的比率，下面接着列其余的
+ * （最多再列 4 个，按比率从高到低），顾问主动接手不算原因、单列次数。只统计进库的会话：宿主的访客、种子永不进库，
+ * 这两个视图里没有会话，写明原因而不是写 0%
+ */
+export function handoffKpi(m: MetricsView, view: OriginView): StaticKpi {
+  const h = handoffOfView(m, view);
+  const days = `近${m.days}天`;
+  const base = { key: 'handoffByKind', label: '转人工率（按原因）' } as const;
+  const takeovers = h.takeovers > 0 ? [`顾问主动接手${digits(h.takeovers)}次`] : null;
+  if (h.sessions === 0) {
+    const caption = view === 'visitor' || view === 'seed' ? ['只统计进库的会话'] : [`${days}没有会话`];
+    return { ...base, value: '—', caption, breakdown: takeovers };
+  }
+  const reasons = Object.entries(h.byKind)
+    .flatMap(([k, rate]) => {
+      const text = k === 'agent' ? null : reasonText(k);
+      return text !== null && typeof rate === 'number' && rate > 0 ? [{ text, rate }] : [];
+    })
+    .sort((a, b) => b.rate - a.rate || (a.text < b.text ? -1 : 1)); // flatMap 给的是新数组，原地排没有副作用
+  const top = reasons[0];
+  if (!top) return { ...base, value: '0%', caption: [`${days}没有会话转人工`], breakdown: takeovers };
+  const rest = reasons.slice(1, 1 + REASON_ROWS);
+  return {
+    ...base,
+    value: rateText(top.rate),
+    caption: [`最多的是${top.text}`],
+    breakdown: takeovers,
+    rows: rest.length ? rest.map((r) => ({ label: r.text, value: [rateText(r.rate)] })) : null,
+  };
 }
 
 // ---------------- 系统状态 ----------------

@@ -6,7 +6,16 @@ import { z } from 'zod';
 import type { ChannelKind, ChannelAccountStatus } from './channel-types.js';
 import type { Hotel, Route } from './catalog-types.js';
 import type { CatalogKind } from './catalog.js';
-import type { DeliveryView, HandoffKind, MessageAuthor, OrderStatus, PaymentMode, SendWindow } from './conversation-types.js';
+import {
+  isHandoffKind,
+  type DeliveryView,
+  type HandoffKind,
+  type MessageAuthor,
+  type OrderStatus,
+  type PaymentMode,
+  type SendWindow,
+} from './conversation-types.js';
+import type { Origin } from './origin.js';
 
 export type Role = 'owner' | 'admin' | 'supervisor' | 'agent' | 'viewer';
 
@@ -48,23 +57,28 @@ export const VersionsQuery = z.object({
 });
 
 /** 没有草稿时 rev 传 null、basedOn 是当前已发布版本的 id；已有草稿时 rev 必须等于草稿的 rev */
-export const SaveDraftBody = z.strictObject({
-  basedOn: z.string().min(1).max(64),
-  rev: z.number().int().nonnegative().nullable(),
-  edits: z
-    .array(z.strictObject({ key: z.string().min(1).max(64), body: z.string().max(100_000) }))
-    .min(1)
-    .max(32),
-  /**
-   * 后台 UX spec 新增：把已有草稿的基线换成这个发布版本，用于合并冲突。必须是当前发布版本；
-   * 三方合并撞上的节都要出现在 edits 里（edits 就是合并的结果）
-   */
-  rebaseOnto: z.string().min(1).max(64).optional(),
-});
+export const SaveDraftBody = z
+  .strictObject({
+    basedOn: z.string().min(1).max(64),
+    rev: z.number().int().nonnegative().nullable(),
+    edits: z.array(z.strictObject({ key: z.string().min(1).max(64), body: z.string().max(100_000) })).max(32),
+    /**
+     * 后台 UX spec 新增：把已有草稿的基线换成这个发布版本，用于合并冲突。必须是当前发布版本；
+     * 三方合并撞上的节都要出现在 edits 里（edits 就是合并的结果）
+     */
+    rebaseOnto: z.string().min(1).max(64).optional(),
+    policy: z.unknown().optional(),
+  })
+  .refine((input) => input.edits.length > 0 || input.policy !== undefined, { message: '需要可编辑节或退改条款' });
 
 export const RevBody = z.strictObject({ rev: z.number().int().nonnegative() });
 
-export const PublishBody = z.strictObject({ rev: z.number().int().nonnegative(), changeNote: str.max(500) });
+export const PublishBody = z.strictObject({
+  rev: z.number().int().nonnegative(),
+  changeNote: str.max(500),
+  gateRunId: z.uuid().optional(),
+  override: z.strictObject({ reason: str.trim().min(1).max(500) }).optional(),
+});
 
 export const RollbackBody = z.strictObject({ changeNote: str.max(500) });
 
@@ -131,17 +145,44 @@ export const AuditQuery = z
  */
 export const MetricsQuery = z.object({ days: intParam(90).optional() });
 
+/** 一轮的结果（turn_traces.outcome 的全部取值）：AI 记录页的筛选、TraceRow.outcome；中文名在 ui-labels.ts 的 TURN_OUTCOME_LABEL */
+export const TRACE_OUTCOMES = ['replied', 'silent', 'handoff', 'deterministic', 'reset', 'budget', 'error'] as const;
+export type TraceOutcome = (typeof TRACE_OUTCOMES)[number];
+
+/** AI 记录的游标（TracePage.next 原样传回 before）：这一页最后一行的开始时刻（UTC、微秒）加下划线加轮次 id；微秒不能截成毫秒，否则同毫秒的行翻页时会漏 */
+const TRACE_CURSOR = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+/**
+ * AI 记录列表（07 R24，GET /traces，所有者、管理员）：since 含、until 不含，都是带时区的 ISO 时刻；
+ * guard 是主回复步骤的 id（guard_verdicts 里 action 不是 pass 的算触发过）；handoffKind 是这一轮触发的转人工原因；
+ * overLimit 只能写 1（只看回复仍超长的）；before 取上一页的 next；limit 1–100，默认 50
+ */
+export const TracesQuery = z.object({
+  since: z.iso.datetime({ offset: true }).optional(),
+  until: z.iso.datetime({ offset: true }).optional(),
+  outcome: z.enum(TRACE_OUTCOMES).optional(),
+  guard: z
+    .string()
+    .regex(/^[a-z][a-z0-9_:-]{0,63}$/)
+    .optional(),
+  handoffKind: z.string().refine(isHandoffKind, '不认识的转人工原因').optional(),
+  overLimit: z.literal('1').optional(),
+  before: z.string().regex(TRACE_CURSOR).optional(),
+  limit: intParam(100).optional(),
+});
+
 // ---------------- 02：会话工作台、订单、快捷回复（docs/architecture/02-conversations-workbench/spec.md「后台接口」） ----------------
 
 /** 人工回复：clientId 是前端生成的 uuid，同一个 clientId 10 分钟内重复提交返回第一次的结果、不重发 */
 export const ReplyBody = z.strictObject({ text: str.min(1).max(2000), clientId: z.uuid() });
 /** 接手；force 是改派（别人接手中时，只有 supervisor 以上） */
 export const TakeoverBody = z.strictObject({ force: z.boolean().optional() });
+export const RejectRefundBody = z.strictObject({ reason: str.min(1).max(200) });
 export const CancelOrderBody = z.strictObject({ reason: str.min(1).max(200) });
 /** 更早的消息：seq 小于 beforeSeq 的最近 limit 条（默认 50） */
 export const MessagesQuery = z.object({ beforeSeq: intParam(INT4_MAX), limit: intParam(100).optional() });
 export const OrdersQuery = z.object({
-  status: z.enum(['pending_payment', 'paid', 'cancelled', 'superseded']).optional(),
+  status: z.enum(['pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending', 'refunded']).optional(),
   limit: intParam(100).optional(),
 });
 /**
@@ -202,7 +243,9 @@ export type ViolationCode =
   | 'over_budget' // 可编辑节正文总长 > 基线 × BUDGET_RATIO
   // 06 R21：这一节的话和包里登记的对客固定文字互相矛盾（如「起价，按最终行程微调」对「总价」）。第 16 步起启用：
   // 发布、回滚、启动重渲染都查
-  | 'consistency';
+  | 'consistency'
+  | 'policy_invalid'
+  | 'policy_mismatch';
 
 export interface ContractViolation {
   code: ViolationCode;
@@ -210,12 +253,18 @@ export interface ContractViolation {
   /** 服务端原文，只在「技术详情」里显示；界面上的说明由前端按 code、sectionKey、match 生成 */
   detail: string;
   /** 后台 UX spec 新增：phrase_forbidden 是命中的短语或正则匹配文本；phrase_missing 是必需的那句原文（rule.text）；
-   *  unknown_tool / unknown_field 是标识符；consistency（R21）是和固定文字矛盾的那句原文；其余 code 没有 */
+   *  unknown_tool / unknown_field 是标识符；consistency（R21）与 policy_mismatch 是发生冲突的那句原文；其余 code 没有 */
   match?: string;
 }
 
 export type SopStatus = 'draft' | 'published' | 'archived' | 'discarded';
 export type SopSource = 'import' | 'console' | 'rollback' | 'rerender';
+
+export interface PolicyView {
+  clauses: { id: string; title: string; text: string }[];
+  approvalThresholdYuan: number | null;
+  selfService: boolean | null;
+}
 
 export interface SopVersion {
   id: string;
@@ -227,6 +276,8 @@ export interface SopVersion {
   sections: SopSectionText[];
   basedOn: string | null;
   rev: number;
+  policyHash: string | null;
+  policy?: PolicyView | null;
   promptHash: string | null;
   toolsHash: string | null;
   prefixHash: string | null;
@@ -262,6 +313,7 @@ export interface ConfigDrift {
 export interface ApiError {
   error: string;
   detail?: string;
+  runId?: string;
   violations?: ContractViolation[];
   fields?: string[];
   keys?: string[];
@@ -340,6 +392,8 @@ export interface Status {
 }
 
 export interface SopOverview {
+  /** 07：发布是否需要回归；沙箱始终为 false。 */
+  gateRequired?: boolean;
   preambleWarning?: boolean;
   published: SopVersion;
   /** stale：basedOn 已不是当前发布版本 */
@@ -450,6 +504,41 @@ export interface MetricsView {
   costTodayYuan: number;
   /** 窗口内之和 / 1000 */
   costRangeYuan: number;
+  /**
+   * 07 R23：窗口内付过款的订单（paid_at 在窗口内、状态是已付、退款中或已退款）按来源和有没有转过人工拆开。
+   * 从内存里的全部订单算（含 demo 类会话），所以宿主的种子与访客也有数；金额是元，已退款单按原成交额算在里面
+   */
+  deals: Record<Origin, DealsPart>;
+  /**
+   * 07 R23：按原因的转人工率（0–1），全部来源合计：窗口内 handoffLog 里有这类记录的会话 / 窗口内有轮次的会话，
+   * 只算进库的会话（宿主的种子与 sim- 访客永不进库）；这个窗口没发生过的原因不出现
+   */
+  handoffByKind: Partial<Record<HandoffKind, number>>;
+  /** 07 R23：窗口内 handoffLog 里 kind 为 agent 的次数（顾问主动接手；接手本来就在转人工中的会话不算），全部来源合计 */
+  takeovers: number;
+  /** 07 R23：上面两项按来源拆开（看板四个视图里三个来源视图用）；宿主的 visitor、seed 结构上是空的 */
+  handoffByOrigin: Record<Origin, HandoffPart>;
+}
+
+/**
+ * 一类来源在窗口内的成交拆分：aiOnly 是没转过人工就付款的（Order.handoffBeforePaid=false），assisted 是转过人工的；
+ * 两类之和等于窗口内付过款的订单数。*Refunded 是各自里面已退款的（其中），refunded 是两者之和
+ */
+export interface DealsPart {
+  aiOnly: number;
+  aiOnlyAmount: number;
+  aiOnlyRefunded: number;
+  assisted: number;
+  assistedAmount: number;
+  assistedRefunded: number;
+  refunded: number;
+}
+
+/** 一类来源的转人工：sessions 是窗口内有轮次的会话数（分母），byKind 是各原因的比率（0–1） */
+export interface HandoffPart {
+  sessions: number;
+  byKind: Partial<Record<HandoffKind, number>>;
+  takeovers: number;
 }
 
 // ---------------- 02：会话工作台、订单、快捷回复、事件流的响应 ----------------
@@ -492,6 +581,10 @@ export interface OrderView {
   confirmed: { at: string; by: string } | null;
   /** 标记已付时会话是否曾经转过人工（R9）；没付或旧数据为 null */
   handoffBeforePaid: boolean | null;
+  refund?: Pick<
+    import('./conversation-types.js').RefundRecord,
+    'amount' | 'tierId' | 'percent' | 'approval' | 'settlement' | 'requestedAt'
+  > & { settledAt: number | null; tierTitle?: string };
   /**
    * 所属会话的最小投影（02 第 21 步新增，A2「待付款」行用：标题、「打开会话」的去向）；会话已被清除（订单不再指向
    * 内存里的会话，第 16 步之后才会出现）时为 null，这种订单的行不画
@@ -568,7 +661,33 @@ export interface TurnDiffView {
   events: { guard: string; action: string; removed: string[]; added: string[] }[];
 }
 
-/** GET /conversations/:id/turns/:turnId：trace 原文（只给所有者、管理员）：原稿、参数、耗时、模型、前缀 */
+/** 主回复流水线里一步的裁决（turn_traces.guard_verdicts 的一项；只记步骤 id 与动作，不含客户原文）。与 src/core/pack-api.ts 的 GuardVerdict 同形 */
+export interface GuardVerdictView {
+  id: string;
+  action: string;
+}
+
+/** 一轮回复的形状（turn_traces.reply_shape，06 R10）。与 src/core/pack-api.ts 的 ReplyShape 同形 */
+export interface ReplyShapeView {
+  class: 'rich' | 'plain';
+  lines: number;
+  chars: number;
+  /** 本轮行数上限 */
+  limit: number;
+  generatedList?: true;
+  /** 裁掉的句数 */
+  trimmed: number;
+  /** 最终文本仍超行数或字数上限 */
+  overLimit: boolean;
+  rewrite: 'off' | 'skipped_time' | 'skipped_budget' | 'used' | 'discarded' | 'timeout' | null;
+  rewriteMs: number | null;
+}
+
+/**
+ * GET /conversations/:id/turns/:turnId：trace 原文（只给所有者、管理员）：原稿、参数、耗时、模型、前缀。
+ * 07 R24 补四项：guardVerdicts、replyShape 来自 turn_traces；handoffKind 是这一轮触发的转人工原因（会话 handoffLog 里 turnId 对得上的最后一条）；
+ * customerText 是这一轮 AI 回复之前的那条客户消息（messages 表），这一轮没有发出回复（沉默）时为 null；不打码，同 trace 的其余内容
+ */
 export interface TurnTraceView {
   turnId: string;
   startedAt: string;
@@ -584,6 +703,35 @@ export interface TurnTraceView {
   calls: unknown[];
   llm: unknown[];
   signals: unknown;
+  guardVerdicts: GuardVerdictView[] | null;
+  replyShape: ReplyShapeView | null;
+  handoffKind: HandoffKind | null;
+  customerText: string | null;
+}
+
+/** AI 记录列表的一行（GET /traces）：一轮对话，跨会话 */
+export interface TraceRow {
+  /** 这一轮的 trace id（turn_traces.id）：详情与「存为回归用例」都用它 */
+  turnId: string;
+  /** 所属会话的 id：现有的详情接口 /conversations/:id/turns/:turnId 与工作台地址 /conversations/$id 用它（审计的 target 才是会话行的 ref） */
+  conversationId: string;
+  /** 会话的渠道：拼「企微客户 · F01」这样的标签 */
+  channel: string;
+  startedAt: string;
+  durationMs: number;
+  outcome: TraceOutcome;
+  /** 触发过的护栏：guard_verdicts 里 action 不是 pass 的步骤 id，按执行顺序；没进主回复流水线（确定性回复、沉默等）为空 */
+  guards: string[];
+  /** 这一轮触发的转人工原因（会话 handoffLog 里 turnId 对得上的最后一条）；没转人工、或记录已被挤出最近 50 条为 null */
+  handoffKind: HandoffKind | null;
+  /** 回复仍超出行数或字数上限（reply_shape.overLimit）；没记形状的轮次为 false */
+  overLimit: boolean;
+}
+
+/** GET /traces：按开始时间倒序（同一时刻按轮次 id 倒序）；next 原样作为下一页的 before，没有更多时为 null */
+export interface TracePage {
+  items: TraceRow[];
+  next: string | null;
 }
 
 /** POST /conversations/:id/reply */
@@ -606,15 +754,28 @@ export interface OrderPage {
   paymentMode: PaymentMode;
 }
 
-/** GET /orders/summary：本月（服务器时区的自然月）的成交额与待付款 */
-export interface OrderSummary {
-  /** 如 2026-10 */
-  month: string;
+/** 一类来源（或全部）的本月成交额与待付款；口径同 OrderSummary 顶层的字段 */
+export interface OrderSummaryPart {
   paidTotal: number;
   paidCount: number;
+  /** 原付款发生在本月的已退款订单，金额为原成交额 */
+  refundedTotal: number;
+  refundedCount: number;
+  /** 现在退款中的订单，不限月份 */
+  refundPendingCount: number;
   /** 现在待付款（pending_payment）的订单，不限月份 */
   pendingTotal: number;
   pendingCount: number;
+}
+
+/**
+ * GET /orders/summary：本月（服务器时区的自然月）的成交额与待付款。顶层的数是全部来源的合计（口径不变）；
+ * byOrigin 是同一口径按来源拆开（07 R23，src/shared/origin.ts 判），三类之和等于顶层
+ */
+export interface OrderSummary extends OrderSummaryPart {
+  /** 如 2026-10 */
+  month: string;
+  byOrigin: Record<Origin, OrderSummaryPart>;
 }
 
 export interface QuickReply {
@@ -640,3 +801,28 @@ export interface ConsoleEventMap {
   auth: Record<string, never>;
 }
 export type ConsoleEventName = keyof ConsoleEventMap;
+
+/** 07 R7：服务端结果与第 14 步面板共用的发布闸契约。 */
+export interface GateGoalResult {
+  id: string;
+  tags: string[];
+  attempts: { pass: boolean; failures: string[]; turns: number; costMilli: number }[];
+  result: 'pass' | 'flaky' | 'fail' | 'skipped_budget';
+}
+export interface GateRunView {
+  id: string;
+  status: 'queued' | 'running' | 'done' | 'error' | 'abandoned';
+  verdict: 'pass' | 'fail' | null;
+  mock: boolean;
+  progress: { done: number; total: number } | null;
+  draft: GateGoalResult[];
+  baseline: GateGoalResult[] | null;
+  baselineReused: boolean;
+  blocking: string[];
+  costMilli: number;
+  error: string | null;
+  finishedAt: string | null;
+}
+export interface StartGateResult {
+  runId: string;
+}

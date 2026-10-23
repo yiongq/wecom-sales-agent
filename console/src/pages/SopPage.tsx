@@ -109,11 +109,13 @@ import {
   withText,
 } from '../sop/merge.js';
 import { MergeActions, MergePane } from '../sop/MergeParts.js';
+import { gateActive, useGate } from '../sop/gate.js';
+import { ForcePublish, GatePanel } from '../sop/GatePanel.js';
 import { ChangesDrawer, PublishBar, PublishDrawer, SopDrawer } from '../sop/PublishParts.js';
 import { QuotaBar } from '../sop/QuotaBar.js';
 import { RollbackModal, rollbackNotice } from '../sop/RollbackModal.js';
 import { ConflictBanner, LostEdits, type LostSection, SaveLive, SaveState } from '../sop/SaveParts.js';
-import { CheckCard, ToolsCard } from '../sop/SideCards.js';
+import { CheckCard, ToolsCard, PolicyCard } from '../sop/SideCards.js';
 import { SopSkeleton } from '../sop/SopSkeleton.js';
 import { cjk } from '../typography.js';
 import { canEdit, refreshSandboxProgress, usePack, useViewer } from '../viewer.js';
@@ -241,7 +243,14 @@ export function SopPage() {
     return <SopPending member={viewer.data?.kind !== 'anon'} pending={q.isPending} error={q.error} onRetry={() => void q.refetch()} />;
   const refetchError = q.isRefetchError ? <ErrorAlert error={q.error} onRetry={() => void q.refetch()} /> : null;
   return 'spec' in q.data ? (
-    <MemberSop data={q.data} pack={pack} editable={canEdit(viewer.data)} now={q.dataUpdatedAt} refetchError={refetchError} />
+    <MemberSop
+      data={q.data}
+      pack={pack}
+      editable={canEdit(viewer.data)}
+      owner={viewer.data?.kind === 'member' && viewer.data.me.role === 'owner'}
+      now={q.dataUpdatedAt}
+      refetchError={refetchError}
+    />
   ) : (
     <AnonSop data={q.data} pack={pack} now={q.dataUpdatedAt} refetchError={refetchError} />
   );
@@ -396,18 +405,22 @@ function MemberSop({
   data,
   pack,
   editable,
+  owner,
   now,
   refetchError,
 }: {
   data: SopOverview;
   pack: IndustryPack | undefined;
   editable: boolean;
+  owner: boolean;
   now: number;
   refetchError: ReactNode;
 }) {
   const qc = useQueryClient();
   const { published, draft, spec, budget } = data;
   const current = draft ?? published;
+  const gateEnabled = editable && data.gateRequired === true;
+  const gate = useGate(gateEnabled && draft ? `${draft.id}:${draft.rev}:${published.id}` : null, draft?.rev ?? null);
   // 草稿的改动相对它算（useDraftBase）：多半是线上版本，草稿跟不上线上版本时是草稿所基于的那一版。第一次打开时等它取到再画，
   // 之后换了（回滚、载入最新草稿以后草稿跟不上了）不卸下页面：取到之前先按线上版本比，没取到在页头下就地报错
   const base = useDraftBase(data);
@@ -553,15 +566,24 @@ function MemberSop({
   // 条里照样是「已发布v3」、「发布…」不能点，不会看着像没发布出去。
   // 422（检查没过）时抽屉开着，清单换成被拒的问题；409（在你编辑期间别人发布过、合并有冲突）抽屉也开着，写撞上的节和
   // 「去合并」，同时重查一次（合并要合到那时的线上版本）；别的失败写在抽屉里，写好的说明不丢。请求在路上时抽屉关不掉（PublishDrawer）
-  const publish = async (): Promise<void> => {
-    if (!draft) return;
+  const publish = async (reason?: string): Promise<void> => {
+    if (!draft || unsaved.length > 0 || (gateEnabled && !reason && !gate.passed)) return;
     const known = [published, check.result?.online];
     setPublishing(true);
     setPublishError(null);
     setRejected(null);
     setConflict(null);
     try {
-      const v = await unwrap(api.sop.draft.publish.$post({ json: { rev: draft.rev, changeNote: note } }));
+      const v = await unwrap(
+        api.sop.draft.publish.$post({
+          json: {
+            rev: draft.rev,
+            changeNote: note,
+            ...(gateEnabled && gate.gateRunId ? { gateRunId: gate.gateRunId } : {}),
+            ...(reason ? { override: { reason } } : {}),
+          },
+        }),
+      );
       refreshSandboxProgress(qc);
       const previous = replacedIn(v.basedOn, known) ?? (await fetchReplaced(v));
       setResult({ versionNo: v.versionNo, names: publishedNames(spec, previous, v), previous });
@@ -578,7 +600,10 @@ function MemberSop({
       else if (e instanceof HttpError && e.body.error === 'sop_conflict') {
         setConflict({ keys: e.body.keys ?? [] });
         check.retry();
-      } else setPublishError(e);
+      } else {
+        setPublishError(e);
+        if (e instanceof HttpError && (e.body.error === 'gate_required' || e.body.error === 'gate_failed')) gate.reject(e);
+      }
     } finally {
       setPublishing(false);
     }
@@ -624,6 +649,7 @@ function MemberSop({
   const row = rows.find((r) => r.key === nav.section);
   const quota = quotaModel(rows, draftChars(spec, current.sections, edits), budget.limit);
   const changed = rows.filter((r) => r.changed);
+  const policyChanged = !!draft?.policy && JSON.stringify(draft.policy) !== JSON.stringify(compared.policy);
   const draftChanged = draft ? spec.filter((s) => !s.locked && textOf(compared, s.key) !== textOf(draft, s.key)) : [];
   // 丢弃是对存下来的草稿做的：还有没存上的改动、请求在路上、409 停住时不能点（发布条的「发布…」点了先存，见下面）
   const discardBlocked = discardBlock({ draft: !!draft, unsaved: unsaved.length > 0, saving, frozen });
@@ -715,7 +741,12 @@ function MemberSop({
   });
 
   // ---------------- 发布（第 6.3 步） ----------------
-  const block = barBlock({ frozen, merging: merge !== null, changed: changed.length, problems: located?.length ?? 0 });
+  const block = barBlock({
+    frozen,
+    merging: merge !== null,
+    changed: changed.length + (policyChanged ? 1 : 0),
+    problems: located?.length ?? 0,
+  });
   // 发布成功的那句只在线上还是刚发布的那一版时留着：之后从版本历史回滚过、别人又发布过，它和「回滚到v2」都不再对
   const shownResult = result !== null && result.versionNo === published.versionNo ? result : null;
   const draftKey = checkKey(draft, published.id);
@@ -757,7 +788,7 @@ function MemberSop({
       setOpening(null);
       if (draftKey !== null) {
         // 预填改了哪几节；自己写过的说明留着，只剩上一次的预填（或空着）时换成这一次的
-        const fill = notePrefill(changed.map((r) => r.name));
+        const fill = notePrefill([...changed.map((r) => r.name), ...(policyChanged ? ['退改条款'] : [])]);
         setNote((n) => (n.trim() === '' || n === prefill ? fill : n));
         setPrefill(fill);
         setPublishError(null);
@@ -1084,7 +1115,7 @@ function MemberSop({
     draft || changed.length > 0
       ? {
           changed: changed.length,
-          same: sameAs(compared, online),
+          same: policyChanged ? '退改条款有改动' : sameAs(compared, online),
           hashes: check.result
             ? ([
                 ['prompt', check.result.promptHash.slice(0, 12)],
@@ -1108,6 +1139,27 @@ function MemberSop({
   // 发布抽屉里撞上的节：发布答 409 以后重查回来之前（或没查上时）照 409 点名的写
   const drawerConflicts = (check.running || check.error !== null) && conflict ? conflict.keys : rebaseConflicts;
   const hasNotices = error !== null || rebaseNote !== null || (!merge && (!!rejected || rolledBackNote !== null));
+
+  const gateRunBlock = !draft
+    ? '保存草稿以后才能跑回归'
+    : unsaved.length > 0 || saving
+      ? '正在保存草稿，保存后再跑回归'
+      : frozen
+        ? '载入最新草稿以后再跑回归'
+        : merge
+          ? '完成合并以后再跑回归'
+          : null;
+  const gateBlock = gateEnabled && (!gate.passed || unsaved.length > 0) ? '当前草稿的回归通过以后才能发布' : null;
+  const gatePanel = gateEnabled ? (
+    <GatePanel gate={gate} blocked={publishing ? '正在发布…' : gateRunBlock} onStart={() => void gate.start()} />
+  ) : undefined;
+  const forceAllowed =
+    gateEnabled &&
+    owner &&
+    gateRunBlock === null &&
+    !gateActive(gate.run) &&
+    !gate.starting &&
+    (gate.error !== null || gate.run?.status === 'error' || gate.run?.status === 'abandoned' || gate.run?.verdict === 'fail');
 
   // 第一次打开、草稿跟不上线上版本：取到草稿所基于的那一版以前是骨架，没取到是整块出错（同取 /sop）
   if (!shown) return <SopPending member pending={base.pending} error={base.error} onRetry={base.retry} />;
@@ -1270,25 +1322,31 @@ function MemberSop({
             )
           }
           check={
-            editable &&
+            (editable || published.policy) &&
             merge === null && (
-              <CheckCard
-                spec={spec}
-                located={located}
-                violations={violations}
-                check={check.result}
-                budget={check.result ?? budget}
-                at={check.at}
-                failed={check.error !== null}
-                onRetry={check.retry}
-                onLocate={locate}
-              />
+              <>
+                {editable && (
+                  <CheckCard
+                    spec={spec}
+                    located={located}
+                    violations={violations}
+                    check={check.result}
+                    budget={check.result ?? budget}
+                    at={check.at}
+                    failed={check.error !== null}
+                    onRetry={check.retry}
+                    onLocate={locate}
+                  />
+                )}
+                <PolicyCard published={published.policy} draft={draft?.policy} />
+              </>
             )
           }
           tools={merge === null && tools && Object.keys(tools).length > 0 && <ToolsCard tools={tools} />}
         />
       )}
 
+      {gateEnabled && !publishOpen && !merge && viewing === undefined && gatePanel}
       {editable && (
         <PublishBar
           result={shownResult}
@@ -1298,7 +1356,7 @@ function MemberSop({
           limit={quota.limit}
           block={block}
           opening={opening !== null}
-          unchanged={`草稿${sameAs(compared, online)}`}
+          unchanged={policyChanged ? '草稿修改了退改条款' : `草稿${sameAs(compared, online)}`}
           // 页头吸顶时状态句藏起来，没保存上要在常驻的发布条上也看得见（409 另有横幅，滚进视口）
           saveFailed={saver.status.kind === 'failed'}
           onRetrySave={saver.flush}
@@ -1314,6 +1372,18 @@ function MemberSop({
       )}
       <PublishDrawer
         open={publishOpen}
+        gate={gatePanel}
+        gateBlock={gateBlock}
+        force={
+          forceAllowed ? (
+            <ForcePublish
+              key={`${draft?.id}:${draft?.rev}`}
+              busy={publishing}
+              error={publishError}
+              onPublish={(reason) => void publish(reason)}
+            />
+          ) : undefined
+        }
         onClose={() => setPublishOpen(false)}
         afterClose={() => setPublishMounted(false)}
         spec={spec}
@@ -1321,6 +1391,7 @@ function MemberSop({
         replacing={online}
         now={now}
         changes={changes}
+        policy={policyChanged ? <PolicyCard published={published.policy} draft={draft?.policy} /> : undefined}
         located={located}
         budget={check.result ?? budget}
         check={{ running: check.running, failed: check.error !== null, at: check.at, retry: check.retry }}

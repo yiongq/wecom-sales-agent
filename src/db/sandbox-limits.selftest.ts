@@ -5,6 +5,7 @@ import { randomBytes } from 'node:crypto';
 import pg from 'pg';
 import { openDb, rowsOf, type Db } from './client.js';
 import { runMigrations } from './migrate.js';
+import { installVectorExtension } from './testing-extensions.js';
 import { openTestDb, fakeLock, testConfigDeps } from './testing.js';
 import { importConfig } from '../config/transfer.js';
 import { closeConfig, currentCatalog, currentSop } from '../config/source.js';
@@ -387,13 +388,13 @@ async function suite(db: Db, q: Query, real: boolean) {
   }
   // 新会话种子不算；并发路径的核心同步创建在 store 里，超限时没有消息或模型调用。
   await withTenantScope(rt, async () => {
-    check(() => assert.equal(listSessions().length, 5));
+    check(() => assert.equal(listSessions().length, 6));
     for (let i = 0; i < 30; i++) {
       const id = `sbx-${i.toString(16).padStart(24, '0')}`;
       getOrCreateSession(id, 'simulator');
       await flushSession(id);
     }
-    check(() => assert.equal(listSessions().length, 35));
+    check(() => assert.equal(listSessions().length, 36));
     check(() => assert.throws(() => getOrCreateSession(`sbx-${'f'.repeat(24)}`, 'simulator'), SandboxLimitError));
     check(() => assert.doesNotThrow(() => getOrCreateSession(listSessions()[0]!.id, 'simulator')));
   });
@@ -535,6 +536,15 @@ if (!process.env.PG_TEST_URL) {
   let owner: pg.Client | undefined;
   try {
     await admin.query(`create database "${name}" owner agent_owner`);
+    // 07 R12：vector 扩展由超级用户在应用库里建，agent_owner 建不了；迁移 0016 要求它已经在
+    const su = new pg.Client({ connectionString: url.toString() });
+    su.on('error', () => {});
+    await su.connect();
+    try {
+      await installVectorExtension((text) => su.query(text));
+    } finally {
+      await su.end();
+    }
     await runMigrations(roleUrl('agent_owner'));
     db = await openDb(roleUrl('agent_app'));
     owner = new pg.Client({ connectionString: url.toString() });

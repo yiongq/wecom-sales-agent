@@ -7,11 +7,13 @@ import type { CustomerProfile, HandoffRecord, Hotel, Order, Route, SalesStage, S
 import type { ToolDef } from '../tool-defs.js';
 import type { MoneyParseOptions } from './parse/money.js';
 import type { PaymentMode } from '../shared/conversation-types.js';
+import type { RefundQuote, RefundTexts } from './refund.js';
 import type { CatalogItem } from '../shared/console-api.js';
 import { z } from 'zod';
 
 export type { CustomerProfile, SalesStage, Session, Order, AgentReply, Route, Hotel } from '../types.js';
 export type { ToolDef } from '../tool-defs.js';
+export { quoteRefund, type RefundQuote, type RefundTexts } from './refund.js';
 export { deepFreeze } from '../shared/freeze.js';
 export { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, REPRICE_FIELDS, type CatalogKind } from '../shared/catalog.js';
 export { UNSTORABLE_TEXT, type CatalogItem } from '../shared/console-api.js';
@@ -225,6 +227,12 @@ export interface TurnContext {
   text: string;
   /** 品牌模板模式下的品牌（旧版模式为 null）；contextNote 里对客口径按它渲染（06 原则的三种情形） */
   brand?: BrandProfile | null;
+  /**
+   * 本轮开始时捕获的已发布 policy 快照与 policyHash（07 R1，同品牌的做法）：整轮沿用，发布新版也不混用；
+   * 运行时不读草稿、不再查库。核心以 unknown 持有，行业包在自己的边界按 schema 读
+   */
+  policy?: unknown;
+  policyHash?: string;
   /** 经本轮注册表执行预取，并返回实际执行的参数与完整结果。 */
   callTool(name: string, args: Record<string, unknown>): Promise<import('./llm/types.js').PrefetchedCall>;
 }
@@ -550,6 +558,9 @@ export interface ShapePolicy {
 export interface ReplyGuardContext extends GuardContext<GuardContextTypes & { flags: ReplyGuardFlags }> {
   raw: string;
   inputText: string;
+  /** 本轮开始时捕获的已发布 policy 快照与 policyHash（07 R1，同 TurnContext）：整轮沿用，运行时不读草稿；核心以 unknown 持有 */
+  policy?: unknown;
+  policyHash?: string;
   stageAtStart: SalesStage;
   ordersBefore: number;
   handoffDeclined: boolean;
@@ -653,8 +664,26 @@ export interface PackRuntimeTypes {
   MockPolicy: MockPolicy;
 }
 
+export type PolicyTopic = 'refund' | 'change' | 'visa' | 'insurance' | 'fees';
+/** title 是对客出处，如「退改条款第2条」。 */
+export type PolicyClause = { id: string; topic: PolicyTopic; title: string; text: string };
+/** 距出发天数闭区间；null 表示不封顶，percent 是 0–100 的整数。 */
+export type RefundTier = { id: string; minDays: number; maxDays: number | null; percent: number };
+export type RefundTerms = { selfService: boolean; approvalThresholdYuan: number; tiers: readonly RefundTier[] };
+export interface PackPolicy<P = unknown> {
+  schema: z.ZodType<P>;
+  defaults: P;
+  editable: readonly string[];
+  canonical(p: P): string;
+  upgrade(old: unknown): P;
+  clauses(p: P): PolicyClause[];
+  refund(p: P): RefundTerms | null;
+  segments: Readonly<Record<string, (p: P) => string>>;
+}
+
 export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   id: string;
+  policy?: PackPolicy;
   defaultBrand: BrandProfile;
   legacy: T['LegacyTexts'];
   templates: T['BrandTemplates'];
@@ -708,6 +737,7 @@ export function boundPack(): PackBinding | null {
 
 /** 第 18 步：模型前安全网、重置与支付通知的行业能力，按旧调用位置注入。 */
 export interface EnginePackHooks {
+  afterSales?(input: AfterSalesInput): AfterSalesStep | null;
   isComplaint(text: string): boolean;
   isHandoffIntent(text: string): boolean;
   safetyNetKind(session: Session, text: string): 'complaint' | 'refund' | 'request';
@@ -730,6 +760,32 @@ export interface EnginePackHooks {
   createOrderTool: string | null;
   resetSession(session: Session): void;
   paidText(order: Order): string;
+  /** 07 R19：退款文字由包提供，核心与后台只负责提交和通知。 */
+  refund?: {
+    quoteText(order: Order, quote: import('./refund.js').RefundQuote, ctx: RefundTextContext): string;
+    chooseText(orders: readonly Order[]): string;
+    texts(quote: import('./refund.js').RefundQuote, ctx: RefundTextContext): import('./refund.js').RefundTexts;
+    noticeText(order: Order, kind: 'settled' | 'rejected', ctx: RefundTextContext): string;
+  };
+}
+
+export type AfterSalesInput = {
+  session: Session;
+  text: string;
+  policy: unknown;
+  policyHash: string;
+  brand: BrandProfile | null;
+  today: string;
+};
+export type AfterSalesStep =
+  | { kind: 'reply'; text: string }
+  | { kind: 'submit'; quote: RefundQuote; texts: RefundTexts }
+  | { kind: 'handoff'; text: string; record: Pick<HandoffRecord, 'kind' | 'reason' | 'quote'> };
+
+export interface RefundTextContext {
+  policy: unknown;
+  channel: string;
+  brand: BrandProfile | null;
 }
 
 /** 客户出口；模板用 {BrandProfile 字段名}，不做递归替换。 */

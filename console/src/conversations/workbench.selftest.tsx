@@ -23,15 +23,17 @@ import type {
   Me,
   MessagesPage,
   MessageView,
+  OrderView,
   QuickReply,
   Role,
   TurnDiffView,
+  TurnTraceView,
 } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import type { Viewer } from '../shell/boot.js';
 import { useViewer, VIEWER_KEY } from '../viewer.js';
 import { SandboxChecklist } from '../sandbox/Sandbox.js';
-import { WorkbenchPage } from './WorkbenchPage.js';
+import { OrderRow, WorkbenchPage } from './WorkbenchPage.js';
 import {
   CAN_HANDLE_ROLES,
   deliveryNote,
@@ -44,6 +46,8 @@ import {
   orderLine,
   ORDER_STATUS_LABEL,
   quoteLine,
+  refundActions,
+  refundLine,
   sendWindowView,
   stepsLine,
   wbContext,
@@ -320,7 +324,14 @@ eq(
   orderLine({ routeTitle: '贵州', travelers: 4, totalPrice: 60_040, departDate: '2026-11-08' }),
   ['贵州', '4位共60,040元', '2026-11-08出发'],
 );
-eq('订单状态中文', ORDER_STATUS_LABEL, { pending_payment: '待付款', paid: '已付款', cancelled: '已取消', superseded: '已失效' });
+eq('订单状态中文', ORDER_STATUS_LABEL, {
+  pending_payment: '待付款',
+  paid: '已付款',
+  cancelled: '已取消',
+  superseded: '已失效',
+  refund_pending: '退款中',
+  refunded: '已退款',
+});
 eq('能处理会话的角色：owner/admin/supervisor/agent，不含 viewer', [...CAN_HANDLE_ROLES].sort(), ['admin', 'agent', 'owner', 'supervisor']);
 
 // 沙箱自己的会话在所有状态组前，状态计数不重复；没有标记的宿主分组照旧。
@@ -363,6 +374,7 @@ interface MockServer {
   cur: ConversationDetail | null;
   messagesBefore?: MessagesPage;
   turnDiff?: Record<string, TurnDiffView>;
+  turnTrace?: Record<string, TurnTraceView>;
   quickReplies?: QuickReply[];
   /** 下一个快捷回复的 id 序号（POST /quick-replies 用），默认从 1 开始 */
   qrSeq?: number;
@@ -399,6 +411,11 @@ function respond(method: string, url: URL, bodyText: string): Response {
   }
   if (idMatch?.[2] === '/messages' && method === 'GET') return json(200, server.messagesBefore ?? { messages: [], hasEarlier: false });
   if (idMatch?.[2] === '/turns' && method === 'GET') return json(200, { turns: [] });
+  const traceMatch = idMatch?.[2] && /^\/turns\/([^/]+)$/.exec(idMatch[2]);
+  if (traceMatch && method === 'GET') {
+    const t = server.turnTrace?.[traceMatch[1]!];
+    return t ? json(200, t) : json(404, { error: 'not_found' });
+  }
   const diffMatch = idMatch?.[2] && /^\/turns\/([^/]+)\/diff$/.exec(idMatch[2]);
   if (diffMatch && method === 'GET') {
     const d = server.turnDiff?.[diffMatch[1]!];
@@ -952,6 +969,73 @@ for (const sandbox of [true, false]) {
     m.texts('.wb-guard-diff dd').some((t) => t.includes('36,800')),
   );
   check('改写对照：按钮文字变成「收起」', m.text(m.$('.wb-guard-toggle')[0]).includes('收起'));
+  await m.unmount();
+}
+
+// 2.6b 「AI为什么这么回」页签（07 R24 起与 AI 记录页的抽屉共用 TraceDetail）：客户原话、护栏、转人工原因、存为回归用例
+{
+  const trace: TurnTraceView = {
+    turnId: 't-1',
+    startedAt: atIso('2026-09-26T14:02:00'),
+    durationMs: 900,
+    outcome: 'replied',
+    sopVersion: 3,
+    prefixHash: 'a'.repeat(64),
+    catalogVersions: {},
+    stageBefore: 'quote',
+    stageAfter: 'closing',
+    draft: '模型原稿',
+    finalText: '北京这条每人3万多起',
+    calls: [],
+    llm: [],
+    signals: null,
+    guardVerdicts: [
+      { id: 'price', action: 'drop_sentence' },
+      { id: 'shape_check', action: 'pass' },
+    ],
+    replyShape: { class: 'rich', lines: 3, chars: 60, limit: 6, trimmed: 0, overLimit: false, rewrite: 'off', rewriteMs: null },
+    handoffKind: null,
+    customerText: '北京多少钱',
+  };
+  server = {
+    cur: detail({
+      messages: [
+        ...detail().messages,
+        {
+          seq: 3,
+          role: 'agent',
+          author: 'ai',
+          authorName: null,
+          text: '北京这条每人3万多起',
+          kind: 'message',
+          at: atIso('2026-09-26T14:02:00'),
+          turnId: 't-1',
+          guarded: null,
+          delivery: null,
+        },
+      ],
+      can: { takeover: false, reply: false, release: false, reassign: false, confirmOrder: false, markPaid: false, traces: true },
+    }),
+    turnTrace: { 't-1': trace },
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  const m = await mount(member('owner'));
+  eq('页签：所有者看得到「AI为什么这么回」', m.texts('.wb-side-tab'), ['客户与交接', 'AI为什么这么回']);
+  await m.click(m.$('.wb-bubble-btn')[0]);
+  const t = m.text(m.$('.td')[0]);
+  check('详情：客户原话', t.includes('客户说') && t.includes('北京多少钱'), t);
+  check(
+    '详情：阶段取行业包的名字、触发的护栏写中文名、回复的篇幅',
+    t.includes('阶段：报价 → 促成') && t.includes('触发的护栏：价格核对') && t.includes('回复3行、60字，上限6行'),
+    t,
+  );
+  check('详情：没有转人工原因时不写这一行', !t.includes('转人工原因'), t);
+  check(
+    '详情：有「存为回归用例」按钮；步骤 id 只在技术详情里',
+    m.texts('.td button').includes('存为回归用例') && !t.replace(/技术详情[\s\S]*$/, '').includes('shape_check'),
+    t,
+  );
   await m.unmount();
 }
 
@@ -1538,6 +1622,137 @@ Date.now = realNow;
     ['你的微信', '你的模拟器会话'],
   );
   await m.unmount();
+}
+
+// 07 R19：真实订单卡按角色与支付模式显示操作，金额用元。
+{
+  const order: OrderView = {
+    id: 'ord_refund',
+    routeTitle: '合成线路',
+    travelers: 2,
+    departDate: '2026-12-10',
+    totalPrice: 40000,
+    status: 'refund_pending',
+    createdAt: new Date(NOW).toISOString(),
+    paidAt: new Date(NOW).toISOString(),
+    confirmed: null,
+    handoffBeforePaid: false,
+    conversation: null,
+    refund: {
+      amount: 40000,
+      tierId: 'd30',
+      tierTitle: '退改条款第1条',
+      percent: 100,
+      approval: 'pending',
+      settlement: 'mock',
+      requestedAt: NOW,
+      settledAt: null,
+    },
+  };
+  check(
+    '退款金额与条款拼行',
+    refundLine(order)!.includes('40,000元') && refundLine(order)!.includes('退改条款第1条') && !refundLine(order)!.includes('¥'),
+  );
+  for (const role of ['owner', 'admin', 'supervisor', 'agent', 'viewer', null] as const) {
+    eq(
+      `退款审批权限 ${role}`,
+      refundActions(order, role, role !== 'viewer' && role !== null, 'online').approve,
+      role === 'owner' || role === 'admin' || role === 'supervisor',
+    );
+    const box = document.createElement('div');
+    document.body.append(box);
+    const root = createRoot(box);
+    const clicks: string[] = [];
+    const reasons: (string | undefined)[] = [];
+    await act(async () =>
+      root.render(
+        <OrderRow
+          o={order}
+          role={role}
+          canConfirm={false}
+          canMarkPaid={false}
+          onConfirm={() => {}}
+          onMarkPaid={() => {}}
+          onCancel={() => {}}
+          confirmError={null}
+          markPaidError={null}
+          cancelError={null}
+          onRefund={(action, reason) => {
+            clicks.push(action);
+            reasons.push(reason);
+          }}
+        />,
+      ),
+    );
+    const buttons = [...box.querySelectorAll('button')];
+    eq(
+      `订单卡 ${role} 审批按钮`,
+      buttons.some((b) => b.textContent?.includes('批准退款')),
+      role === 'owner' || role === 'admin' || role === 'supervisor',
+    );
+    if (role === 'supervisor') {
+      await act(async () => {
+        buttons.find((b) => b.textContent?.includes('批准退款'))!.click();
+      });
+      eq('批准按钮调用审批动作', clicks, ['approve']);
+      await act(async () => {
+        buttons.find((b) => b.textContent?.includes('驳回退款'))!.click();
+      });
+      const textarea = document.querySelector<HTMLTextAreaElement>(`#refund-reason-${order.id}`)!;
+      check('驳回弹窗有原因输入且最多 200 字', !!textarea && textarea.maxLength === 200);
+      const rejectButton = [...document.querySelectorAll<HTMLButtonElement>('.ant-modal-footer button')].find((b) =>
+        b.textContent?.includes('驳回退款'),
+      )!;
+      check('没有原因不能驳回', rejectButton.disabled);
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(win.HTMLTextAreaElement.prototype, 'value')!.set!.call(textarea, '合成原因');
+        textarea.dispatchEvent(new win.Event('input', { bubbles: true }) as unknown as Event);
+      });
+      await act(async () => {
+        rejectButton.click();
+      });
+      eq('驳回提交带原因', [clicks.at(-1), reasons.at(-1)], ['reject', '合成原因']);
+    }
+    await act(async () => root.unmount());
+    box.remove();
+  }
+  const manual: OrderView = { ...order, refund: { ...order.refund!, approval: 'approved', settlement: 'advisor' } };
+  eq('顾问退款接手人可结算', refundActions(manual, 'agent', true, 'advisor'), { approve: false, settle: true });
+  eq('只读即使拿到旧权限也不能结算', refundActions(manual, 'viewer', true, 'advisor').settle, false);
+  eq('匿名即使拿到旧权限也不能结算', refundActions(manual, null, true, 'advisor').settle, false);
+  eq('顾问退款非接手人不能结算', refundActions(manual, 'agent', false, 'advisor').settle, false);
+  eq(
+    '待审批不能结算',
+    refundActions({ ...manual, refund: { ...manual.refund!, approval: 'pending' } }, 'supervisor', true, 'advisor').settle,
+    false,
+  );
+  eq('模拟支付不显示手动结算', refundActions(manual, 'supervisor', true, 'online').settle, false);
+  const box = document.createElement('div');
+  document.body.append(box);
+  const root = createRoot(box);
+  await act(async () =>
+    root.render(
+      <OrderRow
+        o={{ ...manual, status: 'refunded', refund: { ...manual.refund!, settledAt: NOW } }}
+        role="supervisor"
+        mode="advisor"
+        canConfirm
+        canMarkPaid
+        onConfirm={() => {}}
+        onMarkPaid={() => {}}
+        onCancel={() => {}}
+        confirmError={null}
+        markPaidError={null}
+        cancelError={null}
+      />,
+    ),
+  );
+  check(
+    '已退款卡显示结算时间与方式且没有按钮',
+    box.textContent!.includes('结算时间') && box.textContent!.includes('顾问退款') && box.querySelectorAll('button').length === 0,
+  );
+  await act(async () => root.unmount());
+  box.remove();
 }
 
 if (fails.length) {

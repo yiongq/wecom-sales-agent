@@ -45,7 +45,8 @@
 #   .env.ops      不给任何服务：宿主机上 deploy/watch.sh（cron 每分钟）与 backup.sh 读的运维 env 文件，ALERT_WEBHOOK_URL、
 #                 INSTANCE_LABEL 等，见 deploy/watch.sh 开头
 # 口令进连接串时，URL 保留字符（@ : / ? # %）要百分号编码；生成时只用字母数字最省事。
-# 轮换口令见 db-init/roles.sh 开头。
+# 轮换口令见 db-init/roles.sh 开头。应用库里的 vector 扩展（07 起，迁移 0016 要求）由 db-init/extensions.sh 建：新库首次初始化时
+# roles.sh 建完库顺带调它（所以 db 服务的挂载不用改，部署时 db 容器不会因此重建）；现有库补建的方法见 extensions.sh 开头。
 #
 # 项目名固定，数据卷就不随目录名变（wecom-sales-agent_db-data）。同一台机器再起一套（旁路实例）要用 -p 换名，
 # 并用 APP_CONTAINER、HOST_PORT 换掉容器名与宿主端口（deploy.sh 按 NAME、HOST_PORT 传进来）；

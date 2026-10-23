@@ -18,6 +18,22 @@ export type HandoffKind =
   | 'consent' // 客户不同意或撤回同意处理敏感信息（R23）
   | 'agent'; // 顾问在后台接手，或旧工作台点了转人工
 
+/** 转人工类型的全集（键就是 HandoffKind，少写一个编译不过）：从库里读回的 handoffLog 要先过 isHandoffKind，才进统计 */
+const HANDOFF_KIND_SET = {
+  request: true,
+  complaint: true,
+  refund: true,
+  emergency: true,
+  failure: true,
+  sentiment: true,
+  model: true,
+  promise: true,
+  claimed: true,
+  consent: true,
+  agent: true,
+} as const satisfies Record<HandoffKind, true>;
+export const isHandoffKind = (k: string): k is HandoffKind => Object.hasOwn(HANDOFF_KIND_SET, k);
+
 /** 一次转人工的记录：进入时写下，交还、重置时清（R9） */
 export interface HandoffRecord {
   kind: HandoffKind;
@@ -30,6 +46,29 @@ export interface HandoffRecord {
   departNote?: string;
 }
 
+/**
+ * 逐次转人工的记录（07 R23，Session.handoffLog）：enterHandoff 每次进入或升级时追加一条，最多 HANDOFF_LOG_MAX 条（保留最新的），
+ * 同 handoffCount 永不清、重置不清。turnId 是触发它的那一轮 trace 的 id（顾问主动接手等不经轮次的没有）
+ */
+export interface HandoffLogEntry {
+  kind: HandoffKind;
+  at: number;
+  turnId?: string;
+}
+export const HANDOFF_LOG_MAX = 50;
+
+/**
+ * 这一轮触发的转人工原因（07 R24）：handoffLog 里 turnId 对得上的最后一条（一轮里先转人工、再升级成紧急情况时，取升级后的）；
+ * 没有、或类型不认识（库里读回的脏数据）为 null。AI 记录列表在 SQL 里按同一规则取（src/db/repo/traces.ts 的 listTraces）
+ */
+export function handoffKindOfTurn(log: readonly { kind: string; turnId?: string }[] | undefined, turnId: string): HandoffKind | null {
+  for (let i = (log?.length ?? 0) - 1; i >= 0; i -= 1) {
+    const e = log![i]!;
+    if (e.turnId === turnId) return isHandoffKind(e.kind) ? e.kind : null;
+  }
+  return null;
+}
+
 /** 接手人 */
 export interface Assignee {
   /** console 成员的 user id；共享工作台（ADMIN_PASS 旧接口）为 null */
@@ -39,7 +78,21 @@ export interface Assignee {
   at: number;
 }
 
-export type OrderStatus = 'pending_payment' | 'paid' | 'cancelled' | 'superseded';
+export type OrderStatus = 'pending_payment' | 'paid' | 'cancelled' | 'superseded' | 'refund_pending' | 'refunded';
+
+export interface RefundRecord {
+  id: string; // rf_ 加 12 位十六进制
+  requestedAt: number;
+  daysBefore: number;
+  tierId: string;
+  percent: number;
+  amount: number; // 元，整数
+  policyHash: string;
+  approval: 'auto' | 'pending' | 'approved' | 'rejected';
+  settlement: 'mock' | 'advisor';
+  decision?: { at: number; by: { userId: string | null; name: string }; reason?: string };
+  settled?: { at: number; by: { userId: string | null; name: string } | null };
+}
 
 /** 收款方式：online 是今天的模拟支付，advisor 是顾问确认收款（spec「收款流程」） */
 export type PaymentMode = 'online' | 'advisor';

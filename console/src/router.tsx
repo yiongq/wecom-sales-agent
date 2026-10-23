@@ -9,6 +9,7 @@ import { conversationsSearch } from './conversations-search.js';
 import { PageSkeleton, RouteError, StateView } from './parts/StateView.js';
 import { NotFound, Shell } from './shell/Shell.js';
 import { sopSearch } from './sop/search.js';
+import { tracesSearch } from './traces-search.js';
 
 /**
  * 页面的块还在下载：内容面板里马上换成整页骨架，照 StateView 的规矩 300ms 后才看得见（spec「通用部件 · StateView」）。
@@ -74,6 +75,11 @@ const audit = createRoute({ getParentRoute: () => root, path: '/audit', validate
   import('./pages/audit.lazy.js').then((m) => m.Route),
 );
 
+// AI 记录（07 R24）：时间段与四个筛选写进地址（traces-search.ts）
+const traces = createRoute({ getParentRoute: () => root, path: '/traces', validateSearch: tracesSearch }).lazy(() =>
+  import('./pages/traces.lazy.js').then((m) => m.Route),
+);
+
 const specimenSearch = (s: Record<string, unknown>): { theme?: 'light' | 'dark' } =>
   s.theme === 'light' || s.theme === 'dark' ? { theme: s.theme } : {};
 const fieldsSpecimenSearch = (s: Record<string, unknown>): { theme?: 'light' | 'dark'; kind?: string; code?: string; as?: string } => ({
@@ -98,7 +104,18 @@ const specimen = SPECIMEN
   : [];
 
 export const router = createRouter({
-  routeTree: root.addChildren([index, sop, catalog, catalogItem, catalogNew, conversations, conversationWorkbench, audit, ...specimen]),
+  routeTree: root.addChildren([
+    index,
+    sop,
+    catalog,
+    catalogItem,
+    catalogNew,
+    conversations,
+    conversationWorkbench,
+    traces,
+    audit,
+    ...specimen,
+  ]),
   basepath: '/console',
   defaultPendingComponent: PagePending,
   defaultPendingMs: 0,

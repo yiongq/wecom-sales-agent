@@ -1,10 +1,10 @@
 # v2 具名快照与更新政策（06 R4）
 
-快照固定某一时刻的黑盒行为，文件配置与 PGlite 配置共用一份。当前默认比对的是 `eval/v2/snapshot.ts` 里常量 `DEFAULT_BASELINE` 指向的文件，现在是 `v2-06-step17.json`（06 第 17 步，出口兜底删「这是起价」与非报价轮的「微调」半句）；`v2-06-step16.json`（06 第 16 步，第二批话术与工具配套）留作第 16 步的凭证；`v2-06-batch1.json`（06 第一批合并后生成）留作第一批的凭证。`v2-pre04.json`（04 第 5 步，由未改生产代码的评测树生成）留作 04 的凭证，永远不删。
+快照固定某一时刻的黑盒行为，文件配置与 PGlite 配置共用一份。当前默认比对的是 `eval/v2/snapshot.ts` 里常量 `DEFAULT_BASELINE` 指向的文件，现在是 `v2-07-step6.json`（07 第 6 步，自助退款；原有 854 条无差异，新增低额办结、超额审批、多单选择 3 条）；`v2-07-step11.json`（07 第 11 步，政策陈述护栏 `policy_claims`；07 第 10 步的 `q07-policy-ask` 用例也首次进快照）保留。`v2-06-step17.json`（06 第 17 步，出口兜底删「这是起价」与非报价轮的「微调」半句）留作第 17 步的凭证；`v2-06-step16.json`（06 第 16 步，第二批话术与工具配套）留作第 16 步的凭证；`v2-06-batch1.json`（06 第一批合并后生成）留作第一批的凭证。`v2-pre04.json`（04 第 5 步，由未改生产代码的评测树生成）留作 04 的凭证，永远不删。
 
 ## 政策
 
-- 快照不随实现自动更新，更新是显式动作。每个**有意改变行为**的 PR 生成一份新的具名快照 `v2-06-step<N>.json`（N 是 06 plan 的步骤号），并把 `DEFAULT_BASELINE` 改成它；写完用文件与 PGlite 两条路径各比对一次。旧快照一份都不删。
+- 快照不随实现自动更新，更新是显式动作。每个**有意改变行为**的 PR 生成一份新的具名快照 `v2-<阶段>-step<N>.json`（N 是该阶段 plan 的步骤号），并把 `DEFAULT_BASELINE` 改成它；写完用文件与 PGlite 两条路径各比对一次。旧快照一份都不删。
 - 新快照与上一份逐条 diff，每条差异写明是哪条 R 引起的、为什么是对的，记进 plan；说不清的差异就是回归，修代码，不写进快照。`eval/cases-v2/reply-verdicts.json` 一类断言裁决序列的用例，同一个 PR 里按新步骤表更新，同样逐条说明。
 - **没有改变行为**的 PR 不生成快照：默认基线不重生成照样全绿，就是行为没变的证据。
 - 两个 PR 并行时，后合并的那个在合并前基于最新的 `dev` 重新生成快照、重审差异，不能沿用在旧 `dev` 上审过的结论。
@@ -21,6 +21,7 @@
 - 沿用 `values.ts`：`ord_[0-9a-f]{24}` 换成 `ord_NORMALIZED`，去掉 `?v=N` / `&v=N` 方案版本查询参数，保留其它参数。
 - 本轮实际观测的会话 id、轮次随机 id、订单 id 与替代订单引用按精确值替换为固定标记。
 - 本轮开始、护栏记录、订单创建/付款/确认的实际毫秒时间及对应完整 ISO 字符串按精确值替换为 `TIME_NORMALIZED`。不泛匹配数字或日期；业务出发日、金额、人数和线路 id 保留。
+- 退款流程的订单尾号只在「尾号 」位置按已观测订单精确替换；退款申请 id、申请/审批/结算时刻同样精确归一。金额、档位、比例、政策哈希与审批/结算状态全部保留。
 - 订单去掉 `id`、`sessionId`、`createdAt`、`paidAt`、`confirmedAt`。另排除 `catalogVersion`：这是配置条目版本元数据，文件源与数据库源没有相同的版本体系。其它业务字段全部保留；`supersededBy` 的引用归一，是否存在仍参与比对。
 - 不保存 trace 的耗时、模型用量、前缀哈希、工具参数/结果、事件 `at` 等运行元数据。
 
@@ -29,7 +30,7 @@
 ```sh
 # 只跑 v2，全部通过才写文件；写模式不比对旧基线（N 换成 plan 的步骤号）
 CONFIG_SOURCE=file LLM_MOCK=1 pnpm exec tsx eval/run.ts \
-  --cases-v2 eval/cases-v2 --v2-snapshot-write eval/baselines/v2-06-stepN.json
+  --cases-v2 eval/cases-v2 --v2-snapshot-write eval/baselines/v2-<阶段>-stepN.json
 
 # 默认先 v1 后 v2；两种配置都自动比对默认快照
 CONFIG_SOURCE=file LLM_MOCK=1 pnpm exec tsx eval/run.ts

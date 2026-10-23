@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -44,25 +45,52 @@ export function validatePrices(value: unknown): Record<string, PriceRow> {
   return value as Record<string, PriceRow>;
 }
 
+/** 导出目录（07 R9，`export-config` 写的那种）里评测必须有的文件；policy.json、brand.json 可选。 */
+export const CONFIG_DIR_REQUIRED = ['sop.md', 'routes.json', 'hotels.json'] as const;
+
+/**
+ * --config-dir 的静态检查：是目录，且有 sop.md、routes.json、hotels.json。返回绝对路径。
+ * 文件内容是否合格由引擎装载时判（品牌 / policy 不合格会在 engineRuntime 里直接抛出，一个目标都不跑）。
+ */
+export async function resolveConfigDir(dir: string): Promise<string> {
+  const abs = path.resolve(dir);
+  const stat = await fs.stat(abs).catch(() => null);
+  if (!stat?.isDirectory()) throw new Error('--config-dir 不是目录');
+  for (const name of CONFIG_DIR_REQUIRED) {
+    const file = await fs.stat(path.join(abs, name)).catch(() => null);
+    if (!file?.isFile()) throw new Error(`--config-dir 里缺 ${name}`);
+  }
+  return abs;
+}
+
 // 只改变评测进程的部署/存储与时钟；销售模型、SOP、工具定义照引擎原配置。
+// options.configDir：给了就读这个目录里的 sop.md / routes.json / hotels.json（policy.json、brand.json 在 SOP_PATH 同目录，有就用，
+// 没有走包默认）；没给照旧读 data/（07 plan 风险 G3）。用完照旧恢复 process.env。
 export async function engineRuntime(
   meter: Meter,
   customerModel: string | undefined,
   overrides: Record<string, PriceRow> = {},
+  options: { configDir?: string } = {},
 ): Promise<{
   deps: SimDeps;
   close(): Promise<void>;
   metadata: Record<string, unknown>;
 }> {
+  const configDir = options.configDir === undefined ? undefined : await resolveConfigDir(options.configDir);
   const restoreClock = fixtureClock();
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'wecom-sim-'));
+  // 被信号终止（闸超时）时 src/shutdown.ts 经 process.exit 退出，exit 钩子把临时目录一并清掉。
+  // store 的 exit 钩子会把没落盘的状态写回 VAR_DIR，所以引擎模块装载之后还要再挂一次，保证排在它后面。
+  const removeTemp = (): void => rmSync(temp, { recursive: true, force: true });
+  process.on('exit', removeTemp);
   const savedEnv = { ...process.env };
   process.env.VAR_DIR = temp;
   process.env.CONFIG_SOURCE = 'file';
-  process.env.SOP_PATH = path.resolve('data/sop.md');
-  process.env.ROUTES_PATH = path.resolve('data/routes.json');
-  process.env.HOTELS_PATH = path.resolve('data/hotels.json');
+  process.env.SOP_PATH = configDir ? path.join(configDir, 'sop.md') : path.resolve('data/sop.md');
+  process.env.ROUTES_PATH = configDir ? path.join(configDir, 'routes.json') : path.resolve('data/routes.json');
+  process.env.HOTELS_PATH = configDir ? path.join(configDir, 'hotels.json') : path.resolve('data/hotels.json');
   const restoreProcess = async (): Promise<void> => {
+    process.off('exit', removeTemp);
     await fs.rm(temp, { recursive: true, force: true });
     restoreClock();
     for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
@@ -76,18 +104,22 @@ export async function engineRuntime(
     const recorder = await import('../../src/trace/recorder.js');
     const store = await import('../../src/store.js');
     const tools = await import('../../src/tools.js');
-    return { usage, llm, engine, recorder, store, tools };
+    const source = await import('../../src/config/source.js');
+    return { usage, llm, engine, recorder, store, tools, source };
   };
   const modules = await load().catch(async (e: unknown) => {
     await restoreProcess();
     throw e;
   });
+  process.off('exit', removeTemp);
+  process.on('exit', removeTemp);
   const { costOf, onUsage } = modules.usage;
   const { llmCfg, llmStats } = modules.llm;
   const { handleMessage } = modules.engine;
   const { onTurnEnd } = modules.recorder;
   const store = modules.store;
   const { createQuote, routeVersion } = modules.tools;
+  const { currentPack, currentPolicy, prefixSummary } = modules.source;
   const salesCfg = llmCfg();
   const customerCfg = {
     baseUrl: process.env.SIM_CUSTOMER_BASE_URL || salesCfg.baseUrl,
@@ -159,8 +191,21 @@ export async function engineRuntime(
       [salesCfg.model, llmCfg(true).model, customerCfg.model, llmStats().hedgeModel].filter((m): m is string => !!m),
     ))
       checkModel(model);
+    // 配置读不出来（policy.json 不合格、brand.json 不合格……）在这里就抛，一个目标都不跑；
+    // 两个哈希随报告走，父进程可以核对子进程跑的就是它导出的那一份。
+    let loaded: { policyHash: string; promptHash: string; brand: ReturnType<typeof currentPack>['brand'] };
+    try {
+      const brand = currentPack().brand;
+      const policyHash = currentPolicy().policyHash;
+      const { promptHash } = prefixSummary(() => ({ ...modules.engine.promptPrefix(), sop: modules.engine.sopFileText() }));
+      loaded = { policyHash, promptHash, brand };
+    } catch (e) {
+      throw new Error(`配置不合格: ${(e instanceof Error ? e.message : String(e)).replace(/\s+/g, ' ')}`, { cause: e });
+    }
+    const { brand, policyHash, promptHash } = loaded;
     const deps: SimDeps = {
       customerModel: customerCfg.model,
+      configDir,
       price,
       async customer(persona, history, retry) {
         const response = await fetch(`${customerCfg.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
@@ -244,14 +289,19 @@ export async function engineRuntime(
               totalPrice: quote.total,
               catalogVersion: routeVersion(o.routeId),
             });
-            if (o.status === 'paid') store.markOrderPaid(order.id);
-            else if (o.status === 'cancelled') {
+            if (['paid', 'refund_pending', 'refunded'].includes(o.status)) {
+              store.markOrderPaid(order.id);
+              order.status = o.status;
+              store.saveOrder(order);
+            } else if (o.status === 'cancelled') {
               order.status = 'cancelled';
               store.saveOrder(order);
             }
             session.orderIds.push(order.id);
           }
-          session.stage = seed.stage ?? ((seed.orders ?? []).some((o) => o.status === 'paid') ? 'paid' : session.stage);
+          session.stage =
+            seed.stage ??
+            ((seed.orders ?? []).some((o) => ['paid', 'refund_pending', 'refunded'].includes(o.status)) ? 'paid' : session.stage);
           store.saveSession(session);
         }
         return { id, initial: snapshot(id) };
@@ -282,8 +332,11 @@ export async function engineRuntime(
       metadata: {
         clock: FIXTURE_CLOCK,
         timezone: 'Asia/Shanghai',
-        config: 'file',
-        brand: 'legacy',
+        config: configDir ? 'config-dir' : 'file',
+        configDir: configDir ? path.basename(configDir) : null,
+        brand: brand ? brand.brandName : 'legacy',
+        promptHash,
+        policyHash,
         salesModel: salesCfg.model,
         customerModel: customerCfg.model,
         pricesSource: 'src/usage.ts costOf; --prices 覆盖项由运行者提供，待协调者核对',

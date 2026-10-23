@@ -20,6 +20,10 @@ fs.mkdirSync(varParent, { recursive: true });
 const VAR_DIR = fs.mkdtempSync(path.join(varParent, 'wecom-handoff-selftest-'));
 process.env.VAR_DIR = VAR_DIR;
 process.env.CONFIG_SOURCE = 'file';
+const sopDir = path.join(VAR_DIR, 'sop');
+fs.mkdirSync(sopDir);
+fs.copyFileSync(new URL('../../data/sop.md', import.meta.url), path.join(sopDir, 'sop.md'));
+process.env.SOP_PATH = path.join(sopDir, 'sop.md');
 process.env.SERVER_SELFTEST = '1'; // 不 listen、不起企微轮询
 process.env.ADMIN_USER = 'admin';
 process.env.ADMIN_PASS = 'selftest-pass';
@@ -85,6 +89,7 @@ const { cleanText } = await import('../shared/text.js');
 const { conversationState, needSummary, paidNeedsHuman } = await import('../shared/conversation.js');
 const { packById } = await import('../packs/registry.js');
 const { __profileTest, DEMO_DEFAULTS, PROD_CEILING, resolveProfile, ProfileConfigError } = await import('../profile.js');
+const { defaultTravelPolicy } = await import('../packs/travel/policy.js');
 
 let pass = 0;
 const fails: string[] = [];
@@ -545,6 +550,13 @@ const mkOrder = (s: Session): Order => {
 };
 {
   // 验收 12：转人工 → 交还 → 再转人工 → 交还 → 付款 → 已付后要退款 → 再发一句 → 有人接手 → 重置 → 再转人工
+  fs.writeFileSync(
+    path.join(sopDir, 'policy.json'),
+    JSON.stringify({
+      ...defaultTravelPolicy,
+      refund: { ...defaultTravelPolicy.refund, selfService: false },
+    }),
+  );
   const sid = newSid('ACC12');
   await say(sid, '转人工');
   const t1 = sess(sid).firstHandoffAt;
@@ -612,6 +624,34 @@ const mkOrder = (s: Session): Order => {
     '重置后再转人工：状态是等人接手（不是顾问处理中），计数 4，firstHandoffAt 不变',
     conversationState(s, travel) === 'human' && s.assignee === null && s.handoffCount === 4 && s.firstHandoffAt === t1,
   );
+  fs.rmSync(path.join(sopDir, 'policy.json'));
+}
+{
+  const sid = newSid('SELF');
+  const s = store.getOrCreateSession(sid, 'wecom');
+  const o = mkOrder(s);
+  o.totalPrice = 40000;
+  store.markOrderPaid(o.id);
+  s.stage = 'paid';
+  store.saveSession(s);
+  const before = requests.length;
+  const quote = await say(sid, '我要退款');
+  check('自助退款先报价、不转人工', quote.text.includes('确认退款') && !s.handedOver && o.status === 'paid');
+  const result = await say(sid, '确认退款');
+  await store.flushSession(sid);
+  check(
+    '确认后待审批、终态保留、进已成交客户要人工',
+    result.handoff === true &&
+      s.stage === 'paid' &&
+      o.status === 'refund_pending' &&
+      s.handoff?.kind === 'refund' &&
+      paidNeedsHuman(s, packById('travel')!) &&
+      startedOf(sid).length === 1,
+  );
+  const refundId = o.refund?.id;
+  const again = await say(sid, '确认退款');
+  check('重复确认静默，不新增申请或转人工事件', again.silent === true && o.refund?.id === refundId && startedOf(sid).length === 1);
+  check('自助退款全程不调用模型', requests.length === before);
 }
 {
   // 从没转过人工的会话付款：handoffBeforePaid 为 false
@@ -695,6 +735,17 @@ const mkOrder = (s: Session): Order => {
   check('旧 /resume：转人工期间付过款的，交还后阶段是终态 paid', sess(sid).stage === 'paid' && !sess(sid).handedOver);
 }
 
+for (const status of ['refund_pending', 'refunded'] as const) {
+  const sid = newSid(`07-${status}`);
+  await say(sid, '转人工');
+  const o = mkOrder(sess(sid));
+  store.markOrderPaid(o.id);
+  o.status = status;
+  store.saveOrder(o);
+  await legacy(sid, 'resume');
+  check(`07：${status} 交还后仍是终态 paid`, sess(sid).stage === 'paid' && !sess(sid).handedOver);
+}
+
 // ---------------- 5. /api/orders/:id 的键集合（R22、不变量 43） ----------------
 const WHITELIST = [
   'confirmed',
@@ -702,6 +753,7 @@ const WHITELIST = [
   'departDate',
   'id',
   'paidAt',
+  'refund',
   'routeTitle',
   'status',
   'supersededBy',
@@ -2167,6 +2219,120 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
     rs.status === 409 && rr.status === 409 && json(s9) === snap9 && sent.length === 2,
     `${rs.status} ${rr.status}`,
   );
+}
+
+// ---------------- 12. Session.handoffLog（07 R23、不变量 20 的数据一半；plan 第 15 步、风险 D3、D4） ----------------
+{
+  const tk = await import('./takeover.js');
+  const { onTurnEnd } = await import('../trace/recorder.js');
+  const { sessionState, rowToSession } = await import('../store/project.js');
+  const HANDOFF_LOG_MAX = 50; // spec R23 的上限，写死在这里：改了常量这条要变红
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  const A: import('./takeover.js').Actor = { userId: '0b7c5e1a-1d2e-4f30-8a41-0000000000a1', name: '小林', role: 'agent' };
+  const turnIds: string[] = [];
+  const off = onTurnEnd((t) => turnIds.push(t.turn.turnId));
+
+  // 每次进入转人工追加一条，带这一轮的 trace id；交还之后再转再追加，handoffCount 与 handoffLog 同步增长
+  const sid = newSid('LOG1');
+  await say(sid, '转人工');
+  let s = sess(sid);
+  const first = s.handoffLog?.[0];
+  check(
+    '第一次转人工：追加一条，类型与时间同 handoff 记录，turnId 是这一轮 trace 的 id',
+    s.handoffLog?.length === 1 &&
+      first?.kind === 'request' &&
+      first.at === s.handoff?.at &&
+      typeof first.turnId === 'string' &&
+      UUID.test(first.turnId) &&
+      first.turnId === turnIds.at(-1),
+    json({ log: s.handoffLog, turns: turnIds.slice(-1) }),
+  );
+  await legacy(sid, 'resume');
+  await say(sid, '我要投诉');
+  s = sess(sid);
+  check(
+    '交还后再转人工：再追加一条，handoffCount 同步是 2，第一条原样',
+    s.handoffLog?.length === 2 &&
+      s.handoffLog[0]!.kind === 'request' &&
+      s.handoffLog[1]!.kind === 'complaint' &&
+      s.handoffLog[1]!.turnId === turnIds.at(-1) &&
+      s.handoffCount === 2,
+    json(s.handoffLog),
+  );
+  check('交还不清 handoffLog', (await legacy(sid, 'resume')).status === 200 && sess(sid).handoffLog?.length === 2);
+
+  // 升级（已在转人工中又遇到紧急情况）也追加一条，计数不加；沉默规则（再来一个非紧急的）不追加
+  const sidE = newSid('LOG2');
+  await say(sidE, '转人工');
+  enterHandoff(sess(sidE), { kind: 'emergency', at: Date.now() + 1, reason: '客户说人受伤了' });
+  enterHandoff(sess(sidE), { kind: 'emergency', at: Date.now() + 2, reason: '又一次紧急' });
+  enterHandoff(sess(sidE), { kind: 'model', at: Date.now() + 3, reason: '模型又转了一次' });
+  enterHandoff(sess(sidE), { kind: 'consent', at: Date.now() + 4, reason: '客户要求撤回同意或删除信息' });
+  s = sess(sidE);
+  check(
+    '升级追加一条（不加 handoffCount）；已经是 emergency 再来 emergency、别的原因、consent 的沉默规则都不追加',
+    s.handoffCount === 1 && json(s.handoffLog?.map((e) => e.kind)) === json(['request', 'emergency']),
+    json({ log: s.handoffLog, c: s.handoffCount }),
+  );
+  check(
+    '不在轮次里触发的（直接调 enterHandoff）没有 turnId',
+    s.handoffLog?.[1]?.turnId === undefined && !('turnId' in (s.handoffLog?.[1] ?? {})),
+  );
+
+  // 最多 50 条，满了丢最旧的；handoffCount 照常数
+  const sidC = newSid('LOG3');
+  const sc = store.getOrCreateSession(sidC, 'simulator');
+  for (let i = 0; i < HANDOFF_LOG_MAX + 10; i += 1) {
+    sc.handedOver = false;
+    enterHandoff(sc, { kind: 'request', at: 1_000 + i, reason: '客户要找顾问' });
+  }
+  check(
+    `handoffLog 最多 ${HANDOFF_LOG_MAX} 条，保留最新的（丢掉最旧的 10 条），handoffCount 不封顶`,
+    sc.handoffLog?.length === HANDOFF_LOG_MAX &&
+      sc.handoffLog[0]!.at === 1_010 &&
+      sc.handoffLog.at(-1)!.at === 1_000 + HANDOFF_LOG_MAX + 9 &&
+      sc.handoffCount === HANDOFF_LOG_MAX + 10,
+    json({ n: sc.handoffLog?.length, c: sc.handoffCount }),
+  );
+
+  // 重置不清（D3）：清的是 handoff、assignee 与两个窗口，handoffLog 同 firstHandoffAt、handoffCount 一样永不清
+  const before = json(sess(sid).handoffLog);
+  await say(sid, '转人工');
+  const logged = json(sess(sid).handoffLog);
+  await say(sid, '重置');
+  s = sess(sid);
+  check(
+    '重置不清 handoffLog（清了 handoff、assignee），重置前后逐条相同',
+    !s.handedOver && !('handoff' in s) && json(s.handoffLog) === logged && logged !== before && s.handoffLog?.length === 3,
+    json(s.handoffLog),
+  );
+
+  // 顾问主动接手：未转人工时以 kind=agent 进入，记一条、没有 turnId；接手本来就在转人工中的会话（AI 转的）不追加
+  const sidA = newSid('LOG4');
+  const sa = store.getOrCreateSession(sidA, 'simulator');
+  sa.messages.push({ role: 'customer', content: '你好', at: Date.now() });
+  store.saveSession(sa);
+  tk.takeover(sidA, A);
+  check(
+    '顾问主动接手：追加一条 agent，没有 turnId',
+    sa.handoffLog?.length === 1 && sa.handoffLog[0]!.kind === 'agent' && sa.handoffLog[0]!.turnId === undefined,
+    json(sa.handoffLog),
+  );
+  const before2 = json(sess(sidE).handoffLog);
+  tk.takeover(sidE, A);
+  check('接手本来就在转人工中的会话：不追加（不是从 AI 手里接过来）', json(sess(sidE).handoffLog) === before2);
+
+  // 随会话的 state json 进库：sessionState 带着它，rowToSession 原样读回；老会话没有这个字段也能读
+  const st = sessionState(sess(sid));
+  check(
+    'handoffLog 在 sessionState 里，rowToSession 原样读回',
+    json(st.handoffLog) === json(sess(sid).handoffLog) && json(rowToSession({ state: st }, []).handoffLog) === json(sess(sid).handoffLog),
+  );
+  check(
+    '老会话（没有这个字段）：状态里也没有，读回仍是没有',
+    !('handoffLog' in sessionState(store.getOrCreateSession(newSid('LOG5'), 'simulator'))),
+  );
+  off();
 }
 
 fake.close();

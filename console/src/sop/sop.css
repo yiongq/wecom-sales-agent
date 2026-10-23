@@ -1493,3 +1493,68 @@
 .sop-merge-done > svg {
   color: var(--success);
 }
+
+.sop-policy-card {
+  margin-top: 16px;
+}
+.sop-policy-clauses {
+  padding-left: 20px;
+  margin: 12px 0;
+  font-size: 13px;
+  line-height: 1.7;
+}
+.sop-policy-clauses li {
+  margin-bottom: 12px;
+}
+.sop-policy-clauses strong {
+  font-weight: 500;
+}
+.sop-policy-clauses p {
+  margin: 2px 0 0;
+  color: var(--text-2);
+}
+.sop-policy-facts {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+  font-size: 13px;
+}
+.sop-policy-facts div {
+  display: flex;
+  justify-content: space-between;
+  margin: 8px 0;
+}
+.sop-policy-facts dd {
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.sop-policy-card summary {
+  cursor: pointer;
+  font-size: 13px;
+}
+
+/* 07：发布闸与发布抽屉共用，同一时刻只显示一处。 */
+.sop-gate {
+  margin: 16px 24px;
+  padding: 16px;
+  background: var(--panel);
+  box-shadow: var(--shadow-card);
+  border-radius: var(--r-lg);
+  overflow-wrap: anywhere;
+}
+.sop-gate h3,
+.sop-gate h4 {
+  margin: 0 0 12px;
+  font-size: 14px;
+}
+.sop-gate p {
+  margin: 8px 0;
+}
+.sop-gate-results {
+  margin-top: 16px;
+}
+.sop-gate-results ul {
+  padding-left: 20px;
+}
+.sop-publish .sop-gate {
+  margin: 0;
+}

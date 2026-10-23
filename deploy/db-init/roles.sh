@@ -12,6 +12,8 @@
 # compose 另把整个 db-init/ 挂到 /db-init，roles.sh 与 roles.sql 在那里并排。roles.sql 不能进 initdb.d：
 # entrypoint 会把那里的 *.sql 直接交给 psql，没有口令变量必然失败。所以从钩子位置执行时旁边没有它，改取 /db-init/roles.sql。
 #
+# 最后调用同目录的 extensions.sh 在应用库里建 vector 扩展（07 起，细节见它开头）；轮换口令重跑本脚本时它也会再跑一遍，已存在就什么都不做。
+#
 # 环境（db 容器的，来自 .env.db）：AGENT_OWNER_PASSWORD、AGENT_APP_PASSWORD、AGENT_PLATFORM_PASSWORD 必填；
 # AGENT_DB 库名，缺省 agent；POSTGRES_USER 超级用户，缺省 postgres（本地 socket 是 trust，不用口令）。
 # 口令经 psql 的 \getenv 读入，不上命令行（ps 里看不到），也不回显。
@@ -64,3 +66,9 @@ fi
   sed "$edits" "$sql"
 } | psql_su -v db_name="$db"
 echo "roles.sh: 完成：${done_msg# }"
+
+# 07：应用库里的 vector 扩展（迁移 0016 要求，agent_owner 建不了，只能超级用户在应用库里建）。库刚建好，所以放在最后。
+# 从钩子位置执行时旁边没有 extensions.sh（和 roles.sql 一样），改取 /db-init/extensions.sh。可重复执行
+ext="$(cd "$(dirname "$0")" && pwd)/extensions.sh"
+[[ -x "$ext" ]] || ext=/db-init/extensions.sh
+"$ext"

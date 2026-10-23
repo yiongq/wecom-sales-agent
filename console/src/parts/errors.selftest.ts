@@ -79,6 +79,13 @@ const SPEC: ReadonlyArray<readonly [string, number, string, string | null, strin
   ['not_ready', 503, '系统正在启动', '重试', 'neutral', 'inline'],
   ['db_disabled', 503, '后台只在数据库模式下可用', null, 'neutral', 'whole'],
   ['invalid_credentials', 401, '邮箱或密码不对', '检查后重试', 'danger', 'form'],
+  // 07 R7：发布闸的新错误码（第 13 步）
+  ['gate_required', 409, '发布前要先跑一次回归', '保存草稿后运行回归，通过后再发布', 'caution', 'banner'],
+  ['gate_failed', 409, '回归没有通过', '查看拦发布的目标，修改后重新运行', 'danger', 'banner'],
+  ['gate_active', 409, '已有一次回归在排队或运行', '等待这次回归结束', 'neutral', 'banner'],
+  ['gate_quota', 429, '今天的回归次数已用完', '明天再试，或请所有者填写原因强发', 'caution', 'banner'],
+  ['gate_skipped', 409, '沙箱不需要运行发布回归', '静态检查通过后可以发布', 'neutral', 'banner'],
+  ['override_forbidden', 403, '只有所有者可以强发', '请所有者填写原因后发布', 'caution', 'page'],
 ];
 
 for (const [code, status, title, next, tone, place] of SPEC) {

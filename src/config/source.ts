@@ -36,6 +36,7 @@ import {
   type TenantCtx,
   type TenantLock,
 } from '../db/client.js';
+import { abandonGates } from '../db/repo/gate.js';
 import { writeAudit } from '../db/repo/audit.js';
 import { appliedMigrationHashes, imageMigrationHashes } from '../db/migrate.js';
 import { readActiveCatalog, type CatalogRow } from '../db/repo/catalog.js';
@@ -46,16 +47,18 @@ import type { RenderInputs } from '../db/schema.js';
 import { setLogTenant } from '../log.js';
 import { packById, runtimeById, legacyTravelRuntime as travelRuntime } from '../packs/registry.js';
 import { renderSystemPrompt } from '../core/prompt.js';
+import { embedEndpointAllowed, embedEndpointHost } from '../core/llm/endpoints.js';
 import { packPipelines } from '../core/engine/pipelines.js';
 import { bindPack, boundPack, BrandProfileSchema, type PackBinding, type PackSources, type BrandProfile } from '../core/pack-api.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { ConfigDrift } from '../shared/console-api.js';
 import { deepFreeze } from '../shared/freeze.js';
 import type { IndustryPack } from '../shared/pack.js';
+import { policyViolations as checkSopContractPolicy } from '../packs/travel/policy-lint.js';
 import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
 import { decodeSopFile, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
 import { tenantImage, tenantRenderer, switchPreamble, preambleWarning } from './brand.js';
-import { promptHashes, renderInputsFor, sha256, publishedBrand } from './hashes.js';
+import { promptHashes, renderInputsFor, sha256, publishedBrand, policySnapshot, publishedPolicy } from './hashes.js';
 
 export type { TenantLock } from '../db/client.js';
 export type ConfigMode = 'file' | 'db';
@@ -78,6 +81,8 @@ export interface PublishedSop {
   /** 04 R6：来自 render_inputs，绝不从 tenants.brand 现读。 */
   brand: BrandProfile | null;
   brandHash: string;
+  policy: unknown;
+  policyHash: string;
 }
 
 export interface CatalogSnapshot {
@@ -155,7 +160,9 @@ export type ConfigStartupReason =
   | 'integrity'
   | 'renderer_nondeterministic'
   | 'contract_failed'
-  | 'no_active_routes';
+  | 'no_active_routes'
+  | 'embed_endpoint_forbidden'
+  | 'gate_unavailable';
 export class ConfigStartupError extends Error {
   constructor(
     readonly reason: ConfigStartupReason,
@@ -374,6 +381,29 @@ export async function productionConfigDeps(
   };
 }
 
+// 07 R15：嵌入服务的地址。配置层不 import 检索模块（依赖方向，同 onCatalogChanged 与 installRuntimeSources）：
+// src/core/retrieval.ts 加载时把 `embedCfg().baseUrl` 装进来，DB 模式装载租户时据此校验。
+// 没装（进程没加载检索模块，比如只跑配置的 CLI）就没有地址可查，不校验。
+let embedBaseUrl: (() => string) | null = null;
+export function bindEmbedBaseUrl(read: () => string): void {
+  embedBaseUrl = read;
+}
+
+/**
+ * DB 模式启动校验的第 0 步（07 R15）：嵌入请求会带着客户原文出去，目的地的主机不在境内已备案清单里就拒绝启动。
+ * 不碰库，所以排在连库之前。LLM_MOCK=1 时 readEmbedding 一个请求都不发，端点用不到，不校验（行为不变，同 K4 的 mock 优先）。
+ * 提示里只有主机：地址里可能带账号口令
+ */
+function assertEmbedEndpoint(): void {
+  if (process.env.LLM_MOCK === '1' || !embedBaseUrl) return;
+  const url = embedBaseUrl();
+  if (embedEndpointAllowed(url)) return;
+  throw startup(
+    'embed_endpoint_forbidden',
+    `嵌入服务（EMBED_BASE_URL，没配时跟着智谱或主模型走）的主机 ${embedEndpointHost(url)} 不在境内已备案清单里，或清单内主机没用 https：客户原文只发往清单里的 https 端点（07 R15）`,
+  );
+}
+
 async function loadStandardTenants(deps: ConfigDeps) {
   await checkConfigDatabase(deps);
   return dbStep('读 standard 租户清单', () => standardTenants(deps.db));
@@ -405,6 +435,7 @@ async function loadConfigFromEnv(env: NodeJS.ProcessEnv, gracefulExit: (code: nu
     configureTenancy({ role: 'host', standardCount: 1, strict: env.TENANCY_STRICT === '1' });
     return initConfig(null);
   }
+  assertGateAvailable(env);
   const deps = await productionConfigDeps(env, gracefulExit);
   let hostLocks: TenantLock | null = null;
   try {
@@ -471,8 +502,9 @@ const systemCtx = (tenantId: string): TenantCtx => ({ tenantId, actor: { kind: '
 function assertIntegrity(row: SopVersionRow): void {
   try {
     publishedBrand(row.renderInputs);
+    publishedPolicy(runtimeById(row.packId, packSources())?.policy, row);
   } catch {
-    throw startup('integrity', `已发布版本 v${row.versionNo} 的品牌快照或哈希不合规`);
+    throw startup('integrity', `已发布版本 v${row.versionNo} 的品牌、政策快照或哈希不合规`);
   }
   if (!row.renderedPrompt || !row.promptHash || !row.sopHash) throw startup('integrity', `已发布版本 v${row.versionNo} 缺少渲染结果或哈希`);
   if (sha256(row.renderedPrompt) !== row.promptHash)
@@ -542,6 +574,7 @@ export function toPublishedSop(tenantId: string, row: SopVersionRow, sections: r
     prefixHash: row.prefixHash!,
     sopHash: row.sopHash!,
     ...publishedBrand(row.renderInputs),
+    ...publishedPolicy(runtimeById(row.packId, packSources())?.policy, row),
   });
 }
 
@@ -551,6 +584,7 @@ const CAUSE: Record<Exclude<keyof RenderInputs, 'brand'>, string> = {
   sectionTableHash: 'section_table',
   toolsHash: 'tools',
   brandHash: 'brand',
+  policyHash: 'policy',
 };
 
 /**
@@ -565,6 +599,8 @@ function resolvePublished(
 ): { merged: SopSection[]; rendered: string; causes: string[] } | null {
   const changedBrand =
     publishedBrand(row.renderInputs).brandHash !== renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null).brandHash;
+  const policy = publishedPolicy(d.runtime?.policy, row);
+  const changedPolicy = (d.runtime?.policy !== undefined && row.policy == null) || row.renderInputs?.policyHash !== policy.policyHash;
   const stored = changedBrand ? switchPreamble(row.sections, previousImage, imageSections) : row.sections;
   const merged = mergeWithImage(stored, imageSections);
   const rendered = d.render(joinSop(merged));
@@ -579,6 +615,7 @@ function resolvePublished(
     rules: d.runtime?.contractRules(d.brand ? { brand: d.brand } : 'legacy'),
     brand: d.brand,
     hardRequirements: d.render(''),
+    policy: policy.policy,
   });
   if (violations.length) {
     throw startup(
@@ -587,11 +624,11 @@ function resolvePublished(
     );
   }
   const toolsHash = sha256(d.toolsJson);
-  if (rendered === row.renderedPrompt && toolsHash === row.toolsHash && !changedBrand) return null;
-  const now = renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null);
+  if (rendered === row.renderedPrompt && toolsHash === row.toolsHash && !changedBrand && !changedPolicy) return null;
+  const now = renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null, policy.policyHash);
   const before = row.renderInputs;
   const causes = (Object.keys(CAUSE) as (keyof typeof CAUSE)[])
-    .filter((k) => (k === 'brandHash' ? changedBrand : !before || before[k] !== now[k]))
+    .filter((k) => (k === 'brandHash' ? changedBrand : k === 'policyHash' ? changedPolicy : !before || before[k] !== now[k]))
     .map((k) => CAUSE[k]);
   if (!causes.length) throw startup('renderer_nondeterministic', `渲染的输入与 v${row.versionNo} 发布时完全相同，结果却不同`);
   return { merged, rendered, causes };
@@ -657,8 +694,8 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
 }
 
 /**
- * deps 为 null：文件模式，装配同目录品牌。否则依次执行，前 8 步只读：
- *   1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包 → 4 取租户锁
+ * deps 为 null：文件模式，装配同目录品牌。否则依次执行，前 8 步只读（第 0 步校验嵌入端点，不碰库）：
+ *   0 嵌入端点在境内清单里（07 R15）→ 1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包 → 4 取租户锁
  *   → 5 切分并校验 imageSop → 6 装载已发布 SOP，校验完整性，算出合并、渲染与契约结果 → 7 装载产品库快照（至少一条 active 线路）
  *   → 8 按节、按条目打印 DB 与镜像 data/ 的差异 → 9 需要时写入 rerender 版本 → 10 装上缓存。
  * 任何一步失败都以 ConfigStartupError reject，释放锁、关闭连接池，不留半装载状态
@@ -691,10 +728,19 @@ export async function checkConfigDatabase(d: ConfigDeps): Promise<void> {
   if (extra.length) console.warn(`[config] 库里多出 ${extra.length} 条镜像里没有的迁移（库比镜像新），照常启动`);
 }
 
+/** 只在 DB 装载路径调用，profile 启动行由组合根先输出；文件模式与沙箱不读取闸开关。 */
+function assertGateAvailable(env: NodeJS.ProcessEnv): void {
+  if (env.APP_ROLE === 'sandbox' || currentRuntime().kind === 'sandbox' || env.SOP_GATE !== 'required') return;
+  const provider = (env.LLM_PROVIDER ?? '').toLowerCase();
+  const key = (provider === 'zhipu' ? env.ZHIPU_API_KEY : provider === 'deepseek' ? env.DEEPSEEK_API_KEY : '') || env.LLM_API_KEY;
+  if (env.LLM_MOCK === '1' || !key) throw startup('gate_unavailable', '发布闸要求真实模型配置，不能使用 LLM_MOCK 或空模型密钥');
+}
+
 async function loadConfig(deps: ConfigDeps | null): Promise<void> {
   const state = configState();
   if (!deps) {
-    installPack('travel', readFileBrand());
+    const binding = installPack('travel', readFileBrand());
+    readFilePolicy(binding.runtime.policy);
     return;
   }
   let d = deps;
@@ -702,6 +748,9 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
   state.dbInstalled = true;
   let lock: TenantLock | null = null;
   try {
+    // 0
+    assertGateAvailable(process.env);
+    assertEmbedEndpoint();
     await checkConfigDatabase(d);
     // 3
     const tenant = await dbStep('解析租户', () => findTenantBySlug(d.db, d.tenantSlug));
@@ -776,6 +825,8 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
     // 9（02）条目版本的启动补写，两种会话存储都做；补写的版本随后与读到的一起进内存
     const backfill = backfillPlan(items, versions);
     if (backfill.length) await dbStep('补写条目版本', () => writeBackfill(d, tenant.id, backfill));
+    if (currentRuntime().kind === 'standard')
+      await dbStep('放弃重启前的发布闸', () => withTenant(d.db, systemCtx(tenant.id), (tx) => abandonGates(tx)));
     const history = historyOf([...versions, ...backfill]);
     // 10
     state.loaded = {
@@ -822,6 +873,7 @@ async function writeRerender(
   r: { merged: SopSection[]; rendered: string; causes: string[] },
 ): Promise<SopVersionRow> {
   const hashes = promptHashes(r.rendered, d.toolsJson, joinSop(r.merged));
+  const policy = publishedPolicy(d.runtime?.policy, row);
   const next = await withTenant(d.db, systemCtx(tenantId), async (tx) => {
     await lockTenantConfig(tx);
     await archivePublished(tx, row.id);
@@ -834,7 +886,8 @@ async function writeRerender(
       basedOn: row.id,
       renderedPrompt: r.rendered,
       ...hashes,
-      renderInputs: renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null),
+      policy: policy.policy,
+      renderInputs: renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null, policy.policyHash),
       changeNote: `启动重渲染：${r.causes.join('、')} 变了`,
       createdBy: null,
       createdByName: 'system',
@@ -1085,6 +1138,8 @@ export async function closeConfig(): Promise<void> {
   const state = configState();
   const cur = state.loaded;
   if (!cur) return;
+  const { stopTenantGates } = await import('./gate.js');
+  await stopTenantGates(cur.tenantId);
   await cur.lock.release().catch(() => {});
   await cur.deps.closeDb?.().catch(() => {});
 }
@@ -1138,6 +1193,23 @@ export function currentPack(): PackBinding {
   return state.loaded ? { ...binding, brand: state.loaded.sop.brand } : binding;
 }
 
+/** 每轮开始捕获一次并保留返回值：与已发布 SOP 同步，DB 读路径不查询草稿或数据库。 */
+export function currentPolicy(): ReturnType<typeof policySnapshot> {
+  const state = configState();
+  if (state.loaded) return { policy: state.loaded.sop.policy, policyHash: state.loaded.sop.policyHash };
+  if (configMode() === 'db') throw new ConfigNotReadyError();
+  return readFilePolicy(currentPack().runtime.policy);
+}
+
+function readFilePolicy(pack: import('../core/pack-api.js').PackPolicy | undefined): ReturnType<typeof policySnapshot> {
+  const file = path.join(path.dirname(fileSopPath()), 'policy.json');
+  const value = fs.existsSync(file) ? JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file))) : pack?.defaults;
+  const snapshot = policySnapshot(pack, value);
+  const violations = pack ? checkSopContractPolicy(snapshot.policy) : [];
+  if (violations.length) throw new Error(`policy_invalid: ${violations.map((v) => v.detail).join('；')}`);
+  return deepFreeze(snapshot);
+}
+
 /** 与引擎共用有效路径，品牌不会误读 cwd/data 或产品库所在目录。 */
 export function fileSopPath(): string {
   return process.env.SOP_PATH ?? path.join(process.cwd(), 'data', 'sop.md');
@@ -1156,7 +1228,9 @@ export function renderFileSop(sop: string): string {
   const { runtime, brand } = currentPack();
   if (brand === null) return renderSystemPrompt(sop, runtime.legacy.hardRequirements);
   const image = tenantImage(runtime, sop, brand);
-  return tenantRenderer(runtime, brand)(joinSop(mergeWithImage(splitSop(sop, runtime.sopSections), image)));
+  const legacyImage = splitSop(decodeSopFile(fs.readFileSync(path.join(process.cwd(), 'data', 'sop.md'))), runtime.sopSections);
+  const stored = switchPreamble(splitSop(sop, runtime.sopSections), legacyImage, image);
+  return tenantRenderer(runtime, brand)(joinSop(mergeWithImage(stored, image)));
 }
 
 function installPack(id: string, brand: BrandProfile | null = null): PackBinding {

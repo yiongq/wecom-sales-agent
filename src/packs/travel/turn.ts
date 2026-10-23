@@ -47,6 +47,7 @@ import {
 } from './progress.js';
 import { holidayIn, travelDatePolicy } from './dates.js';
 import { advisorCheck, paymentPendingReply } from './contact-words.js';
+import { policyNote } from './policy-ask.js';
 import { isPureChitchat, paidChitchatReply, reminderLines } from './reply-notes.js';
 import { TARGET_DAYS, requestedDays, customHandoffReply } from './itinerary.js';
 
@@ -593,15 +594,15 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
   const SENSITIVE_ASK =
     /(?:安全|开放|能去|可以去|让去|允许去?)(?:吗|么|嘛|不)|安不安全|开不开放|能不能去|边防证|通行证|入藏函|签证|出入境|(?:办|要办|需要办|得办|什么|哪些|啥).{0,4}手续|手续.{0,3}(?:怎么|多久|复杂)|(?:证件|身份证).{0,4}(?:够|要|需)/;
 
-  /** R5：最近 3 张没作废的订单（待付款 / 已付款），不给金额 */
+  /** R5：最近 3 张没作废的订单（含退款状态），不给金额 */
   function liveOrders(session: Session) {
     return session.orderIds
       .map((id) => getOrder(id))
-      .filter((o): o is NonNullable<typeof o> => !!o && (o.status === 'pending_payment' || o.status === 'paid'))
+      .filter((o): o is NonNullable<typeof o> => !!o && ['pending_payment', 'paid', 'refund_pending', 'refunded'].includes(o.status))
       .slice(-3);
   }
 
-  function contextNote({ session, text, brand }: TurnContext): string[] {
+  function contextNote({ session, text, brand, policy }: TurnContext): string[] {
     const lines: string[] = [];
     // 线路 id 跨轮带着走：历史里只有文本，没有这一行，客户说「第二条报个价」时模型得先重查一遍库
     const shown = session.lastShownRoutes ?? [];
@@ -615,11 +616,15 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     const live = liveOrders(session);
     if (live.length) {
       lines.push(
-        `订单: ${live.map((o) => `《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发，${o.status === 'paid' ? '已付款' : '待付款'}`).join('；')}`,
+        `订单: ${live.map((o) => `《${o.routeTitle}》${o.travelers} 位、${cardDate(o.departDate)}出发，${o.status === 'refund_pending' ? '退款中' : o.status === 'refunded' ? '已退款' : o.status === 'paid' ? '已付款' : '待付款'}`).join('；')}`,
       );
       if (live.some((o) => o.status === 'paid')) lines.push('已付款的单：顾问会发行程确认书、拉服务群；说过就别再说');
     }
-    if (PAID_CLAIM.test(text) && !PAID_CLAIM_NEGATED.test(text) && !session.orderIds.some((id) => getOrder(id)?.status === 'paid')) {
+    if (
+      PAID_CLAIM.test(text) &&
+      !PAID_CLAIM_NEGATED.test(text) &&
+      !session.orderIds.some((id) => ['paid', 'refund_pending', 'refunded'].includes(getOrder(id)?.status ?? ''))
+    ) {
       lines.push(
         '客户说已付款，但系统还没收到到账：不要说已到账、订单生效、订单已确认；' +
           `要说就说「${paymentPendingReply({ channel: session.channel, templateMode: !!brand })}」`,
@@ -644,6 +649,8 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
     // 06 R7：已对客户说过的提醒与本会话推荐过的线路。没有记录时不加
     lines.push(...reminderLines(session));
     lines.push(quoteTimingNote(session, text) ?? '', headcountAskNote(session, text) ?? '');
+    // 07 R14：客户在问退款、退订、改期、保险、费用含不含时追加条款（只追加在已有各行之后）；不是政策问法的轮一个字节都不加
+    lines.push(...policyNote({ policy, text, orderIds: session.orderIds, getOrder, today: todayIso() }));
     return lines;
   }
 
@@ -1430,7 +1437,9 @@ export function createTravelTurnHooks(sources: TravelTurnSources) {
       const reply = resendPayReply(session, text, brand);
       if (reply) return { text: reply };
       // 06 R14：付款后的纯寒暄不调模型。已转人工的会话在核心的静默判断里就不会走到这里
-      const paid = session.stage === 'paid' || session.orderIds.some((id) => getOrder(id)?.status === 'paid');
+      const paid =
+        session.orderIds.some((id) => ['paid', 'refund_pending'].includes(getOrder(id)?.status ?? '')) ||
+        (session.stage === 'paid' && !session.orderIds.some((id) => getOrder(id)?.status === 'refunded'));
       if (paid && isPureChitchat(text)) return { text: paidChitchatReply(session, { channel: session.channel, templateMode: !!brand }) };
       return null;
     },

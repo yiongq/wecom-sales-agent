@@ -23,7 +23,10 @@ main(async () => {
       dryRun: a['dry-run'] ?? false,
     });
     (r.code === 0 ? console.log : console.error)(`[import-config] ${r.message}`);
-    if (r.hashes) console.log(`promptHash=${r.hashes.promptHash}\nprefixHash=${r.hashes.prefixHash}\nsopHash=${r.hashes.sopHash}`);
+    if (r.hashes)
+      console.log(
+        `promptHash=${r.hashes.promptHash}\npolicyHash=${r.hashes.policyHash}\nprefixHash=${r.hashes.prefixHash}\nsopHash=${r.hashes.sopHash}`,
+      );
     return r.code;
   } finally {
     await close();

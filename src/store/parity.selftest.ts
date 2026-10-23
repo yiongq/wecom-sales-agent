@@ -159,8 +159,12 @@ function runChild(mode: Mode): ChildOut | null {
 /** 时间戳：取值是毫秒数的这些键换成占位，键本身留着（不删字段）。seq 不在内存的投影里（WeakMap），无需处理 */
 const TIME_KEYS = new Set(['at', 'createdAt', 'updatedAt', 'paidAt', 'sentAt', 'lastAt', 'pendingAt', 'firstHandoffAt', 'confirmedAt']);
 const ORDER_ID = /ord_[0-9a-f]{24}/g;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
-/** 规范化：时间戳换成「<t>」，订单号按在这个场景输出里第一次出现的顺序换成「ord#1」「ord#2」…（两边建单的先后相同） */
+/**
+ * 规范化：时间戳换成「<t>」，订单号按在这个场景输出里第一次出现的顺序换成「ord#1」「ord#2」…（两边建单的先后相同）；
+ * 07 R23 的 handoffLog[].turnId 是每一轮随机的 trace id（两边必然不同），格式对的（uuid）换成「<uuid>」，改坏了格式的原样留着，比得出来
+ */
 function canon(x: unknown, ids = new Map<string, string>()): unknown {
   if (typeof x === 'string') {
     return x.replace(ORDER_ID, (id) => {
@@ -170,7 +174,16 @@ function canon(x: unknown, ids = new Map<string, string>()): unknown {
   }
   if (Array.isArray(x)) return x.map((v) => canon(v, ids));
   if (x !== null && typeof x === 'object') {
-    return Object.fromEntries(Object.entries(x).map(([k, v]) => [k, TIME_KEYS.has(k) && typeof v === 'number' ? '<t>' : canon(v, ids)]));
+    return Object.fromEntries(
+      Object.entries(x).map(([k, v]) => [
+        k,
+        TIME_KEYS.has(k) && typeof v === 'number'
+          ? '<t>'
+          : k === 'turnId' && typeof v === 'string' && UUID.test(v)
+            ? '<uuid>'
+            : canon(v, ids),
+      ]),
+    );
   }
   return x;
 }
@@ -220,6 +233,7 @@ const MUST_SEE: Record<'session' | 'message' | 'order' | 'reply' | 'trace', stri
     'handoff',
     'firstHandoffAt',
     'handoffCount',
+    'handoffLog',
     'assignee',
     'stageBeforeHandoff',
     'lastQuote',

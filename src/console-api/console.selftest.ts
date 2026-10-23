@@ -10,9 +10,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gunzipSync } from 'node:zlib';
+import { Hono } from 'hono';
 import type { ConversationCounts, ConversationDetail, ConversationRow, OrderView, SopSectionText } from '../shared/console-api.js';
 import type { ChatMessage, Session } from '../types.js';
-import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
+import { hostRuntime, withoutTenantScope, identifyRuntime } from '../tenancy/runtime.js';
 import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
 enterTenantScopeForTest(hostRuntime());
@@ -850,6 +851,37 @@ check(
   `${owner.status} ${admin.text} ${reader.text}`,
 );
 
+// 07 R4：同一保存入口接收 policy；可编辑角色、校验、只读投影与发布前隔离。
+{
+  const { defaultTravelPolicy } = await import('../packs/travel/policy.js');
+  const before = cfg.currentSop();
+  const policy = structuredClone(defaultTravelPolicy);
+  policy.refund.approvalThresholdYuan = 25000;
+  const input = { basedOn: before.versionId, rev: null, edits: [], policy };
+  const denied = await call('PUT', '/sop/draft', { as: reader, json: input });
+  check('policy HTTP：viewer 写 policy 草稿 → 403', denied.status === 403);
+  const invalid = await call('PUT', '/sop/draft', {
+    ...O,
+    json: { ...input, policy: { ...policy, pricing: { ...policy.pricing, peakMultiplier: 1.15 } } },
+  });
+  check(
+    'policy HTTP：只读定价字段 → 422 policy_invalid',
+    invalid.status === 422 && invalid.body.violations?.some((v: Body) => v.code === 'policy_invalid'),
+  );
+  const saved = await call('PUT', '/sop/draft', { ...O, json: input });
+  check('policy HTTP：owner 保存整份 policy → 200', saved.status === 200 && saved.body.policy?.approvalThresholdYuan === 25000, saved.text);
+  check('policy HTTP：写草稿不改变已发布 policy', cfg.currentSop().policyHash === before.policyHash);
+  const view = (await call('GET', '/sop', { as: reader })).body;
+  check(
+    'policy HTTP：只读成员看到草稿与已发布差异',
+    view.published.policy?.approvalThresholdYuan === 30000 && view.draft.policy?.approvalThresholdYuan === 25000,
+  );
+  const updated = await call('PUT', '/sop/draft', { as: admin, json: { ...input, rev: saved.body.rev, policy: defaultTravelPolicy } });
+  check('policy HTTP：admin 保存 policy 草稿 → 200', updated.status === 200, updated.text);
+  const discarded = await call('POST', '/sop/draft/discard', { ...O, json: { rev: updated.body.rev } });
+  check('policy HTTP：清理草稿成功', discarded.status === 200);
+}
+
 // 验收 15：CSRF
 {
   const noCsrf = keep(await call('POST', '/sop/draft/check', { as: owner, noCsrf: true }));
@@ -935,6 +967,36 @@ check(
     saved.status === 200 && saved.body.status === 'draft' && saved.body.basedOn === v1.id,
     saved.text.slice(0, 200),
   );
+  const oldGate = process.env.SOP_GATE;
+  try {
+    process.env.SOP_GATE = 'off';
+    check('闸面板 HTTP：关闭时只读字段为 false', (await call('GET', '/sop', O)).body.gateRequired === false);
+    process.env.SOP_GATE = 'required';
+    check('闸面板 HTTP：standard 开启时只读字段为 true', (await call('GET', '/sop', O)).body.gateRequired === true);
+    const host = hostRuntime();
+    const identity = { id: host.id, slug: host.slug, kind: host.kind };
+    try {
+      identifyRuntime(host, { ...identity, kind: 'sandbox' });
+      // 沙箱入口先选定运行时，再进入 console；不能经只路由 standard 的宿主 Host 入口。
+      const { consoleApi } = await withoutTenantScope(() => import('./app.js'));
+      const sandboxEntry = new Hono<{ Variables: { publicHostRuntime: typeof host } }>()
+        .use('*', async (c, next) => {
+          c.set('publicHostRuntime', host);
+          await next();
+        })
+        .route('/', consoleApi);
+      const sandboxView = await sandboxEntry.request('/api/console/sop', {
+        headers: { cookie: `${session.SESSION_COOKIE}=${owner.token}` },
+      });
+      const sandboxBody = (await sandboxView.json()) as Body;
+      check('闸面板 HTTP：沙箱即使开启也不要求回归', sandboxView.status === 200 && sandboxBody.gateRequired === false);
+    } finally {
+      identifyRuntime(host, identity);
+    }
+  } finally {
+    if (oldGate === undefined) delete process.env.SOP_GATE;
+    else process.env.SOP_GATE = oldGate;
+  }
   const overview = (await call('GET', '/sop', O)).body;
   check(
     'SOP HTTP：概览里有草稿、没过期、预算在限内',
@@ -3265,6 +3327,9 @@ async function workbenchSuite(): Promise<void> {
   const S0 = 'wecom:wb13-matrix';
   mk(S0);
   const MATRIX: { route: string; url: string; json?: unknown; allowed: RoleName[]; sse?: true }[] = [
+    // 07 R7：先校验权限，合法成员再进入参数/目标检查，不在权限矩阵里发模型请求。
+    { route: 'POST /sop/draft/gate', url: '/sop/draft/gate', json: { rev: -1 }, allowed: MONEY },
+    { route: 'GET /sop/gate-runs/:id', url: '/sop/gate-runs/00000000-0000-0000-0000-000000000000', allowed: MONEY },
     { route: 'GET /conversations/:id', url: `/conversations/${enc(S0)}`, allowed: ALL },
     { route: 'GET /conversations/:id/messages', url: `/conversations/${enc(S0)}/messages?beforeSeq=10`, allowed: ALL },
     { route: 'GET /conversations/:id/turns', url: `/conversations/${enc(S0)}/turns`, allowed: ALL },
@@ -3278,6 +3343,12 @@ async function workbenchSuite(): Promise<void> {
       url: `/conversations/${enc(S0)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001`,
       allowed: MONEY,
     },
+    {
+      route: 'GET /conversations/:id/turns/:turnId/goal-draft',
+      url: `/conversations/${enc(S0)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001/goal-draft`,
+      allowed: MONEY,
+    },
+    { route: 'GET /traces', url: '/traces', allowed: MONEY },
     // 写接口拿不存在的会话、订单与不合规的请求体测：过了权限这一层的回 404 / 400，不动任何东西
     { route: 'POST /conversations/:id/takeover', url: '/conversations/wecom%3AwmNOSUCH13/takeover', json: {}, allowed: HANDLE },
     { route: 'POST /conversations/:id/release', url: '/conversations/wecom%3AwmNOSUCH13/release', allowed: HANDLE },
@@ -3294,6 +3365,9 @@ async function workbenchSuite(): Promise<void> {
     { route: 'POST /orders/:id/confirm', url: '/orders/ord_nosuch13/confirm', allowed: HANDLE },
     { route: 'POST /orders/:id/mark-paid', url: '/orders/ord_nosuch13/mark-paid', allowed: HANDLE },
     { route: 'POST /orders/:id/cancel', url: '/orders/ord_nosuch13/cancel', json: { reason: '矩阵' }, allowed: HANDLE },
+    { route: 'POST /orders/:id/refund/approve', url: '/orders/ord_nosuch13/refund/approve', allowed: REPLIES },
+    { route: 'POST /orders/:id/refund/reject', url: '/orders/ord_nosuch13/refund/reject', json: { reason: '矩阵' }, allowed: REPLIES },
+    { route: 'POST /orders/:id/refund/settle', url: '/orders/ord_nosuch13/refund/settle', allowed: HANDLE },
     { route: 'GET /quick-replies', url: '/quick-replies', allowed: ALL },
     { route: 'POST /quick-replies', url: '/quick-replies', json: {}, allowed: REPLIES },
     { route: 'PATCH /quick-replies/:id', url: '/quick-replies/nosuch', json: { title: '矩阵' }, allowed: REPLIES },
@@ -3706,12 +3780,25 @@ async function workbenchSuite(): Promise<void> {
       await call('GET', `/conversations/${enc(S)}/turns`, { as: vw }),
       await call('GET', `/conversations/${enc(S)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001/diff`, { as: vw }),
       await call('GET', `/conversations/${enc(S)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001`, O),
+      // 07 R24：AI 记录列表与「存为回归用例」同样只在 db 存储有
+      await call('GET', '/traces', O),
+      await call('GET', `/conversations/${enc(S)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001/goal-draft`, O),
     ];
     keep(rs[0]!);
     check(
-      '文件存储：更早的消息、步骤摘要、改写对照、trace 原文 → 503 store_file_mode',
+      '文件存储：更早的消息、步骤摘要、改写对照、trace 原文、AI 记录列表、回归用例草稿 → 503 store_file_mode',
       rs.every((r) => r.status === 503 && r.body.error === 'store_file_mode'),
       rs.map((r) => r.text).join(' | '),
+    );
+    const viewerTraces = [
+      await call('GET', '/traces', { as: vw }),
+      await call('GET', '/traces', { as: ag1 }),
+      await call('GET', `/conversations/${enc(S)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001/goal-draft`, { as: ag1 }),
+    ];
+    check(
+      '文件存储：AI 记录与回归用例草稿对只读成员、坐席仍是 403（权限先于存储模式）',
+      viewerTraces.every((r) => r.status === 403),
+      viewerTraces.map((r) => r.status).join(),
     );
     const viewerTrace = await call('GET', `/conversations/${enc(S)}/turns/0b7c5e1a-1d2e-4f30-8a41-000000000001`, { as: vw });
     check('文件存储：trace 原文对只读成员仍是 403（权限先于存储模式）', viewerTrace.status === 403);
@@ -4019,6 +4106,105 @@ async function workbenchSuite(): Promise<void> {
         (await call('GET', '/orders/summary', { as: ag1 })).status === 403,
       summary.text,
     );
+
+    // 07 R19：真实路由的权限、审批、驳回与顾问结算。
+    const { requestRefund } = await import('../payment/refunds.js');
+    const { quoteRefund } = await import('../core/refund.js');
+    const { defaultTravelPolicy } = await import('../packs/travel/policy.js');
+    const refundOrder = () => {
+      const o = order(40000);
+      store.markOrderPaid(o.id);
+      const q = quoteRefund(o, defaultTravelPolicy.refund, 'published', '2026-10-31');
+      if ('ineligible' in q) throw new Error('退款夹具不可退');
+      requestRefund(q, defaultTravelPolicy.refund);
+      return o;
+    };
+    const rf = refundOrder();
+    const rfNotices = notice.length;
+    check(
+      '退款批准：坐席与只读均 403',
+      (await call('POST', `/orders/${rf.id}/refund/approve`, { as: ag1 })).status === 403 &&
+        (await call('POST', `/orders/${rf.id}/refund/approve`, { as: vw })).status === 403,
+    );
+    const approved = await call('POST', `/orders/${rf.id}/refund/approve`, { as: sup });
+    check(
+      '主管批准：模拟结算并通知，退款投影不泄露 policyHash 与操作者',
+      approved.status === 200 &&
+        rf.status === 'refunded' &&
+        notice.length === rfNotices + 1 &&
+        (approved.body.refund as Body).settledAt != null &&
+        !JSON.stringify(approved.body.refund).includes('policyHash'),
+    );
+    await call('POST', `/orders/${rf.id}/refund/approve`, { as: sup });
+    check('批准幂等：不再通知', notice.length === rfNotices + 1);
+    const deniedRf = refundOrder();
+    check(
+      '驳回原因最长 200 字',
+      (await call('POST', `/orders/${deniedRf.id}/refund/reject`, { as: sup, json: { reason: '长'.repeat(201) } })).status === 400,
+    );
+    check(
+      '主管驳回：回到 paid、保留原因',
+      (await call('POST', `/orders/${deniedRf.id}/refund/reject`, { as: sup, json: { reason: '合成原因' } })).status === 200 &&
+        deniedRf.status === 'paid' &&
+        deniedRf.refund?.decision?.reason === '合成原因',
+    );
+    __profileTest.use({ DEPLOY_PROFILE: 'prod' });
+    try {
+      const manualRf = refundOrder();
+      const early = await call('POST', `/orders/${manualRf.id}/refund/settle`, { as: sup });
+      check('待审批时结算：409 order_state', early.status === 409 && early.body.error === 'order_state');
+      await call('POST', `/orders/${manualRf.id}/refund/approve`, { as: sup });
+      check('顾问模式批准仍在退款中', manualRf.status === 'refund_pending');
+      const other = await call('POST', `/orders/${manualRf.id}/refund/settle`, { as: ag2 });
+      check('非接手人结算：409 not_assignee', other.status === 409 && other.body.error === 'not_assignee');
+      const settled = await call('POST', `/orders/${manualRf.id}/refund/settle`, { as: ag1 });
+      check('接手人确认已退款：200 refunded', settled.status === 200 && settled.body.status === 'refunded');
+    } finally {
+      __profileTest.reset();
+    }
+
+    const prior = (await call('GET', '/orders/summary', O)).body;
+    const refundPending = order(4321);
+    store.markOrderPaid(refundPending.id);
+    refundPending.status = 'refund_pending';
+    store.saveOrder(refundPending);
+    const refunded = order(2345);
+    store.markOrderPaid(refunded.id);
+    refunded.status = 'refunded';
+    store.saveOrder(refunded);
+    const oldRefund = order(9999);
+    oldRefund.status = 'refunded';
+    oldRefund.paidAt = from - 1;
+    store.saveOrder(oldRefund);
+    const oldPending = order(1111);
+    oldPending.status = 'refund_pending';
+    oldPending.paidAt = from - 1;
+    store.saveOrder(oldPending);
+    const refunds = await call('GET', '/orders/summary', O);
+    check(
+      '07：本月成交含退款中，已退款原成交额单列，跨月不算成交，退款中笔数不限月份',
+      refunds.body.paidTotal === Number(prior.paidTotal) + 4321 &&
+        refunds.body.paidCount === Number(prior.paidCount) + 1 &&
+        refunds.body.refundedTotal === Number(prior.refundedTotal) + 2345 &&
+        refunds.body.refundedCount === Number(prior.refundedCount) + 1 &&
+        refunds.body.refundPendingCount === Number(prior.refundPendingCount) + 2,
+      refunds.text,
+    );
+    // 07 R23：同一口径按来源拆开，三类（customer / visitor / seed）之和等于顶层（来源的判定与数的细节在 ops.selftest.ts、board.selftest.ts）
+    const byOrigin = refunds.body.byOrigin as Record<string, Record<string, number>> | undefined;
+    check(
+      '07 R23：/orders/summary 带 byOrigin，三类来源逐项之和等于顶层（顶层口径不变）',
+      !!byOrigin &&
+        Object.keys(byOrigin).join() === 'customer,visitor,seed' &&
+        ['paidTotal', 'paidCount', 'refundedTotal', 'refundedCount', 'refundPendingCount', 'pendingTotal', 'pendingCount'].every(
+          (k) => Object.values(byOrigin).reduce((n, part) => n + (part[k] ?? Number.NaN), 0) === refunds.body[k],
+        ),
+      refunds.text,
+    );
+    for (const status of ['refund_pending', 'refunded']) {
+      const filtered = await call('GET', `/orders?status=${status}`, O);
+      check(`07：后台接受 ${status} 筛选`, filtered.status === 200 && filtered.text.includes(status), filtered.text);
+    }
     await sleep(100);
     const au = await call('GET', '/audit?actions=order.confirm,order.mark_paid,order.cancel', O);
     const rows = ((au.body.items ?? []) as Body[]).filter((x) => [o1.id, o2.id].includes(String(x.targetId)));
@@ -4685,6 +4871,24 @@ async function dbStoreChild(): Promise<never> {
     sl.messages.push({ role: 'customer', content: '在吗', at: Date.now() });
     store.saveSession(sl);
     await store.flushSession(SL);
+    const { requestRefund: submitRefund } = await import('../payment/refunds.js');
+    const { quoteRefund: quoteRf } = await import('../core/refund.js');
+    const { defaultTravelPolicy: refundPolicy } = await import('../packs/travel/policy.js');
+    const refundLag = store.createOrder({
+      sessionId: SL,
+      routeId: 'r-test',
+      routeTitle: '合成退款',
+      travelers: 2,
+      departDate: '2099-12-10',
+      totalPrice: 40000,
+    });
+    sl.orderIds.push(refundLag.id);
+    store.saveSession(sl);
+    store.markOrderPaid(refundLag.id);
+    const rfQuote = quoteRf(refundLag, refundPolicy.refund, 'published', '2099-10-31');
+    if ('ineligible' in rfQuote) throw new Error('退款积压夹具不能报价');
+    submitRefund(rfQuote, refundPolicy.refund);
+    await store.flushSession(SL);
     let open!: () => void;
     fx.faults.gate = new Promise<void>((r) => (open = r));
     const t0 = Date.now();
@@ -4704,6 +4908,20 @@ async function dbStoreChild(): Promise<never> {
       lagReply.status === 503 && lagReply.body.error === 'store_lagging' && sl.messages.length === before && pushedL.length === 0,
       lagReply.text,
     );
+    for (const action of ['approve', 'reject']) {
+      const refundBefore = JSON.stringify(refundLag);
+      const denied = await req(
+        'POST',
+        `/orders/${refundLag.id}/refund/${action}`,
+        own,
+        action === 'reject' ? { reason: '合成原因' } : undefined,
+      );
+      ck(
+        `退款${action}积压：503 store_lagging 且订单不变`,
+        denied.status === 503 && denied.body.error === 'store_lagging' && JSON.stringify(refundLag) === refundBefore,
+        denied.text,
+      );
+    }
     fx.faults.gate = null;
     open();
     await store.flushSession(SL, { timeoutMs: 5000 });

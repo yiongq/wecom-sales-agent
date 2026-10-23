@@ -86,7 +86,15 @@ import {
   updateQuickReply,
   type QuickReplyRow,
 } from '../db/repo/quick-replies.js';
-import { readGuardTotals, readTurnDiff, readTurnSteps, readTurnTrace } from '../db/repo/traces.js';
+import {
+  listTraces,
+  readGuardTotals,
+  readTurnCustomerMessage,
+  readTurnDiff,
+  readTurnExportSource,
+  readTurnSteps,
+  readTurnTrace,
+} from '../db/repo/traces.js';
 import {
   AssignedToOtherError,
   ConsentDeclinedError,
@@ -99,12 +107,15 @@ import {
   ReplyTooLongError,
   SendWindowError,
   takeover,
+  supervisesConversations,
 } from '../handoff/takeover.js';
 import { clientKey, isCrossSite, lookupLimit } from '../http-guards.js';
 import { requestLogContext } from '../log.js';
+import { liveOrderSummary } from '../ops/board.js';
 import { readMetricsView } from '../ops/metrics.js';
 import { defaultQuickRepliesOf } from '../packs/registry.js';
 import { paymentMode } from '../payment/mode.js';
+import { approveRefund, rejectRefund, settleRefund } from '../payment/refunds.js';
 import { cancelOrder, confirmOrder, markPaidByAdvisor, OrderNotFoundError, OrderStateError } from '../payment/orders.js';
 import { profile } from '../profile.js';
 import { loginShowcase, sandboxTryUrl } from './entry.js';
@@ -113,6 +124,7 @@ import { csvLabelsOf } from '../shared/catalog-csv.js';
 import {
   AuditQuery,
   CancelOrderBody,
+  RejectRefundBody,
   CatalogItemParam,
   CatalogKindParam,
   ConvQuery,
@@ -131,6 +143,7 @@ import {
   RollbackBody,
   SaveDraftBody,
   TakeoverBody,
+  TracesQuery,
   VersionsQuery,
   type AnonCatalogItem,
   type AnonSopOverview,
@@ -156,20 +169,32 @@ import {
   type SopOverview,
   type SopVersion,
   type Status,
+  type TracePage,
   type TurnDiffView,
   type TurnStepsView,
   type TurnTraceView,
 } from '../shared/console-api.js';
-import { conversationState } from '../shared/conversation.js';
-import { deliveryOfSegments } from '../shared/conversation-types.js';
+import { conversationState, shortIdOf } from '../shared/conversation.js';
+import { deliveryOfSegments, handoffKindOfTurn, isHandoffKind } from '../shared/conversation-types.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { CONSOLE_SECURITY_HEADERS } from '../shared/security-headers.js';
+import { startGate, getGateRun, GateError, GateSkippedError } from '../config/gate.js';
 import { SopEncodingError, SopStructureError } from '../sop/sections.js';
-import { flushSession, getSession, isDemoClassId, listOrders, sessionStoreMode, storeHealth, StoreLaggingError } from '../store.js';
+import {
+  flushSession,
+  getOrder,
+  getSession,
+  isDemoClassId,
+  listOrders,
+  sessionStoreMode,
+  storeHealth,
+  StoreLaggingError,
+} from '../store.js';
 import { rowToMessage } from '../store/project.js';
-import type { Session } from '../types.js';
+import type { Order, Session } from '../types.js';
 import { safeEqual } from '../wecom-crypto.js';
 import { addListener, ensureEventHub, eventTiming, replayAfter, tailId, type Buffered } from './events.js';
+import { buildGoalDraft, GOAL_HISTORY_LIMIT, goalDraftFilename } from './goal-draft.js';
 import { maskNumbers } from './mask.js';
 import {
   actorOf,
@@ -295,6 +320,13 @@ const canHandle = roleIn(new Set<Role>(['owner', 'admin', 'supervisor', 'agent']
 /** 管理快捷回复：owner、admin、supervisor */
 const canManageReplies = roleIn(new Set<Role>(['owner', 'admin', 'supervisor']), '只有所有者、管理员与主管能管理快捷回复');
 
+/** 07 R19：审批与驳回先过主管权限，再校验请求体。 */
+const canApproveRefund: MiddlewareHandler<ConsoleEnv> = async (c, next) => {
+  if (!c.var.user) return unauthorized(c);
+  if (!supervisesConversations(c.var.user.role)) return fail(c, 403, { error: 'forbidden', detail: '只有所有者、管理员与主管能审批退款' });
+  return next();
+};
+
 /** 只在 db 存储有的接口（更早的消息、trace、运行数字）在文件存储下 → 503 store_file_mode */
 class StoreFileModeError extends Error {}
 
@@ -339,7 +371,7 @@ function dbIp(c: Context): string | null {
 
 function ctxOf(c: Context<ConsoleEnv>): TenantCtx {
   const u = c.var.user!;
-  return { tenantId: u.tenantId, actor: { kind: 'user', userId: u.userId, name: u.displayName, ip: dbIp(c) } };
+  return { tenantId: u.tenantId, actor: { role: u.role, kind: 'user', userId: u.userId, name: u.displayName, ip: dbIp(c) } };
 }
 
 const meOf = (u: AuthedUser): Me => ({
@@ -392,6 +424,12 @@ function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503
       body: { error: 'store_lagging', detail: '写库跟不上：改动之前就拒绝的什么都没改，等提交超时的已在内存生效、稍后保存' },
     };
   if (e instanceof StoreFileModeError) return { status: 503, body: { error: 'store_file_mode', detail: e.message } };
+  if (e instanceof GateSkippedError) return { status: 409, body: { error: 'gate_skipped', detail: e.message } };
+  if (e instanceof GateError)
+    return {
+      status: e.code === 'override_forbidden' ? 403 : e.code === 'gate_quota' ? 429 : 409,
+      body: { error: e.code, ...(e.runId ? { runId: e.runId } : {}) },
+    };
   if (e instanceof SopConflictError)
     return { status: 409, body: { error: 'sop_conflict', detail: e.message, keys: e.keys, current: e.current } };
   if (e instanceof SopRevConflictError || e instanceof CatalogRevConflictError) {
@@ -506,6 +544,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
       return c.json(anon, 200);
     }
     const body: SopOverview = await getSopOverview(ctxOf(c));
+    body.gateRequired = process.env.SOP_GATE === 'required' && currentRuntime().kind !== 'sandbox';
     return c.json(body, 200);
   })
   .get('/sop/versions', signedIn, zValidator('query', VersionsQuery, badRequest), async (c) => {
@@ -526,6 +565,10 @@ export const consoleApi = new Hono<ConsoleEnv>()
     const body: DraftCheck = await checkSopDraft(ctxOf(c));
     return c.json(body, 200);
   })
+  .post('/sop/draft/gate', canEdit, zValidator('json', RevBody, badRequest), async (c) =>
+    c.json(await startGate(ctxOf(c), c.req.valid('json')), 202),
+  )
+  .get('/sop/gate-runs/:id', canEdit, async (c) => c.json(await getGateRun(ctxOf(c), c.req.param('id')), 200))
   .post('/sop/draft/publish', canEdit, zValidator('json', PublishBody, badRequest), async (c) => {
     const body: SopVersion = await publishSopDraft(ctxOf(c), c.req.valid('json'));
     return c.json(body, 200);
@@ -717,8 +760,15 @@ export const consoleApi = new Hono<ConsoleEnv>()
     const s = listedSessionOf(c.req.param('id'));
     if (sessionStoreMode() !== 'db') throw new StoreFileModeError('trace 只在 SESSION_STORE=db 时有');
     const turnId = c.req.param('turnId');
-    const r = isDemoClassId(s.id) ? null : await readTx(c, (tx) => readTurnTrace(tx, s.id, turnId));
-    if (!r) return fail(c, 404, { error: 'not_found', detail: '这一轮没有记录' });
+    // 客户原话不在 turn_traces 里：从 messages 取这一轮回复之前的那条（07 R24）。同一个只读事务
+    const found = isDemoClassId(s.id)
+      ? null
+      : await readTx(c, async (tx) => {
+          const trace = await readTurnTrace(tx, s.id, turnId);
+          return trace ? { trace, customer: await readTurnCustomerMessage(tx, s.id, turnId) } : null;
+        });
+    if (!found) return fail(c, 404, { error: 'not_found', detail: '这一轮没有记录' });
+    const { trace: r, customer } = found;
     const body: TurnTraceView = {
       turnId: r.id,
       startedAt: r.startedAt.toISOString(),
@@ -734,6 +784,96 @@ export const consoleApi = new Hono<ConsoleEnv>()
       calls: r.calls,
       llm: r.llm,
       signals: r.signals,
+      guardVerdicts: r.guardVerdicts ?? null,
+      replyShape: r.replyShape ?? null,
+      // 用库里的轮次 id（小写）去对 handoffLog：路径里的写法大小写不限
+      handoffKind: handoffKindOfTurn(s.handoffLog, r.id),
+      customerText: customer?.content ?? null,
+    };
+    return c.json(body, 200);
+  })
+  // 「存为回归用例」（07 R24）：这一轮整理成一份 SimGoal 草稿，作为附件下载，不落盘、不进仓库。号码打码；predicates 空、persona 空、
+  // 多一个 _draft，所以原样放进 eval/sim/goals/ 过不了校验，开发者要先改写成合成的话（src/console-api/goal-draft.ts）。
+  // 只给所有者、管理员；每次下载在同一个事务里写一行审计 trace.export（target 是会话行的 ref），审计写不进去就不给文件
+  .get('/conversations/:id/turns/:turnId/goal-draft', canSeeTraces, async (c) => {
+    // 这是会留审计、给文件的 GET：别的网站把已登录的管理员导航过来（Sec-Fetch-Site: cross-site）不给
+    if (isCrossSite(c)) return fail(c, 403, { error: 'cross_site', detail: '跨站请求已拒绝' });
+    const s = listedSessionOf(c.req.param('id'));
+    if (sessionStoreMode() !== 'db') throw new StoreFileModeError('回归用例草稿只在 SESSION_STORE=db 时有');
+    const turnId = c.req.param('turnId');
+    const orders = s.orderIds.flatMap((id): Order[] => {
+      const o = getOrder(id);
+      return o ? [o] : [];
+    });
+    const out = isDemoClassId(s.id)
+      ? null
+      : await withTenant(configRuntime().db, ctxOf(c), async (tx) => {
+          const src = await readTurnExportSource(tx, s.id, turnId, GOAL_HISTORY_LIMIT);
+          if (!src) return null;
+          const { trace } = src;
+          const draft = buildGoalDraft({
+            turnId: trace.id,
+            startedAt: trace.startedAt,
+            durationMs: trace.durationMs,
+            outcome: trace.outcome,
+            sopVersion: trace.sopVersion,
+            stageBefore: trace.stageBefore,
+            stageAfter: trace.stageAfter,
+            finalText: trace.finalText,
+            calls: trace.calls,
+            guardVerdicts: trace.guardVerdicts ?? null,
+            replyShape: trace.replyShape ?? null,
+            handoffKind: handoffKindOfTurn(s.handoffLog, trace.id),
+            customerText: src.customer?.content ?? null,
+            history: src.history,
+            orders,
+          });
+          await writeAudit(tx, {
+            action: 'trace.export',
+            targetType: 'conversation',
+            targetId: src.ref,
+            diff: { shortId: shortIdOf(s.id), turnId: trace.id },
+          });
+          return { draft, turnId: trace.id };
+        });
+    if (!out) return fail(c, 404, { error: 'not_found', detail: '这一轮没有记录' });
+    return c.body(`${JSON.stringify(out.draft, null, 2)}\n`, 200, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-disposition': `attachment; filename="${goalDraftFilename(out.turnId)}"`,
+      'cache-control': 'no-store',
+    });
+  })
+  // ---------------- AI 记录（07 R24） ----------------
+  // 跨会话的每一轮，按开始时间倒序，筛选与游标都在 SQL 里做（src/db/repo/traces.ts 的 listTraces）。只给所有者、管理员；
+  // 只在 db 存储下有（trace 只在那时入库）：文件存储 503 store_file_mode，权限先于它
+  .get('/traces', canSeeTraces, zValidator('query', TracesQuery, badRequest), async (c) => {
+    if (sessionStoreMode() !== 'db') throw new StoreFileModeError('AI 记录只在 SESSION_STORE=db 时有');
+    const q = c.req.valid('query');
+    const { rows, next } = await readTx(c, (tx) =>
+      listTraces(tx, {
+        since: q.since,
+        until: q.until,
+        outcome: q.outcome,
+        guard: q.guard,
+        handoffKind: q.handoffKind,
+        overLimit: q.overLimit === '1',
+        before: q.before,
+        limit: q.limit ?? 50,
+      }),
+    );
+    const body: TracePage = {
+      items: rows.map((r) => ({
+        turnId: r.turnId,
+        conversationId: r.conversationId,
+        channel: r.channel,
+        startedAt: r.startedAt.toISOString(),
+        durationMs: r.durationMs,
+        outcome: r.outcome,
+        guards: r.guards,
+        handoffKind: r.handoffKind !== null && isHandoffKind(r.handoffKind) ? r.handoffKind : null,
+        overLimit: r.overLimit,
+      })),
+      next,
     };
     return c.json(body, 200);
   })
@@ -770,27 +910,18 @@ export const consoleApi = new Hono<ConsoleEnv>()
     const body: OrderPage = { items: all.slice(0, limit).map(orderView), total: all.length, paymentMode: paymentMode() };
     return c.json(body, 200);
   })
-  // 本月成交额：服务器时区的自然月里付了款的订单（作废的已不在内存里）；待付款是现在所有 pending_payment 的
+  // 本月成交额：服务器时区的自然月里付了款的订单（作废的已不在内存里）；待付款是现在所有 pending_payment 的。
+  // 顶层是全部来源的合计，byOrigin 是同一口径按来源拆开（07 R23，来源在 src/shared/origin.ts 判）
   .get('/orders/summary', canSeeMoney, (c) => {
     const now = new Date(clock());
     const from = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
     const to = new Date(now.getFullYear(), now.getMonth() + 1, 1).getTime();
+    const { total, byOrigin } = liveOrderSummary(from, to);
     const body: OrderSummary = {
       month: `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`,
-      paidTotal: 0,
-      paidCount: 0,
-      pendingTotal: 0,
-      pendingCount: 0,
+      ...total,
+      byOrigin,
     };
-    for (const o of listOrders()) {
-      if (o.status === 'paid' && o.paidAt != null && o.paidAt >= from && o.paidAt < to) {
-        body.paidTotal += o.totalPrice;
-        body.paidCount += 1;
-      } else if (o.status === 'pending_payment') {
-        body.pendingTotal += o.totalPrice;
-        body.pendingCount += 1;
-      }
-    }
     return c.json(body, 200);
   })
   // 确认价格、确认收款、取消订单：坐席只限订单所属会话的接手人本人（409 not_assignee），每次一行审计（不变量 39）
@@ -805,6 +936,21 @@ export const consoleApi = new Hono<ConsoleEnv>()
     if (!persisted) throw new StoreLaggingError(order.sessionId);
     const body: OrderView = orderView(order);
     return c.json(body, 200);
+  })
+  .post('/orders/:id/refund/approve', canApproveRefund, async (c) => {
+    const { order, persisted } = await approveRefund(c.req.param('id'), actorOf(c.var.user!, dbIp(c)));
+    if (!persisted) throw new StoreLaggingError(order.sessionId);
+    return c.json(orderView(order), 200);
+  })
+  .post('/orders/:id/refund/reject', canApproveRefund, zValidator('json', RejectRefundBody, badRequest), async (c) => {
+    const { order, persisted } = await rejectRefund(c.req.param('id'), actorOf(c.var.user!, dbIp(c)), c.req.valid('json').reason);
+    if (!persisted) throw new StoreLaggingError(order.sessionId);
+    return c.json(orderView(order), 200);
+  })
+  .post('/orders/:id/refund/settle', canHandle, async (c) => {
+    const { order, persisted } = await settleRefund(c.req.param('id'), actorOf(c.var.user!, dbIp(c)));
+    if (!persisted) throw new StoreLaggingError(order.sessionId);
+    return c.json(orderView(order), 200);
   })
   .post('/orders/:id/cancel', canHandle, zValidator('json', CancelOrderBody, badRequest), async (c) => {
     const o = cancelOrder(c.req.param('id'), actorOf(c.var.user!, dbIp(c)), c.req.valid('json').reason);

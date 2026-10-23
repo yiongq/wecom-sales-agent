@@ -31,7 +31,13 @@ export interface LocatedViolation {
 /** 按标识符找的几类：match 是工具名、字段名 */
 const NAME_CODES: ReadonlySet<ViolationCode> = new Set(['unknown_tool', 'unknown_field']);
 /** 在正文里选中 match 的几类 */
-const MATCH_CODES: ReadonlySet<ViolationCode> = new Set(['phrase_forbidden', 'unknown_tool', 'unknown_field', 'consistency']);
+const MATCH_CODES: ReadonlySet<ViolationCode> = new Set([
+  'phrase_forbidden',
+  'unknown_tool',
+  'unknown_field',
+  'consistency',
+  'policy_mismatch',
+]);
 
 /**
  * 每条问题落在哪、点了去哪。published 是线上版本的节（phrase_missing 去「线上版本里含这句的节」）
@@ -69,6 +75,10 @@ export function problemText(v: Pick<LocatedViolation, 'code' | 'match'>): string
       return v.match ? `提到了不存在的工具「${v.match}」` : null;
     case 'unknown_field':
       return v.match ? `提到了不存在的字段「${v.match}」` : null;
+    case 'policy_invalid':
+      return '退改条款无效，请检查档位、比例与审批阈值';
+    case 'policy_mismatch':
+      return v.match ? `「${v.match}」与退改条款或定价规则不一致` : null;
     case 'consistency':
       return v.match ? `「${v.match}」和系统里固定的对客文字矛盾，改掉这句` : null;
     default:

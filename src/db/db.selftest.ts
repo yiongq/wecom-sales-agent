@@ -29,6 +29,7 @@ process.env.CONFIG_SOURCE = 'file';
 
 const { sql, asc, eq } = await withoutTenantScope(() => import('drizzle-orm'));
 const { openTestDb } = await withoutTenantScope(() => import('./testing.js'));
+const { installVectorExtension } = await withoutTenantScope(() => import('./testing-extensions.js'));
 const { withTenant, currentTenantCtx, lockTenantConfig, queryCount, rowsOf } = await withoutTenantScope(() => import('./client.js'));
 const { catalogItems } = await withoutTenantScope(() => import('./schema.js'));
 type Tx = import('./client.js').Tx;
@@ -117,6 +118,10 @@ async function asPlatform<T>(tenantId: string, fn: (tx: Tx) => Promise<T>): Prom
 }
 
 type Query = <R = Record<string, unknown>>(text: string, params?: unknown[]) => Promise<R[]>;
+/** pg_proc 的别名 p：不算扩展自带的函数。vector 扩展装在 public，几百个 C 函数都在那里，它们不归本仓库的迁移管（07 R12） */
+const NOT_EXTENSION_FN = `not exists (select 1 from pg_depend d where d.classid = 'pg_proc'::regclass and d.objid = p.oid and d.deptype = 'e')`;
+/** 2048 维的 halfvec 文本：第一维是 x，其余为 0（kb_vectors 的合成向量，不调嵌入接口） */
+const halfvecText = (x: number): string => `[${Array.from({ length: 2048 }, (_, i) => (i === 0 ? x : 0)).join(',')}]`;
 /** 02 的十二张新表（spec「数据库」与各节的 DDL） */
 const NEW_TABLES = [
   'conversations',
@@ -167,15 +172,16 @@ const TENANT_POLICY = /^\(tenant_id = \(NULLIF\(current_setting\('app\.tenant_id
  * 按系统目录核对迁移的结果，PGlite 与真实 PG 各跑一遍。带 tenant_id 的表是从目录里找出来的，不是写死的清单：
  * 以后新加一张带 tenant_id 却没开 RLS 的表，这里就变红（验收 12 最后一条）
  */
-async function schemaChecks(run: Query, label: string): Promise<void> {
+async function schemaChecks(run: Query, label: string, vector: boolean): Promise<void> {
   const tables = await run<{ relname: string; owner: string; rls: boolean; force: boolean }>(
     `select c.relname, pg_get_userbyid(c.relowner) as owner, c.relrowsecurity as rls, c.relforcerowsecurity as force
        from pg_class c join pg_namespace n on n.oid = c.relnamespace
       where n.nspname = 'public' and c.relkind in ('r', 'p') order by 1`,
   );
   const names = tables.map((r) => r.relname).join(',');
+  // 07 R12：kb_chunks 两边都有；kb_vectors 要 vector 扩展，只在装了扩展的真实 PG 上建，PGlite 上没有（迁移 0016 的 DO 块）
   check(
-    `${label}迁移：01 的七张表加 02 的十二张、03 的两张、05 的四张`,
+    `${label}迁移：01 的七张表加 02 的十二张、03 的两张、05 的四张、07 的${vector ? '两张（kb_chunks、kb_vectors）' : '一张（kb_chunks；PGlite 没有 vector 扩展，没有 kb_vectors）'}`,
     names ===
       [
         'audit_log',
@@ -188,6 +194,8 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
         'conversations',
         'guard_events',
         'jobs',
+        'kb_chunks',
+        ...(vector ? ['kb_vectors'] : []),
         'memberships',
         'messages',
         'orders',
@@ -198,6 +206,7 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
         'sandbox_process_epoch',
         'sandbox_wechat',
         'sandbox_wecom_state',
+        'sop_gate_runs',
         'sop_versions',
         'tenants',
         'turn_traces',
@@ -313,8 +322,8 @@ async function schemaChecks(run: Query, label: string): Promise<void> {
     JSON.stringify(triggers),
   );
   const fns = await run<{ proname: string; secdef: boolean; acl: string; config: string }>(
-    `select proname, prosecdef as secdef, coalesce(proacl::text, '') as acl, coalesce(proconfig::text, '') as config from pg_proc
-      where pronamespace = 'public'::regnamespace order by 1`,
+    `select proname, prosecdef as secdef, coalesce(proacl::text, '') as acl, coalesce(proconfig::text, '') as config from pg_proc p
+      where pronamespace = 'public'::regnamespace and ${NOT_EXTENSION_FN} order by 1`,
   );
   const auth = fns.filter((f) => f.proname.startsWith('auth_'));
   check(`${label}认证函数：五个`, auth.length === 5, auth.map((f) => f.proname).join(','));
@@ -663,6 +672,32 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
   check(`${L}触发器：agent_app 清空 paid_at 报错`, clearPaid === 'trigger', clearPaid);
   const movePaid = await why(as('agent_app', P, `update orders set paid_at = paid_at - interval '1 day' where id = 'ord_cancelled'`));
   check(`${L}触发器：agent_app 改 paid_at 报错`, movePaid === 'trigger', movePaid);
+
+  // 07 R20：旧四值仍能写；退款状态必须有 paid_at，已退款只能作废不能换状态。
+  await order(P, 'ord_refund', 'cancelled', false);
+  for (const status of ['pending_payment', 'paid', 'cancelled', 'superseded']) {
+    const result = await outcome(as('agent_app', P, `update orders set status = $1 where id = 'ord_refund'`, [status]));
+    check(`${L}07：旧镜像状态 ${status} 仍合法`, result === 'ok', result);
+  }
+  for (const status of ['refund_pending', 'refunded']) {
+    const result = await why(as('agent_app', P, `update orders set status = $1 where id = 'ord_refund'`, [status]));
+    check(`${L}07：${status} 没 paid_at 拒绝`, result === 'orders_refund_paid_check', result);
+  }
+  const invalid = await why(as('agent_app', P, `update orders set status = 'invalid' where id = 'ord_refund'`));
+  check(`${L}07：六值之外拒绝`, invalid === 'orders_status_check', invalid);
+  await su(`update orders set paid_at = now() where tenant_id = $1 and id = 'ord_refund'`, [P]);
+  for (const status of ['refund_pending', 'paid', 'refunded']) {
+    const result = await outcome(as('agent_app', P, `update orders set status = $1 where id = 'ord_refund'`, [status]));
+    check(`${L}07：有 paid_at 能写 ${status}（退款中可驳回）`, result === 'ok', result);
+  }
+  for (const status of ['pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending']) {
+    const result = await why(as('agent_app', P, `update orders set status = $1 where id = 'ord_refund'`, [status]));
+    check(`${L}07：refunded 之后不能改成 ${status}`, result === 'trigger', result);
+  }
+  const voided = await outcome(
+    as('agent_app', P, `update orders set status = 'refunded', voided_at = now(), void_reason = 'reset' where id = 'ord_refund'`),
+  );
+  check(`${L}07：refunded 保持状态仍能作废`, voided === 'ok', voided);
   // 把已付订单从会话上摘下来（置空、改挂到别的会话），会话就成了线索：agent_app 做不到（R20）
   const moved = await conv(P, 'moved', 11);
   await order(P, 'ord_moved', 'moved', true);
@@ -1102,7 +1137,28 @@ async function channelChecks(env: PurgeEnv, label: string): Promise<void> {
   check('迁移：再跑一遍不报错', (await outcome(t.migrate())) === 'ok');
   check('迁移：再跑一遍什么都不做', (await applied()) === journal.entries.length, String(await applied()));
 
-  await schemaChecks(q, '');
+  await schemaChecks(q, '', false);
+
+  // 07 R11：kb_chunks 在 PGlite 上也建（kb_vectors 不建，上面的表清单已核）；约束两边相同
+  const [kbTenant] = await q<{ id: string }>(
+    "insert into tenants (slug, name, pack_id) values ('kb-chunks-test', 'K', 'travel') returning id",
+  );
+  const chunk = (source: string, ref: string, hash: string, tenant = kbTenant!.id): Promise<unknown> =>
+    q('insert into kb_chunks (tenant_id, source, ref, body, body_hash) values ($1, $2, $3, $4, $5)', [tenant, source, ref, '正文', hash]);
+  const goodHash = 'a'.repeat(64);
+  check('kb_chunks：一块 = 一条线路，身份是（source, ref）', (await outcome(chunk('route', 'r-1', goodHash))) === 'ok');
+  check(
+    'kb_chunks：同一租户同一（source, ref）只能有一行',
+    (await why(chunk('route', 'r-1', goodHash))) === 'kb_chunks_tenant_id_source_ref_uq',
+  );
+  check('kb_chunks：source 目前只收线路', (await why(chunk('hotel', 'h-1', goodHash))) === 'kb_chunks_source_check');
+  check(
+    'kb_chunks：body_hash 必须是 64 位小写十六进制',
+    (await why(chunk('route', 'r-2', 'A'.repeat(64)))) === 'kb_chunks_body_hash_check',
+  );
+  check('kb_chunks：tenant_id 必须是真实租户', (await outcome(chunk('route', 'r-3', goodHash, randomUUID()))) === '23503');
+  await q('delete from kb_chunks where tenant_id = $1', [kbTenant!.id]);
+  await q('delete from tenants where id = $1', [kbTenant!.id]);
 }
 
 // ---------------- 02：条目版本的按租户回填 ----------------
@@ -1978,7 +2034,7 @@ await expectWhy([
   ['同一会话的 seq 重复', () => insMsg(A, 'c-a', 1, 'customer'), 'messages_tenant_id_conversation_id_seq_pk'],
   ['订单号带空格', () => insOrder(A, 'ord 1'), 'orders_id_check'],
   ['订单号超过 64 个字符', () => insOrder(A, 'o'.repeat(65)), 'orders_id_check'],
-  ['订单状态只有四种', () => insOrder(A, 'ord_s', { status: 'refunded' }), 'orders_status_check'],
+  ['订单状态只有六种', () => insOrder(A, 'ord_s', { status: 'unknown' }), 'orders_status_check'],
   ['订单金额小于 0', () => insOrder(A, 'ord_p', { totalPrice: -1 }), 'orders_total_price_check'],
   ['作废原因只有两种', () => insOrder(A, 'ord_v', { voidReason: 'oops' }), 'orders_void_reason_check'],
   ['订单 data.id 与 id 不一致', () => insOrder(A, 'ord_d', { data: { id: 'ord_x' } }), 'orders_data_check'],
@@ -3617,11 +3673,12 @@ await t.close();
     'case "$1" in exec|compose|run|inspect|image|container) cat >/dev/null ;; esac',
     // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
     // 只认 rollback-guard.sh 自己的两条渠道查询：backup.sh 的探测里也有 channel_accounts（'public.' || t 的写法），不能被截走
-    'case "$*" in *information_schema.columns*"column_name = \'kind\'"*) echo "docker05 $PWD|$*" >> "$FAKE_LOG" ;; *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
+    'case "$*" in *0015_order_refund_status.sql*|*public.orders*) echo "docker07 $PWD|$*" >> "$FAKE_LOG" ;; *information_schema.columns*"column_name = \'kind\'"*) echo "docker05 $PWD|$*" >> "$FAKE_LOG" ;; *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
     'case "$*" in',
     '  *information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo f ;;',
     // 这些旧版用例没有沙箱痕迹：目标镜像早于 05、容器列表为空、上面的 psql 返回没有 kind 列。
-    '  *tenancy/runtime.ts*) exit 1 ;;',
+    '  *tenancy/runtime.ts*|*0015_order_refund_status.sql*) exit 1 ;;',
+    '  *to_regclass*public.orders*) echo f ;;',
     '  *"container ls"*) exit 0 ;;',
     '  *pack-api.ts*) exit 1 ;;',
     '  *sha256:running*registry.ts*) exit "${FAKE_RUNNING_REGISTRY:-1}" ;;',
@@ -4575,7 +4632,7 @@ await t.close();
     rb > 0 &&
       rb < gp &&
       gp < up &&
-      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[34567*]\) echo "[^\n]*" >&2 ;;\n){6} {2}esac\n {2}exit 1\n\}\n/.test(
+      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[345678*]\) echo "[^\n]*" >&2 ;;\n){7} {2}esac\n {2}exit 1\n\}\n/.test(
         deploySrc,
       ),
   );
@@ -4678,6 +4735,48 @@ async function realPostgres(superUrl: string): Promise<void> {
     const suDb = await login(superInDb);
     const sq = rowsIn(suDb);
 
+    // ---- 07 R12：vector 扩展由超级用户在应用库里建；没装时迁移 0016 报错停下，写明原因 ----
+    const hasVector = (await sq("select 1 from pg_available_extensions where name = 'vector'")).length === 1;
+    if (!hasVector && process.env.CI === 'true')
+      fails.push('CI 下 PG_TEST_URL 的集群必须带 vector 扩展（pgvector/pgvector:pg17）：kb_vectors 只在真实 PG 上测（07 R12）');
+    if (hasVector) {
+      const ownerEarly = await login(OWNER);
+      check(
+        '真实 PG：agent_owner 自己建不了 vector 扩展（不是 trusted 扩展），报 permission denied',
+        (await outcome(ownerEarly.query('CREATE EXTENSION vector WITH SCHEMA public'))) === DENIED,
+      );
+      const failed = await runMigrations(OWNER).then(
+        () => 'ok',
+        (e: unknown) => (e instanceof Error ? e.message : String(e)),
+      );
+      check(
+        '真实 PG：应用库里没有 vector 扩展（可用但没装）时 migrate 失败，写明先由超级用户在应用库里建扩展、用哪个文件',
+        failed.includes('先由超级用户在应用库里建 vector 扩展') && failed.includes('deploy/db-init/extensions.sql'),
+        failed,
+      );
+      const [left] = await sq<{ chunks: string | null; tenants: string | null; migrations: string | null }>(
+        `select to_regclass('public.kb_chunks')::text as chunks, to_regclass('public.tenants')::text as tenants,
+                to_regclass('drizzle.__drizzle_migrations')::text as migrations`,
+      );
+      const rows = left?.migrations ? (await sq<{ n: number }>('select count(*)::int as n from drizzle.__drizzle_migrations'))[0]?.n : 0;
+      check(
+        '真实 PG：失败的迁移整批回退，库里没有任何表、没有迁移记录',
+        left?.chunks === null && left.tenants === null && rows === 0,
+        JSON.stringify({ left, rows }),
+      );
+      // 与新库初始化一样：超级用户连应用库执行 extensions.sql 里的语句
+      await installVectorExtension((text) => suDb.query(text));
+      const [ext] = await sq<{ v: string; schema: string }>(
+        `select extversion as v, extnamespace::regnamespace::text as schema from pg_extension where extname = 'vector'`,
+      );
+      check(
+        '真实 PG：extensions.sql 把 vector 装在 public，halfvec 要 0.7 以上',
+        ext?.schema === 'public' && /^0\.(?:[7-9]|\d{2,})/.test(ext.v),
+        JSON.stringify(ext),
+      );
+      check('真实 PG：extensions.sql 可以重复执行', (await outcome(installVectorExtension((text) => suDb.query(text)))) === 'ok');
+    }
+
     // ---- 迁移 ----
     const guard = await outcome(runMigrations(superInDb));
     check('真实 PG：迁移拒绝以 agent_owner 以外的身份执行', guard.includes('agent_owner'), guard);
@@ -4688,7 +4787,7 @@ async function realPostgres(superUrl: string): Promise<void> {
     };
     const [applied] = await sq<{ n: string }>('select count(*) as n from drizzle.__drizzle_migrations');
     check('真实 PG：journal 里每一条都只应用了一次', Number(applied?.n) === journal.entries.length, applied?.n);
-    await schemaChecks(sq, '真实 PG ');
+    await schemaChecks(sq, '真实 PG ', hasVector);
 
     // ---- 库级权限与角色设置（roles.sql） ----
     const [dbp] = await sq<Record<string, boolean>>(
@@ -4735,6 +4834,7 @@ async function realPostgres(superUrl: string): Promise<void> {
       auth_sessions: { agent_app: '', agent_platform: 'SELECT,DELETE' },
       memberships: { agent_app: '', agent_platform: 'SELECT,INSERT,UPDATE,DELETE' },
       sop_versions: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
+      sop_gate_runs: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       catalog_items: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       audit_log: { agent_app: 'SELECT,INSERT', agent_platform: 'SELECT,INSERT' },
       // 02 spec「数据库」的授权表：没有任何角色对新表有 DELETE 或 TRUNCATE
@@ -4753,6 +4853,9 @@ async function realPostgres(superUrl: string): Promise<void> {
       // 03 spec「数据库」的授权表：channel_accounts 的 UPDATE 是列级的（下面单独核），表级只有 SELECT、INSERT
       channel_accounts: { agent_app: 'SELECT,INSERT', agent_platform: '' },
       channel_inbox: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
+      // 07 R11：派生数据，agent_app 有 DELETE（可以重建），agent_platform 什么都没有；kb_vectors 只在装了 vector 扩展时有
+      kb_chunks: { agent_app: 'SELECT,INSERT,UPDATE,DELETE', agent_platform: '' },
+      ...(hasVector ? { kb_vectors: { agent_app: 'SELECT,INSERT,UPDATE,DELETE', agent_platform: '' } } : {}),
     };
     const PRIVS = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES', 'TRIGGER'];
     for (const [table, byRole] of Object.entries(EXPECT)) {
@@ -4852,7 +4955,7 @@ async function realPostgres(superUrl: string): Promise<void> {
     const fnPriv = await sq<{ fn: string; app: boolean; platform: boolean }>(
       `select p.oid::regprocedure::text as fn, has_function_privilege('agent_app', p.oid, 'EXECUTE') as app,
               has_function_privilege('agent_platform', p.oid, 'EXECUTE') as platform
-         from pg_proc p where p.pronamespace = 'public'::regnamespace order by 1`,
+         from pg_proc p where p.pronamespace = 'public'::regnamespace and ${NOT_EXTENSION_FN} order by 1`,
     );
     for (const f of fnPriv) {
       const name = f.fn.slice(0, f.fn.indexOf('('));
@@ -4984,6 +5087,18 @@ async function realPostgres(superUrl: string): Promise<void> {
         `insert into channel_inbox (tenant_id, account_id, msgid, kind, conversation_id, state) values ($1, gen_random_uuid(), 'm-rls', 'message', 'wecom:wmRls', 'received')`,
         [A],
       ],
+      kb_chunks: [
+        `insert into kb_chunks (tenant_id, source, ref, body, body_hash) values ($1, 'route', 'r-rls', '正文', repeat('a', 64))`,
+        [A],
+      ],
+      ...(hasVector
+        ? {
+            kb_vectors: [
+              `insert into kb_vectors (tenant_id, chunk_id, model, body_hash, embedding) values ($1, gen_random_uuid(), 'm', repeat('a', 64), $2::halfvec)`,
+              [A, halfvecText(1)],
+            ] as [string, unknown[]],
+          }
+        : {}),
     };
     const clients = { agent_app: app, agent_platform: platform, agent_owner: owner };
     for (const table of Object.keys(INSERTS)) {
@@ -5041,6 +5156,100 @@ async function realPostgres(superUrl: string): Promise<void> {
       ),
     );
     check('真实 PG：租户 A 的事务里写 B 的行被 RLS 拒', crossInsert === 'rls', crossInsert);
+
+    // ---- 07 R11–R13：kb_chunks / kb_vectors 的租户隔离、级联与列宽（合成向量，不调嵌入接口） ----
+    if (hasVector) {
+      const chunkOf: Record<string, string> = {};
+      for (const [tenant, ref] of [
+        [A, 'r-kb-a'],
+        [B, 'r-kb-b'],
+      ] as const) {
+        const [{ id }] = await sq<{ id: string }>(
+          `insert into kb_chunks (tenant_id, source, ref, body, body_hash) values ($1, 'route', $2, '正文', repeat('b', 64)) returning id`,
+          [tenant, ref],
+        );
+        chunkOf[tenant] = id;
+        await sq(
+          `insert into kb_vectors (tenant_id, chunk_id, model, body_hash, embedding) values ($1, $2, 'embedding-3', repeat('b', 64), $3::halfvec)`,
+          [tenant, id, halfvecText(tenant === A ? 1 : 2)],
+        );
+      }
+      const kbSeenByA = await withTenant(appDb.db, ctx(A), async (tx) => ({
+        chunks: rowsOf<{ tenant_id: string; ref: string }>(await tx.execute(sql`select tenant_id, ref from kb_chunks`)),
+        vectors: rowsOf<{ tenant_id: string; chunk_id: string }>(await tx.execute(sql`select tenant_id, chunk_id from kb_vectors`)),
+        cross: rowsOf<{ n: number }>(await tx.execute(sql`select count(*)::int as n from kb_vectors where chunk_id = ${chunkOf[B]}`)),
+      }));
+      check(
+        '真实 PG：租户 A 的事务里 kb_chunks 与 kb_vectors 都只看得到 A 的行，按 B 的块 id 查也是 0 行',
+        kbSeenByA.chunks.length === 1 &&
+          kbSeenByA.chunks[0]?.tenant_id === A &&
+          kbSeenByA.vectors.length === 1 &&
+          kbSeenByA.vectors[0]?.tenant_id === A &&
+          kbSeenByA.cross[0]?.n === 0,
+        JSON.stringify(kbSeenByA),
+      );
+      check(
+        '真实 PG：租户 A 的事务里往 B 名下写块被 RLS 拒',
+        (await denial(
+          withTenant(appDb.db, ctx(A), (tx) =>
+            tx.execute(
+              sql`insert into kb_chunks (tenant_id, source, ref, body, body_hash) values (${B}, 'route', 'r-x', 'x', repeat('c', 64))`,
+            ),
+          ),
+        )) === 'rls',
+      );
+      check(
+        '真实 PG：租户 A 的事务里往 B 名下写向量被 RLS 拒',
+        (await denial(
+          withTenant(appDb.db, ctx(A), (tx) =>
+            tx.execute(
+              sql`insert into kb_vectors (tenant_id, chunk_id, model, body_hash, embedding) values (${B}, ${chunkOf[B]}, 'm2', repeat('b', 64), ${halfvecText(3)}::halfvec)`,
+            ),
+          ),
+        )) === 'rls',
+      );
+      check(
+        '真实 PG：租户 A 的事务里写一条指向 B 的块的向量（复合外键带 tenant_id）被外键拒',
+        (await outcome(
+          withTenant(appDb.db, ctx(A), (tx) =>
+            tx.execute(
+              sql`insert into kb_vectors (tenant_id, chunk_id, model, body_hash, embedding) values (${A}, ${chunkOf[B]}, 'm2', repeat('b', 64), ${halfvecText(3)}::halfvec)`,
+            ),
+          ),
+        )) === '23503',
+      );
+      const touchedB = await withTenant(appDb.db, ctx(A), async (tx) => ({
+        upd: rowsOf<{ n: number }>(
+          await tx.execute(
+            sql`with u as (update kb_chunks set body = 'x' where tenant_id = ${B} returning 1) select count(*)::int as n from u`,
+          ),
+        )[0]?.n,
+        del: rowsOf<{ n: number }>(
+          await tx.execute(sql`with d as (delete from kb_vectors where tenant_id = ${B} returning 1) select count(*)::int as n from d`),
+        )[0]?.n,
+      }));
+      check(
+        '真实 PG：租户 A 的事务里改 B 的块、删 B 的向量都影响 0 行',
+        touchedB.upd === 0 && touchedB.del === 0,
+        JSON.stringify(touchedB),
+      );
+      check(
+        '真实 PG：向量列是 halfvec(2048)：别的维数写不进去',
+        (await outcome(
+          sq(
+            `insert into kb_vectors (tenant_id, chunk_id, model, body_hash, embedding) values ($1, $2, 'm3', repeat('b', 64), '[1,2,3]')`,
+            [A, chunkOf[A]],
+          ),
+        )) !== 'ok',
+      );
+      // A 删自己的块，向量跟着没（ON DELETE CASCADE）；B 的原样在
+      await withTenant(appDb.db, ctx(A), (tx) => tx.execute(sql`delete from kb_chunks where ref = 'r-kb-a'`));
+      const [after] = await sq<{ a: number; b: number }>(
+        `select count(*) filter (where tenant_id = $1)::int as a, count(*) filter (where tenant_id = $2)::int as b from kb_vectors`,
+        [A, B],
+      );
+      check('真实 PG：删块时向量级联删除，别的租户的向量原样在', after?.a === 0 && after.b === 1, JSON.stringify(after));
+    }
 
     // 一个事务设过租户并提交，同一连接上的下一个事务不设租户，读到 0 行
     await app.query('begin');
@@ -5669,7 +5878,7 @@ async function realPostgres(superUrl: string): Promise<void> {
 }
 
 if (fails.length) {
-  console.error(`DB SELFTEST FAIL: ${fails.length} 项\n  ${fails.join('\n  ')}`);
+  console.error(`DB SELFTEST FAIL: ${fails.length} 项失败（另有 ${pass} 项通过）\n  ${fails.join('\n  ')}`);
   process.exit(1);
 }
 console.log(
