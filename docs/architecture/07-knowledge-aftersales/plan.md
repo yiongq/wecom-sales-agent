@@ -178,7 +178,7 @@
 - [x] 23. 更新 Status（协调者，owner 确认）——owner 2026-10-23 确认
   - 做：owner 确认后翻 `implemented`。
   - 依赖：22。
-- [ ] 24. 发版到 `main`（协调者，owner 当次授权）
+- [x] 24. 发版到 `main`（协调者，owner 当次授权）——#286，`demo-v8`
   - 做：照 06 发 `demo-v7` 的做法开 release PR 进 `main`、打 tag，记进实施记录。
   - 依赖：23。
 
@@ -712,3 +712,9 @@ aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.jso
 
 - owner 确认收尾，spec `Status: implemented`（第十条 `Revisions:`）；第 0.1 步加的反向引用核过：00、01、02、04、06 顶部有 `Superseded in part by:`，01、02、04、05 顶部有 `Amended by:`；master-reference 阶段 7 补一行 implemented。
 - 下一步第 24 步：release 分支进 `main`、打 `demo-v8`。线上现在是同一份代码的 `demo-v8-rc2`，要不要把线上换成 `demo-v8` 等 owner 说。
+
+### 交接（2026-10-23，第 24 步完成，07 收尾）
+
+- 发版：release 分支 #286 合入 `main`（`4e270eb`），annotated tag `demo-v8` 已推。07 全部 25 步完成，spec `implemented`。
+- 线上仍是同一份代码的 `demo-v8-rc2`（rc2 之后只有文档 #282–#285）；要不要把线上换成 `demo-v8` 等 owner 说，换前照惯例另存当天备份再手动备份。
+- 还开着、不挡收尾的：Open 4（走查记下的体验小问题）、5（SOP 页自测偶发）、7（出处补错位置），以后另起一步或并进下一份 spec。本地 rc tag `demo-v8-rc1`、`demo-v8-rc2` 照惯例保留、不推。
