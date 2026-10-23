@@ -149,8 +149,8 @@ const ok = (cond: unknown, msg: string): void => {
     '条款没有新增一条 system 消息',
   );
   passed++;
-  // 前缀：第一条 system 消息（提示词）不含条款，工具定义没有新增
-  ok(!turn.chats[0]!.messages[0]!.content!.includes('退改条款第'), '提示词前缀里没有条款');
+  // 前缀：第一条 system 消息（提示词）不含条款，工具定义没有新增。能力边界节教出处格式时写的是「第N条」，不算条款
+  ok(!/退改条款第\d+条/.test(turn.chats[0]!.messages[0]!.content!), '提示词前缀里没有条款');
 }
 
 // 有订单：订单行不变，适用那一行用本轮的 todayIso() 算天数；只给条款与天数，不给金额

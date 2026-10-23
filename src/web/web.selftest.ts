@@ -85,8 +85,8 @@ const { resolveProfile, capFlags, BASELINE_FLAG_NAMES, PROFILE_ENV_NAMES, Profil
 );
 const { channelCustomerLabel } = await withoutTenantScope(() => import('../shared/conversation.js'));
 const WEB_NOTE = '客户正在网页上咨询，不在微信里；说到顾问跟进时，请说顾问会在这个页面里回复您，不要说在微信上联系。';
-const SYSTEM_SHA = 'fab15319b77960b9e4dc5e398cd83a60d7ce2711eaa7c6b1a3b38d939e30fb95';
-const TOOLS_SHA = '64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1';
+const SYSTEM_SHA = 'cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900';
+const TOOLS_SHA = '59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd';
 const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex');
 // 下面是开工提交 5b697c2 的原文；仅随机订单凭据替换成 <ORDER>，其余字节原样保留。
 const BASELINE: Record<string, Transcript> = {

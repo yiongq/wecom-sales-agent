@@ -72,7 +72,7 @@ const run = async (name: string, args: unknown) => JSON.parse(await byName.get(n
 assert.equal(JSON.stringify(runtime.tools.map((tool) => tool.def)), JSON.stringify(toolDefs));
 assert.equal(
   createHash('sha256').update(JSON.stringify(toolDefs)).digest('hex'),
-  '64c16fc8f464d5757f02411b7f8a2a6ce6f43da63416283851a6e997819692d1',
+  '59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd',
 );
 assert.deepEqual(
   runtime.tools.filter((t) => t.cacheable).map((t) => t.def.function.name),

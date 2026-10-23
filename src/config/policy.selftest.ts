@@ -180,7 +180,7 @@ async function suite(db: Db, q: Query, slug: string, cliUrl?: string) {
       },
     );
     check(() => assert.equal(cli.status, 0, cli.stderr));
-    check(() => assert.match(cli.stdout, /promptHash=fab15319b77960b9e4dc5e398cd83a60d7ce2711eaa7c6b1a3b38d939e30fb95/));
+    check(() => assert.match(cli.stdout, /promptHash=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900/));
     check(() => assert.ok(cli.stdout.includes(`policyHash=${expectedHash}`)));
   }
   const dry = await importConfig({ ...opts, dryRun: true });

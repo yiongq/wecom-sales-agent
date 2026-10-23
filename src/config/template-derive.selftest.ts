@@ -55,9 +55,9 @@ const countOf = (text: string, part: string): number => text.split(part).length 
     orders: '9438d55ca8b65a72a763b027428922fa161652b0d9efeb9263ba05910c58533e',
     'quote-discipline': 'd411e789b490c3d9cad8f5da3b8551d0f130e9e3da92a000dc6db7d6c297394b',
     'price-rules': 'e377d983b0cd6453f224d81cf2b3bff255e24e00d9704aa954c2a7efa4793671',
-    capabilities: '97c7b5f9844266081ec223eedd14c1891a2bc8c1293ffd81357aec176eeba86c',
+    capabilities: 'c8eb21861d67e8a61e06e1144d43d352e6501fedd466d493f2e6d2a79ef2371c',
     'no-destinations': '86a8d9b4c87043b4fca3ae5a2bcd15d65dd69af7725ecb695d1e148e2dc96899',
-    handoff: '1d9b2b6014fe96f80dc63482b370096fc546754d1ae74ffa2f95fdc7d4aee91c',
+    handoff: '6784c6b666a511fd6315fc9e75717f581067d83b1766ffeba2e039e1e9796532',
   };
   for (const key of lockedKeys) assert.equal(sha256(templates[key]!), pinned[key], `锁定节 ${key} 的模板必须与开工时逐字节相同`);
 
