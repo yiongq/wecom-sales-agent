@@ -150,8 +150,8 @@ export interface ConfigDeps {
 }
 
 export class ConfigNotReadyError extends Error {
-  constructor() {
-    super('DB 模式的配置源还没装载完成');
+  constructor(detail = 'DB 模式的配置源还没装载完成') {
+    super(detail);
   }
 }
 /** 锁连接断开期间的配置写入 → 503 lock_lost */
@@ -1282,11 +1282,15 @@ export function prefixSummary(file: () => { system: string; tools: string; sop: 
   return { sopVersion: null, ...promptHashes(f.system, f.tools, f.sop) };
 }
 
-/** 文件模式与未启动的旧自测入口按 R2 延后装配（文件模式按配置目录的 pack.json，没有就是旅游）；DB 装载成功时显式覆盖绑定。 */
+/** 文件模式按 pack.json 延后装配（没有就是旅游）；DB 模式必须已经显式绑定包（08 R5）。 */
 export function currentPack(): PackBinding {
   const state = configState();
   if (state.fileCatalog) dropStaleFileCatalog(state);
-  const binding = boundPack() ?? (configMode() === 'file' ? installFilePack() : installPack('travel', null));
+  let binding = boundPack();
+  if (!binding) {
+    if (configMode() === 'db') throw new ConfigNotReadyError('DB 模式没有绑定行业包');
+    binding = installFilePack();
+  }
   return state.loaded ? { ...binding, brand: state.loaded.sop.brand } : binding;
 }
 
@@ -1361,7 +1365,7 @@ function dropStaleFileCatalog(state: TenantConfig): void {
   if (boundPack()?.runtime === cache.runtime) unbindPack();
 }
 
-/** 文件模式重置：去掉包绑定，下一次 currentPack() 按当前配置目录重新装配（TenantRuntime.pack 声明为必有，装载后才有，所以绕开类型） */
+/** 重置时去掉包绑定（TenantRuntime.pack 装载后才有，所以绕开类型）；文件模式下一次按配置目录重新装配。 */
 function unbindPack(): void {
   Reflect.set(currentRuntime(), 'pack', undefined);
 }
@@ -1509,7 +1513,7 @@ function resetConfig(): void {
   state.loaded = null;
   state.fileCatalog = null;
   // 文件模式：去掉绑定，下一次 currentPack() 按当前配置目录的 pack.json 重新装配（评测在同一进程里换 SOP_PATH 靠它）。
-  // DB 模式没绑包时 currentPack() 暂时还回落旅游，这条留给第 19 步（R5）
+  // DB 模式必须重新显式绑定；CONFIG_SOURCE=db 时，重置后的 currentPack() 直接抛错（08 R5）。
   unbindPack();
   setLogTenant('');
   state.lockState = 'held';
