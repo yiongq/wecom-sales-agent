@@ -1,5 +1,13 @@
 // 08 R14：只在 PACK_FIXTURES=1 时注册的证明包，保留 04 R16 的工具、阶段与护栏。
-import { deepFreeze, type IndustryPack, type PackRuntime, type SalesStage, type SopSectionDef } from '../../core/pack-api.js';
+import {
+  deepFreeze,
+  UNSTORABLE_TEXT,
+  type IndustryPack,
+  type PackRuntime,
+  type SalesStage,
+  type SopSectionDef,
+} from '../../core/pack-api.js';
+import { z } from 'zod';
 
 const sopSections = [
   { key: 'preamble', heading: null, locked: false },
@@ -58,8 +66,29 @@ export const fixture: IndustryPack = deepFreeze({
 });
 
 export function createFixtureRuntime(): PackRuntime {
+  const widgetText = z
+    .string()
+    .min(1)
+    .refine((text) => !/[\0\p{Cs}]/u.test(text), UNSTORABLE_TEXT);
+  const WidgetSchema = z.strictObject({
+    id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+    title: widgetText,
+    unitPrice: z.number().int().positive(),
+    unit: z.enum(['件', '盒']),
+    tags: z.array(widgetText),
+  });
   return {
     id: fixture.id,
+    catalog: {
+      widget: {
+        schema: WidgetSchema,
+        titleKey: 'title',
+        lockedWhenActive: ['id'],
+        repriceFields: ['unitPrice', 'unit'],
+        moneyFields: [{ path: 'unitPrice', decimals: 0 }],
+        retrieval: true,
+      },
+    },
     defaultBrand: {
       brandName: '虚构方盒核验社',
       advisorTitle: '方盒核验员',

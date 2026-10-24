@@ -2,7 +2,14 @@
 // 用它的有三处：启动装载按租户的 pack_id 取包，查不到就拒绝启动；GET /api/console/pack 下发；tenant-create 的 --pack 只收这里有的。
 // 加一个行业包：在 src/packs/<包>/console-pack.ts 写配置，登记到下面的 PACKS。公开仓库里的包名还要在
 // scripts/check-public-boundary.ts 的白名单里（ADR-003 决策 4）。假包 src/shared/pack-fixtures/ 不进注册表（不变量 25）。
-import { deepFreeze, type IndustryPack, type QuickReplyDefault, type PackRuntime, type PackSources } from '../core/pack-api.js';
+import {
+  deepFreeze,
+  type FieldDef,
+  type IndustryPack,
+  type QuickReplyDefault,
+  type PackRuntime,
+  type PackSources,
+} from '../core/pack-api.js';
 import { createTravelRuntime } from './travel/runtime.js';
 import { fixture, createFixtureRuntime } from './__fixture/runtime.js';
 import { travel } from './travel/console-pack.js';
@@ -39,6 +46,36 @@ export function legacyTravelRuntime(sources: PackSources): ReturnType<typeof cre
   return (legacyTravel ??= createTravelRuntime(sources));
 }
 
+/** 08 R2、R9：纯内存校验，不读配置、不改传入对象；失败点名包与 kind。 */
+export function validatePackCatalog(pack: IndustryPack, runtime: Pick<PackRuntime, 'catalog'>): void {
+  const entityKinds = new Set(pack.entities.map((entity) => entity.kind));
+  for (const kind of new Set([...entityKinds, ...Object.keys(runtime.catalog)])) {
+    if (!entityKinds.has(kind) || !Object.hasOwn(runtime.catalog, kind)) {
+      throw new Error(`行业包 ${pack.id} 的 kind ${kind} 在 entities 与 catalog 中不一致`);
+    }
+  }
+  const moneyPaths = (fields: readonly FieldDef[], prefix = ''): string[] =>
+    fields.flatMap((field) => {
+      const path = prefix && field.key ? `${prefix}.${field.key}` : prefix + field.key;
+      if (field.type === 'money') return [path];
+      return field.type === 'subItems' ? moneyPaths(field.item ?? [], `${path}[]`) : [];
+    });
+  for (const entity of pack.entities) {
+    const declared = runtime.catalog[entity.kind]!.moneyFields;
+    const expected = moneyPaths(entity.fields);
+    if (
+      declared.length !== expected.length ||
+      expected.some((path) => declared.filter((field) => field.path === path && field.decimals === 0).length !== 1)
+    ) {
+      throw new Error(`行业包 ${pack.id} 的 kind ${entity.kind} 的 moneyFields 与 money 字段配置不一致`);
+    }
+  }
+  const retrievalKinds = Object.keys(runtime.catalog).filter((kind) => runtime.catalog[kind]!.retrieval);
+  if (retrievalKinds.length > 1) {
+    throw new Error(`行业包 ${pack.id} 的 kind ${retrievalKinds.join('、')} 有多个 retrieval 为 true`);
+  }
+}
+
 /** 后台定义与对话运行时按同一 id 配对；未登记的 id 永远不创建运行时。 */
 export function runtimeById(id: string, sources: PackSources): PackRuntime | null {
   const pack = packById(id);
@@ -51,5 +88,6 @@ export function runtimeById(id: string, sources: PackSources): PackRuntime | nul
   ) {
     throw new Error(`行业包 ${id} 的后台与运行时阶段不一致`);
   }
+  validatePackCatalog(pack, runtime);
   return runtime;
 }
