@@ -6,6 +6,9 @@
 //   三、拒绝：widget.json 清空 / 缺文件 / 条目不合格 / 重复 / 不是数组 → catalog_startup；pack.json 指向没有的包或写坏 → pack_unknown；非旅游包没有 brand.json → brand_required；
 //      没登记（不设 PACK_FIXTURES）的证明包 → pack_unknown。
 //   四、模拟评测：--config-dir 的静态检查按包，engineRuntime 对非旅游包只设 SOP_PATH（不设 ROUTES_PATH / HOTELS_PATH），从 pack.json 认包。
+//   五、同一进程换配置目录（交叉评审的四条回归）：证明包 → 旅游 → 证明包的 engineRuntime 不串包绑定与产品库快照；engineRuntime 开始前就装载并校验
+//      非旅游产品库（widget.json 为 [] 时直接以 catalog_startup 失败）；直接换 SOP_PATH 后 currentCatalog() 跟着目录走；重置后按当前目录惰性恢复；
+//      config.fileCatalog 的状态计数按快照是否存在算。
 import '../selftest-env.js';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -41,6 +44,9 @@ if (mode === 'parent') {
   const { hostRuntime, withoutTenantScope } = await import('../tenancy/runtime.js');
   const { enterTenantScopeForTest } = await import('../tenancy/testing.js');
   enterTenantScopeForTest(hostRuntime());
+  const { tenantKeys } = await import('../tenancy/state.js');
+  /** config.fileCatalog 的状态计数：有快照 1，没有 0 */
+  const fileCatalogKeys = (): number => tenantKeys(hostRuntime().id)['config.fileCatalog']!;
   const { boundPack } = await withoutTenantScope(() => import('../core/pack-api.js'));
   const source = await withoutTenantScope(() => import('./source.js'));
   const { initConfig, currentCatalog, currentPack, configMode, renderFileSop, ConfigStartupError, ConfigNotReadyError, __configTest } =
@@ -179,6 +185,61 @@ if (mode === 'parent') {
         await runtime.close();
       }
       check(() => assert.equal(process.env.SOP_PATH, undefined));
+      // 关闭时放回建 runtime 之前的样子：这里是没绑过包、没有快照
+      check(() => assert.equal(boundPack(), null));
+      check(() => assert.equal(fileCatalogKeys(), 0));
+
+      // 回归 1：同一进程里 证明包 → 旅游 → 证明包。包绑定与产品库快照跟着配置目录走，不串
+      const open = async (configDir: string | undefined) =>
+        engineRuntime(new Meter(1), 'sim-fake-customer', fakePrices, configDir === undefined ? {} : { configDir });
+      const oneWidget = copyFixture('one-widget');
+      fs.writeFileSync(widgetFile(oneWidget), JSON.stringify([JSON.parse(fs.readFileSync(widgetFile(fixtureDir), 'utf8'))[1]]));
+      for (const [label, configDir, expect] of [
+        ['证明包', fixtureDir, { pack: '__fixture', widgets: fixtureWidgetCount(), brand: '虚构方盒核验社' }],
+        ['旅游（data/）', undefined, { pack: 'travel', widgets: null, brand: 'legacy' }],
+        ['证明包（第二次）', fixtureDir, { pack: '__fixture', widgets: fixtureWidgetCount(), brand: '虚构方盒核验社' }],
+        ['证明包的另一个目录（只有一条 widget）', oneWidget, { pack: '__fixture', widgets: 1, brand: '虚构方盒核验社' }],
+        ['旅游（data/，第二次）', undefined, { pack: 'travel', widgets: null, brand: 'legacy' }],
+      ] as const) {
+        const rt = await open(configDir);
+        try {
+          check(() => assert.equal(currentPack().runtime.id, expect.pack, label));
+          check(() => assert.equal(rt.metadata.brand, expect.brand, label));
+          if (expect.widgets === null) check(() => assert.throws(() => currentCatalog(), ConfigNotReadyError, label));
+          else check(() => assert.equal(currentCatalog().items.widget?.length, expect.widgets, label));
+          check(() => assert.equal(process.env.ROUTES_PATH === undefined, expect.widgets !== null, label));
+        } finally {
+          await rt.close();
+        }
+        check(() => assert.equal(boundPack(), null, `${label}：关闭后放回没绑`));
+        check(() => assert.equal(fileCatalogKeys(), 0, `${label}：关闭后放回没有快照`));
+      }
+
+      // 回归 2：非旅游产品库在开始任何目标前就装载并校验。widget.json 为 [] 或条目不合格，engineRuntime 直接以 catalog_startup 失败，
+      // 失败也把环境、包绑定与快照放回去，之后好的目录照常能建
+      for (const [label, content, re] of [
+        ['widget.json 为 []', '[]\n', /catalog_startup.*widget/],
+        [
+          '单价三位小数',
+          JSON.stringify([{ id: 'w-bad', title: '合成方盒', unitPrice: 3.655, unit: '件', tags: [] }]),
+          /catalog_startup.*第 1 条不合格/,
+        ],
+      ] as const) {
+        const bad = copyFixture('bad-catalog');
+        fs.writeFileSync(widgetFile(bad), content);
+        await assert.rejects(open(bad), re, label);
+        checks++;
+        check(() => assert.equal(process.env.SOP_PATH, undefined, label));
+        check(() => assert.equal(boundPack(), null, label));
+        check(() => assert.equal(fileCatalogKeys(), 0, label));
+        fs.rmSync(bad, { recursive: true });
+      }
+      const again = await open(fixtureDir);
+      try {
+        check(() => assert.equal(currentCatalog().items.widget?.length, fixtureWidgetCount()));
+      } finally {
+        await again.close();
+      }
     } finally {
       await customer.close();
       await sales.close();
@@ -238,7 +299,16 @@ if (mode === 'parent') {
     check(() => assert.equal(boundPack()?.runtime.id, '__fixture'));
     check(() => assert.equal(currentPack().brand?.brandName, '虚构方盒核验社'));
     check(() => assert.equal(lazy.items.widget?.length, fixtureWidgetCount()));
+    check(() => assert.equal(fileCatalogKeys(), 1));
+    // 回归 3：重置后不强制绑旅游。SOP_PATH 还指着证明包，重置之后惰性入口照 pack.json 恢复成 __fixture
     __configTest.reset();
+    check(() => assert.equal(boundPack(), null));
+    check(() => assert.equal(fileCatalogKeys(), 0, '回归 4：重置后状态计数归 0'));
+    check(() => assert.equal(currentPack().runtime.id, '__fixture'));
+    check(() => assert.equal(currentCatalog().items.widget?.length, fixtureWidgetCount()));
+    check(() => assert.equal(fileCatalogKeys(), 1, '回归 4：装载后状态计数是 1'));
+    __configTest.reset();
+    check(() => assert.equal(fileCatalogKeys(), 0));
 
     // ---------------- 一、没有 pack.json = 旅游，与以前相同 ----------------
     // 锁定套件的配置目录就是 data/：这里不能有 pack.json、catalog/，参考配置放 data/packs/<id>/
@@ -310,6 +380,7 @@ if (mode === 'parent') {
     check(() => assert.equal(runtime.id, '__fixture'));
     check(() => assert.equal(configMode(), 'file'));
     check(() => assert.equal(currentPack().brand?.brandName, '虚构方盒核验社'));
+    check(() => assert.equal(fileCatalogKeys(), 1));
     const snapshot = currentCatalog();
     const onDisk = JSON.parse(fs.readFileSync(widgetFile(fixtureDir), 'utf8')) as { id: string; tiers?: unknown[] }[];
     check(() => assert.deepEqual(snapshot.items.widget, onDisk));
@@ -355,6 +426,18 @@ if (mode === 'parent') {
     checks++;
     delete process.env.ROUTES_PATH;
     delete process.env.HOTELS_PATH;
+
+    // 回归 1（直接换路径）：同一进程里不重置也不重新装载，直接换 SOP_PATH，currentCatalog() 与包绑定跟着配置目录走，不再返回原快照
+    const other = copyFixture('other-dir');
+    fs.writeFileSync(widgetFile(other), JSON.stringify([onDisk[0]]));
+    process.env.SOP_PATH = path.join(other, 'sop.md');
+    check(() => assert.equal(currentCatalog().items.widget?.length, 1));
+    check(() => assert.notEqual(currentCatalog(), snapshot));
+    check(() => assert.equal(currentPack().runtime.id, '__fixture'));
+    delete process.env.SOP_PATH;
+    check(() => assert.throws(() => currentCatalog(), ConfigNotReadyError, '换回 data/：产品库作废，回到旅游的老样子'));
+    check(() => assert.equal(currentPack().runtime.id, 'travel'));
+    check(() => assert.equal(fileCatalogKeys(), 0));
 
     // 旅游：OTel 包名 travel，预检照旧调 loadRoutes()：ROUTES_PATH 指向不存在的文件就打「数据文件损坏」，正常文件不打
     delete process.env.SOP_PATH;

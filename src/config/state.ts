@@ -1,6 +1,7 @@
 // 每个运行时独立的配置缓存与锁状态（05 R3 / R5）。
 import type { ConfigDeps, PublishedSop, CatalogSnapshot, LockEvent } from './source.js';
 import type { TenantLock } from '../db/client.js';
+import type { PackRuntime } from '../core/pack-api.js';
 import type { IndustryPack } from '../shared/pack.js';
 import type { SopSection } from '../sop/sections.js';
 type VersionHistory = Map<string, Map<number, unknown>>;
@@ -24,8 +25,11 @@ export interface Loaded {
 
 export interface TenantConfig {
   loaded: Loaded | null;
-  /** 08 R11：文件模式下非旅游包的产品库快照（配置目录的 catalog/<kind>.json），装载时读一次。旅游与 DB 模式恒为 null */
-  fileCatalog: CatalogSnapshot | null;
+  /**
+   * 08 R11：文件模式下非旅游包的产品库快照（配置目录的 catalog/<kind>.json），装载时读一次。旅游与 DB 模式恒为 null。
+   * dir 是装它时的配置目录，runtime 是当时装载它的包运行时：评测在同一进程里换 SOP_PATH 后，dir 对不上就作废（见 source.ts 的 dropStaleFileCatalog）
+   */
+  fileCatalog: { dir: string; runtime: PackRuntime; snapshot: CatalogSnapshot } | null;
   dbInstalled: boolean;
   lockState: 'held' | 'lost';
   lockTaken: boolean;

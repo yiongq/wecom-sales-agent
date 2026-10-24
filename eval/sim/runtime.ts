@@ -110,12 +110,15 @@ export async function engineRuntime(
     process.env.ROUTES_PATH = configDir ? path.join(configDir, 'routes.json') : path.resolve('data/routes.json');
     process.env.HOTELS_PATH = configDir ? path.join(configDir, 'hotels.json') : path.resolve('data/hotels.json');
   }
+  // 同一进程里先后建几个 runtime（不同配置目录）：包绑定与文件模式的产品库快照跟着配置目录走，关闭时放回建 runtime 之前的样子
+  let restoreConfig = (): void => {};
   const restoreProcess = async (): Promise<void> => {
     process.off('exit', removeTemp);
     await fs.rm(temp, { recursive: true, force: true });
     restoreClock();
     for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
     Object.assign(process.env, savedEnv);
+    restoreConfig();
   };
   const load = async () => {
     await import('../../src/selftest-env.js');
@@ -142,7 +145,8 @@ export async function engineRuntime(
   const store = modules.store;
   const { createQuote, routeVersion } = modules.tools;
   const { createLineOrder } = modules.orderView;
-  const { currentPack, currentPolicy, prefixSummary } = modules.source;
+  const { currentPack, currentPolicy, initConfig, prefixSummary, saveFileConfig } = modules.source;
+  restoreConfig = saveFileConfig();
   const salesCfg = llmCfg();
   const customerCfg = {
     baseUrl: process.env.SIM_CUSTOMER_BASE_URL || salesCfg.baseUrl,
@@ -214,10 +218,13 @@ export async function engineRuntime(
       [salesCfg.model, llmCfg(true).model, customerCfg.model, llmStats().hedgeModel].filter((m): m is string => !!m),
     ))
       checkModel(model);
-    // 配置读不出来（policy.json 不合格、brand.json 不合格……）在这里就抛，一个目标都不跑；
+    // 配置读不出来（policy.json 不合格、brand.json 不合格、非旅游包的 pack.json / catalog/*.json 不合格……）在这里就抛，一个目标都不跑；
     // 两个哈希随报告走，父进程可以核对子进程跑的就是它导出的那一份。
+    // 先显式装载当前配置目录（同服务启动的 initConfig(null)：包、品牌、policy，非旅游包还有产品库）：
+    // 同一进程里上一个 runtime 留下的包绑定与产品库快照不能带到这一个
     let loaded: { policyHash: string; promptHash: string; brand: ReturnType<typeof currentPack>['brand']; pack: string };
     try {
+      await initConfig(null);
       const { brand, runtime: boundRuntime } = currentPack();
       const policyHash = currentPolicy().policyHash;
       const { promptHash } = prefixSummary(() => ({ ...modules.engine.promptPrefix(), sop: modules.engine.sopFileText() }));
