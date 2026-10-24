@@ -593,6 +593,38 @@ export interface OrderView {
 }
 
 /** GET /conversations/:id：J 页一次取全 */
+/** ConversationDetail.need：旅游沿用的需求要素形状 */
+export interface ConversationNeed {
+  destination: string | null;
+  segment: string | null;
+  travelers: string | null;
+  dates: string | null;
+  budget: string | null;
+}
+
+/** ConversationDetail.quote：旅游沿用的最近报价形状 */
+export interface ConversationQuote {
+  routeId: string;
+  routeTitle: string;
+  travelers: number;
+  perPerson: number | null;
+  total: number | null;
+  departDate: string | null;
+}
+
+/** 08 R4：包的 profileView 下发的画像卡（会话标题后半段加若干行） */
+export interface ConversationProfileCard {
+  title: string;
+  rows: { label: string; value: string }[];
+}
+
+/** 08 R4：包的 quoteCard 下发的报价卡；amountFen 是整数分，null 表示有报价但没有金额 */
+export interface ConversationQuoteCard {
+  title: string;
+  amountFen: number | null;
+  lines: string[];
+}
+
 export interface ConversationDetail {
   row: ConversationRow;
   /** 内存窗口，按 seq 升序 */
@@ -609,16 +641,14 @@ export interface ConversationDetail {
     stageBefore: string | null;
     assigneeName: string | null;
   } | null;
-  /** 需求要素：规范化的取值，与 needSummary 同源 */
-  need: { destination: string | null; segment: string | null; travelers: string | null; dates: string | null; budget: string | null };
-  quote: {
-    routeId: string;
-    routeTitle: string;
-    travelers: number;
-    perPerson: number | null;
-    total: number | null;
-    departDate: string | null;
-  } | null;
+  /** 需求要素：规范化的取值，与 needSummary 同源。非旅游包的字段全是 null，画像卡走 profileCard */
+  need: ConversationNeed;
+  /** 最近一次报价（旅游沿用的形状）。非旅游包恒为 null，报价卡走 quoteCard */
+  quote: ConversationQuote | null;
+  /** 08 R4：非旅游包的画像卡（包的 profileView，viewer 已打码）；旅游没有这个键，只有 need */
+  profileCard?: ConversationProfileCard;
+  /** 08 R4：非旅游包的报价卡（包的 quoteCard，viewer 已打码）；旅游没有这个键，只有 quote */
+  quoteCard?: ConversationQuoteCard;
   orders: OrderView[];
   /** 企微渠道才有 */
   sendWindow: SendWindow | null;

@@ -5,6 +5,7 @@ import {
   type IndustryPack,
   type PackRuntime,
   type SalesStage,
+  type Session,
   type SopSectionDef,
 } from '../../core/pack-api.js';
 import { z } from 'zod';
@@ -77,8 +78,35 @@ export function createFixtureRuntime(): PackRuntime {
     unit: z.enum(['件', '盒']),
     tags: z.array(widgetText),
   });
+  // 08 R4：状态槽两个键——inspections 计核验次数（重置清掉），tier 记客户的核验档位（重置保留）
+  const StateSchema = z.strictObject({
+    inspections: z.number().int().min(0).optional(),
+    tier: z.string().min(1).max(20).optional(),
+  });
+  const profileFields = [
+    { key: 'color', label: '颜色' },
+    { key: 'size', label: '尺寸' },
+  ] as const;
+  /** 包写状态槽一律先过 schema（核心只存取、不解读） */
+  const writeState = (session: Session, patch: z.infer<typeof StateSchema>): void => {
+    session.packState = StateSchema.parse({ ...session.packState, ...patch });
+  };
   return {
     id: fixture.id,
+    sessionState: { schema: StateSchema, resetKeys: ['inspections'] },
+    profileFields,
+    // 只发业务字段；attrs 只发声明过的键（核心还会再筛一次）
+    profileForPrompt(profile) {
+      const attrs = Object.fromEntries(profileFields.flatMap(({ key }) => (profile.attrs?.[key] ? [[key, profile.attrs[key]]] : [])));
+      return {
+        ...(profile.notes?.length ? { notes: profile.notes } : {}),
+        ...(Object.keys(attrs).length ? { attrs } : {}),
+      };
+    },
+    profileView(profile) {
+      const rows = profileFields.flatMap(({ key, label }) => (profile.attrs?.[key] ? [{ label, value: profile.attrs[key] }] : []));
+      return { title: rows.map((r) => r.value).join(''), rows };
+    },
     catalog: {
       widget: {
         schema: WidgetSchema,
@@ -139,13 +167,25 @@ export function createFixtureRuntime(): PackRuntime {
           type: 'function',
           function: { name: 'fixture_inspect', description: '核验服务需求', parameters: { type: 'object', properties: {} } },
         },
-        sideEffects: [],
+        sideEffects: ['session'],
         cacheable: true,
         blocksRetry: false,
-        execute: async () => JSON.stringify({ inspected: true }),
+        async execute(_args, ctx) {
+          writeState(ctx.session, { inspections: (Number(ctx.session.packState?.inspections) || 0) + 1, tier: 'basic' });
+          return JSON.stringify({ inspected: true });
+        },
       },
     ],
-    extractProfile: () => ({ notes: ['已核验'] }),
+    // 客户说「颜色：红」「尺寸：大」就记进 attrs；每轮最多抽到其中一部分，引擎按键合并
+    extractProfile(text) {
+      const attrs = Object.fromEntries(
+        profileFields.flatMap(({ key, label }) => {
+          const value = new RegExp(`${label}[:：]\\s*([^\\s，。,.]+)`).exec(text)?.[1];
+          return value ? [[key, value]] : [];
+        }),
+      );
+      return { notes: ['已核验'], ...(Object.keys(attrs).length ? { attrs } : {}) };
+    },
     advanceStage: (session, turn) => (turn.calls.some((c) => c.name === 'fixture_inspect') ? 'objection' : session.stage),
     contextNote: () => ['按测试服务规则核验需求'],
     replyAnchors: { markdown: 'fixture_guard' },
