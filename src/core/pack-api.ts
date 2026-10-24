@@ -7,6 +7,7 @@ import type { CustomerProfile, HandoffRecord, Hotel, Order, Route, SalesStage, S
 import type { ToolDef } from '../tool-defs.js';
 import type { MoneyParseOptions } from './parse/money.js';
 import type { PaymentMode } from '../shared/conversation-types.js';
+import type { AnyOrder, LineOrder } from './order-view.js';
 import type { RefundQuote, RefundTexts } from './refund.js';
 import type { CatalogItem, ConversationNeed, ConversationQuote } from '../shared/console-api.js';
 import type { CatalogSnapshot } from '../config/source.js';
@@ -466,7 +467,7 @@ export interface GuardToolSource {
 export interface GuardContextTypes {
   flags: GuardTurnFlags;
   toolSources: GuardToolSource[];
-  orderSources: readonly Order[];
+  orderSources: readonly AnyOrder[];
   thresholds: object;
 }
 
@@ -747,6 +748,7 @@ export interface QuoteCard {
 
 export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   id: string;
+  documents?: { proposal?: boolean };
   policy?: PackPolicy;
   defaultBrand: BrandProfile;
   legacy: T['LegacyTexts'];
@@ -851,6 +853,8 @@ export interface EnginePackHooks {
   createOrderTool: string | null;
   resetSession(session: Session): void;
   paidText(order: Order): string;
+  /** owner 2026-10-24 定（plan Open 2）：通用单付款确认，未实现时由核心给默认话术。 */
+  paidLineText?(order: LineOrder): string;
   /** 07 R19：退款文字由包提供，核心与后台只负责提交和通知。 */
   refund?: {
     quoteText(order: Order, quote: import('./refund.js').RefundQuote, ctx: RefundTextContext): string;

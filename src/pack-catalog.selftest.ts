@@ -46,6 +46,13 @@ if (process.argv[2] !== 'worker') {
 
     const runtime = createFixtureRuntime();
     assert.doesNotThrow(() => validatePackCatalog(fixture, runtime));
+    const noTerminal = { ...fixture, stages: fixture.stages.filter((stage) => !stage.terminal) };
+    assert.throws(
+      () => validatePackCatalog(noTerminal, { ...runtime, stages: runtime.stages.filter((stage) => !stage.terminal) }),
+      /__fixture.*priceLine.*终态/,
+    );
+    assert.throws(() => validatePackCatalog(fixture, { ...runtime, stages: [] }), /__fixture.*priceLine.*终态/);
+    assert.doesNotThrow(() => validatePackCatalog(noTerminal, { ...runtime, priceLine: undefined, stages: [] }));
     const widget = runtime.catalog.widget!;
     const sample = { id: 'w-sample', title: '合成方盒', unitPrice: 12, unit: '件', tags: ['合成'] };
     assert.ok(widget.schema.safeParse(sample).success);

@@ -83,6 +83,7 @@ export const fixture: IndustryPack = deepFreeze({
   stages: [
     { key: 'greeting', label: '开始' },
     { key: 'objection', label: '核验完成' },
+    { key: 'paid', label: '已付款', terminal: true },
   ],
 });
 
@@ -199,7 +200,7 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
       { id: 'fixture_no_unverified', kind: 'exclude', text: '未经核验也保证可用', from: '证明包：不得把未核验的需求说成已确认' },
     ],
     knownFields: { names: ['inspected'], sourceFiles: ['src/packs/__fixture/runtime.ts'] },
-    stages: fixture.stages.map((s) => ({ id: s.key as SalesStage })),
+    stages: fixture.stages.map((s) => ({ id: s.key as SalesStage, ...(s.terminal ? { terminal: true } : {}) })),
     tools: [
       {
         def: {

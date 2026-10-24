@@ -5,9 +5,9 @@ import type { HandoffRow } from '../db/repo/metrics.js';
 import type { DealsPart, HandoffPart, OrderSummaryPart } from '../shared/console-api.js';
 import { type HandoffKind, isHandoffKind } from '../shared/conversation-types.js';
 import { originOf, type Origin } from '../shared/origin.js';
-import { getSession, listOrders } from '../store.js';
+import { getSession, listAnyOrders } from '../store.js';
 import { currentRuntime } from '../tenancy/runtime.js';
-import type { Order } from '../types.js';
+import { orderTotalFen, type AnyOrder } from '../core/order-view.js';
 
 type TenantKind = 'standard' | 'sandbox';
 /** 会话的种子标记（Session.seed）：会话不在内存里（订单的会话已被清理）为 undefined */
@@ -32,11 +32,11 @@ const emptySummary = (): OrderSummaryPart => ({
   pendingCount: 0,
 });
 
-const originOfOrder = (o: Order, kind: TenantKind, seedOf: SeedOf): Origin =>
+const originOfOrder = (o: AnyOrder, kind: TenantKind, seedOf: SeedOf): Origin =>
   originOf({ sessionId: o.sessionId, orderId: o.id, seed: seedOf(o.sessionId) }, kind);
 
 /** 付过款的订单：写过 paid_at，状态是已付、退款中或已退款（退款不改 paid_at，也不改 handoffBeforePaid） */
-const paidAtOf = (o: Order): number | null =>
+const paidAtOf = (o: AnyOrder): number | null =>
   o.paidAt != null && (o.status === 'paid' || o.status === 'refund_pending' || o.status === 'refunded') ? o.paidAt : null;
 
 /**
@@ -44,7 +44,7 @@ const paidAtOf = (o: Order): number | null =>
  * 顾问收款模式下的确认价格、确认收款是收款流程，不改 handoffBeforePaid（它只在 markOrderPaid 时按会话有没有转过人工写一次），
  * 所以不算协同。已退款的单照算在两类里，另在「其中已退款」里单列
  */
-export function dealsByOrigin(orders: readonly Order[], since: number, kind: TenantKind, seedOf: SeedOf): Record<Origin, DealsPart> {
+export function dealsByOrigin(orders: readonly AnyOrder[], since: number, kind: TenantKind, seedOf: SeedOf): Record<Origin, DealsPart> {
   const out: Record<Origin, DealsPart> = { customer: emptyDeals(), visitor: emptyDeals(), seed: emptyDeals() };
   for (const o of orders) {
     const paidAt = paidAtOf(o);
@@ -53,37 +53,41 @@ export function dealsByOrigin(orders: readonly Order[], since: number, kind: Ten
     const refunded = o.status === 'refunded' ? 1 : 0;
     if (o.handoffBeforePaid === true) {
       part.assisted += 1;
-      part.assistedAmount += o.totalPrice;
+      part.assistedAmount += orderTotalFen(o);
       part.assistedRefunded += refunded;
     } else {
       part.aiOnly += 1;
-      part.aiOnlyAmount += o.totalPrice;
+      part.aiOnlyAmount += orderTotalFen(o);
       part.aiOnlyRefunded += refunded;
     }
     part.refunded += refunded;
+  }
+  for (const part of Object.values(out)) {
+    part.assistedAmount /= 100;
+    part.aiOnlyAmount /= 100;
   }
   return out;
 }
 
 /** 一张订单加进本月汇总（口径同第 4 步的 /orders/summary：成交额含退款中，已退款单按原付款月份的原成交额单列，退款中与待付款不限月份） */
-function addToSummary(part: OrderSummaryPart, o: Order, from: number, to: number): void {
+function addToSummary(part: OrderSummaryPart, o: AnyOrder, from: number, to: number): void {
   const inMonth = o.paidAt != null && o.paidAt >= from && o.paidAt < to;
   if (o.status === 'refund_pending') part.refundPendingCount += 1;
   if (o.status === 'refunded' && inMonth) {
-    part.refundedTotal += o.totalPrice;
+    part.refundedTotal += orderTotalFen(o);
     part.refundedCount += 1;
   } else if ((o.status === 'paid' || o.status === 'refund_pending') && inMonth) {
-    part.paidTotal += o.totalPrice;
+    part.paidTotal += orderTotalFen(o);
     part.paidCount += 1;
   } else if (o.status === 'pending_payment') {
-    part.pendingTotal += o.totalPrice;
+    part.pendingTotal += orderTotalFen(o);
     part.pendingCount += 1;
   }
 }
 
 /** /orders/summary 的数：顶层是全部来源的合计，byOrigin 是同一口径按来源拆开（三类之和等于合计） */
 export function summarizeOrders(
-  orders: readonly Order[],
+  orders: readonly AnyOrder[],
   from: number,
   to: number,
   kind: TenantKind,
@@ -95,6 +99,11 @@ export function summarizeOrders(
     addToSummary(total, o, from, to);
     addToSummary(byOrigin[originOfOrder(o, kind, seedOf)], o, from, to);
   }
+  for (const part of [total, ...Object.values(byOrigin)]) {
+    part.paidTotal /= 100;
+    part.refundedTotal /= 100;
+    part.pendingTotal /= 100;
+  }
   return { total, byOrigin };
 }
 
@@ -102,12 +111,12 @@ const liveSeedOf: SeedOf = (sessionId) => getSession(sessionId)?.seed;
 
 /** 当前租户内存里的全部订单（含 demo 类）的成交拆分 */
 export function liveDeals(since: number): Record<Origin, DealsPart> {
-  return dealsByOrigin(listOrders(), since, currentRuntime().kind, liveSeedOf);
+  return dealsByOrigin(listAnyOrders(), since, currentRuntime().kind, liveSeedOf);
 }
 
 /** 当前租户内存里的全部订单的本月汇总 */
 export function liveOrderSummary(from: number, to: number): ReturnType<typeof summarizeOrders> {
-  return summarizeOrders(listOrders(), from, to, currentRuntime().kind, liveSeedOf);
+  return summarizeOrders(listAnyOrders(), from, to, currentRuntime().kind, liveSeedOf);
 }
 
 /**

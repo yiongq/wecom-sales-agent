@@ -111,7 +111,18 @@ try {
         baselineHtml = baselineHtml.replace(branch, '');
       }
     }
-    assert.equal(sha256(baselineHtml), hash, `${page} 除授权页脚与 R20 退款分支外必须与开工时逐字节相同`);
+    if (page === 'pay' || page === 'chat') {
+      // 08 R12 给通用单加 `display` 分支：只剔除这段新增字节，原页面哈希及其余字节继续锁住。
+      const start = page === 'pay' ? '      if (order.display) {\n' : '      if (o.display) {\n';
+      const end = page === 'pay' ? '        render();\n        return;\n      }\n' : '        return;\n      }\n';
+      const startAt = baselineHtml.indexOf(start);
+      assert.notEqual(startAt, -1, `${page} R12 display 分支起点必须存在`);
+      assert.equal(baselineHtml.indexOf(start, startAt + start.length), -1, `${page} R12 display 分支起点必须恰好出现一次`);
+      const endAt = baselineHtml.indexOf(end, startAt + start.length);
+      assert.notEqual(endAt, -1, `${page} R12 display 分支终点必须存在`);
+      baselineHtml = baselineHtml.slice(0, startAt) + baselineHtml.slice(endAt + end.length);
+    }
+    assert.equal(sha256(baselineHtml), hash, `${page} 除授权页脚、R20 退款分支与 R12 display 分支外必须与开工时逐字节相同`);
     assert.equal(renderBrandPage(html, name, runtime, null), html);
     const next = renderBrandPage(html, name, runtime, shanhaiBrand);
     // 检查全部客户文案（含 JS 中的动态文案）；技术注释不属于客户文案，支付产品名保留。

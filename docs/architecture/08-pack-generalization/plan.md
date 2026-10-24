@@ -696,6 +696,8 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 - 第 19、20 步（来自第 4、12 步）：核心里还有几处 `runtime.id === 'travel'` 的判断——启动检查的原因码与启动日志（`assertCatalogStartup`、`loadConfig`）、`brand_required` 的抛出点；注册表的 `sopConsistencyOf` 按包 id 派发一致性检查；旧品牌名「云途」的规则用 id 前缀 `brand-fixed:` 表示「只查固定内容」；`src/sop/contract.ts`、`src/sop/sections.ts` 为自测保留了旅游的重导出。收口时一并处理（表驱动的注册表登记各包的一致性检查、`SopContractRule` 加显式字段或保留约定并写进 spec）。
 - 第 13、18 步（来自第 12 步）：`importConfig` 对非旅游包仍会在 `assertKind('route')` 处拒绝，第 12 步的证明包首次发布是在自测里用同一组构件造的；文件模式与导出接上 `catalog/*.json` 之后，自测改走 `importConfig`。
 - 第 11 步：判断回复里的金额调 `parseMoney`（合并了 `amountHits` 与口语金额），不要只调 `amountHits`；证明包的 `money` 设为 `{ minimumAmount: 0.01, precisionTolerance: 0.5, decimals: true }`（第 10 步，#294）。第 10 步的已知误报：`每个2盒` 会读出 2；`decimals` 模式下不带单位的区间不算区间两头。
+- 第 15、16 步（来自第 14 步合入后的交叉评审）：`src/console-api/workbench.ts` 的 `orderConversation()` 直接返回 `profileView().title`、没有 viewer 打码，订单关联的会话标题会把非旅游包画像里的号码原样给 viewer；在第 15–16 步的 PR 里一并修，旅游的字节照旧。
+- 第 17–19 步（来自第 13 步）：`resolveConfigDir` 对包目录只查 `sop.md`、`pack.json` 与 `catalog/`，逐 kind 的严检与闸、runner 的文案留给第 18 步（清单 7.12–7.14、7.18、7.22、7.23）；`catalog/*.json` 坏数据报 `catalog_startup`、`pack.json` 写坏报 `pack_unknown`，不加新原因；7.17、7.20 留给第 17 步，7.2「DB 模式抛错」与 7.6 `resetConfig` 留给第 19 步。
 - 第 16 步：`fillPayCard` 只在 `public/chat.html`（:529），锁定的 `server.selftest.ts:279-313` 用正则抠出函数头到「两格缩进的 `}`」为止、只给它 `fetch` 与 `cnDate`：函数头原样，新分支内联、不引用函数外的新标识符，函数体里不能出现恰好两格缩进的 `}` 行。`public/pay.html` 的渲染在 `load()`，锁定钉子是 `server.selftest.ts:513-514` 的正则（E10、E11）。另外，第 0.5 步的夹具钉的是 `/pay/<id>` 的完整 HTML：第 16 步给 `pay.html` 加 `display` 分支，会让夹具里 `pay/*` 的 12 条变红，这是 R12 要求的改动。第 16 步的 PR 里用 `UPDATE_LEGACY_BYTES=1` 重生成一次，diff 只许是新加的分支、逐行审，夹具里其余 48 条必须一字不变（spec 第六条 `Revisions:` 二）。
 
 ### 第 2–9、14、21 步（2026-10-24，#295、#297、#298）
@@ -732,9 +734,9 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 
 ## Open
 
-1. **非旅游包缺品牌时的启动拒绝原因**（挡第 12 步合并）。R10 与验收 8 要求清掉品牌后启动被拒，但没写用哪个 `ConfigStartupError` 原因；R2 又写「联合类型只加 `catalog_startup` 这一个值」，现有原因里没有表达「缺品牌」的。推荐加一个 `brand_required`，同时把 R2 那句改成「只加 `catalog_startup` 与 `brand_required` 两个值」，记进 spec 的 `Revisions:`；备选是并进 `catalog_startup`，但那样一个原因同时管产品库和品牌，看日志分不清。owner 定。
+1. ~~**非旅游包缺品牌时的启动拒绝原因**~~（**已定**，owner 2026-10-24：照推荐用 `brand_required`，记在 spec 第八条 `Revisions:`）。R10 与验收 8 要求清掉品牌后启动被拒，但没写用哪个 `ConfigStartupError` 原因；R2 又写「联合类型只加 `catalog_startup` 这一个值」，现有原因里没有表达「缺品牌」的。推荐加一个 `brand_required`，同时把 R2 那句改成「只加 `catalog_startup` 与 `brand_required` 两个值」，记进 spec 的 `Revisions:`；备选是并进 `catalog_startup`，但那样一个原因同时管产品库和品牌，看日志分不清。owner 定。
 
-2. **通用单付款后的确认话术**（挡第 15 步合并）。付款到账后，`notifyPaid`（`core/engine/index.ts:995-1002`）用 `getOrder` 取单，再调包的 `engineHooks.paidText(order: Order)` 写一句确认发给客户；`getOrder` 只返回旧版旅游单，所以通用单付款后客户收不到任何确认，spec 没写这句话归谁。选项：A，`EnginePackHooks` 加可选的 `paidLineText(order: LineOrder)`，没实现时核心不发；B，核心用 `orderDisplay` 拼一句默认话（如「已收到您的付款 1,330 元，订单 3 项」）；C，A 加 B 兜底。推荐 C：旅游的钩子与调用字节不动，新包可以写自己的话，没写也不会让客户付了钱没回音；默认话的文字由 owner 定。owner 定。
+2. ~~**通用单付款后的确认话术**~~（**已定**，owner 2026-10-24：照推荐 C，默认话「已收到您的付款{金额}，订单共{N}项。」，记在 spec 第八条 `Revisions:`）。付款到账后，`notifyPaid`（`core/engine/index.ts:995-1002`）用 `getOrder` 取单，再调包的 `engineHooks.paidText(order: Order)` 写一句确认发给客户；`getOrder` 只返回旧版旅游单，所以通用单付款后客户收不到任何确认，spec 没写这句话归谁。选项：A，`EnginePackHooks` 加可选的 `paidLineText(order: LineOrder)`，没实现时核心不发；B，核心用 `orderDisplay` 拼一句默认话（如「已收到您的付款 1,330 元，订单 3 项」）；C，A 加 B 兜底。推荐 C：旅游的钩子与调用字节不动，新包可以写自己的话，没写也不会让客户付了钱没回音；默认话的文字由 owner 定。owner 定。
 
 ## 交接记录
 
