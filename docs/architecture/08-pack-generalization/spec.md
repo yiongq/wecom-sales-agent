@@ -1,13 +1,14 @@
 # 08 · 核心去旅游化：产品种类、通用订单与金额
 
-Status: draft
+Status: ready
 Revisions: 2026-10-23 起草期评审（一路 Claude Opus，对照 e1433e0 的代码）之后就地修订，尚无代码依赖。一、订单：旧访问器只返回旧版旅游单，另加新访问器；逐个写出读订单的地方的去向；单价改由包的确定性函数算，`createLineOrder` 不收价格；补上通用单的改单作废规则，并规定通用单不进退款（R3）。二、新增 R10「SOP 子系统按包」和 R11「文件模式的产品库」：原稿没写，证明包在 DB 模式下发布不了 SOP，在文件模式下也读不到产品库。三、旅游不经视图，保留原有渲染路径，去掉逐像素比对；视图改名 `OrderDisplay`，只给通用单用（R12）。四、金额出处步骤的放行集合只认工具声明的金额与包的静态金额，去掉「在场条目」和「客户说过的数」；补跟进路径；定死步骤位置（R8）。五、补金额解析表与反例（R6）、money 字段的 CSV、上架检查与显示（R7）。六、写路径与写死处补全，包括沙箱条目上限、按 kind 的进程缓存、闸的缓存键（R2）；知识库每个包至多一个可检索的 kind（R9）。七、回滚检查的退出码改为 9，判定方式照 `rollback-guard.sh` 现有的写法（R13）。八、改写顶部的取代与修订清单。九、沙箱按包移到后续 spec。
 Revisions: 2026-10-23 owner 定开放问题 1–7，全部照推荐：金额出处步骤放本 spec；旧版旅游单不迁；产品库金额存元、最多两位小数；通用单的 `total_price` 写 `round(total_fen / 100)`；非旅游包只支持模板模式；同一会话最多一张待付的通用单；沙箱按包出种子移到后续 spec。正文的裁决与这些推荐本来一致，没有其他改动。`Status` 仍是 `draft`。
 Revisions: 2026-10-23 为 09、10 的起草补两处，尚无代码依赖：`priceLine` 可以返回 `{ reject, detail }`，表示这一行不定价，例如低于起订量（旧的写法只能返回单价）；「后续」一节改成 09–12 的编号与链接。
+Revisions: 2026-10-24 owner 定 `ready`，开放问题 1–7 照 2026-10-23 的裁决。同一个 docs PR 里按 plan 第 0.3 步核对被取代与被修订的条款，反向引用连同行号写进各被改文件的顶部；比原来两行多核出的几处补进本文顶部：取代的加 01 的 `CatalogKind` 类型、导入时用 `RouteSchema` / `HotelSchema` 校验、`catalog-fix --kind` 的取值，与 02 验收 9 的键集合；修订的加 01 的 `CatalogSnapshot.items` 与 `catalog_startup`，02 的方案书路由，04 R2、R14、R17，06 的 `SimGoal.initial`。这些都是正文 R2–R13 本来就写了的改动，行为不变；原写「行号在开工核对时补上」一句改为指向反向引用，「开放问题」开头一句同步。plan 补齐每一步的做 / 验 / 依赖与工作量。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8 候选「第二个真实行业包：模板机制要靠它来验证」的前半段。本 spec 只改核心，并用证明包验证；第二个真实行业包另起一份 spec。
 Depends on: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md)（开工时须已 implemented、发版到 `main`）；[04](../04-industry-packs/spec.md)：`PackRuntime`、门面（R1）、步骤表（R7）、假包（R16）、回滚检查（R14）；[05](../05-tenancy-sandbox/spec.md)：租户运行时、进程内状态清单（R5）、沙箱写限额；[06](../06-reply-quality/spec.md)：cases v2 快照、模拟客户；[02](../02-conversations-workbench/spec.md)：订单、工作台、看板、公开订单接口（R22）。
-Supersedes in part: [01](../01-pg-config-console/spec.md) 产品库 `kind` 只能是 `route` / `hotel` 的 CHECK 与 `/catalog/:kind` 的取值、启动时「没有 active 线路就拒绝」——kind 改由包定义，启动检查改由包给出，旅游的错误码与文案不变（R2）。[02](../02-conversations-workbench/spec.md) R22 与不变量 43「`/api/orders/:id` 的键集合恰为白名单」——通用单另有一份白名单，旧版旅游单不变（R12）。[04](../04-industry-packs/spec.md) R16 假包的能力范围（升级为证明包，R14）；「`PackRuntime`」一节「画像字段仍是现有 8 个」（加 `attrs`，R4）。[07](../07-knowledge-aftersales/spec.md)「知识库只收线路」与 `kb_chunks.source` 的 DDL（source 存 kind，R9）。[ADR-004](../../adr/adr-004-pack-field-rendering.md) 决策 4「服务端用 `RouteSchema` / `HotelSchema` 校验写入」——改为用包的 schema，旅游仍是这两个（R2）。[设计系统](../../features/console-ux/design-system.md)「money 只收整数（元）」——`decimals: 2` 的 money 字段收两位小数；「金额写『42,800 元』、全站不出现『¥』」不变（R7）。被取代条款的行号在开工核对时补上，随 `Status: ready` 一起写进被改 spec 的顶部。
-Amends: [ADR-004](../../adr/adr-004-pack-field-rendering.md) 决策 2：`money` 加可选配置 `decimals: 0 | 2`（R7）。[ADR-003](../../adr/adr-003-open-core-boundary.md) 决策 4：路径白名单同样管 `data/packs/<名>/`（R5）。04 R12：`MoneyParseOptions` 加可选的 `decimals`（R6）。04 R10、R11：cases v2 与 `SimGoal` 加可选的 `pack`；配置目录加 `pack.json`（R11）。07 R8、R9：闸的目标目录与导出按包（R11）。02「数据库」：`orders` 加列 `total_fen`（R3）。05 沙箱写限额：按全部 kind 计数（R2）。
+Supersedes in part: [01](../01-pg-config-console/spec.md) 产品库 `kind` 只能是 `route` / `hotel`（`CatalogKind` 类型、`catalog_items.kind` 的 CHECK、`/catalog/:kind` 与 `catalog-fix --kind` 的取值）、导入时用 `RouteSchema` / `HotelSchema` 校验、启动时「没有 active 线路就拒绝」——kind 改由包定义，写入用包的 schema 校验，启动检查改由包给出，旅游的错误码与文案不变（R2）。[02](../02-conversations-workbench/spec.md) R22、不变量 43 与验收 9「`/api/orders/:id` 的键集合恰为白名单」——通用单另有一份白名单，旧版旅游单不变（R12）。[04](../04-industry-packs/spec.md) R16 假包的能力范围（升级为证明包，R14）；「`PackRuntime`」一节「画像字段仍是现有 8 个」（加 `attrs`，R4）。[07](../07-knowledge-aftersales/spec.md)「知识库只收线路」与 `kb_chunks.source` 的 DDL（source 存 kind，R9）。[ADR-004](../../adr/adr-004-pack-field-rendering.md) 决策 4「服务端用 `RouteSchema` / `HotelSchema` 校验写入」——改为用包的 schema，旅游仍是这两个（R2）。[设计系统](../../features/console-ux/design-system.md)「money 只收整数（元）」——`decimals: 2` 的 money 字段收两位小数；「金额写『42,800 元』、全站不出现『¥』」不变（R7）。行号见各被改文件顶部的反向引用（2026-10-24 按 plan 第 0.3 步核对）。
+Amends: [ADR-004](../../adr/adr-004-pack-field-rendering.md) 决策 2：`money` 加可选配置 `decimals: 0 | 2`（R7）。[ADR-003](../../adr/adr-003-open-core-boundary.md) 决策 4：路径白名单同样管 `data/packs/<名>/`（R5）。01「两种模式与启动装载」：`CatalogSnapshot` 加 `items`，`ConfigStartupError` 的原因加 `catalog_startup`（R2）。04 R2：`check-boundaries` 加两条规则（R5）。04 R12：`MoneyParseOptions` 加可选的 `decimals`（R6）。04 R10、R11、R17：cases v2 与 `SimGoal` 加可选的 `pack`；配置目录加 `pack.json` 与 `catalog/*.json`（R11）。04 R14：回滚检查加 pre-08 与退出码 9（R13）。06 的 `SimGoal.initial`：非旅游包的 `orders` 用通用单的形状（R11）。07 R8、R9：闸的目标目录与导出按包（R11）。02「数据库」：`orders` 加列 `total_fen`（R3）；方案书路由只对声明了 `documents.proposal` 的包开放（R12）。05 沙箱写限额：按全部 kind 计数（R2）。
 
 **一句话：** 04 把行业逻辑抽成了包，但产品种类、订单、金额、SOP 子系统、文件模式、评测都还写死旅游，第二个行业包上不来。本 spec 的做法：旅游的会话字段、订单形状、产品 schema、价格护栏和它的全部渲染路径原样冻结；新包走一套通用形状——包自己定义的产品种类、按行记的订单、整数分的金额、包自有的会话状态。核心读通用形状经包给的视图，单价只由包的确定性函数算。用证明包在 DB 模式与文件模式下端到端验证，旅游的前缀、锁定套件、回归结论与客户看到的每个字节全程不变。
 
@@ -371,7 +372,7 @@ export interface PublicLineOrder {
 
 ## 开放问题
 
-以下七条 owner 2026-10-23 定：全部照推荐（见顶部第二条 `Revisions:`）。`Status` 仍是 `draft`，翻 `ready` 由 owner 另定。
+以下七条 owner 2026-10-23 定：全部照推荐（见顶部第二条 `Revisions:`）；2026-10-24 翻 `ready`。
 
 1. **通用金额出处步骤放本 spec，还是第二个包的 spec（已定：放本 spec）。** 推荐放本 spec（R8）：没有它，新包上线时没有任何金额保护，违反「钱不由模型决定」的硬规则；它是核心能力，要靠证明包来验。
 2. **旧版旅游单要不要迁成通用单（已定：不迁）。** 推荐不迁（R1、R3）：迁的话要改锁定套件、要迁数据、回滚更难。等锁定套件解锁（另起 spec）时再评估。
