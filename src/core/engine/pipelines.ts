@@ -2,8 +2,18 @@
 import type { PackRuntime, GuardStep, ReplyGuardContext } from '../pack-api.js';
 import { coreReplySteps } from '../guards/reply.js';
 import { loadGuardPipeline } from '../guards/execute.js';
+import { GuardStepValidationError } from '../guards/validate.js';
 
 export function packPipelines(runtime: PackRuntime) {
+  try {
+    return assemblePipelines(runtime);
+  } catch (error) {
+    if (error instanceof GuardStepValidationError) error.message = `行业包 ${runtime.id}：${error.message}`;
+    throw error;
+  }
+}
+
+function assemblePipelines(runtime: PackRuntime) {
   const pending: GuardStep<ReplyGuardContext>[] = [
     ...coreReplySteps().map((step) => (runtime.replyAnchors?.[step.id] ? { ...step, after: [runtime.replyAnchors[step.id]!] } : step)),
     ...runtime.replySteps,

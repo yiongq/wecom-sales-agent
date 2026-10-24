@@ -4,6 +4,8 @@ import {
   createLineOrder,
   orderDisplay,
   yuanToFen,
+  moneyProvenanceStep,
+  moneyProvenanceFollowupStep,
   UNSTORABLE_TEXT,
   type CatalogItem,
   type IndustryPack,
@@ -118,6 +120,7 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
   };
   return {
     id: fixture.id,
+    money: { minimumAmount: 0.01, precisionTolerance: 0.5, decimals: true },
     sessionState: { schema: StateSchema, resetKeys: ['inspections'] },
     profileFields,
     // 只发业务字段；attrs 只发声明过的键（核心还会再筛一次）
@@ -201,6 +204,39 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
       {
         def: {
           type: 'function',
+          function: {
+            name: 'fixture_quote',
+            description: '查询方盒单价',
+            parameters: {
+              type: 'object',
+              properties: { code: { type: 'string' } },
+              required: ['code'],
+              additionalProperties: false,
+            },
+          },
+        },
+        sideEffects: [],
+        cacheable: true,
+        blocksRetry: false,
+        async execute(input) {
+          const parsed = z.object({ code: z.string() }).safeParse(input);
+          if (!parsed.success) return JSON.stringify({ error: '缺少方盒编号' });
+          const item = sources
+            ?.currentCatalog()
+            .items.widget?.map((entry) => WidgetSchema.parse(entry))
+            .find((entry) => entry.id === parsed.data.code);
+          if (!item) return JSON.stringify({ error: '没有该方盒' });
+          const widget = WidgetSchema.parse(item);
+          return JSON.stringify({ code: widget.id, unitPrice: widget.unitPrice, unit: widget.unit });
+        },
+        amounts(result) {
+          const quote = JSON.parse(result) as { unitPrice?: number };
+          return quote.unitPrice === undefined ? [] : [{ fen: yuanToFen(quote.unitPrice), label: '查询单价' }];
+        },
+      },
+      {
+        def: {
+          type: 'function',
           function: { name: 'fixture_inspect', description: '核验服务需求', parameters: { type: 'object', properties: {} } },
         },
         sideEffects: ['session'],
@@ -254,6 +290,8 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
           return JSON.stringify({
             orderId: result.order.id,
             reused: result.reused,
+            lines: result.order.lines,
+            totalFen: result.order.totalFen,
             display,
             text: [
               display.title,
@@ -261,6 +299,17 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
               `合计${display.totalText}`,
             ].join('\n'),
           });
+        },
+        amounts(result) {
+          const order = JSON.parse(result) as { lines?: { unitPriceFen: number; amountFen: number }[]; totalFen?: number };
+          if (!order.lines || order.totalFen === undefined) return [];
+          return [
+            ...order.lines.flatMap((line) => [
+              { fen: line.unitPriceFen, label: '订单单价' },
+              { fen: line.amountFen, label: '订单行金额' },
+            ]),
+            { fen: order.totalFen, label: '订单合计' },
+          ];
         },
       },
     ],
@@ -276,7 +325,7 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
     },
     advanceStage: (session, turn) => (turn.calls.some((c) => c.name === 'fixture_inspect') ? 'objection' : session.stage),
     contextNote: () => ['按测试服务规则核验需求'],
-    replyAnchors: { markdown: 'fixture_guard' },
+    replyAnchors: { markdown: 'fixture_guard', 'takeover_check:post': 'money_provenance' },
     replySteps: [
       {
         id: 'fixture_guard',
@@ -288,8 +337,12 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
           return { action: 'replace', text };
         },
       },
+      {
+        ...moneyProvenanceStep({ staticAmounts: () => [1000], fallback: '金额尚未核验，请先查询。' }),
+        after: ['stage_advance', 'shape_check'],
+      },
     ],
-    followupSteps: [],
+    followupSteps: [moneyProvenanceFollowupStep({ staticAmounts: () => [1000] })],
     engineHooks: {
       isComplaint: () => false,
       isHandoffIntent: () => false,
