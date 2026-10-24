@@ -1,0 +1,28 @@
+[
+  {
+    "id": "w-basic",
+    "title": "合成基础方盒",
+    "unitPrice": 12.5,
+    "unit": "件",
+    "tags": ["合成", "基础"]
+  },
+  {
+    "id": "w-tiered",
+    "title": "合成阶梯方盒",
+    "unitPrice": 9.9,
+    "unit": "件",
+    "tags": ["合成", "阶梯价"],
+    "moq": 5,
+    "tiers": [
+      { "minQty": 10, "unitPrice": 8.8 },
+      { "minQty": 50, "unitPrice": 7.65 }
+    ]
+  },
+  {
+    "id": "w-gift-box",
+    "title": "合成礼盒方盒",
+    "unitPrice": 88,
+    "unit": "盒",
+    "tags": ["合成", "礼盒"]
+  }
+]

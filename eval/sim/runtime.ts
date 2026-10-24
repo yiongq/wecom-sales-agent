@@ -7,6 +7,7 @@ import type { SimDeps, Tokens } from './runner.js';
 import { Meter } from './runner.js';
 import type { Snapshot } from './judge.js';
 import type { FinishedTurn } from '../../src/trace/recorder.js';
+import { PACK_FILE, readPackFile } from '../../src/config/pack-file.js';
 
 export const FIXTURE_CLOCK = '2026-10-10T12:00:00+08:00';
 export function fixtureClock(): () => void {
@@ -47,25 +48,42 @@ export function validatePrices(value: unknown): Record<string, PriceRow> {
 
 /** 导出目录（07 R9，`export-config` 写的那种）里评测必须有的文件；policy.json、brand.json 可选。 */
 export const CONFIG_DIR_REQUIRED = ['sop.md', 'routes.json', 'hotels.json'] as const;
+/** 08 R11：目录里有 pack.json 指向非旅游包时必须有的：sop.md 与 pack.json，产品库在 catalog/（缺的 kind 文件是空数组，由装载时的启动检查判） */
+export const PACK_DIR_REQUIRED = ['sop.md', PACK_FILE] as const;
+
+/** 目录里 pack.json 指的非旅游包 id；没有（或写的就是 travel）是 null，按旅游的老样子。pack.json 写坏了抛错 */
+function packIdOf(abs: string): string | null {
+  const id = readPackFile(abs)?.id;
+  return id === undefined || id === 'travel' ? null : id;
+}
 
 /**
- * --config-dir 的静态检查：是目录，且有 sop.md、routes.json、hotels.json。返回绝对路径。
- * 文件内容是否合格由引擎装载时判（品牌 / policy 不合格会在 engineRuntime 里直接抛出，一个目标都不跑）。
+ * --config-dir 的静态检查：是目录；旅游有 sop.md、routes.json、hotels.json，非旅游包（目录里有 pack.json）有 sop.md、pack.json 与 catalog/ 目录。
+ * 返回绝对路径。文件内容是否合格由引擎装载时判（品牌 / policy 不合格会在 engineRuntime 里直接抛出，一个目标都不跑）。
  */
 export async function resolveConfigDir(dir: string): Promise<string> {
   const abs = path.resolve(dir);
   const stat = await fs.stat(abs).catch(() => null);
   if (!stat?.isDirectory()) throw new Error('--config-dir 不是目录');
-  for (const name of CONFIG_DIR_REQUIRED) {
+  let packId: string | null;
+  try {
+    packId = packIdOf(abs);
+  } catch (e) {
+    throw new Error(`--config-dir 里的 ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+  }
+  for (const name of packId === null ? CONFIG_DIR_REQUIRED : PACK_DIR_REQUIRED) {
     const file = await fs.stat(path.join(abs, name)).catch(() => null);
     if (!file?.isFile()) throw new Error(`--config-dir 里缺 ${name}`);
   }
+  if (packId !== null && !(await fs.stat(path.join(abs, 'catalog')).catch(() => null))?.isDirectory())
+    throw new Error('--config-dir 里缺 catalog/');
   return abs;
 }
 
 // 只改变评测进程的部署/存储与时钟；销售模型、SOP、工具定义照引擎原配置。
 // options.configDir：给了就读这个目录里的 sop.md / routes.json / hotels.json（policy.json、brand.json 在 SOP_PATH 同目录，有就用，
-// 没有走包默认）；没给照旧读 data/（07 plan 风险 G3）。用完照旧恢复 process.env。
+// 没有走包默认）；目录里有 pack.json 指向非旅游包时只设 SOP_PATH，包与产品库（catalog/）由同目录的 pack.json 认（08 R11）；
+// 没给照旧读 data/（07 plan 风险 G3）。用完照旧恢复 process.env。
 export async function engineRuntime(
   meter: Meter,
   customerModel: string | undefined,
@@ -87,14 +105,20 @@ export async function engineRuntime(
   process.env.VAR_DIR = temp;
   process.env.CONFIG_SOURCE = 'file';
   process.env.SOP_PATH = configDir ? path.join(configDir, 'sop.md') : path.resolve('data/sop.md');
-  process.env.ROUTES_PATH = configDir ? path.join(configDir, 'routes.json') : path.resolve('data/routes.json');
-  process.env.HOTELS_PATH = configDir ? path.join(configDir, 'hotels.json') : path.resolve('data/hotels.json');
+  // 非旅游包的目录没有 routes.json / hotels.json，也不设这两个变量
+  if (!configDir || packIdOf(configDir) === null) {
+    process.env.ROUTES_PATH = configDir ? path.join(configDir, 'routes.json') : path.resolve('data/routes.json');
+    process.env.HOTELS_PATH = configDir ? path.join(configDir, 'hotels.json') : path.resolve('data/hotels.json');
+  }
+  // 同一进程里先后建几个 runtime（不同配置目录）：包绑定与文件模式的产品库快照跟着配置目录走，关闭时放回建 runtime 之前的样子
+  let restoreConfig = (): void => {};
   const restoreProcess = async (): Promise<void> => {
     process.off('exit', removeTemp);
     await fs.rm(temp, { recursive: true, force: true });
     restoreClock();
     for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
     Object.assign(process.env, savedEnv);
+    restoreConfig();
   };
   const load = async () => {
     await import('../../src/selftest-env.js');
@@ -119,7 +143,8 @@ export async function engineRuntime(
   const { onTurnEnd } = modules.recorder;
   const store = modules.store;
   const { createQuote, routeVersion } = modules.tools;
-  const { currentPack, currentPolicy, prefixSummary } = modules.source;
+  const { currentPack, currentPolicy, initConfig, prefixSummary, saveFileConfig } = modules.source;
+  restoreConfig = saveFileConfig();
   const salesCfg = llmCfg();
   const customerCfg = {
     baseUrl: process.env.SIM_CUSTOMER_BASE_URL || salesCfg.baseUrl,
@@ -191,10 +216,13 @@ export async function engineRuntime(
       [salesCfg.model, llmCfg(true).model, customerCfg.model, llmStats().hedgeModel].filter((m): m is string => !!m),
     ))
       checkModel(model);
-    // 配置读不出来（policy.json 不合格、brand.json 不合格……）在这里就抛，一个目标都不跑；
+    // 配置读不出来（policy.json 不合格、brand.json 不合格、非旅游包的 pack.json / catalog/*.json 不合格……）在这里就抛，一个目标都不跑；
     // 两个哈希随报告走，父进程可以核对子进程跑的就是它导出的那一份。
+    // 先显式装载当前配置目录（同服务启动的 initConfig(null)：包、品牌、policy，非旅游包还有产品库）：
+    // 同一进程里上一个 runtime 留下的包绑定与产品库快照不能带到这一个
     let loaded: { policyHash: string; promptHash: string; brand: ReturnType<typeof currentPack>['brand'] };
     try {
+      await initConfig(null);
       const brand = currentPack().brand;
       const policyHash = currentPolicy().policyHash;
       const { promptHash } = prefixSummary(() => ({ ...modules.engine.promptPrefix(), sop: modules.engine.sopFileText() }));
