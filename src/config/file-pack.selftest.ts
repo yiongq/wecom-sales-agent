@@ -5,7 +5,8 @@
 //      条目过包的 schema 且至少一条带阶梯价；评测那种不走 initConfig 的路径（还没绑包）按 pack.json 惰性装载；OTel 包名是 __fixture；启动预检不报错，旅游的预检照旧。
 //   三、拒绝：widget.json 清空 / 缺文件 / 条目不合格 / 重复 / 不是数组 → catalog_startup；pack.json 指向没有的包或写坏 → pack_unknown；非旅游包没有 brand.json → brand_required；
 //      没登记（不设 PACK_FIXTURES）的证明包 → pack_unknown。
-//   四、模拟评测：--config-dir 的静态检查按包，engineRuntime 对非旅游包只设 SOP_PATH（不设 ROUTES_PATH / HOTELS_PATH），从 pack.json 认包。
+//   四、模拟评测：--config-dir 的静态检查按包（非旅游包逐 kind 严检 catalog/<kind>.json，缺了点名），engineRuntime 对非旅游包只设 SOP_PATH
+//      （不设 ROUTES_PATH / HOTELS_PATH），从 pack.json 认包。
 //   五、同一进程换配置目录（交叉评审的四条回归）：证明包 → 旅游 → 证明包的 engineRuntime 不串包绑定与产品库快照；engineRuntime 开始前就装载并校验
 //      非旅游产品库（widget.json 为 [] 时直接以 catalog_startup 失败）；直接换 SOP_PATH 后 currentCatalog() 跟着目录走；重置后按当前目录惰性恢复；
 //      config.fileCatalog 的状态计数按快照是否存在算。
@@ -157,6 +158,14 @@ if (mode === 'parent') {
     const packDir = copyFixture('pack-dir');
     assert.equal(await resolveConfigDir(packDir), packDir);
     checks++;
+    // 08 第 18 步：包声明的每个 kind 都要有 catalog/<kind>.json，缺哪个点名哪个，不当空数组（装载时的 catalog_startup 判不到这里）
+    const noWidget = copyFixture('no-widget-file');
+    fs.rmSync(widgetFile(noWidget));
+    fs.writeFileSync(path.join(noWidget, 'catalog', 'unrelated.json'), '[]');
+    await rejects('非旅游包缺 catalog/widget.json', noWidget, /缺 catalog\/widget\.json/);
+    const ghost = copyFixture('ghost-pack');
+    fs.writeFileSync(path.join(ghost, 'pack.json'), '{"id":"ghost"}');
+    await rejects('pack.json 指向没登记的包', ghost, /「ghost」.*不在注册表里/);
     fs.rmSync(path.join(packDir, 'catalog'), { recursive: true });
     await rejects('非旅游包缺 catalog/', packDir, /缺 catalog\//);
     fs.rmSync(path.join(packDir, 'sop.md'));

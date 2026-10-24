@@ -3,7 +3,10 @@ export const STATE_MANIFEST: Record<
   string,
   { kind: 'tenant'; state: string } | { kind: 'instance'; why: string } | { kind: 'object-keyed' }
 > = Object.freeze({
-  'src/config/gate.ts:__gateTest': { kind: 'instance', why: '自测目标目录选择；不保存租户数据，生产使用固定回归集目录。' },
+  'src/config/gate.ts:__gateTest': {
+    kind: 'instance',
+    why: '自测目标目录选择与子进程额外环境变量（childEnv）；不保存租户数据，生产不设，使用包的回归集目录。',
+  },
   'src/config/gate.ts:goalSchema': { kind: 'instance', why: '报告目标的静态校验 schema。' },
   'src/config/gate.ts:usageSchema': { kind: 'instance', why: '报告用量的静态校验 schema。' },
   'src/config/gate.ts:summarySchema': { kind: 'instance', why: '报告汇总的静态校验 schema。' },

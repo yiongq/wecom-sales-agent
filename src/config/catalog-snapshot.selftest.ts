@@ -252,10 +252,11 @@ if (process.argv[2] !== 'worker') {
     );
     console.log('CATALOG SNAPSHOT PASS：启动判定纯函数，旅游/证明包各自的拒绝原因、完整文案与 active 放行');
     console.log('CATALOG SNAPSHOT SKIP：证明包 DB 端到端启动由 sop-per-pack.selftest.ts 覆盖（第 12 步）');
-    // 旅游闸缓存仍只取旧的两组数组。
+    // 闸缓存的产品库哈希按包声明的 kind 顺序取各 kind 的数组（08 第 18 步）：旅游声明 route、hotel，等于原来的 [routes, hotels]，
+    // 旅游的值由 gate-per-pack.selftest.ts 按开工时算出的常量钉住。
     assert.match(
       fs.readFileSync('src/config/gate.ts', 'utf8'),
-      /JSON\.stringify\(\[snapshot\.catalog\.routes, snapshot\.catalog\.hotels\]\)/,
+      /JSON\.stringify\(Object\.keys\(pack\.catalog\)\.map\(\(kind\) => snapshot\.catalog\.items\[kind\] \?\? \[\]\)\)/,
     );
   } finally {
     await closeConfig();

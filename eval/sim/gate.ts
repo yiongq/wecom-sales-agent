@@ -1,5 +1,7 @@
 // 发布闸的评测入口（07 R8、R9）。服务端（第 13 步）把它当子进程起：
 //   node --import tsx eval/sim/gate.ts --config-dir <导出目录> --tag regression --rerun 2 --budget <元> --report <文件>
+// 导出目录（export-config 写的那种）：旅游是 sop.md、routes.json、hotels.json；其他包是 sop.md、pack.json 与包声明的每个 kind 的 catalog/<kind>.json（08 R11），
+// 子进程靠目录里的 pack.json 认包（证明包只在 PACK_FIXTURES=1 时登记）。policy.json、brand.json 可选。
 // 可选：--goals <目标目录，缺省 eval/sim/goals/quality>、--model <客户模型>、--prices <单价 JSON>。--rerun 缺省 2。
 // 只输出机器读的报告（--report 文件，JSON Lines，一行一个 JSON，以 \n 结尾；读的人只认以 \n 结尾的完整行）；
 // 不打印人读的表，不连数据库，不读 DATABASE_URL 一类变量，模型只走 LLM_* / SIM_CUSTOMER_* / EMBED_* / TZ（环境由父进程限定）。
@@ -22,7 +24,7 @@
 // 退出码：
 //   0  跑完：每个目标都有结论，最后一行是 summary；目标有没有失败不影响退出码，由父进程按基线判定
 //   1  运行出错：模型配置缺失、导出目录里的 policy.json / brand.json 等不合格、报告写不了……（没有 summary）
-//   2  参数错：命令行不合法、--config-dir 不是带 sop.md / routes.json / hotels.json 的目录、--prices 不合格、没有目标带这个标签（不写报告）
+//   2  参数错：命令行不合法、--config-dir 不是完整的配置目录（旅游缺 sop.md / routes.json / hotels.json；其他包缺 sop.md / pack.json / catalog/<kind>.json）、--prices 不合格、没有目标带这个标签（不写报告）
 //   3  预算停止：花费到了 --budget，有目标没跑完（summary 里 budgetStopped=true，那些目标是 skipped_budget）
 // 被 SIGTERM / SIGINT 终止（闸超时）时没有 summary：引擎模块自己接了这两个信号（src/shutdown.ts），收尾后以 143 / 130 退出，
 // 评测的临时目录在 exit 钩子里清掉（runtime.ts）。

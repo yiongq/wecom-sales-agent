@@ -34,7 +34,7 @@ export interface RunArgs {
   model?: string;
   report: string;
   prices?: string;
-  /** 07 R9：导出目录；给了就读目录里的配置，没给读 data/ */
+  /** 07 R9：导出目录（旅游是 sop.md、routes.json、hotels.json；其他包是 sop.md、pack.json、catalog/<kind>.json，08 R11）；给了就读目录里的配置，没给读 data/ */
   configDir?: string;
   /** 07 R8：只跑 tags 含它的目标 */
   tag?: string;
