@@ -4,7 +4,7 @@ import { currentRuntime, type TenantRuntime } from '../tenancy/runtime.js';
 // 后台 AI 洞察 / 下一步建议：聚合真实数据 → LLM 生成 → 缓存。
 // LLM 不可用（mock / 未配 key / 失败）时返回空，前端回退到规则版。
 import type { Session, Order } from '../types.js';
-import { profileForPrompt } from '../types.js';
+import { profileForModel } from './pack-profile.js';
 import { listSessions, listOrders } from '../store.js';
 import { completeText } from './llm/client.js';
 import { currentPack } from '../config/source.js';
@@ -142,7 +142,8 @@ async function suggest(s: Session, key: string, rt: TenantRuntime, state: Caches
     .map((m) => (m.role === 'customer' ? '客户' : m.role === 'agent' ? '顾问' : '系统') + '：' + m.content)
     .join('\n');
   const sys = prompts().suggestion;
-  const user = '销售阶段：' + s.stage + '\n客户画像：' + JSON.stringify(profileForPrompt(s.profile)) + '\n近期对话：\n' + recent;
+  const user =
+    '销售阶段：' + s.stage + '\n客户画像：' + JSON.stringify(profileForModel(currentPack().runtime, s.profile)) + '\n近期对话：\n' + recent;
   const out = await completeText(sys, user, { purpose: 'suggestion' });
   if (rt.cancel.aborted || !caches.owns(rt, state)) return '';
   const val = (out || '').split('\n')[0].trim();
@@ -172,7 +173,8 @@ async function draft(s: Session, key: string, rt: TenantRuntime, state: Caches):
     .map((m) => (m.role === 'customer' ? '客户' : m.role === 'agent' ? '顾问' : '系统') + '：' + m.content)
     .join('\n');
   const sys = prompts().draft;
-  const user = '销售阶段：' + s.stage + '\n客户画像：' + JSON.stringify(profileForPrompt(s.profile)) + '\n近期对话：\n' + recent;
+  const user =
+    '销售阶段：' + s.stage + '\n客户画像：' + JSON.stringify(profileForModel(currentPack().runtime, s.profile)) + '\n近期对话：\n' + recent;
   const fallback = prompts().draftFallback[s.stage] || prompts().draftFallback[prompts().draftFallbackStage];
   const out = await completeText(sys, user, { purpose: 'draft' });
   if (rt.cancel.aborted || !caches.owns(rt, state)) return '';

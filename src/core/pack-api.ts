@@ -8,7 +8,7 @@ import type { ToolDef } from '../tool-defs.js';
 import type { MoneyParseOptions } from './parse/money.js';
 import type { PaymentMode } from '../shared/conversation-types.js';
 import type { RefundQuote, RefundTexts } from './refund.js';
-import type { CatalogItem } from '../shared/console-api.js';
+import type { CatalogItem, ConversationNeed, ConversationQuote } from '../shared/console-api.js';
 import type { CatalogSnapshot } from '../config/source.js';
 import { z } from 'zod';
 
@@ -695,6 +695,40 @@ export interface CatalogKindSpec {
   retrieval: boolean;
 }
 
+/** 08 R4：包的画像字段声明；attrs 的键只有声明过的才进模型（核心再筛一次） */
+export interface ProfileFieldDef {
+  key: string;
+  label: string;
+}
+
+/** 08 R4：会话状态槽的声明。核心只存取；包写入前用 schema 校验，重置时核心只清 resetKeys 里的键 */
+export interface SessionStateSpec {
+  schema: z.ZodType<Record<string, unknown>>;
+  resetKeys: readonly string[];
+}
+
+/**
+ * 08 R4：包给的画像展示。title 是会话标题后半段（没有为空串），rows 是画像卡的行；viewer 的打码由核心做。
+ * need 只有旅游填：沿用旧接口的 ConversationDetail.need 形状（budget 不打码，核心按 viewer 打码）；
+ * 填了，工作台下发 need 而不下发 profileCard，其余包走 profileCard
+ */
+export interface ProfileView {
+  title: string;
+  rows: { label: string; value: string }[];
+  need?: ConversationNeed;
+}
+
+/**
+ * 08 R4：包给的报价卡（工作台报价卡与 A2 排序金额）。amountFen 是整数分，null 表示有报价但没有金额（不参与排序）。
+ * quote 只有旅游填：沿用旧接口的 ConversationDetail.quote 形状；填了，工作台下发 quote 而不下发 quoteCard
+ */
+export interface QuoteCard {
+  title: string;
+  amountFen: number | null;
+  lines: string[];
+  quote?: ConversationQuote;
+}
+
 export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   id: string;
   policy?: PackPolicy;
@@ -739,6 +773,20 @@ export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
     ctx: { kind: string; session: Session },
   ): { unitPriceFen: number; unit: string; attrs?: Record<string, string> } | { reject: string; detail?: Record<string, unknown> };
   maxQty?: number;
+  /** 08 R4：会话状态槽（Session.packState）。旅游不声明、不写 */
+  sessionState?: SessionStateSpec;
+  /** 08 R4：画像里 attrs 的键与对客标签。旅游不声明 */
+  profileFields?: readonly ProfileFieldDef[];
+  /** 08 R4：发给模型的画像（主对话、后台建议与代拟、沉默跟进共用）。核心对输出再删昵称与头像，attrs 再按 profileFields 筛一次 */
+  profileForPrompt(profile: CustomerProfile): Record<string, unknown>;
+  /** 08 R4：会话标题与画像卡 */
+  profileView(profile: CustomerProfile): ProfileView;
+  /** 08 R4：工作台的报价卡与排序金额。没实现就没有报价卡、排序金额只取待付订单 */
+  quoteCard?(session: Session): QuoteCard | null;
+  /** 08 R4：交还 AI 时没有接管前阶段、也没付款时的阶段。没实现（或返回 null）就按有订单 closing、否则 discovery */
+  stageOnReturn?(session: Session): SalesStage | null;
+  /** 08 R4：沙箱种子写进会话的包内状态。seed 由核心现算（refundQuote：已发布 policy 算出的退款报价）。没实现就什么都不写 */
+  seedSession?(session: Session, seed: Readonly<Record<string, unknown>>): void;
 }
 
 export interface PackBinding<T extends PackRuntimeTypes = PackRuntimeTypes> {
@@ -860,7 +908,7 @@ export interface PackSources extends Omit<TravelToolSources, 'budgetVerdict'> {
 
 export { dejargon } from './guards/dejargon.js';
 export { stripMarkdown, trimDangling } from './guards/text.js';
-export { stripAdvisorPrefix } from '../shared/conversation.js';
+export { stripAdvisorPrefix, needParts, type NeedVocabulary } from '../shared/conversation.js';
 
 export { brandTexts, renderBrandTemplate, renderBrandPage } from './brand.js';
 

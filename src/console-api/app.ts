@@ -210,7 +210,6 @@ import {
   isListed,
   listedSessions,
   messageView,
-  needVocabulary,
   orderView,
   tracedInDb,
   waitingFirst,
@@ -677,10 +676,9 @@ export const consoleApi = new Hono<ConsoleEnv>()
           (group !== 'paid_needs_human' || inPaidNeedsHuman(s, pack)),
       )
       .toSorted(sandboxOwnedFirst(order === 'waiting_first' ? waitingFirst(pack) : byRecent));
-    const vocab = needVocabulary();
     const page: ConversationPage = {
       total: all.length,
-      items: all.slice(offset, offset + limit).map((s) => conversationRow(s, vocab, c.var.user!.role === 'viewer')),
+      items: all.slice(offset, offset + limit).map((s) => conversationRow(s, c.var.user!.role === 'viewer')),
     };
     return c.json(page, 200);
   })

@@ -425,11 +425,7 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
           [...samples].sort(compare).map((s) => s.id),
         ),
       );
-    check(() =>
-      assert.ok(
-        samples.every((s) => !('sandboxOwner' in conversationRow({ ...s, orderIds: [] }, { destinations: [], segments: {} }, false))),
-      ),
-    );
+    check(() => assert.ok(samples.every((s) => !('sandboxOwner' in conversationRow({ ...s, orderIds: [] }, false)))));
     check(() => assert.equal(sandboxOwnConversationId(), null));
   });
   const html = await page(`/chat.html?c=${sbxId}`, token);

@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { quoteRefund } from '../../core/refund.js';
-import type { BrandProfile, EnginePackHooks, RefundTerms } from '../../core/pack-api.js';
+import type { BrandProfile, EnginePackHooks, PackRuntime, RefundTerms } from '../../core/pack-api.js';
 import { cleanText } from '../../shared/text.js';
 import type { Order, PaymentMode, RefundRecord, Session } from '../../types.js';
 
@@ -24,6 +24,8 @@ export interface SeedContext {
   /** 开通日（服务器时区的 YYYY-MM-DD），出发日与退款天数都从它算 */
   today: string;
   refund: SeedRefundContext | null;
+  /** 08 R4：包的 seedSession 钩子，把现算的内容（refundQuote：退款报价）写进种子会话里包自己的状态；包没有就不给，什么都不写 */
+  seedSession?: PackRuntime['seedSession'];
 }
 
 /** 夹具里的订单：出发日可以写成相对开通日的天数；refundSeed 标出要补全退款记录的那一张 */
@@ -121,12 +123,14 @@ export function sandboxSeeds(createdAt: number, ctx: SeedContext): { sessions: S
     sessions = sessions.map((session) => {
       if (!session.orderIds.includes(order.id)) return session;
       const text: Record<string, string> = { [REFUND_QUOTE]: built.quoteText, [REFUND_SUBMITTED]: built.submittedText };
-      return {
+      const next = {
         ...session,
         messages: session.messages.map((m) => (Object.hasOwn(text, m.content) ? { ...m, content: text[m.content]! } : m)),
-        ...(session.afterSale?.step === 'confirm' ? { afterSale: { ...session.afterSale, quote: built.quote } } : {}),
         ...(session.handoff?.reason === REFUND_REASON ? { handoff: { ...session.handoff, reason: built.reason } } : {}),
       };
+      // 售后状态是旅游的会话字段：由包的钩子替换成现算的退款报价（原位替换，键的顺序不变）
+      ctx.seedSession?.(next, { refundQuote: built.quote });
+      return next;
     });
     return [{ ...order, status: 'refund_pending' as const, refund: built.refund }];
   });
