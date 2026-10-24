@@ -532,7 +532,7 @@ export const STATE_MANIFEST: Record<
   'src/shared/audit-text.ts:WRITES_VERSION': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/shared/audit-text.ts:absorbedVersion': { kind: 'object-keyed' },
   'src/shared/catalog-csv.ts:BODY_FRAME': { kind: 'instance', why: '固定模板、解析词表或序列化规则；不保存按租户变化的业务状态。' },
-  'src/shared/catalog-csv.ts:schemaShapes': { kind: 'instance', why: '按静态 CatalogKind 缓存 schema 形状，不含产品条目' },
+  'src/shared/catalog-csv.ts:schemaShapes': { kind: 'instance', why: '按 packId:kind 缓存包的静态 schema 形状，不含产品条目或租户数据' },
   'src/shared/catalog-csv.ts:utf8': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/shared/catalog-types.ts:SALES_SEGMENTS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/shared/catalog.ts:HotelSchema': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },

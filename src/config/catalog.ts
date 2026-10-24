@@ -11,6 +11,7 @@ import { writeAudit } from '../db/repo/audit.js';
 import { insertCatalogVersion, maxCatalogVersion } from '../db/repo/catalog-versions.js';
 import {
   activateItem,
+  countCatalogItems,
   insertDraftItem,
   maxOrd,
   readCatalogItem,
@@ -158,9 +159,7 @@ async function write(ctx: TenantCtx, fn: (tx: Tx) => Promise<CatalogRow>): Promi
 
 async function checkSandboxCatalogSize(tx: Tx, add: number): Promise<void> {
   if (scopedRuntime()?.kind !== 'sandbox') return;
-  const routes = await readCatalogOfKind(tx, 'route');
-  const hotels = await readCatalogOfKind(tx, 'hotel');
-  assertSandboxWriteCapacity('catalogItems', routes.length + hotels.length, add);
+  assertSandboxWriteCapacity('catalogItems', await countCatalogItems(tx), add);
 }
 
 // ---------------- 读 ----------------
@@ -253,7 +252,7 @@ export async function activateCatalogItem(ctx: TenantCtx, kind: CatalogKind, cod
  */
 export async function importCatalogCsv(ctx: TenantCtx, kind: CatalogKind, csv: string, labels?: CsvLabels): Promise<CatalogItem[]> {
   const spec = assertKind(currentTenant().pack.id, kind);
-  const payloads = prepareCatalogCsv(kind, csv, labels, spec.schema);
+  const payloads = prepareCatalogCsv(kind, csv, labels, spec.schema, currentTenant().pack.id);
   assertSandboxWriteCapacity('importRows', 0, payloads.length);
   assertConfigWritable();
   const rt = runtimeFor(ctx);

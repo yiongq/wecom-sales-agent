@@ -110,6 +110,7 @@ export function createTravelRuntime(sources: PackSources) {
         retrieval: false,
       },
     },
+    catalogStartupCheck: (snapshot) => (snapshot.routes.length ? null : '没有 active 的线路'),
     policy: travelPolicy,
     defaultBrand: demoBrand,
     legacy: {

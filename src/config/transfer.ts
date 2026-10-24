@@ -124,7 +124,7 @@ export async function writeTemplateConfig(
     createdBy: null,
     createdByName: null,
   });
-  for (const kind of ['route', 'hotel'] as const) {
+  for (const kind of Object.keys(runtime.catalog)) {
     const rows = items.filter((row) => row.kind === kind);
     await insertActiveItems(
       tx,

@@ -22,7 +22,10 @@ const orders = new Map<string, Order>();
 let saved = 0;
 const sources: TravelToolSources = {
   configMode: () => 'db',
-  currentCatalog: () => ({ tenantId: 'fixture', generation: 1, routes: [route], hotels: [], versions: { 'route:fixture': 2 } }),
+  currentCatalog: () => {
+    const items = { route: [route], hotel: [] };
+    return { tenantId: 'fixture', generation: 1, items, routes: items.route, hotels: items.hotel, versions: { 'route:fixture': 2 } };
+  },
   catalogVersionKey: (kind, code) => `${kind}:${code}`,
   catalogItemAt: () => route,
   indexReady: () => false,

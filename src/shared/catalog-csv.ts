@@ -55,11 +55,12 @@ export interface CsvShape {
   nestedRequired: string[];
 }
 
-const schemaShapes = new Map<CatalogKind, CsvShape>();
+const schemaShapes = new Map<string, CsvShape>();
 
-/** 服务端的列：由传入 schema 推出；包 schema 暂不进旧的 kind 缓存，第 4 步再接包缓存键。 */
-function schemaCsvShape(kind: CatalogKind, schema?: z.ZodType): CsvShape {
-  let shape = schema ? undefined : schemaShapes.get(kind);
+/** 服务端的列：由包 schema 推出；同名 kind 按 packId 隔离。旧调用默认旅游。 */
+function schemaCsvShape(kind: CatalogKind, schema?: z.ZodType, packId = 'travel'): CsvShape {
+  const key = `${packId}:${kind}`;
+  let shape = schemaShapes.get(key);
   if (shape) return shape;
   const js = z.toJSONSchema(schema ?? CATALOG_SCHEMAS[kind], { io: 'input' }) as {
     properties: Record<string, { type?: string; items?: { type?: string } }>;
@@ -74,13 +75,17 @@ function schemaCsvShape(kind: CatalogKind, schema?: z.ZodType): CsvShape {
   }
   const required = new Set(js.required ?? []);
   shape = { order: Object.keys(js.properties), flat, required, nestedRequired: [...required].filter((k) => !flat.has(k)) };
-  if (!schema) schemaShapes.set(kind, shape);
+  schemaShapes.set(key, shape);
   return shape;
 }
 
 /** 这个 kind 的 CSV 能用哪些列；必填字段里有嵌套结构时 importable 为 false */
-export function catalogCsvColumns(kind: CatalogKind): { importable: boolean; columns: string[]; nestedRequired: string[] } {
-  const shape = schemaCsvShape(kind);
+export function catalogCsvColumns(
+  kind: CatalogKind,
+  schema?: z.ZodType,
+  packId = 'travel',
+): { importable: boolean; columns: string[]; nestedRequired: string[] } {
+  const shape = schemaCsvShape(kind, schema, packId);
   return {
     importable: !shape.nestedRequired.length,
     columns: shape.order.filter((k) => shape.flat.has(k)),
@@ -291,8 +296,14 @@ export function checkCsvRows(
  * 整份 CSV → 待建的 payload（服务端）：先解析，再逐行转换、过 schema、查文件内重复的 id。任何一处不合格就抛 CatalogCsvError，
  * 列出全部问题。表头是字段名或 labels 里的中文标签；payload 的键序按 schema 的字段顺序。库里是否已有同一个 code 由调用方在事务里查
  */
-export function prepareCatalogCsv(kind: CatalogKind, csv: string, labels: CsvLabels = {}, schema?: z.ZodType): Record<string, unknown>[] {
-  const shape = schemaCsvShape(kind, schema);
+export function prepareCatalogCsv(
+  kind: CatalogKind,
+  csv: string,
+  labels: CsvLabels = {},
+  schema?: z.ZodType,
+  packId = 'travel',
+): Record<string, unknown>[] {
+  const shape = schemaCsvShape(kind, schema, packId);
   if (shape.nestedRequired.length) {
     throw whole(`必填字段 ${shape.nestedRequired.join('、')} 不是平铺字段，CSV 只收平铺字段，这一类请在表单里新建`);
   }

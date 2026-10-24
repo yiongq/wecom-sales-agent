@@ -89,6 +89,7 @@ export function createFixtureRuntime(): PackRuntime {
         retrieval: true,
       },
     },
+    catalogStartupCheck: (snapshot) => (snapshot.items.widget?.length ? null : '没有 active 的 widget'),
     defaultBrand: {
       brandName: '虚构方盒核验社',
       advisorTitle: '方盒核验员',
