@@ -380,10 +380,29 @@ function parse(file: string, text: string): ts.SourceFile {
   return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, scriptKind(file));
 }
 
+/**
+ * 剥掉不改变值的包装：括号、as、satisfies、<T>x 断言、非空断言 x!，逐层剥到底。
+ * import(('x'))、import('x' as string)、s[('lastQuote')]、{ ['lastQuote' as const]: 1 } 这类写法剥完就是字符串字面量，
+ * 规则 (1)、(2) 判断「是不是字符串字面量」之前都要先剥，否则套一层就漏判
+ */
+function unwrap(node: ts.Node): ts.Node {
+  let cur = node;
+  while (
+    ts.isParenthesizedExpression(cur) ||
+    ts.isAsExpression(cur) ||
+    ts.isSatisfiesExpression(cur) ||
+    ts.isTypeAssertionExpression(cur) ||
+    ts.isNonNullExpression(cur)
+  )
+    cur = cur.expression;
+  return cur;
+}
+
 function importsOf(sf: ts.SourceFile): Imp[] {
   const file = sf.fileName;
   const found: Imp[] = [];
-  const add = (lit: ts.Node | undefined, typeOnly: boolean, dynamic = false) => {
+  const add = (arg: ts.Node | undefined, typeOnly: boolean, dynamic = false) => {
+    const lit = arg && unwrap(arg);
     if (!lit || !ts.isStringLiteralLike(lit)) return;
     const line = sf.getLineAndCharacterOfPosition(lit.getStart(sf)).line + 1;
     found.push({ line, spec: lit.text, typeOnly, dynamic, ...resolve(file, lit.text) });
@@ -413,16 +432,19 @@ interface FieldUse {
   how: string;
 }
 
-/** 属性名节点的字面名；写成计算属性但里面是字符串字面量（{ ['lastQuote']: 1 }）也认，别的算不出来 */
+/** 属性名节点的字面名；写成计算属性但里面（剥掉括号与类型断言后）是字符串字面量（{ ['lastQuote']: 1 }、{ [('lastQuote')]: q }）也认，别的算不出来 */
 function keyText(name: ts.PropertyName | ts.BindingName | undefined): string | null {
   if (!name) return null;
   if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) return name.text;
-  if (ts.isComputedPropertyName(name) && ts.isStringLiteralLike(name.expression)) return name.expression.text;
+  if (ts.isComputedPropertyName(name)) {
+    const inner = unwrap(name.expression);
+    if (ts.isStringLiteralLike(inner)) return inner.text;
+  }
   return null;
 }
 
 /**
- * 08 R5 规则 (2) 的探测：属性访问 x.lastQuote（含 x?.lastQuote）、字符串字面量的元素访问 x['lastQuote']、
+ * 08 R5 规则 (2) 的探测：属性访问 x.lastQuote（含 x?.lastQuote）、字符串字面量的元素访问 x['lastQuote']（下标套括号或类型断言也算）、
  * 解构里的同名属性（{ lastQuote }、{ lastQuote: q }、{ 'lastQuote': q }）、对象字面量里的同名键（lastQuote: 1、简写、方法、取值器）。
  * 类型位置的成员（interface 的属性签名）不算读写。变量名、函数名撞上字段名也不算，只看「属性」。
  */
@@ -435,7 +457,8 @@ function sessionFieldUsesOf(sf: ts.SourceFile): FieldUse[] {
   const visit = (node: ts.Node): void => {
     if (ts.isPropertyAccessExpression(node)) add(node.name, node.name.text, '属性访问');
     else if (ts.isElementAccessExpression(node)) {
-      if (ts.isStringLiteralLike(node.argumentExpression)) add(node.argumentExpression, node.argumentExpression.text, '元素访问');
+      const index = unwrap(node.argumentExpression);
+      if (ts.isStringLiteralLike(index)) add(index, index.text, '元素访问');
     } else if (ts.isObjectBindingPattern(node)) {
       // { ...rest } 的 rest 是新变量名，不是属性
       for (const el of node.elements) if (!el.dotDotDotToken) add(el, keyText(el.propertyName ?? el.name), '解构');

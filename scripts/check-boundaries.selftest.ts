@@ -135,6 +135,28 @@ try {
   check('src/probe.ts', "import { x } from './packs/travel/sop.js';", RULE_IMPORT, "'./packs/travel/sop.js'");
   check('src/db/testing.ts', "import { x } from '../packs/travel/sop.js';", RULE_IMPORT, "'../packs/travel/sop.js'");
   check('src/tenancy/fixture-testing.ts', "import { x } from '../packs/travel/sop.js';", RULE_IMPORT, "'../packs/travel/sop.js'");
+  // 参数外面套括号、as、satisfies、<T> 断言、非空断言（可叠几层）照样认：剥到底是字符串字面量就算
+  const LEGACY = "'../packs/travel/legacy.js'";
+  for (const wrapped of [
+    `(${LEGACY})`,
+    `((${LEGACY}))`,
+    `${LEGACY} as string`,
+    `${LEGACY} as const`,
+    `${LEGACY} satisfies string`,
+    `<string>${LEGACY}`,
+    `${LEGACY}!`,
+    `((${LEGACY} as string)!)`,
+    '(`../packs/travel/legacy.js`)',
+  ]) {
+    check('src/config/probe.ts', `const p = import(${wrapped});`, RULE_IMPORT, '../packs/travel/legacy.js');
+  }
+  check('src/config/probe.ts', `const x = require((${LEGACY}));`, RULE_IMPORT, '../packs/travel/legacy.js');
+  check('src/config/probe.ts', `const x = require(${LEGACY} as string);`, RULE_IMPORT, '../packs/travel/legacy.js');
+  check('src/config/probe.ts', `const m = await import((${LEGACY} as string)!);`, RULE_IMPORT, '../packs/travel/legacy.js');
+  // 套了壳但指向包外的路径、写不出字面量的参数都不算
+  check('src/config/probe.ts', "const p = import(('../core/prompt.js' as string));", null);
+  check('src/config/probe.ts', "const p = import(('../packs/registry.js'));", null);
+  check('src/config/probe.ts', 'const p = import((path as string));', null);
   // 门面、注册表、包自己、自测、src/ 之外的代码都不受这条管；注册表本身（src/packs/registry.ts）谁都能 import
   for (const name of FACADE_FILES) check(name, "import { x } from './packs/travel/sop.js';", null);
   check('src/engine.ts', "export { x } from './packs/travel/runtime.js';", null);
@@ -185,6 +207,41 @@ try {
   check('src/config/probe.selftest.ts', 'const { afterSale } = session; const s = { reminders: {} };', null);
   check('scripts/probe.ts', 'const q = session.lastQuote;', null);
   check('eval/probe.ts', 'const q = session.lastQuote;', null);
+  // 下标、计算键外面套括号、as、satisfies、<T> 断言、非空断言（可叠几层）照样认：读、写、delete、解构、对象字面量都有
+  for (const wrap of [
+    (k: string) => `(${k})`,
+    (k: string) => `((${k}))`,
+    (k: string) => `${k} as const`,
+    (k: string) => `${k} as string`,
+    (k: string) => `${k} satisfies string`,
+    (k: string) => `<string>${k}`,
+    (k: string) => `${k}!`,
+    (k: string) => `((${k} as const)!)`,
+  ]) {
+    const key = wrap("'lastQuote'");
+    check('src/core/probe.ts', `const q = session[${key}];`, RULE_FIELD, "元素访问 'lastQuote'");
+    check('src/core/probe.ts', `session[${wrap("'quoteHistory'")}] = [];`, RULE_FIELD, "元素访问 'quoteHistory'");
+    check('src/core/probe.ts', `delete session[${wrap("'afterSale'")}];`, RULE_FIELD, "元素访问 'afterSale'");
+    check('src/core/probe.ts', `const { [${wrap("'reminders'")}]: r } = session;`, RULE_FIELD, "解构 'reminders'");
+    check('src/core/probe.ts', `function f({ [${wrap("'budgetGaps'")}]: g }: S) { return g; }`, RULE_FIELD, "解构 'budgetGaps'");
+    check('src/core/probe.ts', `const o = { [${wrap("'recommendedRoutes'")}]: [] };`, RULE_FIELD, "对象字面量的键 'recommendedRoutes'");
+  }
+  check('src/core/probe.ts', 'const q = session[(`lastQuote`)];', RULE_FIELD, "元素访问 'lastQuote'");
+  check('src/core/probe.ts', 'const { [(`seenRouteIds`)]: ids } = session;', RULE_FIELD, "解构 'seenRouteIds'");
+  check(
+    'src/core/probe.ts',
+    'const o = { [(`missedDestinations`) as string]() { return 1; } };',
+    RULE_FIELD,
+    "对象字面量的键 'missedDestinations'",
+  );
+  // 套了壳但不是会话字段、或写不出字面量的下标都不算
+  check('src/core/probe.ts', "const q = session[('id' as const)]; const { [('stage')]: s } = session; const o = { [('seed')]: 1 };", null);
+  check('src/core/probe.ts', 'const q = session[(key as string)]; const { [(key)]: r } = session;', null);
+  // 门面、旅游包、src/types.ts、自测里的同样写法不报
+  check('src/engine.ts', "const q = session[('lastQuote' as const)]; const { [('reminders')]: r } = session;", null);
+  check('src/packs/travel/probe.ts', "const q = session[('lastQuote')]; const o = { ['afterSale' as const]: 1 };", null);
+  check('src/types.ts', "export const x = { [('lastQuote' as const)]: true };", null);
+  check('src/core/probe.selftest.ts', "const q = session[('lastQuote')]; const { [('reminders')]: r } = session;", null);
   check('src/core/probe.ts', 'const reminders: string[] = []; reminders.push(String(1));', null);
   check('src/core/probe.ts', 'const q = session.lastQuoteAt; const r = session.reminder;', null);
   check('src/core/probe.ts', 'const q = session[key];', null);
