@@ -23,20 +23,24 @@ process.env.CONFIG_SOURCE = 'file';
 
 const root = path.join(import.meta.dirname, '..', '..');
 const sopSections = await withoutTenantScope(() => import('../sop/sections.js'));
-const { TRAVEL_SOP_SECTIONS, joinSop, sectionBody, withBody, normalizeBody, assertSopEncoding } = sopSections;
+const { joinSop, sectionBody, withBody, normalizeBody, assertSopEncoding } = sopSections;
+const { TRAVEL_SOP_SECTIONS, SOP_CONTRACT, SOP_KNOWN_FIELDS, knownFields } = await withoutTenantScope(
+  () => import('../packs/travel/sop.js'),
+);
 // 08 R10：节表是必传参数。这份自测测的是旅游，在这里绑一次旅游节表，下面的调用写法不变
 const splitSop = (text: string) => sopSections.splitSop(text, TRAVEL_SOP_SECTIONS);
 const mergeWithImage = (stored: readonly SopSection[], img: readonly SopSection[]) =>
   sopSections.mergeWithImage(stored, img, TRAVEL_SOP_SECTIONS);
 const editableChars = (sections: readonly SopSection[]) => sopSections.editableChars(sections, TRAVEL_SOP_SECTIONS);
-const { SOP_CONTRACT, SOP_KNOWN_FIELDS, BUDGET_RATIO, checkSopContract } = await withoutTenantScope(() => import('../sop/contract.js'));
-const { knownFields } = await withoutTenantScope(() => import('../packs/travel/sop.js'));
+const { BUDGET_RATIO, checkSopContract } = await withoutTenantScope(() => import('../sop/contract.js'));
 const { contractInputs } = await withoutTenantScope(() => import('./brand.js'));
 const { runtimeById } = await withoutTenantScope(() => import('../packs/registry.js'));
 const { packSources } = await withoutTenantScope(() => import('./source.js'));
 const travelRuntime = runtimeById('travel', packSources())!;
-const { renderSystemPrompt } = await withoutTenantScope(() => import('../prompt/system.js'));
-const toolDefsModule = await withoutTenantScope(() => import('../tool-defs.js'));
+// 08 R5：旧版（无品牌）的 system prompt = SOP + 绑定包的旧版硬性要求；原先 prompt/system.ts 里绑旅游的单参数入口已收走，自测按运行时自己取
+const { renderSystemPrompt: renderWithRequirements } = await withoutTenantScope(() => import('../core/prompt.js'));
+const renderSystemPrompt = (sop: string) => renderWithRequirements(sop, travelRuntime.legacy.hardRequirements);
+const toolDefsModule = await withoutTenantScope(() => import('../packs/travel/tool-defs.js'));
 const { toolDefs: toolDefsViaTools } = await withoutTenantScope(() => import('../tools.js'));
 const { promptPrefix, __engineTest } = await withoutTenantScope(() => import('../engine.js'));
 const { loadRoutes, loadHotels, searchHotels } = await withoutTenantScope(() => import('../tools.js'));

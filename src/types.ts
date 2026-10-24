@@ -198,6 +198,48 @@ export interface Session {
   channelAccountId?: string;
 }
 
+/**
+ * 08 R4：匿名接口（server.ts 的 anonSession）只拷白名单里的键。逐个列出 Session 的全部键：true 是 08 之前就有的，匿名输出的键因此逐字节不变；
+ * false 是行业包的状态槽，不外露。Record<keyof Session, boolean> 让 Session 新增键而这里没表态就编译不过，
+ * 加键的人必须决定它外不外露（08 第 11 步的 moneyLedger 同样填 false）。
+ * 表放在 Session 旁边：它要点名旅游的九个会话字段，而 08 R5 只许 src/types.ts、旅游包与门面点名它们
+ */
+export const SESSION_EXPOSURE = {
+  id: true,
+  channel: true,
+  stage: true,
+  profile: true,
+  messages: true,
+  orderIds: true,
+  handedOver: true,
+  createdAt: true,
+  updatedAt: true,
+  lastQuote: true,
+  quoteHistory: true,
+  stageBeforeHandoff: true,
+  budgetGaps: true,
+  lastShownRoutes: true,
+  seenRouteIds: true,
+  missedDestinations: true,
+  reminders: true,
+  recommendedRoutes: true,
+  afterSale: true,
+  handoff: true,
+  firstHandoffAt: true,
+  handoffCount: true,
+  handoffLog: true,
+  seed: true,
+  assignee: true,
+  turnSignals: true,
+  negativeHits: true,
+  followupOptOut: true,
+  consent: true,
+  consentAskCount: true,
+  channelAccountId: true,
+  packState: false,
+  moneyLedger: false,
+} as const satisfies Record<keyof Session, boolean>;
+
 export interface Order {
   id: string;
   sessionId: string;

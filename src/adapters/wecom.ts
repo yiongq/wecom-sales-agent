@@ -16,7 +16,6 @@ import {
 import { isLineOrder, orderDisplay } from '../core/order-view.js';
 import { currentPack } from '../config/source.js';
 import { brandTexts } from '../core/brand.js';
-import { welcomeText as legacyWelcomeText, welcomeBackText as legacyWelcomeBackText } from '../packs/travel/legacy.js';
 // 企业微信「微信客服」（kf）适配器：回调驱动 + 兜底轮询。
 //
 // 接入步骤（真实联调时按此走）：
@@ -193,12 +192,12 @@ function tokenFailed(rt: WecomRuntime, e: unknown): void {
 // 客户进入会话时的欢迎语（本账号 API 托管，微信自带欢迎语不生效，须由此发）。
 // AI 显式标识（00 spec「AI 显式标识」）：第一句写明「AI 旅行顾问」，正文写明人工入口；账号名在企微后台另改。
 // 身份只在这里说一次：system prompt 仍是「主动自我介绍不提 AI、被问就承认」，对话中不反复自称。
-// 两段现行欢迎语的文字只在行业包里有一份（07 R3：packs/travel/legacy.ts 的旧版文字），这里引用，字节不变
-const WELCOME_TEXT = legacyWelcomeText;
-
-// 老客户（48h 会话窗口内）再次扫码进入时，企微不下发 welcome_code——用普通消息补一条。
+// 两段现行欢迎语（首次进入、老客户回来）的文字只在行业包里有一份（07 R3：旧版文字 runtime.legacy），这里按绑定包取，字节不变。
+// 要用时才取：import 时还没有绑定包，模块顶层不能调 currentPack()
+//
+// 老客户（48h 会话窗口内）再次扫码进入时，企微不下发 welcome_code——用普通消息补一条（welcomeBackText）。
 // 不承诺「之前聊的都记得」：每轮只带最近 30–39 条历史，长会话会被裁剪，「重置」还会清空
-const WELCOME_BACK_TEXT = legacyWelcomeBackText;
+const legacyTexts = () => currentPack().runtime.legacy;
 
 // 改版前的两段欢迎语。已存的会话里还留着它们：上线当次重启正好是在途重放发生的时候，重放对齐要认得出来
 const LEGACY_WELCOME_TEXTS = [
@@ -207,7 +206,11 @@ const LEGACY_WELCOME_TEXTS = [
     '川西藏地 / 云南雪山 / 新疆南北疆 / 贵州山水 / 西安北京人文，都能聊！',
   '欢迎回来～我是您的专属旅行顾问，咱们之前聊的内容我都记得。\n想继续看线路、调整行程，或者换个方向看看，直接说就行～',
 ];
-const WELCOME_TEXTS = new Set([WELCOME_TEXT, WELCOME_BACK_TEXT, ...LEGACY_WELCOME_TEXTS]);
+/** 认得的固定欢迎语：绑定包的两段现行文字，加改版前的两段（用到时现算，不在 import 时取包） */
+const fixedWelcomeTexts = (): readonly string[] => {
+  const legacy = legacyTexts();
+  return [legacy.welcomeText, legacy.welcomeBackText, ...LEGACY_WELCOME_TEXTS];
+};
 
 /**
  * 发布过隐私说明时，欢迎语末尾加一行链接（02 spec「隐私说明…」，不变量 40）；没发布时原样返回——与开工时逐字节相同，
@@ -303,7 +306,7 @@ class WecomRuntime {
     return text;
   }
   get welcomeTexts(): ReadonlySet<string> {
-    return new Set([...WELCOME_TEXTS, ...this.issuedWelcomeTexts, this.welcomeText, this.welcomeBackText]);
+    return new Set([...fixedWelcomeTexts(), ...this.issuedWelcomeTexts, this.welcomeText, this.welcomeBackText]);
   }
   /** env 账号：cursor、handled、在途表、冷启动（wecom-state.ts）；库里的账号：channel_inbox 与库里的 cursor（channels/inbox.ts） */
   readonly state: RuntimeState;
@@ -3118,8 +3121,13 @@ export const __test = {
   resetForTest: (): Promise<void> => resetRuntime(envRuntime()),
   inspectForTest: () => inspectRuntime(envRuntime()),
   STATE_FILE,
-  WELCOME_TEXT,
-  WELCOME_BACK_TEXT,
+  // 锁定的 wecom.selftest.ts 把这两个当值读：用 getter 按绑定包现取，值与之前相同
+  get WELCOME_TEXT(): string {
+    return legacyTexts().welcomeText;
+  },
+  get WELCOME_BACK_TEXT(): string {
+    return legacyTexts().welcomeBackText;
+  },
   LEGACY_WELCOME_TEXTS,
 };
 

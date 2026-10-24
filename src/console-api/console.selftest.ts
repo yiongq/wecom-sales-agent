@@ -539,7 +539,8 @@ const { queryCount } = await withoutTenantScope(() => import('../db/client.js'))
 const cfg = await withoutTenantScope(() => import('../config/source.js'));
 const { observeRequests } = await withoutTenantScope(() => import('../llm.js'));
 const { numEnv } = await withoutTenantScope(() => import('../env.js'));
-const { sectionBody, TRAVEL_SOP_SECTIONS } = await withoutTenantScope(() => import('../sop/sections.js'));
+const { sectionBody } = await withoutTenantScope(() => import('../sop/sections.js'));
+const { TRAVEL_SOP_SECTIONS } = await withoutTenantScope(() => import('../packs/travel/sop.js'));
 const { canonicalBody } = await withoutTenantScope(() => import('../shared/sop-sections.js'));
 
 const NL = String.fromCharCode(10);

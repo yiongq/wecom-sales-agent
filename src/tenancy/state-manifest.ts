@@ -40,7 +40,6 @@ export const STATE_MANIFEST: Record<
   'src/adapters/wecom.ts:NON_TEXT_HINT': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/adapters/wecom.ts:NON_TEXT_PLACEHOLDER': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/adapters/wecom.ts:WELCOME_DEDUPE_MS': { kind: 'instance', why: '部署环境决定的固定进程阈值或开关，不随租户变化。' },
-  'src/adapters/wecom.ts:WELCOME_TEXTS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/adapters/wecom.ts:__test': { kind: 'instance', why: '自测能力出口；本对象不另存租户数据，所读写状态按各自条目归类' },
   'src/adapters/wecom.ts:__wecomTest': { kind: 'instance', why: '自测能力出口；本对象不另存租户数据，所读写状态按各自条目归类' },
   'src/adapters/wecom.ts:observationClock': { kind: 'instance', why: '进程测试时钟 / 时序配置 / 测试接线，不保存生产租户数据' },
@@ -257,42 +256,6 @@ export const STATE_MANIFEST: Record<
   'src/handoff/triggers.corpus.ts:NEGATIVE_NO_OTHER': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/handoff/triggers.corpus.ts:NEGATIVE_NO_PRESALE': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/handoff/triggers.corpus.ts:NEGATIVE_YES': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
-  'src/handoff/triggers.ts:FAILURE_WINDOW': {
-    kind: 'instance',
-    why: '旧版能力门面与固定词表的纯函数闭包；业务配置在调用时从当前租户读取。',
-  },
-  'src/handoff/triggers.ts:SENTIMENT_WINDOW': {
-    kind: 'instance',
-    why: '旧版能力门面与固定词表的纯函数闭包；业务配置在调用时从当前租户读取。',
-  },
-  'src/handoff/triggers.ts:consentWithdrawalOf': {
-    kind: 'instance',
-    why: '旧版能力门面与固定词表的纯函数闭包；业务配置在调用时从当前租户读取。',
-  },
-  'src/handoff/triggers.ts:emergencyOf': { kind: 'instance', why: '旧版能力门面与固定词表的纯函数闭包；业务配置在调用时从当前租户读取。' },
-  'src/handoff/triggers.ts:failureThresholdReached': {
-    kind: 'instance',
-    why: '旧版能力门面与固定词表的纯函数闭包；业务配置在调用时从当前租户读取。',
-  },
-  'src/handoff/triggers.ts:isQuestion': { kind: 'instance', why: '旧版能力门面与固定词表的纯函数闭包；业务配置在调用时从当前租户读取。' },
-  'src/handoff/triggers.ts:negativeLevel': {
-    kind: 'instance',
-    why: '旧版能力门面与固定词表的纯函数闭包；业务配置在调用时从当前租户读取。',
-  },
-  'src/handoff/triggers.ts:pushWindow': { kind: 'instance', why: '旧版能力门面与固定词表的纯函数闭包；业务配置在调用时从当前租户读取。' },
-  'src/handoff/triggers.ts:repeatedQuestion': {
-    kind: 'instance',
-    why: '旧版能力门面与固定词表的纯函数闭包；业务配置在调用时从当前租户读取。',
-  },
-  'src/handoff/triggers.ts:sensitiveCategoriesOf': {
-    kind: 'instance',
-    why: '旧版能力门面与固定词表的纯函数闭包；业务配置在调用时从当前租户读取。',
-  },
-  'src/handoff/triggers.ts:sentimentThresholdReached': {
-    kind: 'instance',
-    why: '旧版能力门面与固定词表的纯函数闭包；业务配置在调用时从当前租户读取。',
-  },
-  'src/handoff/triggers.ts:turnFailed': { kind: 'instance', why: '旧版能力门面与固定词表的纯函数闭包；业务配置在调用时从当前租户读取。' },
   'src/http-guards.ts:LOOKUP_RATE_PER_MIN': { kind: 'instance', why: '部署环境决定的固定进程阈值或开关，不随租户变化。' },
   'src/http-guards.ts:TRUST_PROXY_HOPS': { kind: 'instance', why: '部署环境决定的固定进程阈值或开关，不随租户变化。' },
   'src/http-guards.ts:lookupRateLimited': { kind: 'instance', why: 'IP 限流保护整个进程（R5），闭包含 hits 与清理定时器' },

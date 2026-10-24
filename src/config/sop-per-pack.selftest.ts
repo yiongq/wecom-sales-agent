@@ -39,9 +39,9 @@ if (process.argv[2] !== 'worker') {
   const { insertCatalogVersion } = await import('../db/repo/catalog-versions.js');
   const { createUser } = await import('../auth/accounts.js');
   const { consoleApi } = await import('../console-api/app.js');
-  const { editableChars, joinSop, mergeWithImage, sectionBody, splitSop, withBody, TRAVEL_SOP_SECTIONS } =
-    await import('../sop/sections.js');
-  const { checkSopContract, SOP_CONTRACT, SOP_KNOWN_FIELDS } = await import('../sop/contract.js');
+  const { editableChars, joinSop, mergeWithImage, sectionBody, splitSop, withBody } = await import('../sop/sections.js');
+  const { checkSopContract } = await import('../sop/contract.js');
+  const { TRAVEL_SOP_SECTIONS, SOP_CONTRACT, SOP_KNOWN_FIELDS } = await import('../packs/travel/sop.js');
   const { contractInputs, readImageSop, tenantImage, tenantRenderer } = await import('./brand.js');
   const { imageCode, exportConfig, writeTemplateConfig } = await import('./transfer.js');
   const sopApi = await import('./sop.js');
@@ -49,8 +49,8 @@ if (process.argv[2] !== 'worker') {
   const { policyViolations } = await import('../packs/travel/policy-lint.js');
   const { defaultTravelPolicy } = await import('../packs/travel/policy.js');
   const { shanhaiBrand } = await import('../packs/travel/brand-fixture.js');
-  const { toolDefs } = await import('../tool-defs.js');
-  const { renderSystemPrompt } = await import('../prompt/system.js');
+  const { toolDefs } = await import('../packs/travel/tool-defs.js');
+  const { renderSystemPrompt: renderWithRequirements } = await import('../core/prompt.js');
   const { sopConsistencyOf } = await import('../packs/registry.js');
 
   let checks = 0;
@@ -59,6 +59,8 @@ if (process.argv[2] !== 'worker') {
     checks++;
   };
   const travelRuntime = runtimeById('travel', packSources())!;
+  // 08 R5：旧版（无品牌）的 system prompt = SOP + 绑定包的旧版硬性要求；原先 prompt/system.ts 里绑旅游的单参数入口已收走，自测按运行时自己取
+  const renderSystemPrompt = (sop: string) => renderWithRequirements(sop, travelRuntime.legacy.hardRequirements);
   const fixtureRuntime = runtimeById('__fixture', packSources())!;
   const fixtureSpec = fixtureRuntime.sopSections;
   const travelMd = fs.readFileSync('data/sop.md', 'utf8');

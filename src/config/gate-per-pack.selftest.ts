@@ -59,7 +59,8 @@ if (process.argv[2] !== 'worker') {
   const { createFixtureTenant } = await import('../tenancy/fixture-testing.js');
   const { fakeService, say } = await import('../../eval/sim/fake.js');
   const { fixtureClock } = await import('../../eval/sim/runtime.js');
-  const { sectionBody, TRAVEL_SOP_SECTIONS } = await import('../sop/sections.js');
+  const { sectionBody } = await import('../sop/sections.js');
+  const { TRAVEL_SOP_SECTIONS } = await import('../packs/travel/sop.js');
   const { importConfig } = await import('./transfer.js');
   const { readImageSop } = await import('./brand.js');
   const { runtimeById } = await import('../packs/registry.js');

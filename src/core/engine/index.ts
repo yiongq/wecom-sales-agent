@@ -99,7 +99,7 @@ function loadSop(): string {
   return fs.readFileSync(p, 'utf8');
 }
 
-// system prompt 的拼装与前缀缓存的讲究见 prompt/system.ts。这里只决定 SOP 从哪来：
+// system prompt 的拼装与前缀缓存的讲究见 core/prompt.ts。这里只决定 SOP 从哪来：
 // DB 模式取发布时渲染好的那一串（每轮逐字节复用，从不重新渲染），文件模式每轮按 data/sop.md 现渲染
 export function buildSystemPrompt(): string {
   return configMode() === 'db' ? currentSop().renderedPrompt : renderFileSop(loadSop());

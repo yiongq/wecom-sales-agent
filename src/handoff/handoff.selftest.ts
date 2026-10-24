@@ -1032,7 +1032,10 @@ const MEMBER = { userId: 'u-member-1', name: '小林' };
 }
 
 // ---------------- 9. 确定性转人工触发的向量表（R15、开放问题 4、R23；plan 第 11、11.1 步） ----------------
-const triggers = await import('./triggers.js');
+// 旧版纯函数入口是绑旅游词表的一份实例；08 R5 把它从 triggers.ts 收走，这里自己建（词表与算法都没变）
+const { createHandoffTriggers } = await import('./trigger-rules.js');
+const { handoffVocab } = await import('../packs/travel/handoff-vocab.js');
+const triggers = createHandoffTriggers(handoffVocab);
 const corpus = await import('./triggers.corpus.js');
 /** 精确优先的四个数（owner 2026-10-03）：售前与一般咨询的误判率、全部「不是」的误判率、明确正例的召回、全部正例的召回 */
 function rates(

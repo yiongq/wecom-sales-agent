@@ -13,8 +13,6 @@ import {
 } from './sections.js';
 
 import type { BrandProfile, PackPolicy, SopContractRule } from '../core/pack-api.js';
-// 旅游的契约短语与已知字段仍从这里重导出，给自测和旧调用方用；本文件自己不再用它们做缺省（08 R10），重导出由后面的依赖方向步骤收走。
-export { SOP_CONTRACT, SOP_KNOWN_FIELDS, KNOWN_FIELD_SOURCES } from '../packs/travel/sop.js';
 export type { SopContractRule as ContractRule } from '../core/pack-api.js';
 
 /** 可编辑节正文总长的上限：导入版本的 BUDGET_RATIO 倍（开放问题 7） */
