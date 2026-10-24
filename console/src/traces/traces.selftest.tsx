@@ -57,7 +57,7 @@ const HOUR = 3_600_000;
 const DAY = 24 * HOUR;
 
 const TRAVEL: IndustryPack = {
-  id: 'fixture-travel',
+  id: 'travel',
   name: '旅游',
   vocabulary: { customer: '客户', advisor: '顾问', productNoun: '产品', tools: {}, sopFields: {} },
   entities: [],

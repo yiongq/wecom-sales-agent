@@ -643,3 +643,35 @@
     min-height: 480px;
   }
 }
+
+/* 08 R12：仅给通用订单与画像使用，旅游卡片沿用原样式。 */
+.wb-order-lines {
+  margin: 8px 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 8px;
+}
+.wb-order-total {
+  font-weight: 600;
+  color: var(--text);
+}
+.wb-profile-rows {
+  margin: 0;
+  display: grid;
+  gap: 6px;
+}
+.wb-profile-rows > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 2fr);
+  gap: 12px;
+  font-size: 13px;
+  line-height: 20px;
+}
+.wb-profile-rows dt {
+  color: var(--text-2);
+}
+.wb-profile-rows dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

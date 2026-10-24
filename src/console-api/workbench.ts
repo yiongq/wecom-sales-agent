@@ -20,8 +20,9 @@ import type {
 } from '../shared/console-api.js';
 import { conversationState, paidNeedsHuman } from '../shared/conversation.js';
 import type { IndustryPack } from '../shared/pack.js';
-import { getOrder, getSession, isDemoClassId, listSessions, seqOf, sessionStoreMode, turnIdOf, windowStartOf } from '../store.js';
-import type { ChatMessage, MessageAuthor, Order, Session } from '../types.js';
+import { getAnyOrder, getSession, isDemoClassId, listSessions, seqOf, sessionStoreMode, turnIdOf, windowStartOf } from '../store.js';
+import type { ChatMessage, MessageAuthor, Session } from '../types.js';
+import { isLineOrder, orderDisplay, orderTotalFen, type AnyOrder } from '../core/order-view.js';
 import { scopedRuntime } from '../tenancy/runtime.js';
 import { sandboxWechatIndex } from '../tenancy/sandbox/outbound.js';
 import { maskNumbers } from './mask.js';
@@ -91,8 +92,8 @@ function lastCustomerAt(s: Session): string | null {
  * 不对客、不进任何正文，只给 A2「需要你处理」按「金额高的在前」排序用
  */
 function conversationAmount(s: Session): number | null {
-  const pending = s.orderIds.map((id) => getOrder(id)).find((o): o is Order => !!o && o.status === 'pending_payment');
-  if (pending) return pending.totalPrice;
+  const pending = s.orderIds.map((id) => getAnyOrder(id)).find((o): o is AnyOrder => !!o && o.status === 'pending_payment');
+  if (pending) return orderTotalFen(pending) / 100;
   const fen = currentPack().runtime.quoteCard?.(s)?.amountFen;
   return fen == null ? null : fen / 100;
 }
@@ -214,18 +215,33 @@ export const windowTurnIds = (s: Session): string[] =>
  * 订单所属会话的最小投影（A2「待付款」行用）：会话被清除（第 16 步之后才会出现）时为 null。不带短码——
  * console 一侧 conversationLabel(row, pack) 已经会从 id 现算 shortIdOf，这里重复发一遍只是多一个字段
  */
-function orderConversation(o: Order): OrderView['conversation'] {
+function orderConversation(o: AnyOrder, viewer: boolean): OrderView['conversation'] {
   const s = getSession(o.sessionId);
   if (!s) return null;
   return {
     id: s.id,
     ...(sandboxConversationOwner(s) ? { sandboxOwner: sandboxConversationOwner(s)! } : {}),
     channel: s.channel,
-    needSummary: currentPack().runtime.profileView(s.profile).title || null,
+    needSummary: titleOf(s, viewer),
   };
 }
 
-export function orderView(o: Order): OrderView {
+export function orderView(o: AnyOrder, viewer = false): OrderView {
+  if (isLineOrder(o)) {
+    const display = orderDisplay(o);
+    return {
+      id: o.id,
+      display,
+      totalFen: display.totalFen,
+      totalText: display.totalText,
+      status: o.status,
+      createdAt: iso(o.createdAt),
+      paidAt: o.paidAt != null ? iso(o.paidAt) : null,
+      confirmed: o.confirmedAt != null ? { at: iso(o.confirmedAt), by: o.confirmedBy?.name ?? '' } : null,
+      handoffBeforePaid: o.handoffBeforePaid ?? null,
+      conversation: orderConversation(o, viewer),
+    };
+  }
   return {
     id: o.id,
     routeTitle: o.routeTitle,
@@ -253,7 +269,7 @@ export function orderView(o: Order): OrderView {
           },
         }
       : {}),
-    conversation: orderConversation(o),
+    conversation: orderConversation(o, viewer),
   };
 }
 
@@ -322,8 +338,8 @@ export function conversationDetail(
     ...(profile.profileCard ? { profileCard: profile.profileCard } : {}),
     ...(quote.quoteCard ? { quoteCard: quote.quoteCard } : {}),
     orders: s.orderIds.flatMap((id) => {
-      const o = getOrder(id);
-      return o ? [orderView(o)] : [];
+      const o = getAnyOrder(id);
+      return o ? [orderView(o, viewer)] : [];
     }),
     sendWindow: s.channel === 'wecom' ? sendWindow(s.id, now) : null,
     paymentMode: paymentMode(),

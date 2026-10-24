@@ -492,7 +492,13 @@ export function travelReplySteps(sources: TravelReplyStepSources): GuardStep<Rep
         {
           policy: ctx.policy,
           inputText: ctx.inputText,
-          scope: routesInScope(session, ctx.orderSources, ctx.toolSources ?? [], ctx.text, routes),
+          scope: routesInScope(
+            session,
+            ctx.orderSources.filter((o): o is import('../../core/pack-api.js').Order => !('v' in o && o.v === 2)),
+            ctx.toolSources ?? [],
+            ctx.text,
+            routes,
+          ),
         },
         { hasHole: (t) => new RegExp(ANY_HOLE.source).test(t) },
         session.lastQuote?.routeId,

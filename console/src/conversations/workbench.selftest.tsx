@@ -67,7 +67,7 @@ const eq = (name: string, got: unknown, want: unknown): void =>
 const NOW = Date.parse('2026-09-26T14:30:00+08:00');
 
 const TRAVEL: IndustryPack = {
-  id: 'fixture-travel',
+  id: 'travel',
   name: '旅游',
   vocabulary: {
     customer: '客户',
