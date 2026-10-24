@@ -9,14 +9,15 @@ import { insertCatalogVersion } from '../db/repo/catalog-versions.js';
 import { countSopVersions, insertPublishedSop, readPublishedSop } from '../db/repo/sop.js';
 import { findTenantBySlug, readBrand } from '../db/repo/tenants.js';
 import { renderSystemPrompt as renderPackSystemPrompt } from '../core/prompt.js';
-import type { PackRuntime } from '../core/pack-api.js';
+import type { CatalogKindSpec, PackRuntime } from '../core/pack-api.js';
 import { HotelSchema, RouteSchema } from '../shared/catalog.js';
 import { checkSopContract } from '../sop/contract.js';
 import { decodeSopFile, editableChars, joinSop, mergeWithImage, splitSop, type SopSection } from '../sop/sections.js';
 import { runtimeById } from '../packs/registry.js';
 import { assertKind } from './catalog.js';
+import { PACK_FILE, readPackFile } from './pack-file.js';
 import { assertBrandForPack, ConfigStartupError, packSources } from './source.js';
-import { contractInputs, tenantImage, tenantRenderer, switchPreamble } from './brand.js';
+import { contractInputs, imageSopFile, tenantImage, tenantRenderer, switchPreamble } from './brand.js';
 import { promptHashes, publishedBrand, policySnapshot, publishedPolicy, renderInputsFor, type PromptHashes } from './hashes.js';
 
 export const EXIT = { ok: 0, error: 1, inconsistent: 2, locked: 3 } as const;
@@ -69,6 +70,56 @@ function readItems(dir: string, file: string, kind: CatalogKind): Record<string,
     seen.add(id);
   });
   return raw as Record<string, unknown>[];
+}
+
+/**
+ * 08 R11：非旅游包的条目文件 catalog/<kind>.json，每条过包的 schema、id 不重复；拒绝原因的写法同文件模式装载（source.ts 的 readCatalogFile）。
+ * 缺文件也拒绝：导入要的是一份完整的配置，不像文件模式把缺的 kind 当空数组。返回原对象（写库的是原对象，不是 zod 的输出）
+ */
+function readPackItems(dir: string, kind: string, spec: CatalogKindSpec): Record<string, unknown>[] {
+  const name = `catalog/${kind}.json`;
+  // kind 拼进文件名：包声明里的 kind 也不许带路径
+  if (!/^[A-Za-z0-9_-]+$/.test(kind)) throw new Error(`kind「${kind}」不能当文件名用`);
+  let raw: unknown;
+  try {
+    // 严格解码：非法字节不能被替换成 U+FFFD 后照样通过校验
+    raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(path.join(dir, 'catalog', `${kind}.json`))));
+  } catch (e) {
+    throw new Error(`${name} 读不出来：${message(e)}`, { cause: e });
+  }
+  if (!Array.isArray(raw)) throw new Error(`${name} 必须是数组`);
+  const seen = new Set<string>();
+  raw.forEach((item: unknown, i) => {
+    const parsed = spec.schema.safeParse(item);
+    if (!parsed.success) {
+      const why = parsed.error.issues.map((x) => `${x.path.join('.') || '(根)'}：${x.message}`).join('；');
+      throw new Error(`${name} 第 ${i + 1} 条不合格：${why}`);
+    }
+    const id = (item as Record<string, unknown>).id;
+    if (typeof id !== 'string' || !id) throw new Error(`${name} 第 ${i + 1} 条没有字符串 id`);
+    if (seen.has(id)) throw new Error(`${name} 里 id「${id}」重复`);
+    seen.add(id);
+  });
+  return raw as Record<string, unknown>[];
+}
+
+/**
+ * 08 R11：非旅游包的导出目录里除 sop.md、policy.json、brand.json 之外的文件：pack.json（{ "id": "<包>" }）与包声明的每个 kind 的
+ * catalog/<kind>.json（缺的 kind 写 []）。返回相对路径与文本，闸的导出与 export-config 各自用自己的方式写盘。旅游不走这里（routes.json / hotels.json）
+ */
+export function packCatalogFiles(
+  packId: string,
+  kinds: readonly string[],
+  itemsOf: (kind: string) => readonly unknown[],
+): { file: string; text: string }[] {
+  const text = (value: unknown): string => `${JSON.stringify(value, null, 2)}\n`;
+  return [
+    { file: PACK_FILE, text: text({ id: packId }) },
+    ...kinds.map((kind) => {
+      if (!/^[A-Za-z0-9_-]+$/.test(kind)) throw new Error(`kind「${kind}」不能当文件名用`);
+      return { file: `catalog/${kind}.json`, text: text(itemsOf(kind)) };
+    }),
+  ];
 }
 
 const itemKey = (kind: CatalogKind, code: string, ord: number, payload: unknown): string =>
@@ -147,11 +198,20 @@ export async function writeTemplateConfig(
   return hashes;
 }
 
+/**
+ * import-config 没传 --data 时的配置目录（08 R11，清单 7.23）：旅游照旧是 ./data，其他包是它的参考配置 ./data/packs/<包>/。
+ * 与镜像 SOP 同一个位置（imageSopFile），包 id 必须已经过注册表校验。
+ */
+export const defaultDataDir = (packId: string, root?: string): string => path.dirname(imageSopFile(packId, root));
+
 export interface ImportOptions {
   db: Db;
   tenantSlug: string;
-  /** --data：sop.md、routes.json、hotels.json 所在目录 */
-  dataDir: string;
+  /**
+   * --data：配置目录。旅游是 sop.md、routes.json、hotels.json；其他包是 sop.md、pack.json 与 catalog/<kind>.json（08 R11），目录的包要与租户绑定的包一致。
+   * 给函数时在解析出租户的包之后才取（命令行没传 --data 时用 defaultDataDir），同 imageSop
+   */
+  dataDir: string | ((packId: string) => string);
   /**
    * 镜像 SOP 的全文，锁定节以它为准。给函数时在解析出租户的包之后才取（旅游 data/sop.md，其他包 data/packs/<id>/sop.md，08 R10），
    * 命令行用 readImageSop；自测直接给字符串。
@@ -174,10 +234,29 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
   if (!runtime) return fail('pack_unknown：没有行业包运行时');
   let code = o.code ?? imageCode(runtime);
   const spec = runtime.sopSections;
-  // 本步保留旅游文件与循环；在读取、加锁和任何写入之前校验它们的 kind。
+  let dataDir: string;
   try {
-    assertKind(tenant.packId, 'route');
-    assertKind(tenant.packId, 'hotel');
+    dataDir = typeof o.dataDir === 'string' ? o.dataDir : o.dataDir(tenant.packId);
+  } catch (e) {
+    return fail(`文件不合格：读不到行业包「${tenant.packId}」的配置目录：${message(e)}`);
+  }
+  // 08 R11：--data 目录属于哪个包（pack.json 的 id，没有就是旅游）要与租户绑定的包一致；旅游读 routes.json / hotels.json，
+  // 其他包读 pack.json 声明的各 kind 的 catalog/<kind>.json。在读取条目、加锁和任何写入之前校验。
+  const travel = runtime.id === 'travel';
+  const kinds: readonly string[] = travel ? ['route', 'hotel'] : Object.keys(runtime.catalog);
+  let dirPackFile: ReturnType<typeof readPackFile>;
+  try {
+    dirPackFile = readPackFile(dataDir);
+  } catch (e) {
+    return fail(`文件不合格：${message(e)}`);
+  }
+  const dirPack = dirPackFile?.id ?? 'travel';
+  if (dirPack !== runtime.id)
+    return fail(
+      `文件不合格：--data 目录属于行业包「${dirPack}」（${dirPackFile ? `${PACK_FILE} 写的` : `没有 ${PACK_FILE}，按旅游算`}），租户「${o.tenantSlug}」绑定的是行业包「${runtime.id}」，两边的包不符`,
+    );
+  try {
+    if (travel) for (const kind of kinds) assertKind(tenant.packId, kind);
   } catch (e) {
     return fail(message(e));
   }
@@ -202,12 +281,11 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
   if (!lock) return { code: EXIT.locked, message: `lock_held：租户「${o.tenantSlug}」的锁在别的进程手里（应用正以 DB 模式运行？）` };
   try {
     let sections: SopSection[];
-    let routes: Record<string, unknown>[];
-    let hotels: Record<string, unknown>[];
+    let items: Record<string, Record<string, unknown>[]>;
     let imageSections: SopSection[];
     let policy: ReturnType<typeof policySnapshot>;
     try {
-      const file = path.join(o.dataDir, 'policy.json');
+      const file = path.join(dataDir, 'policy.json');
       const raw = fs.existsSync(file)
         ? JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file)))
         : runtime.policy?.defaults;
@@ -217,9 +295,10 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
     }
     try {
       imageSections = tenantImage(runtime, imageSop, brand);
-      sections = splitSop(decodeSopFile(fs.readFileSync(path.join(o.dataDir, 'sop.md'))), spec);
-      routes = readItems(o.dataDir, 'routes.json', 'route');
-      hotels = readItems(o.dataDir, 'hotels.json', 'hotel');
+      sections = splitSop(decodeSopFile(fs.readFileSync(path.join(dataDir, 'sop.md'))), spec);
+      items = travel
+        ? { route: readItems(dataDir, 'routes.json', 'route'), hotel: readItems(dataDir, 'hotels.json', 'hotel') }
+        : Object.fromEntries(kinds.map((kind) => [kind, readPackItems(dataDir, kind, runtime.catalog[kind]!)]));
     } catch (e) {
       return fail(`文件不合格：${message(e)}`);
     }
@@ -248,11 +327,15 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
     if (violations.length)
       return fail(`contract_failed：${violations.map((v) => `${v.code}${v.sectionKey ? `@${v.sectionKey}` : ''} ${v.detail}`).join('；')}`);
     const hashes = { ...promptHashes(rendered, code.toolsJson, sopText), policyHash: policy.policyHash };
+    // 给人看的条数：旅游的文字不变；其他包按 kind 列出
+    const counts = travel
+      ? `${items.route!.length} 条线路、${items.hotel!.length} 家酒店`
+      : kinds.map((kind) => `${kind} ${items[kind]!.length} 条`).join('、');
 
     return await withTenant(o.db, platformCtx(tenant.id, 'import-config'), async (tx) => {
       await lockTenantConfig(tx);
       if ((await countSopVersions(tx)) === 0 && (await countCatalogItems(tx)) === 0) {
-        if (o.dryRun) return { code: EXIT.ok, hashes, message: `dry-run：会写入 SOP v1、${routes.length} 条线路、${hotels.length} 家酒店` };
+        if (o.dryRun) return { code: EXIT.ok, hashes, message: `dry-run：会写入 SOP v1、${counts}` };
         await insertPublishedSop(tx, {
           tenantId: tenant.id,
           versionNo: 1,
@@ -269,14 +352,10 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
           createdByName: 'import-config',
         });
         const by = { userId: null, name: 'import-config' };
-        await insertActiveItems(tx, tenant.id, 'route', routes, by);
-        await insertActiveItems(tx, tenant.id, 'hotel', hotels, by);
+        for (const kind of kinds) await insertActiveItems(tx, tenant.id, kind, items[kind]!, by);
         // 导入直接是 active，等于上架：每条写版本 1（02「报价快照」），之后启动时就没有要补写的
-        for (const [kind, list] of [
-          ['route', routes],
-          ['hotel', hotels],
-        ] as const) {
-          for (const payload of list) {
+        for (const kind of kinds) {
+          for (const payload of items[kind]!) {
             await insertCatalogVersion(tx, {
               kind,
               code: String(payload.id),
@@ -287,8 +366,13 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
             });
           }
         }
-        await writeAudit(tx, { action: 'config.import', diff: { sections: merged.length, routes: routes.length, hotels: hotels.length } });
-        return { code: EXIT.ok, hashes, versionNo: 1, message: `已导入 SOP v1、${routes.length} 条线路、${hotels.length} 家酒店` };
+        await writeAudit(tx, {
+          action: 'config.import',
+          diff: travel
+            ? { sections: merged.length, routes: items.route!.length, hotels: items.hotel!.length }
+            : { sections: merged.length, items: Object.fromEntries(kinds.map((kind) => [kind, items[kind]!.length])) },
+        });
+        return { code: EXIT.ok, hashes, versionNo: 1, message: `已导入 SOP v1、${counts}` };
       }
       // 已有内容：一致 = 当前已发布版本的可编辑节等于文件切出的可编辑节，且每条 active 条目与文件完全一致。
       // rerender 版本（只动锁定节）和 draft 条目不影响判定
@@ -301,10 +385,7 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
         editable.every((s) => pubMerged.find((x) => x.key === s.key)?.text === merged.find((x) => x.key === s.key)?.text);
       // 两边按同一个顺序排好再逐条比（库里按 kind、ord 读出，hotel 排在 route 前面）
       const inDb = (await readActiveCatalog(tx)).map((r) => itemKey(r.kind, r.code, r.ord, r.payload)).toSorted();
-      const inFile = [
-        ...routes.map((r, i) => itemKey('route', String(r.id), i, r)),
-        ...hotels.map((h, i) => itemKey('hotel', String(h.id), i, h)),
-      ].toSorted();
+      const inFile = kinds.flatMap((kind) => items[kind]!.map((item, i) => itemKey(kind, String(item.id), i, item))).toSorted();
       const itemsSame = inDb.length === inFile.length && inDb.every((k, i) => k === inFile[i]);
       if (sopSame && itemsSame)
         return { code: EXIT.ok, hashes, versionNo: pub?.versionNo ?? undefined, message: '库里已是这份内容，没有写入' };
@@ -329,6 +410,8 @@ export interface ExportOptions {
 
 /**
  * 在一个 REPEATABLE READ READ ONLY 事务里一次读出已发布版本和全部 active 条目，写成 SOP、条目与已发布品牌。
+ * 旅游写 routes.json、hotels.json；其他包写 pack.json 与包声明的每个 kind 的 catalog/<kind>.json（08 R11）。
+ * 输出目录可以复用：写之前先删旧的 routes.json、hotels.json、pack.json 与 catalog/（只这四样），再按本包写，所以换了包不会留下上一个包的产品文件。
  * 只读库，应用可以照常在跑
  */
 export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
@@ -383,10 +466,19 @@ export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
     return fail(`本地重新渲染的 promptHash 与库里 v${pub.versionNo} 存的不同：代码在发布之后变过，先以 DB 模式启动一次（重渲染）再导出`);
   }
   const payloads = (kind: CatalogKind): unknown[] => items.filter((r) => r.kind === kind).map((r) => r.payload);
+  const travel = runtime.id === 'travel';
+  const kinds = Object.keys(runtime.catalog);
   fs.mkdirSync(o.outDir, { recursive: true });
+  for (const stale of ['routes.json', 'hotels.json', PACK_FILE]) fs.rmSync(path.join(o.outDir, stale), { force: true });
+  fs.rmSync(path.join(o.outDir, 'catalog'), { recursive: true, force: true });
   fs.writeFileSync(path.join(o.outDir, 'sop.md'), sopText);
-  fs.writeFileSync(path.join(o.outDir, 'routes.json'), `${JSON.stringify(payloads('route'), null, 2)}\n`);
-  fs.writeFileSync(path.join(o.outDir, 'hotels.json'), `${JSON.stringify(payloads('hotel'), null, 2)}\n`);
+  if (travel) {
+    fs.writeFileSync(path.join(o.outDir, 'routes.json'), `${JSON.stringify(payloads('route'), null, 2)}\n`);
+    fs.writeFileSync(path.join(o.outDir, 'hotels.json'), `${JSON.stringify(payloads('hotel'), null, 2)}\n`);
+  } else {
+    fs.mkdirSync(path.join(o.outDir, 'catalog'));
+    for (const { file, text } of packCatalogFiles(runtime.id, kinds, payloads)) fs.writeFileSync(path.join(o.outDir, file), text);
+  }
   fs.writeFileSync(path.join(o.outDir, 'policy.json'), `${JSON.stringify(policy.policy, null, 2)}\n`);
   const brandFile = path.join(o.outDir, 'brand.json');
   if (brand) fs.writeFileSync(brandFile, `${JSON.stringify(brand, null, 2)}\n`);
@@ -395,6 +487,10 @@ export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
     code: EXIT.ok,
     hashes,
     versionNo: pub.versionNo ?? undefined,
-    message: `已导出 SOP v${pub.versionNo}、${payloads('route').length} 条线路、${payloads('hotel').length} 家酒店到 ${o.outDir}`,
+    message: `已导出 SOP v${pub.versionNo}、${
+      travel
+        ? `${payloads('route').length} 条线路、${payloads('hotel').length} 家酒店`
+        : kinds.map((kind) => `${kind} ${payloads(kind).length} 条`).join('、')
+    }到 ${o.outDir}`,
   };
 }

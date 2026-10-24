@@ -215,6 +215,7 @@ export function createTravelRuntime(sources: PackSources) {
         updatedAt: '',
       })),
     retrievalCacheFile: 'route-vectors.json',
+    evalGoalsDir: 'eval/sim/goals/quality',
     followupTemplates,
     insightPrompts,
     mock: travelMock,

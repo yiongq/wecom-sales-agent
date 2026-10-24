@@ -805,6 +805,8 @@ export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   stageOnReturn?(session: Session): SalesStage | null;
   /** 08 R4：沙箱种子写进会话的包内状态。seed 由核心现算（refundQuote：已发布 policy 算出的退款报价）。没实现就什么都不写 */
   seedSession?(session: Session, seed: Readonly<Record<string, unknown>>): void;
+  /** 08 R11：发布闸的回归目标目录（相对仓库根）。旅游是 eval/sim/goals/quality，证明包是 eval/sim/goals/__fixture */
+  evalGoalsDir: string;
 }
 
 export interface PackBinding<T extends PackRuntimeTypes = PackRuntimeTypes> {

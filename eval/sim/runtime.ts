@@ -48,7 +48,7 @@ export function validatePrices(value: unknown): Record<string, PriceRow> {
 
 /** 导出目录（07 R9，`export-config` 写的那种）里评测必须有的文件；policy.json、brand.json 可选。 */
 export const CONFIG_DIR_REQUIRED = ['sop.md', 'routes.json', 'hotels.json'] as const;
-/** 08 R11：目录里有 pack.json 指向非旅游包时必须有的：sop.md 与 pack.json，产品库在 catalog/（缺的 kind 文件是空数组，由装载时的启动检查判） */
+/** 08 R11：目录里有 pack.json 指向非旅游包时必须有的：sop.md 与 pack.json；产品库在 catalog/，包声明的每个 kind 都要有 catalog/<kind>.json（resolveConfigDir 逐 kind 严检） */
 export const PACK_DIR_REQUIRED = ['sop.md', PACK_FILE] as const;
 
 /** 目录里 pack.json 指的非旅游包 id；没有（或写的就是 travel）是 null，按旅游的老样子。pack.json 写坏了抛错 */
@@ -58,7 +58,8 @@ function packIdOf(abs: string): string | null {
 }
 
 /**
- * --config-dir 的静态检查：是目录；旅游有 sop.md、routes.json、hotels.json，非旅游包（目录里有 pack.json）有 sop.md、pack.json 与 catalog/ 目录。
+ * --config-dir 的静态检查：是目录；旅游有 sop.md、routes.json、hotels.json；非旅游包（目录里有 pack.json）有 sop.md、pack.json，
+ * 以及包声明的每个 kind 的 catalog/<kind>.json（08 R11：逐 kind 严检，缺哪个就点名哪个，不把缺的当空数组）。
  * 返回绝对路径。文件内容是否合格由引擎装载时判（品牌 / policy 不合格会在 engineRuntime 里直接抛出，一个目标都不跑）。
  */
 export async function resolveConfigDir(dir: string): Promise<string> {
@@ -75,14 +76,26 @@ export async function resolveConfigDir(dir: string): Promise<string> {
     const file = await fs.stat(path.join(abs, name)).catch(() => null);
     if (!file?.isFile()) throw new Error(`--config-dir 里缺 ${name}`);
   }
-  if (packId !== null && !(await fs.stat(path.join(abs, 'catalog')).catch(() => null))?.isDirectory())
-    throw new Error('--config-dir 里缺 catalog/');
+  if (packId !== null) {
+    if (!(await fs.stat(path.join(abs, 'catalog')).catch(() => null))?.isDirectory()) throw new Error('--config-dir 里缺 catalog/');
+    // 包声明的 kind 取注册表（后台定义与对话运行时的 kind 一致，注册表装载时已核对）。动态引入：旅游目录不碰注册表，
+    // 注册表的模块图装载时不读 VAR_DIR / SOP_PATH 一类评测要改的变量，可以早于 engineRuntime 设环境变量
+    const { packById } = await import('../../src/packs/registry.js');
+    const pack = packById(packId);
+    if (!pack) throw new Error(`--config-dir 里的 pack.json 指向行业包「${packId}」，它不在注册表里`);
+    for (const { kind } of pack.entities) {
+      if (!/^[A-Za-z0-9_-]+$/.test(kind)) throw new Error(`--config-dir：kind「${kind}」不能当文件名用`);
+      const file = await fs.stat(path.join(abs, 'catalog', `${kind}.json`)).catch(() => null);
+      if (!file?.isFile()) throw new Error(`--config-dir 里缺 catalog/${kind}.json`);
+    }
+  }
   return abs;
 }
 
 // 只改变评测进程的部署/存储与时钟；销售模型、SOP、工具定义照引擎原配置。
-// options.configDir：给了就读这个目录里的 sop.md / routes.json / hotels.json（policy.json、brand.json 在 SOP_PATH 同目录，有就用，
-// 没有走包默认）；目录里有 pack.json 指向非旅游包时只设 SOP_PATH，包与产品库（catalog/）由同目录的 pack.json 认（08 R11）；
+// options.configDir：给了就读这个目录里的配置——旅游是 sop.md / routes.json / hotels.json，其他包是 sop.md / pack.json / catalog/<kind>.json
+// （policy.json、brand.json 在 SOP_PATH 同目录，有就用，没有走包默认）；目录里有 pack.json 指向非旅游包时只设 SOP_PATH，
+// 包与产品库（catalog/）由同目录的 pack.json 认（08 R11）；
 // 没给照旧读 data/（07 plan 风险 G3）。用完照旧恢复 process.env。
 export async function engineRuntime(
   meter: Meter,

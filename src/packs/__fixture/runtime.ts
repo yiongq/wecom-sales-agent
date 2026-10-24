@@ -383,6 +383,7 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
       });
     },
     retrievalCacheFile: 'fixture-vectors.json',
+    evalGoalsDir: 'eval/sim/goals/__fixture',
     retrievalText: (item) => JSON.stringify(item.payload),
     followupTemplates: { idleMinutes: {}, byStage: {}, fallback: '需要帮助随时说', system: '写一句服务跟进' },
     insightPrompts: {

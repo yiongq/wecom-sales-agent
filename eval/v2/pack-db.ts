@@ -1,6 +1,7 @@
 // 08 R11：PGlite 配置下的非旅游包。旅游走 installSeededConfig（把 data/ 导入再装载）；
-// import-config 对非旅游包的产品部分还没有，所以这里造一个该包的租户，把参考配置目录
-// （data/packs/<包>/ 的 sop.md、brand.json、catalog/<kind>.json）发布成 v1，再装成配置源。
+// 第 18 步起 importConfig 已能按包导入非旅游包（读 data/packs/<包>/ 的 sop.md、pack.json、catalog/<kind>.json），
+// 这里仍照原装配自己造该包的租户、把参考配置目录（sop.md、brand.json、catalog/<kind>.json）发布成 v1，再装成配置源；
+// 装配没有在第 18 步重构，之后可以并回 importConfig。
 // 只给 eval/run.ts 这个组合根调用：库的测试装配（src/db/testing.ts）由它传进来，v2 的 worker 不依赖它。
 import fs from 'node:fs';
 import path from 'node:path';
@@ -46,7 +47,7 @@ export async function installSeededPackConfig(
   await t.pg.exec('SET ROLE agent_app');
   const ctx = { tenantId: tenant.id, actor: ACTOR };
 
-  // 首次发布：与 importConfig 的 SOP 部分同一组构件（没有 policy）
+  // 首次发布：与 importConfig 的 SOP 与条目部分同一组构件（没有 policy）
   const image = tenantImage(runtime, imageSop, brand);
   const render = tenantRenderer(runtime, brand);
   const merged = mergeWithImage(image, image, runtime.sopSections);

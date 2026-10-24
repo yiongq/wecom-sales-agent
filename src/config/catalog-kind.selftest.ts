@@ -91,7 +91,7 @@ if (process.argv[2] !== 'worker') {
       catalog.fixLockedFields({ db: t.db, tenantSlug: tenant.slug, kind: 'route', code: 'missing', set: {}, reason: '合成修正' }),
       unknown,
     );
-    // 清单 4.7：仍读取旅游文件的过渡导入，须在取锁、读文件、写入之前拒绝。
+    // 清单 4.7：导入按包（08 R11，第 18 步）：旅游目录（没有 pack.json）导入证明包租户，须在取锁、读条目、写入之前拒绝，报错点名两边的包。
     const result = await importConfig({
       db: t.db,
       tenantSlug: tenant.slug,
@@ -102,7 +102,7 @@ if (process.argv[2] !== 'worker') {
       },
     });
     assert.equal(result.code, 1);
-    assert.match(result.message, /kind_unknown/);
+    assert.match(result.message, /「travel」.*「__fixture」/);
     // 清单 4.8：不能把不属于模板包的条目静默过滤掉。
     await assert.rejects(
       withTenant(t.db, ctx, (tx) => writeTemplateConfig(tx, { ...pub, packId: tenant.packId }, [active[0]!], '')),

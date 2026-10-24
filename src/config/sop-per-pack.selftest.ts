@@ -264,7 +264,7 @@ if (process.argv[2] !== 'worker') {
     const ctx = { tenantId: tenant.id, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
     await t.pg.exec('SET ROLE agent_app');
 
-    // 首次发布（v1，source='import'）：与 importConfig 的 SOP 部分同一组构件，import-config 对非旅游包的产品文件部分是后续步骤
+    // 首次发布（v1，source='import'）：与 importConfig 的 SOP 部分同一组构件；第 18 步起 importConfig 也能按包导入产品文件（transfer-per-pack.selftest.ts 覆盖），这里只测 SOP 子系统，仍手工发布
     const firstPublish = async (tenantId: string): Promise<void> => {
       const image = tenantImage(fixtureRuntime, fixtureMd, brand);
       const render = tenantRenderer(fixtureRuntime, brand);

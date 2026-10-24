@@ -48,7 +48,7 @@ export interface CustomerResponse {
 export interface SimDeps {
   customer(persona: string, history: { role: 'user' | 'assistant'; content: string }[], retry: boolean): Promise<CustomerResponse>;
   customerModel: string;
-  /** 给了 --config-dir 时是它的绝对路径：品牌由目录里的 brand.json 定，目标的 brand 字段不再拒绝。没给是 undefined。 */
+  /** 给了 --config-dir 时是它的绝对路径（旅游或其他包的导出目录都一样）：品牌由目录里的 brand.json 定，目标的 brand 字段不再拒绝。没给是 undefined。 */
   configDir?: string;
   price(model: string, tokens: Tokens): number;
   /** 通用单的种子要经包的 priceLine 异步建，所以可以返回 Promise；同步的假依赖照旧 */
