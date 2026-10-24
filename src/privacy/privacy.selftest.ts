@@ -32,7 +32,10 @@ const {
   withdrawConsent,
 } = await import('./../handoff/consent.js');
 const { consentDeclined, release, ConsentDeclinedError, sharedActor } = await import('../handoff/takeover.js');
-const { sensitiveCategoriesOf, consentWithdrawalOf } = await import('../handoff/triggers.js');
+// 旧版纯函数入口是绑旅游词表的一份实例；08 R5 把它从 handoff/triggers.ts 收走，这里自己建
+const { createHandoffTriggers } = await import('../handoff/trigger-rules.js');
+const { handoffVocab } = await import('../packs/travel/handoff-vocab.js');
+const { sensitiveCategoriesOf, consentWithdrawalOf } = createHandoffTriggers(handoffVocab);
 
 let pass = 0;
 const fails: string[] = [];

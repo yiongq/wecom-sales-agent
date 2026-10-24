@@ -84,6 +84,7 @@ import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guar
 import { profile } from './profile.js';
 import { paymentMode } from './payment/mode.js';
 import type { Assignee, ChannelAdapter, ChatMessage, CustomerProfile, Order, OrderStatus, PushOpts, Route, Session } from './types.js';
+import { SESSION_EXPOSURE } from './types.js';
 import { boot } from './boot.js';
 import { currentPrivacyNotice, escapeHtml, initPrivacy, startPrivacyPoll } from './privacy/privacy.js';
 import { startOtelExport } from './ops/otel.js';
@@ -255,46 +256,6 @@ function anonMessage(m: ChatMessage): AnonMessage {
   return out;
 }
 
-/**
- * 08 R4：匿名接口只拷白名单里的键。逐个列出 Session 的全部键：true 是 08 之前就有的，匿名输出的键因此逐字节不变；
- * false 是行业包的状态槽，不外露。Record<keyof Session, boolean> 让 Session 新增键而这里没表态就编译不过，
- * 加键的人必须决定它外不外露（08 第 11 步的 moneyLedger 同样填 false）
- */
-const SESSION_EXPOSURE = {
-  id: true,
-  channel: true,
-  stage: true,
-  profile: true,
-  messages: true,
-  orderIds: true,
-  handedOver: true,
-  createdAt: true,
-  updatedAt: true,
-  lastQuote: true,
-  quoteHistory: true,
-  stageBeforeHandoff: true,
-  budgetGaps: true,
-  lastShownRoutes: true,
-  seenRouteIds: true,
-  missedDestinations: true,
-  reminders: true,
-  recommendedRoutes: true,
-  afterSale: true,
-  handoff: true,
-  firstHandoffAt: true,
-  handoffCount: true,
-  handoffLog: true,
-  seed: true,
-  assignee: true,
-  turnSignals: true,
-  negativeHits: true,
-  followupOptOut: true,
-  consent: true,
-  consentAskCount: true,
-  channelAccountId: true,
-  packState: false,
-  moneyLedger: false,
-} as const satisfies Record<keyof Session, boolean>;
 /** 运行时挂在会话上、不在 Session 类型里的键：core/followup 的跟进记账，web/routes 的轮次上限标记（08 之前就随会话外露） */
 const RUNTIME_EXPOSURE = { followup: true, webTurnLimited: true } as const;
 /** profile 的白名单：CustomerProfile 的全部键去掉 attrs（Record<keyof CustomerProfile, boolean> 同样逼着新增键表态） */

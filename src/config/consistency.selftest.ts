@@ -23,10 +23,11 @@ await config.initConfig(null);
 const { legacyTravelRuntime } = await withoutTenantScope(() => import('../packs/registry.js'));
 const { createFixtureRuntime } = await withoutTenantScope(() => import('../packs/__fixture/runtime.js'));
 const { tenantImage, contractInputs } = await withoutTenantScope(() => import('./brand.js'));
-const { splitSop, joinSop, TRAVEL_SOP_SECTIONS, withBody, sectionBody } = await withoutTenantScope(() => import('../sop/sections.js'));
+const { splitSop, joinSop, withBody, sectionBody } = await withoutTenantScope(() => import('../sop/sections.js'));
+const { TRAVEL_SOP_SECTIONS } = await withoutTenantScope(() => import('../packs/travel/sop.js'));
 const { checkSopContract } = await withoutTenantScope(() => import('../sop/contract.js'));
-const { renderSystemPrompt } = await withoutTenantScope(() => import('../prompt/system.js'));
-const { toolDefs } = await withoutTenantScope(() => import('../tool-defs.js'));
+const { renderSystemPrompt: renderWithRequirements } = await withoutTenantScope(() => import('../core/prompt.js'));
+const { toolDefs } = await withoutTenantScope(() => import('../packs/travel/tool-defs.js'));
 const cons = await import('../packs/travel/consistency.js');
 const { MODE_CTX, declaredOrigin, FIXED_REPLY_STEPS } = await import('../packs/travel/fixed-replies.js');
 const { replyLineCount } = await import('../core/guards/shape.js');
@@ -41,6 +42,8 @@ type ConsistencyText = import('../core/consistency.js').ConsistencyText;
 const travel = legacyTravelRuntime(packSources());
 const consistency = travel.consistency;
 const runtime = travel.runtime;
+// 08 R5：旧版（无品牌）的 system prompt = SOP + 绑定包的旧版硬性要求；原先 prompt/system.ts 里绑旅游的单参数入口已收走，自测按运行时自己取
+const renderSystemPrompt = (sop: string) => renderWithRequirements(sop, runtime.legacy.hardRequirements);
 
 let passed = 0;
 const failures: string[] = [];

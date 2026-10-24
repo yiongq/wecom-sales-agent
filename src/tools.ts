@@ -5,7 +5,8 @@ import type { Session, ToolHints, ToolSpec } from './core/pack-api.js';
 import { legacyTravelRuntime } from './config/source.js';
 import { enterHandoff } from './handoff/record.js';
 
-export { toolDefs, type ToolDef } from './tool-defs.js';
+export type { ToolDef } from './tool-defs.js';
+export { toolDefs } from './packs/travel/tool-defs.js';
 export { enterHandoff };
 export { peakMonths } from './shared/season.js';
 export {

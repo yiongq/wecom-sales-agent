@@ -9,8 +9,8 @@ import { brandSnapshot, promptHashes, publishedBrand, renderInputsFor, sha256 } 
 import { shanhaiBrand, shanhaiPreamble } from '../packs/travel/brand-fixture.js';
 import { brandTexts, renderBrandPage, renderBrandTemplate } from '../core/brand.js';
 import { bindPack, partsOf, type BrandProfile } from '../core/pack-api.js';
-import { toolDefs } from '../tool-defs.js';
-import { renderSystemPrompt } from '../prompt/system.js';
+import { toolDefs } from '../packs/travel/tool-defs.js';
+import { renderSystemPrompt as renderWithRequirements } from '../core/prompt.js';
 import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
 import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
@@ -38,6 +38,8 @@ const { __test: wecom, syncFromCallback } = await withoutTenantScope(() => impor
 const { installAccounts } = await withoutTenantScope(() => import('../channels/accounts.js'));
 
 const runtime = config.currentPack().runtime;
+// 08 R5：旧版（无品牌）的 system prompt = SOP + 绑定包的旧版硬性要求；原先 prompt/system.ts 里绑旅游的单参数入口已收走，自测按运行时自己取
+const renderSystemPrompt = (sop: string) => renderWithRequirements(sop, runtime.legacy.hardRequirements);
 const baseline = promptPrefix();
 const legacy = brandTexts(runtime, null);
 const rendered = brandTexts(runtime, shanhaiBrand);

@@ -17,10 +17,6 @@ import {
 
 export { sectionBody, SopStructureError, type SectionSpec, type SopSection };
 
-// 旅游节表仍从这里重导出给自测用；本文件的函数不再缺省取它（08 R10：节表必传，取绑定包的 sopSections）。重导出由后面的依赖方向步骤收走。
-import { TRAVEL_SOP_SECTIONS } from '../packs/travel/sop.js';
-export { TRAVEL_SOP_SECTIONS };
-
 /** BOM、\r、非 NFC、孤立代理项、\n 与 \t 以外的 C0 控制字符、U+2028 / U+2029 */
 export class SopEncodingError extends Error {}
 
