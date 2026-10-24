@@ -99,18 +99,18 @@
   - 做：`MoneyParseOptions.decimals`（缺省 false，旅游不传）与 `PackRuntime.money`；为 true 时照 spec「金额解析」表识别（带单位的小数与低单价、紧跟价格词的裸数、口语与汉字数、倍率、量词「块」、日期型号版本号、低于 `minimumAmount`），约数词跟在小数后时按 R6 的容差；`AmountHit.value` 仍以元计。只改 `src/core/parse/money.ts` 与 `pack-api.ts`。
   - 验：表里每一行一条自测，反例与正例一样多（验收 5）；锁定的 `price-guard.selftest.ts` 与 v2 结论不变。
   - 依赖：0.1。
-- [ ] 11. 金额出处（R8；2.5 天）
+- [x] 11. 金额出处（R8；2.5 天）——#299，Codex
   - 做：`ToolSpec.amounts`、`MoneyEntry`；工具执行成功后由核心记进 `Session.moneyLedger`（封顶 200 条、留最新的）；两个步骤工厂 `moneyProvenanceStep` / `moneyProvenanceFollowupStep`（基础标识 `money_provenance`），放行集合与判定照 R8，主回复删残时换 `options.fallback`，跟进只删句；装载时校验主回复步骤排在 `stage_advance` 之后、`takeover_check:post` 与 `turn_failure` 之前；裁决按 04 R8 记录；`resetSession` 清 `moneyLedger`。旅游不放这两个步骤，旅游会话不写这个键。证明包启用两个步骤，查询工具与建单工具声明金额，并给静态运费。
   - 验：验收 6 全部（含同一份输入下旅游的 `guard_verdicts` 与开工时相同）；步骤排错位置时装载被拒；两个工厂各带自测；0.5 的自测里旅游 state json 照旧没有 `moneyLedger`；不变量 9。
   - 依赖：7、9、10、14。
 
 ### 批 D：SOP 子系统与文件模式（第 12–13 步）
 
-- [ ] 12. SOP 子系统按包（R10；2.5 天）
+- [x] 12. SOP 子系统按包（R10；2.5 天）——#300，Claude 子 agent
   - 做：第 0.2 步清单 6 的每一处（节表、契约规则、policy lint、哈希的节表参数、导入导出、console 的可编辑节；出处见 spec「背景与问题 · SOP 子系统」）改取绑定包的 `sopSections` / `contractRules` / `policy`，不再缺省取旅游；非旅游包只支持模板模式：租户没有品牌就拒绝启动（拒绝原因见 Open 1），锁定节由包的模板渲染成租户的镜像，不读 `data/sop.md`。
   - 验：验收 8（证明包租户，DB 模式、模板模式：首次发布、在 console 改一个可编辑节再发布都成功，契约检查用的是证明包的规则；清掉品牌后启动被拒）；验收 3 第 5 条的端到端部分（从第 4 步移来）：证明包没有 active `widget` 时 DB 模式启动以 `catalog_startup` 拒绝，有一条时照常启动；旅游两种模式的 `promptHash`、`toolsHash`、导入导出的哈希与开工时相同。
   - 依赖：4、1；合并等 Open 1。
-- [ ] 13. 文件模式按包（R11 的装载部分；1.5 天）
+- [x] 13. 文件模式按包（R11 的装载部分；1.5 天）——#304，Claude 子 agent
   - 做：配置目录有 `pack.json` 就按这个包装载，没有就是旅游；非旅游包由核心读同目录的 `catalog/<kind>.json` 组成 `CatalogSnapshot`（版本恒为 1），`currentCatalog()` 在文件模式下对它们可用（`source.ts:232`）；旅游的工具照旧读 `ROUTES_PATH`；OTel 取 `pack.json` 的包名（`ops/otel.ts:58`）；v2 与模拟评测的文件模式装载（`eval/v2/worker.ts:68-73`、`eval/sim/runtime.ts:88-91`）对非旅游包不再要 `routes.json`、`hotels.json`；`data/packs/__fixture/` 补 `pack.json` 与 `catalog/widget.json`。
   - 验：用 `data/packs/__fixture/` 起文件模式，`currentCatalog().items.widget` 有数据、OTel 的包名是 `__fixture`；没有 `pack.json` 的目录与今天完全相同（旅游的文件模式自测、v2 文件配置那条照绿）。
   - 依赖：12。
@@ -121,18 +121,18 @@
   - 做：`Session.packState` 与 `PackRuntime.sessionState`（zod 校验、`resetKeys`，`resetSession` 只清这些键）；`CustomerProfile.attrs` 与 `profileFields`，引擎合并画像时 `attrs` 按键合并（`core/engine/index.ts:864`）；`profileForPrompt`（旅游的实现等于今天的函数）之后核心再删 `nickname`、`avatar`；`profileView` 给会话标题与画像卡，viewer 照 `workbench.ts:258` 打码；三个钩子 `quoteCard`（`workbench.ts:94、284`）、`stageOnReturn`（`handoff/takeover.ts:241`）、`seedSession`（`tenancy/sandbox/seeds.ts:127`），旅游的实现照搬现在的逻辑；`anonSession`（`server.ts:251`）改为只拷白名单字段。证明包加 `packState` 与 `attrs` 各至少一个键。
   - 验：验收 7 全部；旅游的工作台报价卡与排序、交还 AI 的阶段、沙箱种子的售后状态与开工时相同；前缀与 v2 结论不变；不变量 13、14。
   - 依赖：2。
-- [ ] 15. 订单读者接上展示（R12；2.5 天）
+- [x] 15. 订单读者接上展示（R12；2.5 天）——#302（与第 16 步一起），Codex
   - 做：第 0.2 步重核后的「R3 订单读者的去向」表里标「两种」的读者，逐个改用 `getAnyOrder` / `listAnyOrders`，通用单经 `orderDisplay`、旧版旅游单走原路径：公开订单接口与支付页（通用单用 `PublicLineOrder`）、企微付款卡片、看板（按 `orderTotalFen` 在内存里按分求和，接口仍以元计）、洞察、确认价格 / 标记已付 / 取消与审计文字、工作台订单卡接口（金额字段带 `Fen` 后缀，另带格式化文字）、落库投影已在第 8 步；方案书的页面与接口只对声明了 `documents.proposal` 的包开放，其余 404；`goal-draft` 对非旅游包隐藏入口。
   - 验：验收 4 的展示部分（支付页与 `/api/orders/:id` 按 `PublicLineOrder` 返回两行明细与「1,330 元」、没有旅游字段；看板「本月成交额」包含 1,330 元）；验收 12 后半（证明包租户的方案书两条路由 404）；不变量 12；0.5 的自测不变。
   - 依赖：9、14。
-- [ ] 16. 工作台与客户页（R12；2 天）
+- [x] 16. 工作台与客户页（R12；2 天）——#302，Codex
   - 做：console 的工作台订单卡与画像卡渲染通用单与 `profileView`（console 照旧不 import 包，数据经接口下发）；`public/chat.html` 的 `fillPayCard` 与 `public/pay.html` 的 `load()` 认 `display`，没有 `display` 的 JSON 照今天渲染（锁定的 `server.selftest.ts:279-313` 用旅游形状直接跑 `fillPayCard`，约束见「实施记录 · 第 0 步 · 给各步的注意」）。
   - 验：验收 4 的「工作台订单卡显示两行」；锁定的 `server.selftest.ts` 照绿；PR 里写 BEFORE/AFTER；`check-fonts` 过；浏览器里看证明包租户的工作台与支付页（截图不进仓库）。
   - 依赖：15。
 
 ### 批 F：评测、闸、收口、回滚与上线（第 17–26 步）
 
-- [ ] 17. 评测按包（R11 的评测部分；2 天）
+- [x] 17. 评测按包（R11 的评测部分；2 天）——#305，Claude 子 agent
   - 做：cases v2 与 `SimGoal` 加 `pack?: string`（缺省 `travel`；`goalSchema` 是 strict 的，同步加）；不是 `travel` 时 `fixtures.session.profile` 只收 `{ attrs, notes }`，`fixtures.orders` 与 `initial.orders` 用 `{ status, lines }`、按包的 `priceLine` 建成通用单，`expect.orders.last` 能断言 `lines` 与 `totalFen`（`eval/v2/worker.ts:102`）；证明包至少 3 条 v2 case（`eval/cases-v2/q08-fixture.json`）、2 个模拟客户目标（`eval/sim/goals/__fixture/`，第 18 步登记为它的 `evalGoalsDir`）；生成 `eval/baselines/v2-08-step17.json`，默认基线改指它。
   - 验：验收 9 第 1 条（`pack: '__fixture'` 的 case 在文件与 PGlite 两种配置下 mock 通过；证明包的模拟目标在 mock 下跑完）；快照与 `v2-07-step6.json` 的 diff 只有新增的 case；`travel` 的 schema 与旧 case 不变。
   - 依赖：9、11、13、14。
@@ -700,6 +700,19 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 - 第 17–19 步（来自第 13 步）：`resolveConfigDir` 对包目录只查 `sop.md`、`pack.json` 与 `catalog/`，逐 kind 的严检与闸、runner 的文案留给第 18 步（清单 7.12–7.14、7.18、7.22、7.23）；`catalog/*.json` 坏数据报 `catalog_startup`、`pack.json` 写坏报 `pack_unknown`，不加新原因；7.17、7.20 留给第 17 步，7.2「DB 模式抛错」与 7.6 `resetConfig` 留给第 19 步。
 - 第 16 步：`fillPayCard` 只在 `public/chat.html`（:529），锁定的 `server.selftest.ts:279-313` 用正则抠出函数头到「两格缩进的 `}`」为止、只给它 `fetch` 与 `cnDate`：函数头原样，新分支内联、不引用函数外的新标识符，函数体里不能出现恰好两格缩进的 `}` 行。`public/pay.html` 的渲染在 `load()`，锁定钉子是 `server.selftest.ts:513-514` 的正则（E10、E11）。另外，第 0.5 步的夹具钉的是 `/pay/<id>` 的完整 HTML：第 16 步给 `pay.html` 加 `display` 分支，会让夹具里 `pay/*` 的 12 条变红，这是 R12 要求的改动。第 16 步的 PR 里用 `UPDATE_LEGACY_BYTES=1` 重生成一次，diff 只许是新加的分支、逐行审，夹具里其余 48 条必须一字不变（spec 第六条 `Revisions:` 二）。
 
+### 第 11–13、15–16 步（2026-10-24，#299、#300、#304、#302）
+
+- 第 11 步（#299，Codex）：记账放在核心工具注册表的成功执行之后（金额是非负安全整数分、标签最多 20 字，工具没声明金额就不建账本，留最新 200 条）；放行集合 = 会话账本 + 本会话通用单的单价 / 行金额 / 合计 + 包声明的静态金额，不读整库价格，也不认客户自己报的价；解析用绑定包的 `money` 调 `parseMoney`，容差半分；步骤位置的装载校验在 `core/guards/validate.ts`，报错点名包与步骤。证明包的 `fixture_quote`、`fixture_order` 声明金额，静态运费 1000 分。
+- 第 12 步（#300，Claude 子 agent）：Open 1 定 `brand_required` 之后合入。Codex 评审出两个主要问题，已修（`f05a60a`）：沙箱复制的写路径没查品牌（补 `assertBrandForPack`）；旅游启动时读镜像的时机挪后，`image_sop_invalid` 与 `db_unreachable` 的先后变了，改回在锁之前先读 `data/sop.md`。
+- 第 13 步（#304，Claude 子 agent）：Codex 评审出 2 个主要、2 个次要问题，已修：换配置目录后沿用旧包的绑定与快照（快照改按目录区分）；模拟评测运行前没校验非旅游包的产品库；重置后回不到 `pack.json` 指的包；`fileCatalog` 的状态计数恒为空。
+- 第 15–16 步（#302，Codex，返工三轮）：第 15 步单独过不了 console 的类型检查，与第 16 步一起提交。Open 2 照 C：`EnginePackHooks.paidLineText` 可选，缺省发「已收到您的付款{金额}，订单共{N}项。」。Claude 评审与第 14 步的合入后评审合起来 5 条，已修：通用单 `/pay/<id>` 的完整 body 里留着「出行人数」「出发日期」（只在通用单分支换成中性词，不变量 12 的断言改为对完整 body）；看板金额带角分时按 `formatYuan` 显示；声明了 `priceLine` 却没有终态阶段的包在装载时被拒，模拟支付在写入之前先取终态阶段；`attrs` 在支付页、聊天付款卡、工作台都渲染，聊天付款卡的卡头在通用单分支里改成中性；订单关联的会话标题用 viewer 打码。
+- 第 0.5 步的夹具照计划在 #302 里重生成一次：60 个键不变，只有 `pay/*` 的 12 条变了，每条都是同一段 4,282 字符的纯插入（`display` 分支），其余 48 条逐字节相同，协调者另写脚本核过。Codex 起初为了不重生成，用正则在服务端从 `pay.html` 剥掉一段带标记的代码、并让静态 `/pay.html` 改走页面渲染；没收：正则剥源码太脆，静态入口的响应头也会跟着变，夹具盖不到。
+- 第 15–16 步合并前 CI 红在 `src/config/brand.selftest.ts`：它对 `pay.html`、`chat.html` 剔除已授权的新增段后比开工时的哈希，本步的 `display` 分支没剔。照 07 R20 的写法把两段 `display` 分支剔掉再比，哈希不改。之后的任务说明要求改了 `public/*.html` 必跑这条。
+
+### 第 17 步（2026-10-24，#305）
+
+- 第 17 步（#305，Claude 子 agent）：cases v2 与 `SimGoal` 的 `pack` 各一套 schema（非旅游不收金额与旅游字段），夹具订单经 `createLineOrder`；v2 的 worker 按包的环境换进程，PGlite 下证明包发布到自己的租户（`eval/v2/pack-db.ts`）；证明包 4 条 v2 case（`q08-fixture-*`，覆盖验收 4、6、7 的对话部分）与 2 个模拟目标；参考配置 `catalog/widget.json` 加 3 条。新默认基线 `v2-08-step17.json`：按 id 核过，旅游 857 条与 `v2-07-step6.json` 相同，新增 4 条，没有删。Codex 只读评审无问题。
+
 ### 第 2–9、14、21 步（2026-10-24，#295、#297、#298）
 
 - 第 2、3 步各自一个 PR（#295、#297）。第 4–9、14、21 步在分支上依次叠加，最后由协调者把第 14 步与订单链、最新 `dev` 整合成一个 PR（#298）合入，每一步仍是独立提交、各自审过；不逐个开 PR，是因为叠加分支逐个过 CI 要排几个小时，而且每个都改 `package.json` 的 `test` 末尾，合一个冲一个。整合时 `pack-api.ts` 与 `test` 两边都留；合并前在整合后的树上跑过 12 个相互影响的自测、`test:locked`、第 0.5 步的出口字节自测（60 条相同）、`check-migrations`（21 个）与 v2 两条（857 条 0 差异）。
@@ -771,3 +784,10 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 - 开着 PR：第 11 步 #299（自动合并）；第 12 步 #300（**等 Open 1**，没开自动合并）。
 - 在做：第 13 步（Claude 子 agent，worktree `claude-08-s13`，叠在第 12 步上）；第 15、16 步（Codex，worktree `codex-08-s15`，叠在第 11 步上；第 15 步单独过不了 console 的类型检查，两步一起提交；付款确认话术照 Open 2 的推荐 C 实现、标了待确认，合并要等 Open 2）。
 - 下一步：第 13 步合入后接第 17、18 步；Open 1、2 定了之后合第 12、15–16 步；第 21 步的真实 docker 演练放在第 22 步之前。
+
+### 交接（2026-10-24，第 18–20 步进行中）
+
+- 已合入：第 0–17 步；第 21 步的代码（真实 docker 演练待做，未打勾）。Open 1、2 已定（#303）。
+- 开着 PR、开了自动合并：第 18 步 #306（导出与闸按包）；第 19 步 #307（注册表表驱动、DB 模式不回落，叠在 #306 上）。
+- 在做：第 20 步（Claude 子 agent，worktree `claude-08-s20`，分支 `feat/08-boundaries`，叠在第 19 步上）。
+- 下一步：第 20 步合入后做第 21 步的真实 docker 演练与第 22 步中期验收（含真实模型 k=1 ≤¥1.5、浏览器看证明包租户的支付页、聊天付款卡与工作台）；第 23 步上线要 owner 当次授权。
