@@ -8,6 +8,7 @@
 // 中文标签的表由调用方从行业包传入（src/shared 不 import src/packs）
 import { z } from 'zod';
 import { CATALOG_SCHEMAS, type CatalogKind } from './catalog.js';
+import { yuanToFen } from './catalog-money.js';
 import { parseCsv } from './csv.js';
 import type { EntityType, FieldDef } from './pack.js';
 
@@ -42,7 +43,7 @@ export const CSV_REASON_HEADER = '不合格原因';
 
 // ---------------- 列 ----------------
 
-type FlatType = 'string' | 'integer' | 'boolean' | 'strings';
+type FlatType = 'string' | 'integer' | 'decimal' | 'boolean' | 'strings';
 /** 中文标签 → payload 的键 */
 export type CsvLabels = Readonly<Record<string, string>>;
 
@@ -63,13 +64,13 @@ function schemaCsvShape(kind: CatalogKind, schema?: z.ZodType, packId = 'travel'
   let shape = schemaShapes.get(key);
   if (shape) return shape;
   const js = z.toJSONSchema(schema ?? CATALOG_SCHEMAS[kind], { io: 'input' }) as {
-    properties: Record<string, { type?: string; items?: { type?: string } }>;
+    properties: Record<string, { type?: string; multipleOf?: number; items?: { type?: string } }>;
     required?: string[];
   };
   const flat = new Map<string, FlatType>();
   for (const [k, p] of Object.entries(js.properties)) {
     if (p.type === 'string') flat.set(k, 'string');
-    else if (p.type === 'integer' || p.type === 'number') flat.set(k, 'integer');
+    else if (p.type === 'integer' || p.type === 'number') flat.set(k, p.multipleOf === 0.01 ? 'decimal' : 'integer');
     else if (p.type === 'boolean') flat.set(k, 'boolean');
     else if (p.type === 'array' && p.items?.type === 'string') flat.set(k, 'strings');
   }
@@ -101,6 +102,7 @@ function flatTypeOf(f: FieldDef): FlatType | null {
     case 'monthRange':
       return 'string';
     case 'money':
+      return f.decimals === 2 ? 'decimal' : 'integer';
     case 'intUnit':
       return 'integer';
     case 'boolean':
@@ -223,7 +225,7 @@ export function resolveCsvHeader(shape: CsvShape, rawHeader: readonly string[], 
 
 /**
  * 一行 → payload：空格子就是这个键不存在（必填的数组给 []）；格子先去掉防公式前缀、再去首尾空白；
- * 数值只认整数写法；布尔认 是/否、true/false；数组按「、」切。payload 的键按 shape.order 排
+ * 整数列只认整数写法，两位小数的金额列收大于0、最多两位小数；布尔认 是/否、true/false；数组按「、」切。payload 的键按 shape.order 排
  */
 export function convertCsvRow(
   shape: CsvShape,
@@ -245,6 +247,15 @@ export function convertCsvRow(
     else if (type === 'integer') {
       if (/^-?[0-9]+$/.test(cell)) values[h] = Number(cell);
       else issues.push({ path: h, message: `要写整数，写的是「${cell}」` });
+    } else if (type === 'decimal') {
+      try {
+        const n = Number(cell);
+        if (!/^[0-9]+(?:\.[0-9]{1,2})?$/.test(cell) || n <= 0) throw new Error();
+        yuanToFen(n);
+        values[h] = n;
+      } catch {
+        issues.push({ path: h, message: `要写大于0、最多两位小数，写的是「${cell}」` });
+      }
     } else if (type === 'boolean') {
       if (['是', 'true', 'TRUE', '1'].includes(cell)) values[h] = true;
       else if (['否', 'false', 'FALSE', '0'].includes(cell)) values[h] = false;

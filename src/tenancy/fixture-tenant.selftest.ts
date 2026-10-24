@@ -56,7 +56,7 @@ if (process.argv[2] !== 'worker') {
     assert.equal(widget.csvImport, true);
     const sample = { id: 'w-sample', title: '合成方盒', unitPrice: 12, unit: '件', tags: ['合成'] };
     assert.deepEqual(checkItem(widget, sample).required, []);
-    assert.ok(checkItem(widget, { ...sample, unitPrice: 3.65 }).required.some((i) => i.path === 'unitPrice'));
+    assert.ok(checkItem(widget, { ...sample, unitPrice: 3.655 }).required.some((i) => i.path === 'unitPrice'));
 
     const dir = new URL('../../data/packs/__fixture/', import.meta.url);
     const brandBytes = fs.readFileSync(new URL('brand.json', dir), 'utf8');
@@ -128,7 +128,7 @@ if (process.argv[2] !== 'worker') {
       await t.close();
     }
     console.log(
-      `FIXTURE SKELETON PASS：PACK_FIXTURES=1，widget 整数元字段、阶段/节表配对、${locked.length} 个锁定节、参考配置、契约反例、PGlite 双租户与品牌`,
+      `FIXTURE SKELETON PASS：PACK_FIXTURES=1，widget 元值金额字段、阶段/节表配对、${locked.length} 个锁定节、参考配置、契约反例、PGlite 双租户与品牌`,
     );
   }
 }

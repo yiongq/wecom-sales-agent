@@ -37,7 +37,7 @@ export const fixture: IndustryPack = deepFreeze({
       fields: [
         { key: '$code', type: 'text', label: '方盒编号', group: 'basic' },
         { key: 'title', type: 'text', label: '方盒名称', group: 'basic' },
-        { key: 'unitPrice', type: 'money', unitFrom: 'unit', label: '单价', group: 'basic', reprices: true },
+        { key: 'unitPrice', type: 'money', decimals: 2, unitFrom: 'unit', label: '单价', group: 'basic', reprices: true },
         { key: 'unit', type: 'enum', options: ['件', '盒'], label: '单位', group: 'basic', reprices: true },
         { key: 'tags', type: 'tags', label: '标签', group: 'basic' },
         { key: '$status', type: 'status', label: '状态', group: 'basic' },
@@ -75,7 +75,11 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
   const WidgetSchema = z.strictObject({
     id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
     title: widgetText,
-    unitPrice: z.number().int().positive(),
+    unitPrice: z
+      .number()
+      .positive()
+      .multipleOf(0.01)
+      .max(Number.MAX_SAFE_INTEGER / 100),
     unit: z.enum(['件', '盒']),
     tags: z.array(widgetText),
   });
@@ -87,7 +91,7 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
         titleKey: 'title',
         lockedWhenActive: ['id'],
         repriceFields: ['unitPrice', 'unit'],
-        moneyFields: [{ path: 'unitPrice', decimals: 0 }],
+        moneyFields: [{ path: 'unitPrice', decimals: 2 }],
         retrieval: true,
       },
     },

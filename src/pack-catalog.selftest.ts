@@ -51,7 +51,7 @@ if (process.argv[2] !== 'worker') {
     assert.ok(widget.schema.safeParse(sample).success);
     for (const payload of [
       { ...sample, extra: true },
-      { ...sample, unitPrice: 3.65 },
+      { ...sample, unitPrice: 3.655 },
       { ...sample, unitPrice: 0 },
       { ...sample, unit: '台' },
       { ...sample, tags: [''] },
@@ -60,7 +60,8 @@ if (process.argv[2] !== 'worker') {
       assert.equal(widget.schema.safeParse(payload).success, false);
       assert.ok(checkItem(fixture.entities[0]!, payload).required.length > 0 || Object.hasOwn(payload, 'extra'));
     }
-    assert.deepEqual(widget.moneyFields, [{ path: 'unitPrice', decimals: 0 }]);
+    assert.deepEqual(widget.moneyFields, [{ path: 'unitPrice', decimals: 2 }]);
+    assert.ok(widget.schema.safeParse({ ...sample, unitPrice: 3.65 }).success);
 
     const reject = (catalog: Record<string, CatalogKindSpec>, kind: string, reason: string): void => {
       assert.throws(
@@ -73,7 +74,7 @@ if (process.argv[2] !== 'worker') {
     reject({ widget, hotel: { ...widget, retrieval: false } }, 'hotel', 'entities');
     reject({ widget: { ...widget, moneyFields: [] } }, 'widget', 'moneyFields');
     reject({ widget: { ...widget, moneyFields: [{ path: 'wrongPrice', decimals: 0 }] } }, 'widget', 'moneyFields');
-    reject({ widget: { ...widget, moneyFields: [{ path: 'unitPrice', decimals: 2 }] } }, 'widget', 'moneyFields');
+    reject({ widget: { ...widget, moneyFields: [{ path: 'unitPrice', decimals: 0 }] } }, 'widget', 'moneyFields');
     reject({ widget: { ...widget, moneyFields: [...widget.moneyFields, ...widget.moneyFields] } }, 'widget', 'moneyFields');
 
     // 同名 hotel 只存在于自测副本；生产的证明包仍仅登记 widget。第 4 步可沿用此构造测 CSV 隔离。

@@ -5,10 +5,10 @@
 //   月份区间取 1–12 月，其余取各条已有的值去重；多值的字段（多选枚举、标签、多选引用）按「包含」匹配；
 // - 搜索覆盖 list.search 的字段，不分大小写、忽略空白的子串（与 ⌘K 的原文匹配相同）；
 // - 页签的数字按搜索与筛选之后的条目算，默认按更新时间倒序（defaultSort 只有 -$updated 一种）
-import { clockTime, dateText, dayKey, digits, money, parseMonthRange, quantity } from '../../../src/shared/format.js';
+import { clockTime, dateText, dayKey, digits, parseMonthRange, quantity } from '../../../src/shared/format.js';
 import { type EntityType, type FieldDef, type FieldType, valueAt } from '../../../src/shared/pack.js';
 import { actorName } from '../../../src/shared/ui-labels.js';
-import { moneyUnit, nounOf, parseStored, type RefItem, resolveRef } from '../fields/model.js';
+import { moneyText, moneyUnit, nounOf, parseStored, type RefItem, resolveRef } from '../fields/model.js';
 import { STATUS_LABEL } from '../parts/Status.js';
 import { fieldText, type Matcher, plainMatch } from '../shell/search.js';
 import { type CatalogSearch, parseFilter } from './params.js';
@@ -137,7 +137,7 @@ function cellText(f: FieldDef, row: ListRow): string {
   const v = cellValue(row, f.key);
   switch (f.type) {
     case 'money':
-      return typeof v === 'number' ? (f.unit ? digits(v) : money(v, moneyUnit(f, row.payload))) : '';
+      return typeof v === 'number' ? moneyText(f, v, f.unit ? '' : moneyUnit(f, row.payload)) : '';
     case 'intUnit':
       return typeof v === 'number' ? quantity(v, f.unit ?? '') : '';
     case 'subItems':
@@ -296,7 +296,7 @@ export const matchesPick = (row: ListRow, p: ActivePick): boolean => atomsOf(p.f
 
 /** 按类型写一个取值：数字带单位和千分位，引用写被引用条目的名称（库里找不到写原文） */
 function valueLabel(f: FieldDef, value: string, refItems: readonly RefItem[] | undefined): string {
-  if (f.type === 'money') return money(Number(value), f.unit ?? (f.unitFrom ? '' : '元'));
+  if (f.type === 'money') return moneyText(f, Number(value), f.unit ?? (f.unitFrom ? '' : '元'));
   if (f.type === 'intUnit') return quantity(Number(value), f.unit ?? '');
   if (f.type === 'reference') return resolveRef(f, value, refItems)?.name ?? value;
   return value;

@@ -16,6 +16,14 @@ export function digits(n: number): string {
 /** 金额：「42,800元」「13,800元/人」。unit 是整个单位（行业包的 FieldDef.unit），默认「元」 */
 export const money = (n: number, unit = '元'): string => (Number.isFinite(n) ? `${digits(n)}${unit}` : '—');
 
+/** 整数分显示为元：整元省小数，否则角分总写两位；数字与元之间不加空格。 */
+export function formatYuan(fen: number): string {
+  if (!Number.isInteger(fen) || !Number.isFinite(fen)) return '—';
+  const amount = Math.abs(fen);
+  const fraction = amount % 100;
+  return `${fen < 0 ? '-' : ''}${digits(Math.floor(amount / 100))}${fraction ? `.${String(fraction).padStart(2, '0')}` : ''}元`;
+}
+
 /** 带单位的整数：「8天」「4,700米」 */
 export const quantity = (n: number, unit: string): string => (Number.isFinite(n) ? `${digits(n)}${unit}` : '—');
 
