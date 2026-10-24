@@ -496,7 +496,11 @@ exit 0`,
       r.out,
     );
     r = deploy('v07', { ...env, FAKE_HEALTH_FAIL: '1' });
-    check(`${status}：自动回滚 8 转 1、不启动 prev`, r.code === 1 && r.out.includes('没有自动回滚') && !fs.existsSync(rolledBack), r.out);
+    check(
+      `${status}：自动回滚 8 转 1、提示服务不可用、不启动 prev`,
+      r.code === 1 && r.out.includes('没有自动回滚，服务当前不可用！') && !fs.existsSync(rolledBack),
+      r.out,
+    );
   }
   for (const env of [
     { FAKE_REFUND_SCHEMA: 'down', FAKE_REFUND: 'f' },
@@ -541,17 +545,32 @@ exit 0`,
         !fs.existsSync(purged),
       r.out,
     );
+    check(
+      `08：${label}镜像目标在四项清零、重跑检查通过后给出恢复命令`,
+      r.out.includes(restore) &&
+        r.out.indexOf('四项都为零、重跑回滚检查退出码 0 后') < r.out.indexOf(restore) &&
+        r.out.includes('curl -fsS http://127.0.0.1:3999/healthz') &&
+        r.out.includes('确认 revision 是 side1:prev 的 APP_REVISION'),
+      r.out,
+    );
+    const pre08 = guard('pre-08', env);
+    check(
+      `08：pre-08 目标只有${label}时退出 9，清理并检查通过后重新部署，无镜像恢复命令`,
+      pre08.code === 9 &&
+        pre08.out.includes('四项都为零、重跑回滚检查通过后，再部署旧 tag') &&
+        !pre08.out.includes('APP_IMAGE=') &&
+        !pre08.out.includes('docker tag'),
+      pre08.out,
+    );
     const d = deploy('v03', env);
     check(
       `08：${label}部署旧 tag，9 转 1、原样透出、rsync 前拒绝`,
       d.code === 1 &&
-        d.out.includes(r.out.trim()) &&
+        d.out.includes(pre08.out.trim()) &&
         d.out.includes('08 之前的版本，非旅游数据回滚检查拒绝部署（服务器上什么都没动）') &&
         !d.log.includes('rsync '),
       d.out,
     );
-    const pre08 = guard('pre-08', env);
-    check(`08：pre-08 目标只有${label}时退出 9`, pre08.code === 9 && pre08.out.includes(r.out.trim()), pre08.out);
     const oldTag = deploy('v07', env);
     check(
       `08：07 tag 按文件树判 pre-08，${label}导致 9 转 1、同步前拒绝`,
@@ -566,15 +585,45 @@ exit 0`,
       `08：${label}自动回滚，9 转 1、原样透出、不启动 prev`,
       auto.code === 1 &&
         auto.out.includes(r.out.trim()) &&
-        auto.out.includes('非旅游数据回滚检查拒绝，没有自动回滚！按上面的步骤人工处理') &&
+        auto.out.includes('非旅游数据回滚检查拒绝，没有自动回滚，服务当前不可用！按上面的步骤人工处理') &&
         !fs.existsSync(rolledBack),
       auto.out,
     );
   }
   for (const target of ['pre-02', 'pre-03', 'pre-04', 'pre-05', 'pre-07', 'pre-08', 'side1:prev']) {
     r = guard(target, { FAKE_TARGET: '7', FAKE_RUNNING: '8', FAKE_NONTRAVEL_ORDERS: 't' });
-    check(`08：${target} 同样检查通用单、退出 9`, r.code === 9 && r.out.includes('通用单'), r.out);
+    check(
+      `08：${target} 同样检查通用单、退出 9，仅镜像目标打印恢复命令`,
+      r.code === 9 &&
+        r.out.includes('通用单') &&
+        r.out.includes(restore) === (target === 'side1:prev') &&
+        r.out.includes('APP_IMAGE=') === (target === 'side1:prev') &&
+        r.out.includes('再部署旧 tag') === (target !== 'side1:prev'),
+      r.out,
+    );
   }
+  const emptyServer = {
+    FAKE_RUNNING: 'missing',
+    FAKE_NONTRAVEL_TENANTS: 'down',
+    FAKE_NONTRAVEL_ORDERS: 'down',
+    FAKE_NONTRAVEL_CATALOG: 'down',
+    FAKE_KB_SCHEMA: 'down',
+  };
+  r = guard('pre-08', emptyServer);
+  check(
+    '08：新服务器四项无法确认，退出 9 并提示先部署新版或确认无数据',
+    r.code === 9 &&
+      nontravelRisks.every(([, , label]) => new RegExp(`${label}（[^\\n]*：无法确认`).test(r.out)) &&
+      r.out.includes('若这是库还没建、四项都无法确认的新服务器，先部署 08 之后的 tag，或确认库里确实没有这四类数据后再处理。') &&
+      !r.out.includes('APP_IMAGE='),
+    r.out,
+  );
+  const emptyDeploy = deploy('v07', emptyServer);
+  check(
+    '08：新服务器部署旧 tag 透出空库提示，9 转 1、同步前拒绝',
+    emptyDeploy.code === 1 && emptyDeploy.out.includes(r.out.trim()) && !emptyDeploy.log.includes('rsync '),
+    emptyDeploy.out,
+  );
   const oldRisks = {
     FAKE_TARGET: 'error',
     FAKE_RUNNING: '8',
@@ -737,6 +786,12 @@ exit 0`,
     );
     fs.rmSync(path.join(srv, '.env.sandbox'), { force: true });
   }
+  r = deploy('v08', { ...sandboxEnv, FAKE_OTHER_HOST: 't', FAKE_HEALTH_FAIL: '1' });
+  check(
+    '05：自动回滚 7 转 1、提示服务不可用、不启动 prev',
+    r.code === 1 && r.out.includes('多租户或沙箱风险，没有自动回滚，服务当前不可用！') && !fs.existsSync(rolledBack),
+    r.out,
+  );
   r = guard('pre-05', { ...sandboxEnv, FAKE_SANDBOX_ROWS: 't' });
   check(
     '05-13② 当前镜像 purge --all 后重新问库才放行',

@@ -4647,6 +4647,12 @@ await t.close();
       deploySrc.slice(gp, up),
     ),
   );
+  for (const code of [7, 8, 9]) {
+    check(
+      `deploy.sh：自动回滚 ${code} 分支明确提示服务当前不可用`,
+      new RegExp(`^ {4}${code}\\) echo "[^\\n]*没有自动回滚，服务当前不可用！[^\\n]*" >&2 ;;$`, 'm').test(deploySrc.slice(gp, up)),
+    );
+  }
   check(
     'deploy.sh：两处用的是同一个 guard_rollback，经 ssh 把本地的 rollback-guard.sh 交给服务器上的 bash -s（带上项目名与宿主端口）',
     /guard_rollback\(\) \{ ssh "\$\{SERVER\}" bash -s -- "\$REMOTE_DIR" "\$1" "\$NAME" "\$HOST_PORT" <deploy\/rollback-guard\.sh; \}/.test(
