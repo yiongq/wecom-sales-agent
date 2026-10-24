@@ -121,6 +121,7 @@ function seedContext(pub: Parameters<typeof publishedPolicy>[1] & { packId: stri
   if (!terms) return { today, refund: null };
   return {
     today,
+    ...(runtime.seedSession ? { seedSession: runtime.seedSession.bind(runtime) } : {}),
     refund: {
       terms,
       policy,

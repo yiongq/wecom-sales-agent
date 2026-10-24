@@ -64,10 +64,10 @@ export function validatePackCatalog(pack: IndustryPack, runtime: Pick<PackRuntim
       throw new Error(`行业包 ${pack.id} 的 kind ${kind} 在 entities 与 catalog 中不一致`);
     }
   }
-  const moneyPaths = (fields: readonly FieldDef[], prefix = ''): string[] =>
+  const moneyPaths = (fields: readonly FieldDef[], prefix = ''): { path: string; decimals: 0 | 2 }[] =>
     fields.flatMap((field) => {
       const path = prefix && field.key ? `${prefix}.${field.key}` : prefix + field.key;
-      if (field.type === 'money') return [path];
+      if (field.type === 'money') return [{ path, decimals: field.decimals ?? 0 }];
       return field.type === 'subItems' ? moneyPaths(field.item ?? [], `${path}[]`) : [];
     });
   for (const entity of pack.entities) {
@@ -75,7 +75,7 @@ export function validatePackCatalog(pack: IndustryPack, runtime: Pick<PackRuntim
     const expected = moneyPaths(entity.fields);
     if (
       declared.length !== expected.length ||
-      expected.some((path) => declared.filter((field) => field.path === path && field.decimals === 0).length !== 1)
+      expected.some(({ path, decimals }) => declared.filter((field) => field.path === path && field.decimals === decimals).length !== 1)
     ) {
       throw new Error(`行业包 ${pack.id} 的 kind ${entity.kind} 的 moneyFields 与 money 字段配置不一致`);
     }

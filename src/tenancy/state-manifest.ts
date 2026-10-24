@@ -580,6 +580,7 @@ export const STATE_MANIFEST: Record<
   'src/shared/pack-fixtures/renovation.ts:material': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/shared/pack-fixtures/renovation.ts:pkg': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/shared/pack-fixtures/renovation.ts:renovation': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
+  'src/shared/pack.ts:DECIMAL_MONEY': { kind: 'instance', why: '静态金额格式校验 schema，不保存租户数据。' },
   'src/shared/pack.ts:SYSTEM_KEYS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/shared/security-headers.ts:ASSET_TYPES': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/shared/sop-sections.ts:BOM': { kind: 'instance', why: '固定模板、解析词表或序列化规则；不保存按租户变化的业务状态。' },

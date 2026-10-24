@@ -5,9 +5,9 @@
 // - 复制为新草稿：新编号的检查、换掉编号的 payload；
 // - 新建：编号字段没写帮助、示例时按实体补上（spec「新建」：帮助里写格式）。
 import { CATALOG_CODE } from '../../../src/shared/catalog.js';
-import { money, parseMonthRange, quantity } from '../../../src/shared/format.js';
+import { parseMonthRange, quantity } from '../../../src/shared/format.js';
 import { type CheckIssue, CODE_RULE, type EntityType, type FieldDef, filled, valueAt } from '../../../src/shared/pack.js';
-import { arrayValued, CODECS, moneyUnit, nounOf, type Payload, pruneHidden, visible, writeValue } from '../fields/model.js';
+import { arrayValued, CODECS, moneyText, moneyUnit, nounOf, type Payload, pruneHidden, visible, writeValue } from '../fields/model.js';
 import type { ItemSearch } from './params.js';
 import { issueText, locksOnActive } from './detail.js';
 
@@ -48,7 +48,7 @@ export function valueText(f: FieldDef, v: unknown, row: Payload, refName: RefNam
     case 'longText':
       return typeof v === 'string' ? v : String(v);
     case 'money':
-      return typeof v === 'number' ? money(v, moneyUnit(f, row)) : String(v);
+      return typeof v === 'number' ? moneyText(f, v, moneyUnit(f, row)) : String(v);
     case 'intUnit':
       return typeof v === 'number' ? quantity(v, f.unit ?? '') : String(v);
     case 'monthRange': {
@@ -86,7 +86,7 @@ export function activateSentence(entity: EntityType, payload: Payload, refName: 
     const f = entity.fields.find((x) => x.key === key);
     const v = f ? valueAt(payload, key) : undefined;
     if (!f) return '';
-    if (f.type === 'money' && f.unit && typeof v === 'number') return money(v, f.unit.split('/')[0]);
+    if (f.type === 'money' && f.unit && typeof v === 'number') return moneyText(f, v, f.unit.split('/')[0]);
     return valueText(f, v, payload, refName) ?? '—';
   });
   return /[。！？.!?]$/.test(line) ? line : `${line}。`;

@@ -2447,6 +2447,7 @@ await expectWhy([
     routeId: 'r-guizhou',
     status: 'pending_payment',
     totalPrice: 5200,
+    totalFen: null,
     createdAt: new Date(T0),
     paidAt: null,
     confirmedAt: null,
@@ -3673,8 +3674,12 @@ await t.close();
     'case "$1" in exec|compose|run|inspect|image|container) cat >/dev/null ;; esac',
     // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
     // 只认 rollback-guard.sh 自己的两条渠道查询：backup.sh 的探测里也有 channel_accounts（'public.' || t 的写法），不能被截走
-    'case "$*" in *0015_order_refund_status.sql*|*public.orders*) echo "docker07 $PWD|$*" >> "$FAKE_LOG" ;; *information_schema.columns*"column_name = \'kind\'"*) echo "docker05 $PWD|$*" >> "$FAKE_LOG" ;; *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
+    'case "$*" in *order-view.ts*|*"pack_id <>"*|*"data->>"*|*"kind not in"*|*"source <>"*|*to_regclass*public.kb_chunks*) echo "docker08 $PWD|$*" >> "$FAKE_LOG" ;; *0015_order_refund_status.sql*|*public.orders*) echo "docker07 $PWD|$*" >> "$FAKE_LOG" ;; *information_schema.columns*"column_name = \'kind\'"*) echo "docker05 $PWD|$*" >> "$FAKE_LOG" ;; *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
     'case "$*" in',
+    // 08 的探测与查询单独记账：旧版夹具没有非旅游数据，原有 02–07 断言保持不变。
+    '  *order-view.ts*) exit 1 ;;',
+    '  *to_regclass*public.kb_chunks*) echo t ;;',
+    '  *"pack_id <>"*|*"data->>"*|*"kind not in"*|*"source <>"*) echo f ;;',
     '  *information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo f ;;',
     // 这些旧版用例没有沙箱痕迹：目标镜像早于 05、容器列表为空、上面的 psql 返回没有 kind 列。
     '  *tenancy/runtime.ts*|*0015_order_refund_status.sql*) exit 1 ;;',
@@ -4632,7 +4637,7 @@ await t.close();
     rb > 0 &&
       rb < gp &&
       gp < up &&
-      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[345678*]\) echo "[^\n]*" >&2 ;;\n){7} {2}esac\n {2}exit 1\n\}\n/.test(
+      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[3456789*]\) echo "[^\n]*" >&2 ;;\n){8} {2}esac\n {2}exit 1\n\}\n/.test(
         deploySrc,
       ),
   );

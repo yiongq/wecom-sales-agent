@@ -82,7 +82,7 @@ import { numEnv } from './env.js';
 import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guards.js';
 import { profile } from './profile.js';
 import { paymentMode } from './payment/mode.js';
-import type { Assignee, ChannelAdapter, ChatMessage, Order, OrderStatus, PushOpts, Route, Session } from './types.js';
+import type { Assignee, ChannelAdapter, ChatMessage, CustomerProfile, Order, OrderStatus, PushOpts, Route, Session } from './types.js';
 import { boot } from './boot.js';
 import { currentPrivacyNotice, escapeHtml, initPrivacy, startPrivacyPoll } from './privacy/privacy.js';
 import { startOtelExport } from './ops/otel.js';
@@ -237,7 +237,11 @@ const legacyWrites: MiddlewareHandler = async (c, next) => (profile().flags.lega
 // 带 ADMIN_PASS 的请求照旧返回原对象；「带凭据」只认 isAdminReq（Basic），不认 console 的登录 cookie
 const ANON_MEMBER_NAME = '顾问';
 type AnonMessage = Omit<ChatMessage, 'authorId'>;
-type AnonSession = Omit<Session, 'assignee' | 'messages'> & { assignee?: Omit<Assignee, 'userId'> | null; messages: AnonMessage[] };
+type AnonSession = Omit<Session, 'assignee' | 'messages' | 'packState' | 'profile'> & {
+  assignee?: Omit<Assignee, 'userId'> | null;
+  messages: AnonMessage[];
+  profile: Omit<CustomerProfile, 'attrs'>;
+};
 type AnonOrder = Omit<Order, 'confirmedBy' | 'paidMarkedBy' | 'cancelReason'>;
 
 /** 按消息逐条投影：去掉操作者 id、作者姓名写「顾问」，交还消息里的姓名同样换成「顾问」（02 spec「后台接口」匿名投影、不变量 44） */
@@ -249,11 +253,75 @@ function anonMessage(m: ChatMessage): AnonMessage {
   return out;
 }
 
+/**
+ * 08 R4：匿名接口只拷白名单里的键。逐个列出 Session 的全部键：true 是 08 之前就有的，匿名输出的键因此逐字节不变；
+ * false 是行业包的状态槽，不外露。Record<keyof Session, boolean> 让 Session 新增键而这里没表态就编译不过，
+ * 加键的人必须决定它外不外露（08 第 11 步的 moneyLedger 同样填 false）
+ */
+const SESSION_EXPOSURE = {
+  id: true,
+  channel: true,
+  stage: true,
+  profile: true,
+  messages: true,
+  orderIds: true,
+  handedOver: true,
+  createdAt: true,
+  updatedAt: true,
+  lastQuote: true,
+  quoteHistory: true,
+  stageBeforeHandoff: true,
+  budgetGaps: true,
+  lastShownRoutes: true,
+  seenRouteIds: true,
+  missedDestinations: true,
+  reminders: true,
+  recommendedRoutes: true,
+  afterSale: true,
+  handoff: true,
+  firstHandoffAt: true,
+  handoffCount: true,
+  handoffLog: true,
+  seed: true,
+  assignee: true,
+  turnSignals: true,
+  negativeHits: true,
+  followupOptOut: true,
+  consent: true,
+  consentAskCount: true,
+  channelAccountId: true,
+  packState: false,
+} as const satisfies Record<keyof Session, boolean>;
+/** 运行时挂在会话上、不在 Session 类型里的键：core/followup 的跟进记账，web/routes 的轮次上限标记（08 之前就随会话外露） */
+const RUNTIME_EXPOSURE = { followup: true, webTurnLimited: true } as const;
+/** profile 的白名单：CustomerProfile 的全部键去掉 attrs（Record<keyof CustomerProfile, boolean> 同样逼着新增键表态） */
+const PROFILE_EXPOSURE = {
+  destinationInterest: true,
+  segment: true,
+  travelers: true,
+  dates: true,
+  budget: true,
+  notes: true,
+  nickname: true,
+  avatar: true,
+  attrs: false,
+} as const satisfies Record<keyof CustomerProfile, boolean>;
+
+/** 键在不在白名单里：只认自有键，原型上的名字（toString、__proto__）不算 */
+const exposedIn = (table: Readonly<Record<string, boolean>>, key: string): boolean => Object.hasOwn(table, key) && table[key] === true;
+
 function anonSession(s: Session): AnonSession {
-  const { assignee, ...rest } = s;
-  const out: AnonSession = { ...rest, messages: s.messages.map(anonMessage) };
-  if (assignee !== undefined) out.assignee = assignee && { name: ANON_MEMBER_NAME, at: assignee.at };
-  return out;
+  // 按会话自己的键序走一遍、只留白名单里的：输出的键序与整份展开拷贝时相同
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(s)) {
+    if (key === 'assignee' || !(exposedIn(SESSION_EXPOSURE, key) || exposedIn(RUNTIME_EXPOSURE, key))) continue;
+    if (key === 'messages') out[key] = s.messages.map(anonMessage);
+    else if (key === 'profile' && value !== null && typeof value === 'object') {
+      out[key] = Object.fromEntries(Object.entries(value).filter(([k]) => exposedIn(PROFILE_EXPOSURE, k)));
+    } else out[key] = value;
+  }
+  if (s.assignee !== undefined) out.assignee = s.assignee && { name: ANON_MEMBER_NAME, at: s.assignee.at };
+  return out as unknown as AnonSession;
 }
 
 function anonOrder(o: Order): AnonOrder {

@@ -40,7 +40,8 @@ import { paidOrderText } from './order-words.js';
 import { travelPolicy } from './policy.js';
 import { policyViolations } from './policy-lint.js';
 import { createTravelAfterSales } from './after-sales.js';
-import { CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, REPRICE_FIELDS, type CatalogKindSpec } from '../../core/pack-api.js';
+import { CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, REPRICE_FIELDS, profileForPrompt, type CatalogKindSpec } from '../../core/pack-api.js';
+import { createTravelSessionHooks } from './session-hooks.js';
 
 const thresholds = { ...travelPriceThresholds, dates: travelDateThresholds, search: travelSearchThresholds };
 interface TravelRuntimeTypes extends PackRuntimeTypes {
@@ -140,6 +141,9 @@ export function createTravelRuntime(sources: PackSources) {
     beforeTool: turnHooks.beforeTool,
     afterTool: turnHooks.afterTool,
     extractProfile,
+    // 08 R4：旅游的画像与会话钩子；profileForPrompt 就是 types.ts 里今天的那个函数
+    profileForPrompt,
+    ...createTravelSessionHooks(sources),
     advanceStage,
     prefetch: turnHooks.prefetch,
     contextNote: turnHooks.contextNote,

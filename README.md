@@ -442,6 +442,7 @@ docker compose -f deploy/compose.yml up -d app
 
 **回到文件模式或更早的版本**（配置源与会话存储是两件事）：
 
+- **08 之前的镜像**：回滚检查以 `src/core/order-view.ts` 是否存在判定目标版本。库里有非旅游租户、通用单（`data->>'v' = '2'`）、kind 不在 `route` / `hotel` 的条目或 source 不是 `route` 的知识块时，[回滚检查脚本](deploy/rollback-guard.sh) 以 **退出码 9** 拒绝，`deploy.sh` 转成 1 并透出处理步骤。先停用并清理非旅游租户及其遗留数据，确认四项都为零后再回滚；库或查询结果无法确认时从严拒绝，仅明确正在运行的也是 08 之前的镜像时豁免未知项，已确认存在的风险仍拒绝。自动回滚同样适用。
 - **先查条目版本**：后台修改已上架条目后（`/healthz` 的 `config.catalogVersioned=true`），`deploy.sh` 拒绝回到 02 之前的镜像。旧镜像不写条目版本，那期间发出的方案书回到 02 后会按版本 1 显示旧价；回到文件存储也去不掉风险，只能回滚到 02 之后的镜像。检查适用于手工部署与自动回滚，健康或数据库状态看不清时从严拒绝。
 - **文件配置的链接损失**：同一 02 镜像去掉 `CONFIG_SOURCE=db` 后，已发 `?v=2` 及以上的方案书全部 404，不带 `v` 的旧链接按导出时的新内容显示，不能保持历史报价；仅把 `SESSION_STORE` 改为 file、仍保留 DB 配置则不改变条目版本。当前没有对此类配置切换的专门启动告警，操作前须人工核对。
 - 会话在库里时（`.env` 为 `SESSION_STORE=db` 或 `var/` 有 `sessions-in-db.json`），先用 02 的镜像回到文件存储：`docker compose -f deploy/compose.yml stop app`，跑 `src/cli/export-sessions.ts`（用法见 [deploy/compose.yml](deploy/compose.yml) 开头），去掉 `SESSION_STORE=db` 再起。不做这一步，deploy.sh 拒绝部署 02 之前的 tag，也不会自动回滚到 02 之前的 `:prev`（[deploy/rollback-guard.sh](deploy/rollback-guard.sh)）。

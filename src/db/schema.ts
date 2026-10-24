@@ -402,17 +402,19 @@ export const orders = pgTable(
     id: text('id').notNull(),
     /** 会话被清除或删除后置空。外键 (tenant_id, session_id) → conversations ON DELETE SET NULL (session_id) 在 custom 迁移里 */
     sessionId: text('session_id'),
-    /** 不对产品库建外键 */
+    /** 主条目编号；不对产品库建外键 */
     routeId: text('route_id').notNull(),
     status: text('status', { enum: ['pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending', 'refunded'] }).notNull(),
     totalPrice: integer('total_price').notNull(),
+    /** 通用单的整数分；旧版旅游单留空，不回填 */
+    totalFen: bigint('total_fen', { mode: 'number' }),
     createdAt: tstz('created_at').notNull(),
     /** 触发器：写入之后不能改、不能清空 */
     paidAt: tstz('paid_at'),
     confirmedAt: tstz('confirmed_at'),
     voidedAt: tstz('voided_at'),
     voidReason: text('void_reason', { enum: ['reset', 'resync'] }),
-    /** 整个 Order 对象，键序原样；重建只读它 */
+    /** 整个 AnyOrder 对象，键序原样；重建只读它 */
     data: json('data').$type<Record<string, unknown>>().notNull(),
   },
   (t) => [
@@ -421,6 +423,11 @@ export const orders = pgTable(
     check('orders_status_check', sql`${t.status} IN ('pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending', 'refunded')`),
     check('orders_refund_paid_check', sql`${t.status} NOT IN ('refund_pending', 'refunded') OR ${t.paidAt} IS NOT NULL`),
     check('orders_total_price_check', sql`${t.totalPrice} >= 0`),
+    check('orders_total_fen_check', sql`${t.totalFen} IS NULL OR ${t.totalFen} >= 0`),
+    check(
+      'orders_line_total_fen_check',
+      sql`(${t.data}->>'v') IS DISTINCT FROM '2' OR (${t.totalFen} IS NOT NULL AND ${t.totalFen} = (${t.data}->>'totalFen')::bigint)`,
+    ),
     check('orders_void_reason_check', sql`${t.voidReason} IN ('reset', 'resync')`),
     check('orders_data_check', sql`json_typeof(${t.data}) = 'object' AND coalesce(${t.data}->>'id' = ${t.id}, false)`),
     index('orders_by_status').on(t.tenantId, t.status, t.createdAt),
