@@ -3,7 +3,7 @@
 // 本文件被 server.ts 静态 import，所以它自己不能静态 import src/otel/**（lint 的 check-boundaries 管着）。
 // 每轮的会话引用、渠道、租户在这里取好交给 exportTurn：src/otel/ 只经 onTurnEnd 拿数据，不碰 store 与库。
 import { createHmac, randomBytes } from 'node:crypto';
-import { configMode, configRuntime, currentTenant } from '../config/source.js';
+import { configMode, configRuntime, currentPack, currentTenant } from '../config/source.js';
 import { llmCfg } from '../llm.js';
 import { conversationRef, getSession } from '../store.js';
 import { onTurnEnd } from '../trace/recorder.js';
@@ -32,6 +32,11 @@ export function providerName(): string {
   return 'openai_compatible';
 }
 
+/** 导出的行业包名：DB 模式取租户行的包；文件模式取配置目录 pack.json 装载的包，没有 pack.json 就是旅游（08 R11） */
+export function agentName(): string {
+  return configMode() === 'db' ? currentTenant().pack.id : currentPack().runtime.id;
+}
+
 /**
  * 没有 ref 的会话（文件存储、demo 类会话）的匿名引用：HMAC-SHA256(进程启动导出时随机生成的密钥, 会话 id) 的前 16 个十六进制字符。
  * 不含客户标识（推不回会话 id 的任何一段），不同会话不会撞（短码只有末 4 位），同一进程里同一会话每轮相同；不用 Map 存，
@@ -54,8 +59,8 @@ export async function startOtelExport(): Promise<void> {
       // 实例初始化不读租户状态；同步订阅在这一轮所属的租户作用域执行。
       const db = configMode() === 'db';
       const tenant = db ? configRuntime().deps.tenantSlug : '';
-      // 文件配置模式读 data/ 下的旅游 demo，没有租户行，行业包就是旅游包
-      const agent = db ? currentTenant().pack.id : 'travel';
+      // 文件配置模式没有租户行：行业包取配置目录的 pack.json，没有就是旅游包
+      const agent = agentName();
       const id = f.turn.conversationId;
       const meta = {
         tenant,

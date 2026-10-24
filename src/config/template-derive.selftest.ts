@@ -38,7 +38,7 @@ const runtime = config.currentPack().runtime;
 
 const mirror = readMirrorSop();
 assert.equal(mirror, fs.readFileSync(path.join(root, 'data', 'sop.md'), 'utf8'));
-const mirrorByKey = new Map(splitSop(mirror).map((s) => [s.key, s.text]));
+const mirrorByKey = new Map(splitSop(mirror, runtime.sopSections).map((s) => [s.key, s.text]));
 const lockedKeys = TRAVEL_SOP_SECTIONS.filter((s) => s.locked).map((s) => s.key);
 const lines = (s: string): string[] => s.split('\n');
 const countOf = (text: string, part: string): number => text.split(part).length - 1;

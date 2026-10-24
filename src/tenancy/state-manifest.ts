@@ -10,6 +10,7 @@ export const STATE_MANIFEST: Record<
   'src/db/schema.ts:sopGateRuns': { kind: 'instance', why: 'Drizzle 静态表定义，不保存行或租户快照。' },
   'src/config/gate.ts:slot': { kind: 'instance', why: '进程唯一发布闸调度槽；只串行调度，租户项登记在 gate.progress，摘下时取消。' },
   'src/config/gate.ts:progress': { kind: 'tenant', state: 'gate.progress' },
+  'src/config/pack-file.ts:PackFileSchema': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
 
   'src/tenancy/sandbox/limits.ts:provisioned': { kind: 'instance', why: '进程开通的小时与 IP 日计数；崩溃归零，不随沙箱删除减去。' },
   'src/tenancy/sandbox/limits.ts:tenantState': { kind: 'tenant', state: 'sandbox.limits.writes' },
@@ -83,7 +84,6 @@ export const STATE_MANIFEST: Record<
   'src/channels/transitions.ts:OUTBOUND_KEEPS_PAYLOAD': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/channels/transitions.ts:OUTBOUND_TRANSITIONS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/cli/tenant-create.ts:USAGE': { kind: 'instance', why: '固定模板、解析词表或序列化规则；不保存按租户变化的业务状态。' },
-  'src/config/sop.ts:EDITABLE': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/config/source.ts:CAUSE': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/config/source.ts:PRIVILEGED': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/config/source.ts:RELOAD_BACKOFF_MS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },

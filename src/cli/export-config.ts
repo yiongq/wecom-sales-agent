@@ -3,8 +3,8 @@
 // --out 必须落在挂进来的宿主目录里：写在容器里的文件会随 --rm 一起删掉，而这里照样打印成功。宿主目录的准备见 deploy/compose.yml 开头。
 // 回到旧版本前用 --image-sop 指向目标版本的 data/sop.md（先放进同一个宿主目录），锁定节按它合并。导出的 JSON 提交前用 oxfmt 格式化
 import fs from 'node:fs';
-import path from 'node:path';
 import { exportConfig } from '../config/transfer.js';
+import { readImageSop } from '../config/brand.js';
 import { decodeSopFile } from '../sop/sections.js';
 import { args, dbFromEnv, main, need } from './common.js';
 
@@ -19,7 +19,7 @@ main(async () => {
       db,
       tenantSlug,
       outDir,
-      imageSop: decodeSopFile(fs.readFileSync(path.join(process.cwd(), 'data', 'sop.md'))),
+      imageSop: (packId) => readImageSop(packId),
       targetImageSop: a['image-sop'] === undefined ? undefined : decodeSopFile(fs.readFileSync(a['image-sop'])),
     });
     (r.code === 0 ? console.log : console.error)(`[export-config] ${r.message}`);

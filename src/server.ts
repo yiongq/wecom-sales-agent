@@ -93,6 +93,7 @@ import {
   configHealth,
   configMode,
   configRuntime,
+  currentCatalog,
   initConfigFromEnv,
   markConfigShuttingDown,
   prefixSummary,
@@ -1261,6 +1262,25 @@ function pushFollowUp(sessionId: string, text: string, opts?: PushOpts): Promise
   return adapterFor(s?.channel ?? 'wecom').push(sessionId, text, opts);
 }
 
+/**
+ * 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见。
+ * 旅游照旧调 loadRoutes() / loadHotels()；非旅游包没有这两个文件，改为装载 currentCatalog()（08 R11）。
+ */
+export function startupPreflight(): void {
+  withTenantScope(hostRuntime(), () => {
+    try {
+      if (currentPack().runtime.id === 'travel') {
+        loadRoutes();
+        loadHotels();
+      } else {
+        currentCatalog();
+      }
+    } catch (e) {
+      console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
+    }
+  });
+}
+
 if (!SELFTEST && sandbox) {
   try {
     await sandbox.start();
@@ -1319,16 +1339,7 @@ if (!SELFTEST && !sandbox) {
         withTenantScope(hostRuntime(), () => logStartup(info.port));
         onListening();
       }),
-    // 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见
-    preflight: () =>
-      withTenantScope(hostRuntime(), () => {
-        try {
-          loadRoutes();
-          loadHotels();
-        } catch (e) {
-          console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
-        }
-      }),
+    preflight: startupPreflight,
     // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配
     buildIndex: () =>
       Promise.all(

@@ -3,7 +3,7 @@
 import { createHash } from 'node:crypto';
 import { BrandProfileSchema, deepFreeze, type BrandProfile, type PackPolicy } from '../core/pack-api.js';
 import type { RenderInputs } from '../db/schema.js';
-import { TRAVEL_SOP_SECTIONS, type SectionSpec } from '../sop/sections.js';
+import type { SectionSpec } from '../sop/sections.js';
 
 export const sha256 = (s: string): string => createHash('sha256').update(s, 'utf8').digest('hex');
 
@@ -61,7 +61,8 @@ export function renderInputsFor(
   render: (sop: string) => string,
   imageSop: string,
   toolsJson: string,
-  spec: readonly SectionSpec[] = TRAVEL_SOP_SECTIONS,
+  /** 08 R10：绑定包的 sopSections，没有旅游缺省 */
+  spec: readonly SectionSpec[],
   brand: BrandProfile | null = null,
   policyHash?: string,
 ): RenderInputs {

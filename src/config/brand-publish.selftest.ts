@@ -9,7 +9,7 @@ import { updateBrand } from '../db/repo/tenants.js';
 import { importConfig } from './transfer.js';
 import * as config from './source.js';
 import * as sop from './sop.js';
-import { tenantImage, tenantRenderer, preambleWarning } from './brand.js';
+import { contractInputs, tenantImage, tenantRenderer, preambleWarning } from './brand.js';
 import { shanhaiBrand } from '../packs/travel/brand-fixture.js';
 import { editableChars, joinSop, sectionBody, withBody } from '../sop/sections.js';
 import { BUDGET_RATIO, checkSopContract } from '../sop/contract.js';
@@ -138,7 +138,7 @@ async function budgetRoundTrip(before: BrandProfile | null, edited: boolean, n: 
   await config.initConfig(deps);
   const first = config.currentSop();
   const ctx = { tenantId: first.tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
-  const originalChars = editableChars(first.sections);
+  const originalChars = editableChars(first.sections, runtime.sopSections);
   const originalLimit = Math.floor(originalChars * BUDGET_RATIO);
   const initialOverview = await sop.getSopOverview(ctx);
   check(() => assert.deepEqual(initialOverview.budget, { chars: originalChars, limit: originalLimit }));
@@ -151,7 +151,7 @@ async function budgetRoundTrip(before: BrandProfile | null, edited: boolean, n: 
     first.sections.find((s) => s.key === 'tone')!,
     toneSpec,
   ).trimEnd();
-  const fullTone = toneBody + '补'.repeat(originalLimit - editableChars(sections));
+  const fullTone = toneBody + '补'.repeat(originalLimit - editableChars(sections, runtime.sopSections));
   let draft = await sop.saveSopDraft(ctx, {
     basedOn: first.versionId,
     rev: null,
@@ -256,8 +256,7 @@ try {
     toolNames: runtime.tools.map((t) => t.def.function.name),
     knownFields: runtime.knownFields.names,
     baselineEditableChars: null,
-    rules: runtime.contractRules({ brand: shanhaiBrand }),
-    brand: shanhaiBrand,
+    ...contractInputs(runtime, shanhaiBrand, runtime.policy!.defaults),
     hardRequirements: render(''),
   };
   check(() => assert.deepEqual(checkSopContract(base), []));

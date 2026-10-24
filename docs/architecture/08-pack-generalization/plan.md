@@ -60,42 +60,42 @@
 
 ### 批 B：产品种类、金额字段与知识库（第 2–6 步）
 
-- [ ] 2. 包接口与装载校验（R2、R9；1.5 天）
+- [x] 2. 包接口与装载校验（R2、R9；1.5 天）——#295，Codex
   - 做：`src/core/pack-api.ts` 加 `CatalogKindSpec`、`PackRuntime.catalog` 与可选的 `catalogStartupCheck`（只加类型，行为在第 4 步接）；旅游的 `catalog` 由 `src/shared/catalog.ts` 现有的 `RouteSchema`、`HotelSchema`、`LOCKED_WHEN_ACTIVE`、`REPRICE_FIELDS` 组成（引用同一个对象，`route` 可检索）；证明包声明 `widget`（可检索）与只在测试里登记的 `hotel`。注册表装载时校验三项：`IndustryPack.entities[].kind` 与 `catalog` 逐项相同；`moneyFields` 与字段配置里 `money` 字段的路径和 `decimals` 一致（第 5 步之前 `decimals` 一律按 0）；至多一个 kind 的 `retrieval` 为 true。
   - 验：三项各一条反例自测，装载时被拒、报错点名包与 kind；旅游 `catalog` 的各项与 `shared/catalog.ts` 是同一个引用；前缀、锁定套件、0.5 不变。
   - 依赖：1。
-- [ ] 3. kind 的库约束与写路径（R2；2 天）
+- [x] 3. kind 的库约束与写路径（R2；2 天）——#297，Codex
   - 做：迁移把 `catalog_items_kind_check` 改为格式检查 `^[a-z][a-z0-9_]{1,31}$`，drizzle 的 `kind` 枚举去掉；`CatalogKind` 改成 `string`，删掉 `src/db/repo/catalog.ts:6` 那份；`assertKind(packId, kind)` 接到第 0.2 步清单 4 的每条写路径（console 的新建、补丁、上架、复制，CSV 导入，`catalog-fix`，`import-config`，沙箱复制 `transfer.ts:125`，种子与回填）；`CatalogKindParam`（`shared/console-api.ts:85-86`）改为按格式校验的字符串，格式不对 400、不属于包 422 `kind_unknown`；锁定与计价规则改从 `pack.catalog[kind]` 取，逻辑不变。
   - 验：验收 3 第 2 条（422、400、在库里直接插 `Bad-Kind` 被 CHECK 拒，真实 PG 与 PGlite 各一遍）；清单 4 的每条写路径各一条「kind 不属于包」的自测；旅游租户的写入与锁定字段的 422 与今天相同；`check-migrations` 过。
   - 依赖：2、0.2。
-- [ ] 4. 快照、隔离与启动检查（R2；2 天）
+- [x] 4. 快照、隔离与启动检查（R2；2 天）——#298，Codex
   - 做：`CatalogSnapshot.items`，`routes` / `hotels` 等于 `items.route` / `items.hotel`；增量更新（`source.ts:976`）、`ords`（:212）、`snapshotOf`（:524）按 kind 通用；导入导出与沙箱复制按包的全部 kind 循环（`transfer.ts:194、247、361-365`，`catalog-fix.ts:21`）；沙箱条目上限按全部 kind 合计（`config/catalog.ts:142-146`）；CSV 列形状缓存键改为 `packId:kind`（`catalog-csv.ts:58`），进程内状态登记表与 `check-tenant-state` 同步改；trace 的条目版本对所有 kind 生效（`trace/recorder.ts:292、317`）；`catalogStartupCheck` 与 `ConfigStartupError('catalog_startup', …)`，旅游照旧 `no_active_routes`。旅游闸的缓存键保持 `[routes, hotels]`（`gate.ts:310`），不改。
   - 验：验收 3 第 3–6 条（两个包的 `hotel` CSV 列互不串用、沙箱上限计入 `widget`、启动判定（抽成不依赖 SOP 装载的纯函数：旅游没有 active 线路仍是 `no_active_routes` 与原文案，证明包没有 active `widget` 是 `catalog_startup`）、trace 记 `widget` 条目版本；证明包的 DB 端到端启动要第 12 步的 SOP 按包，移到第 12 步验）；旅游快照的 `routes` / `hotels` 与开工时逐字节相同；旅游闸的缓存键与开工时相同。
   - 依赖：3。
-- [ ] 5. money 字段的两位小数（R7；1.5 天）
+- [x] 5. money 字段的两位小数（R7；1.5 天）——#298，Codex
   - 做：ADR-004 的 `money` 加 `decimals?: 0 | 2`（`src/shared/pack.ts`）；为 2 时表单、`checkItem`（`pack.ts:405`）、CSV 导入（`catalog-csv.ts:98-100、240-242`）收「大于 0、最多两位小数」；新函数 `formatYuan(fen)`（`src/shared/format.ts`，整元「1,330 元」、带角分「1,330.50 元」，不出现「¥」），旧的 `digits` 留给旅游；元到分的换算按 `moneyFields` 的路径（含 `[]`）取值，`Math.round(x * 100)` 并校验换算前后相差小于 1e-9；console 的 money 渲染器按 `decimals` 输入与显示；注册表的 `moneyFields` 校验接上 `decimals`。证明包 `widget` 的单价 `decimals: 2`。
   - 验：验收 3 第 1 条（console 导航有 `widget`；CSV 导入 3 行、其中一行 `3.65`，成为草稿；上架后列表显示「3.65 元」）；`formatYuan` 与换算的边界自测（浮点误差、超过两位小数被拒）；旅游的表单、CSV、显示与今天相同；`check-fonts` 过。
   - 依赖：3（`widget` 要能写进库）。
-- [ ] 6. 知识库（R9；1 天）
+- [x] 6. 知识库（R9；1 天）——#298，Codex
   - 做：迁移把 `kb_chunks_source_check` 改为同样的格式检查，drizzle 的 `source` 枚举去掉；`retrieval-kb.ts:61、96` 与 `db/repo/kb.ts:74` 写死的 `'route'` 改为包里那个可检索的 kind；证明包的 `widget` 增量嵌入。
   - 验：验收 11（`widget` 进 `kb_chunks`、`source = 'widget'`，假 embedding 下语义召回命中；两个可检索 kind 的包装载被拒，用第 2 步的反例；旅游的知识块与开工时相同）；真实 PG（带 vector）与 PGlite 各一遍；`check-migrations` 过。
   - 依赖：4。
 
 ### 批 C：订单与金额（第 7–11 步）
 
-- [ ] 7. 通用单的类型、访问器与展示（R3；1.5 天）
+- [x] 7. 通用单的类型、访问器与展示（R3；1.5 天）——#298，Codex
   - 做：新文件 `src/core/order-view.ts`：`OrderLine`、`LineOrder`、`AnyOrder`、`OrderDisplay`、`PublicLineOrder`、`isLineOrder`、`orderTotalFen`、`orderDisplay`（金额用 `formatYuan`，多行时标题加「等 N 项」）；`store.ts` 加 `getAnyOrder` / `listAnyOrders`，`getOrder` / `listOrders` 的类型与行为不变、只返回旧版旅游单。
   - 验：`orderTotalFen` 两种单各一条；`orderDisplay` 的标题、摘要、逐行文字自测；夹具直接写入一张 `v: 2` 单，`getOrder` / `listOrders` 看不到它、`getAnyOrder` 能取到；锁定套件全绿。
   - 依赖：5。
-- [ ] 8. `total_fen` 与落库投影（R3；1.5 天）
+- [x] 8. `total_fen` 与落库投影（R3；1.5 天）——#298，Codex
   - 做：迁移给 `orders` 加 `total_fen bigint`（可空）与两个 CHECK，授权照 02 对 `orders` 的做法（`drizzle/0003`），不回填；`orderToRow`（`store/project.ts:273-275`）加通用单分支：`route_id` 写第一行的 `code`（schema 注释改为「主条目编号」）、`total_price = round(total_fen / 100)`、`total_fen = totalFen`；旧版旅游单的行逐列不变（`total_fen` 为空）。
   - 验：通用单落库后 `total_fen = data.totalFen`；直接插一行 `v: 2` 而 `total_fen` 对不上的、`total_fen` 为负的都被 CHECK 拒；旅游单的行与开工时相同；真实 PG 与 PGlite 各一遍；`check-migrations` 过。
   - 依赖：6（迁移编号）、7。
-- [ ] 9. 建单与作废（R3；2 天）
+- [x] 9. 建单与作废（R3；2 天）——#298，Codex
   - 做：`PackRuntime.priceLine`、`maxQty`；`createLineOrder(session, picks)`：入参只有 `{ kind, code, qty }`，核心校验 kind 属于包、条目 active、`qty` 是 1 到 `maxQty` 的整数，调包的 `priceLine` 算每行单价（整数分），任一行 `reject` 就整单拒绝并带回每行原因，`amountFen = unitPriceFen × qty`、`totalFen = Σ amountFen`；「复用与作废」照 R3；经 02 的订单路径落库。`requestRefund`（`core/refund.ts:16-20`、`payment/refunds.ts:75`）收到通用单直接拒绝。证明包加建单工具（经 `createLineOrder`）与两档数量阶梯的 `priceLine`，带自测（AGENTS.md 硬规则）。
-  - 验：验收 4 的建单部分（一段 mock 对话：200 件 A 单价 3.65 元、50 件 B 单价 12 元，`totalFen = 133000`，库里 `total_fen = 133000`、`total_price = 1330`；同样条目和数量复用待付单，改一行数量旧单 `superseded`；对通用单申请退款被拒；工具参数里塞 `unitPriceFen` 被丢弃、金额不变）；`priceLine` 返回 `reject` 时整单拒绝；不变量 6、7。
+  - 验：验收 4 的建单部分（在函数与工具一级验：直接调 `createLineOrder` 与证明包的建单工具；完整的 mock 对话要第 12、13 步之后才跑得起来，移到第 17 步的 v2 用例；200 件 A 单价 3.65 元、50 件 B 单价 12 元，`totalFen = 133000`，库里 `total_fen = 133000`、`total_price = 1330`；同样条目和数量复用待付单，改一行数量旧单 `superseded`；对通用单申请退款被拒；工具参数里塞 `unitPriceFen` 被丢弃、金额不变）；`priceLine` 返回 `reject` 时整单拒绝；不变量 6、7。
   - 依赖：8、4。
-- [ ] 10. 金额解析（R6；1.5 天）
+- [x] 10. 金额解析（R6；1.5 天）——#294，Claude 子 agent
   - 做：`MoneyParseOptions.decimals`（缺省 false，旅游不传）与 `PackRuntime.money`；为 true 时照 spec「金额解析」表识别（带单位的小数与低单价、紧跟价格词的裸数、口语与汉字数、倍率、量词「块」、日期型号版本号、低于 `minimumAmount`），约数词跟在小数后时按 R6 的容差；`AmountHit.value` 仍以元计。只改 `src/core/parse/money.ts` 与 `pack-api.ts`。
   - 验：表里每一行一条自测，反例与正例一样多（验收 5）；锁定的 `price-guard.selftest.ts` 与 v2 结论不变。
   - 依赖：0.1。
@@ -117,7 +117,7 @@
 
 ### 批 E：会话、画像、客户页与工作台（第 14–16 步）
 
-- [ ] 14. 会话与画像（R4；2.5 天）
+- [x] 14. 会话与画像（R4；2.5 天）——#298，Claude 子 agent
   - 做：`Session.packState` 与 `PackRuntime.sessionState`（zod 校验、`resetKeys`，`resetSession` 只清这些键）；`CustomerProfile.attrs` 与 `profileFields`，引擎合并画像时 `attrs` 按键合并（`core/engine/index.ts:864`）；`profileForPrompt`（旅游的实现等于今天的函数）之后核心再删 `nickname`、`avatar`；`profileView` 给会话标题与画像卡，viewer 照 `workbench.ts:258` 打码；三个钩子 `quoteCard`（`workbench.ts:94、284`）、`stageOnReturn`（`handoff/takeover.ts:241`）、`seedSession`（`tenancy/sandbox/seeds.ts:127`），旅游的实现照搬现在的逻辑；`anonSession`（`server.ts:251`）改为只拷白名单字段。证明包加 `packState` 与 `attrs` 各至少一个键。
   - 验：验收 7 全部；旅游的工作台报价卡与排序、交还 AI 的阶段、沙箱种子的售后状态与开工时相同；前缀与 v2 结论不变；不变量 13、14。
   - 依赖：2。
@@ -693,8 +693,20 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 - 第 3 步：`assertKind` 的包 id 取租户行的 `pack_id`，不取 `currentPack()`（`importConfig` 在 `bindPack` 之前跑，锁定清单 B 组）；`console/src/rpc-types.check.ts:8` 对 kind `'ship'` 的 `@ts-expect-error` 在 `CatalogKindParam` 改成字符串后会让 typecheck 失败，改成格式不对的 kind 作反例。
 - 第 7 步：`getAnyOrder` 是同步的；`getOrder` / `listOrders` 照旧返回 `state.orders` 里的活对象、类型是 `Order`、空串 id 不抛（锁定清单 T、C 组）。
 - 第 15 步：旅游的运行时显式声明 `documents: { proposal: true }`，否则方案书的闸会关掉锁定的 `/proposal`、`/api/proposal` 与企微方案卡（锁定清单 E13）。
+- 第 19、20 步（来自第 4、12 步）：核心里还有几处 `runtime.id === 'travel'` 的判断——启动检查的原因码与启动日志（`assertCatalogStartup`、`loadConfig`）、`brand_required` 的抛出点；注册表的 `sopConsistencyOf` 按包 id 派发一致性检查；旧品牌名「云途」的规则用 id 前缀 `brand-fixed:` 表示「只查固定内容」；`src/sop/contract.ts`、`src/sop/sections.ts` 为自测保留了旅游的重导出。收口时一并处理（表驱动的注册表登记各包的一致性检查、`SopContractRule` 加显式字段或保留约定并写进 spec）。
+- 第 13、18 步（来自第 12 步）：`importConfig` 对非旅游包仍会在 `assertKind('route')` 处拒绝，第 12 步的证明包首次发布是在自测里用同一组构件造的；文件模式与导出接上 `catalog/*.json` 之后，自测改走 `importConfig`。
 - 第 11 步：判断回复里的金额调 `parseMoney`（合并了 `amountHits` 与口语金额），不要只调 `amountHits`；证明包的 `money` 设为 `{ minimumAmount: 0.01, precisionTolerance: 0.5, decimals: true }`（第 10 步，#294）。第 10 步的已知误报：`每个2盒` 会读出 2；`decimals` 模式下不带单位的区间不算区间两头。
+- 第 15、16 步（来自第 14 步合入后的交叉评审）：`src/console-api/workbench.ts` 的 `orderConversation()` 直接返回 `profileView().title`、没有 viewer 打码，订单关联的会话标题会把非旅游包画像里的号码原样给 viewer；在第 15–16 步的 PR 里一并修，旅游的字节照旧。
+- 第 17–19 步（来自第 13 步）：`resolveConfigDir` 对包目录只查 `sop.md`、`pack.json` 与 `catalog/`，逐 kind 的严检与闸、runner 的文案留给第 18 步（清单 7.12–7.14、7.18、7.22、7.23）；`catalog/*.json` 坏数据报 `catalog_startup`、`pack.json` 写坏报 `pack_unknown`，不加新原因；7.17、7.20 留给第 17 步，7.2「DB 模式抛错」与 7.6 `resetConfig` 留给第 19 步。
 - 第 16 步：`fillPayCard` 只在 `public/chat.html`（:529），锁定的 `server.selftest.ts:279-313` 用正则抠出函数头到「两格缩进的 `}`」为止、只给它 `fetch` 与 `cnDate`：函数头原样，新分支内联、不引用函数外的新标识符，函数体里不能出现恰好两格缩进的 `}` 行。`public/pay.html` 的渲染在 `load()`，锁定钉子是 `server.selftest.ts:513-514` 的正则（E10、E11）。另外，第 0.5 步的夹具钉的是 `/pay/<id>` 的完整 HTML：第 16 步给 `pay.html` 加 `display` 分支，会让夹具里 `pay/*` 的 12 条变红，这是 R12 要求的改动。第 16 步的 PR 里用 `UPDATE_LEGACY_BYTES=1` 重生成一次，diff 只许是新加的分支、逐行审，夹具里其余 48 条必须一字不变（spec 第六条 `Revisions:` 二）。
+
+### 第 2–9、14、21 步（2026-10-24，#295、#297、#298）
+
+- 第 2、3 步各自一个 PR（#295、#297）。第 4–9、14、21 步在分支上依次叠加，最后由协调者把第 14 步与订单链、最新 `dev` 整合成一个 PR（#298）合入，每一步仍是独立提交、各自审过；不逐个开 PR，是因为叠加分支逐个过 CI 要排几个小时，而且每个都改 `package.json` 的 `test` 末尾，合一个冲一个。整合时 `pack-api.ts` 与 `test` 两边都留；合并前在整合后的树上跑过 12 个相互影响的自测、`test:locked`、第 0.5 步的出口字节自测（60 条相同）、`check-migrations`（21 个）与 v2 两条（857 条 0 差异）。
+- 第 2 步：`CatalogKindSpec` 与 `validatePackCatalog`（kind 一致、money 路径与精度一致、至多一个可检索）。第 3 步：迁移 0018、`assertKind` 接到 7 条写路径、包外 kind 422（读也一样），`console.selftest` 与 `db.selftest` 各一条断言随 spec 改。第 4 步：快照 `items`（`routes` / `hotels` 是同一数组的别名），启动判定抽成纯函数 `assertCatalogStartup`（返工一轮：证明包的 DB 端到端启动要第 12 步，移过去了）。第 6 步：迁移 0019，可检索 kind 按包；PGlite 上知识块只在内存（07 R13），持久与逐块增量由 CI 的真实 PG 验。第 5 步：`decimals`、`formatYuan`、`yuanToFen`。第 7 步：`order-view.ts`、`getAnyOrder`。第 8 步：迁移 0020。第 9 步：`createLineOrder`、证明包的阶梯价（`tiers[]`）、起订量与 `fixture_order`。
+- 第 14 步：钩子的返回值比 spec 多了几个可选成员才能让旅游的 JSON 逐字节不变（spec 第七条 `Revisions:`）；`anonSession` 白名单用 `Record<keyof Session, boolean>`，加会话键不表态就编译不过；旅游的工作台、匿名接口、沙箱种子与 08 之前生成的基准（`src/pack-session.golden.json`）逐字节相同。
+- 第 21 步：代码已随 #298 合入（`pre08_image`、`deploy.sh` 的 `pre-08` tag 判定、退出码 9、README）；返工两轮（`deploy.sh` 接 `pre-08` tag、`db.selftest` 的假 docker 与退出码正则）。**本机真实 docker 演练还没做**，做完再打勾。
+- 第 10 步（#294）：价格词后允许冒号（协调者定：认不出的金额等于放行编造的价）。
 
 ### 第 0.3 步 · 取代与修订条款（2026-10-24，协调者，随 08 的 docs PR）
 
@@ -722,9 +734,9 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 
 ## Open
 
-1. **非旅游包缺品牌时的启动拒绝原因**（挡第 12 步合并）。R10 与验收 8 要求清掉品牌后启动被拒，但没写用哪个 `ConfigStartupError` 原因；R2 又写「联合类型只加 `catalog_startup` 这一个值」，现有原因里没有表达「缺品牌」的。推荐加一个 `brand_required`，同时把 R2 那句改成「只加 `catalog_startup` 与 `brand_required` 两个值」，记进 spec 的 `Revisions:`；备选是并进 `catalog_startup`，但那样一个原因同时管产品库和品牌，看日志分不清。owner 定。
+1. ~~**非旅游包缺品牌时的启动拒绝原因**~~（**已定**，owner 2026-10-24：照推荐用 `brand_required`，记在 spec 第八条 `Revisions:`）。R10 与验收 8 要求清掉品牌后启动被拒，但没写用哪个 `ConfigStartupError` 原因；R2 又写「联合类型只加 `catalog_startup` 这一个值」，现有原因里没有表达「缺品牌」的。推荐加一个 `brand_required`，同时把 R2 那句改成「只加 `catalog_startup` 与 `brand_required` 两个值」，记进 spec 的 `Revisions:`；备选是并进 `catalog_startup`，但那样一个原因同时管产品库和品牌，看日志分不清。owner 定。
 
-2. **通用单付款后的确认话术**（挡第 15 步合并）。付款到账后，`notifyPaid`（`core/engine/index.ts:995-1002`）用 `getOrder` 取单，再调包的 `engineHooks.paidText(order: Order)` 写一句确认发给客户；`getOrder` 只返回旧版旅游单，所以通用单付款后客户收不到任何确认，spec 没写这句话归谁。选项：A，`EnginePackHooks` 加可选的 `paidLineText(order: LineOrder)`，没实现时核心不发；B，核心用 `orderDisplay` 拼一句默认话（如「已收到您的付款 1,330 元，订单 3 项」）；C，A 加 B 兜底。推荐 C：旅游的钩子与调用字节不动，新包可以写自己的话，没写也不会让客户付了钱没回音；默认话的文字由 owner 定。owner 定。
+2. ~~**通用单付款后的确认话术**~~（**已定**，owner 2026-10-24：照推荐 C，默认话「已收到您的付款{金额}，订单共{N}项。」，记在 spec 第八条 `Revisions:`）。付款到账后，`notifyPaid`（`core/engine/index.ts:995-1002`）用 `getOrder` 取单，再调包的 `engineHooks.paidText(order: Order)` 写一句确认发给客户；`getOrder` 只返回旧版旅游单，所以通用单付款后客户收不到任何确认，spec 没写这句话归谁。选项：A，`EnginePackHooks` 加可选的 `paidLineText(order: LineOrder)`，没实现时核心不发；B，核心用 `orderDisplay` 拼一句默认话（如「已收到您的付款 1,330 元，订单 3 项」）；C，A 加 B 兜底。推荐 C：旅游的钩子与调用字节不动，新包可以写自己的话，没写也不会让客户付了钱没回音；默认话的文字由 owner 定。owner 定。
 
 ## 交接记录
 
@@ -752,3 +764,10 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 - 已审、已提交、还没开 PR 的叠加分支（车道 1，Codex）：第 3 步 `feat/08-kind-write-paths`（迁移 0018）→ 第 4 步 `feat/08-snapshot-items` → 第 6 步 `feat/08-kb-source`（迁移 0019）→ 第 5 步 `feat/08-money-decimals-field`。前一个合入后照上面的办法给下一个开 PR。
 - 在做：第 7 步（Codex，叠在第 5 步上）；第 14 步（Claude 子 agent，叠在第 2 步上）。
 - 任务说明在协调者 worktree 的 `.claude/runs/08-step*.final.md`（git 忽略）。Open 1、2 仍待 owner。
+
+### 交接（2026-10-24，第 11–13、15–16 步进行中）
+
+- 已合入：第 0–10、14 步；第 21 步的代码（演练待做，未打勾）。
+- 开着 PR：第 11 步 #299（自动合并）；第 12 步 #300（**等 Open 1**，没开自动合并）。
+- 在做：第 13 步（Claude 子 agent，worktree `claude-08-s13`，叠在第 12 步上）；第 15、16 步（Codex，worktree `codex-08-s15`，叠在第 11 步上；第 15 步单独过不了 console 的类型检查，两步一起提交；付款确认话术照 Open 2 的推荐 C 实现、标了待确认，合并要等 Open 2）。
+- 下一步：第 13 步合入后接第 17、18 步；Open 1、2 定了之后合第 12、15–16 步；第 21 步的真实 docker 演练放在第 22 步之前。

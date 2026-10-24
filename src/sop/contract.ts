@@ -8,16 +8,12 @@ import {
   sectionBody,
   SopEncodingError,
   SopStructureError,
-  TRAVEL_SOP_SECTIONS,
   type SectionSpec,
   type SopSection,
 } from './sections.js';
 
-import type { BrandProfile, SopContractRule } from '../core/pack-api.js';
-import { SOP_CONTRACT } from '../packs/travel/sop.js';
-import { policyViolations } from '../packs/travel/policy-lint.js';
-import { defaultTravelPolicy } from '../packs/travel/policy.js';
-import { sopConsistencyViolations } from '../packs/travel/consistency-sop.js';
+import type { BrandProfile, PackPolicy, SopContractRule } from '../core/pack-api.js';
+// 旅游的契约短语与已知字段仍从这里重导出，给自测和旧调用方用；本文件自己不再用它们做缺省（08 R10），重导出由后面的依赖方向步骤收走。
 export { SOP_CONTRACT, SOP_KNOWN_FIELDS, KNOWN_FIELD_SOURCES } from '../packs/travel/sop.js';
 export type { SopContractRule as ContractRule } from '../core/pack-api.js';
 
@@ -29,6 +25,26 @@ export type { ContractViolation, ViolationCode };
 const SNAKE = /\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g;
 // 大写开头的词（酒店品牌名）和纯小写单词（greeting、emoji）都不查
 const CAMEL = /\b[a-z]+(?:[A-Z][a-z0-9]*)+\b/g;
+
+/**
+ * 08 R10：包给的 exclude 规则里，id 以它开头的只在品牌（模板）模式下查代码所有的固定内容（锁定节与硬性要求，档案自己的品牌名先剔掉），
+ * 不查整段渲染结果；旅游用它禁旧品牌名。核心自己只留渠道名这类通用禁用词。
+ */
+const FIXED_ONLY_RULE_PREFIX = 'brand-fixed:';
+/** 是这类规则就返回要禁的词，不是返回 null */
+const fixedOnlyText = (rule: SopContractRule): string | null =>
+  rule.kind === 'exclude' && rule.id.startsWith(FIXED_ONLY_RULE_PREFIX) ? rule.text : null;
+/** 品牌模式下固定内容里不能出现的渠道名（核心通用，与行业包无关） */
+const CHANNEL_WORDS = ['微信', 'WeCom', '企微'] as const;
+
+/** 08 R10：话术与代码固定文字的一致性检查，按包给（06 R21）；包没有登记就传 null，不查。违规码 consistency */
+export type SopConsistencyCheck = (sections: readonly SopSection[]) => readonly { sectionKey: string; detail: string; match: string }[];
+
+/** 08 R10：包的政策检查（PackPolicy.lint）与要查的政策快照；包没有 policy 能力或没有 lint 就传 null，不查 */
+export interface SopPolicyCheck {
+  lint: NonNullable<PackPolicy['lint']>;
+  value: unknown;
+}
 
 export function checkSopContract(input: {
   sections: readonly SopSection[];
@@ -43,18 +59,16 @@ export function checkSopContract(input: {
   baselineEditableChars: number | null;
   /** 系统托管可编辑内容相对导入镜像的字数差额；运营改过的内容不享受此调整。 */
   systemEditableAdjustment?: number;
-  spec?: readonly SectionSpec[];
-  rules?: readonly SopContractRule[];
+  /** 08 R10：以下四项取绑定包（sopSections、contractRules、一致性检查、policy），没有旅游缺省，调用方一律显式传 */
+  spec: readonly SectionSpec[];
+  rules: readonly SopContractRule[];
   brand?: BrandProfile | null;
   hardRequirements?: string;
-  /**
-   * 06 R21：检查话术与包登记的对客固定文字有没有互相矛盾，违规码 `consistency`。默认开（发布、回滚、启动重渲染、导出都查）；
-   * 只有自测要单独看别的检查项时才传 false。
-   */
-  consistency?: boolean;
-  policy?: unknown;
+  /** 06 R21：发布、回滚、启动重渲染、导出都查；null 是包没有一致性规则（自测要单独看别的检查项时也传 null） */
+  consistency: SopConsistencyCheck | null;
+  policy: SopPolicyCheck | null;
 }): ContractViolation[] {
-  const spec = input.spec ?? TRAVEL_SOP_SECTIONS;
+  const spec = input.spec;
   const out: ContractViolation[] = [];
   // match 是前端在正文里查找、生成说明用的原文（后台 UX spec「检查」）：短语、标识符与一致性检查使用，policy_mismatch 也点名原句
   const add = (code: ViolationCode, sectionKey: string | null, detail: string, match?: string): void => {
@@ -91,7 +105,8 @@ export function checkSopContract(input: {
 
   // 短语：对整段 rendered 执行，与 selftest 的断言对象相同
   const holder = (hit: (text: string) => boolean): string | null => input.sections.find((x) => hit(x.text))?.key ?? null;
-  for (const rule of input.rules ?? SOP_CONTRACT) {
+  for (const rule of input.rules) {
+    if (fixedOnlyText(rule) !== null) continue;
     if (rule.kind === 'include') {
       if (!input.rendered.includes(rule.text)) add('phrase_missing', null, `缺少「${rule.text}」（${rule.from}）`, rule.text);
     } else if (rule.kind === 'exclude') {
@@ -118,11 +133,12 @@ export function checkSopContract(input: {
   if (input.brand) {
     const fixed = input.sections.filter((s) => spec.some((x) => x.key === s.key && x.locked));
     fixed.push({ key: 'hard-requirements', text: input.hardRequirements ?? '' });
+    const banned = [...input.rules.flatMap((rule) => fixedOnlyText(rule) ?? []), ...CHANNEL_WORDS];
     for (const section of fixed) {
       let text = section.text;
       // 显式配置成旧品牌仍是模板模式；只排除档案本身允许的品牌名。
       text = text.split(input.brand.brandName).join('');
-      for (const phrase of ['云途', '微信', 'WeCom', '企微']) {
+      for (const phrase of banned) {
         if (text.includes(phrase)) add('phrase_forbidden', section.key, `固定要求不能出现「${phrase}」`, phrase);
       }
     }
@@ -146,8 +162,8 @@ export function checkSopContract(input: {
   }
 
   // 话术与固定文字不矛盾（R21，默认开）：点名冲突的另一方（代码里的报价模板）
-  if (input.consistency !== false) {
-    for (const v of sopConsistencyViolations(input.sections)) add('consistency', v.sectionKey, v.detail, v.match);
+  if (input.consistency) {
+    for (const v of input.consistency(input.sections)) add('consistency', v.sectionKey, v.detail, v.match);
   }
 
   // 预算只管运营能控制的部分：可编辑节的正文
@@ -163,6 +179,6 @@ export function checkSopContract(input: {
       );
     }
   }
-  if (input.policy !== null) out.push(...policyViolations(input.policy === undefined ? defaultTravelPolicy : input.policy, input.sections));
+  if (input.policy) out.push(...input.policy.lint(input.policy.value, input.sections));
   return out;
 }

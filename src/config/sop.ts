@@ -23,26 +23,26 @@ import {
   type SopVersionRow,
 } from '../db/repo/sop.js';
 import { BUDGET_RATIO, checkSopContract, type ContractViolation } from '../sop/contract.js';
-import {
-  editableChars,
-  joinSop,
-  mergeWithImage,
-  TRAVEL_SOP_SECTIONS,
-  rebuildSection,
-  type SectionSpec,
-  type SopSection,
-} from '../sop/sections.js';
+import { editableChars, joinSop, mergeWithImage, rebuildSection, type SectionSpec, type SopSection } from '../sop/sections.js';
 import type { PackPolicy } from '../core/pack-api.js';
-import { policyViolations } from '../packs/travel/policy-lint.js';
 import type { PolicyView, SopVersion } from '../shared/console-api.js';
 import { promptHashes, publishedBrand, policySnapshot, publishedPolicy, renderInputsFor, type PromptHashes } from './hashes.js';
-import { assertConfigWritable, configRuntime, currentSop, reloadFromDb, replacePublishedSop, toPublishedSop } from './source.js';
+import {
+  assertBrandForPack,
+  assertConfigWritable,
+  configRuntime,
+  currentSop,
+  reloadFromDb,
+  replacePublishedSop,
+  runtimeOf,
+  toPublishedSop,
+} from './source.js';
 
 import { currentCatalog } from './source.js';
 import { currentRuntime } from '../tenancy/runtime.js';
 import { gatesForDraft } from '../db/repo/gate.js';
 import { GateError } from './gate-errors.js';
-import { preambleWarning, tenantImage } from './brand.js';
+import { contractInputs, preambleWarning, tenantImage } from './brand.js';
 
 export type { SopSource, SopStatus, SopVersion } from '../shared/console-api.js';
 
@@ -76,9 +76,14 @@ export class SopInputError extends Error {}
 
 // 版本 id 是 uuid 列：格式不对的直接当不存在，不让库报类型错误变成 500
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const EDITABLE: readonly SectionSpec[] = TRAVEL_SOP_SECTIONS.filter((s) => !s.locked);
+/** 08 R10：节表取绑定包的 sopSections，不再有旅游缺省 */
+const specOf = (rt: ReturnType<typeof configRuntime>): readonly SectionSpec[] => runtimeOf(rt.deps).sopSections;
+const editableSpec = (spec: readonly SectionSpec[]): readonly SectionSpec[] => spec.filter((s) => !s.locked);
 const textOf = (sections: readonly SopSection[], key: string): string | undefined => sections.find((s) => s.key === key)?.text;
-const editableOf = (sections: readonly SopSection[]): SopSection[] => sections.filter((s) => EDITABLE.some((e) => e.key === s.key));
+const editableOf = (spec: readonly SectionSpec[], sections: readonly SopSection[]): SopSection[] => {
+  const editable = editableSpec(spec);
+  return sections.filter((s) => editable.some((e) => e.key === s.key));
+};
 
 /** 旧草稿只补新增字段；不合格快照也走契约错误，不能变成未分类的 schema 异常。 */
 function draftPolicy(pack: PackPolicy | undefined, raw: unknown): ReturnType<typeof policySnapshot> {
@@ -136,12 +141,14 @@ function runtimeFor(ctx: TenantCtx): ReturnType<typeof configRuntime> {
  * 锁定节不参与判定：发布时本来就取镜像
  */
 function rebase(
+  spec: readonly SectionSpec[],
   base: readonly SopSection[],
   cur: readonly SopSection[],
   mine: readonly SopSection[],
 ): { sections: SopSection[]; conflicts: string[] } {
-  const upstream = EDITABLE.filter((s) => textOf(base, s.key) !== textOf(cur, s.key)).map((s) => s.key);
-  const edited = EDITABLE.filter((s) => textOf(base, s.key) !== textOf(mine, s.key)).map((s) => s.key);
+  const editable = editableSpec(spec);
+  const upstream = editable.filter((s) => textOf(base, s.key) !== textOf(cur, s.key)).map((s) => s.key);
+  const edited = editable.filter((s) => textOf(base, s.key) !== textOf(mine, s.key)).map((s) => s.key);
   const conflicts = upstream.filter((k) => edited.includes(k));
   const sections = mine.map((s) => (upstream.includes(s.key) ? { key: s.key, text: textOf(cur, s.key) ?? s.text } : s));
   return { sections, conflicts };
@@ -163,7 +170,7 @@ function budgetFor(
   imported: SopVersionRow | null,
   fallback: readonly SopSection[],
 ): { baseline: number; adjustment: number; limit: number } {
-  const baseline = editableChars(imported?.sections ?? fallback);
+  const baseline = editableChars(imported?.sections ?? fallback, specOf(rt));
   let adjustment = 0;
   if (imported && rt.deps.runtime && !preambleWarning(sections, rt.imageSections)) {
     const originalImage = tenantImage(rt.deps.runtime, rt.legacyImageSop, publishedBrand(imported.renderInputs).brand);
@@ -180,7 +187,10 @@ async function evaluate(
   sections: readonly SopSection[],
   policy: unknown,
 ): Promise<Evaluated> {
-  const merged = mergeWithImage(sections, rt.imageSections);
+  const spec = specOf(rt);
+  // 检查、发布、回滚都经这里，早于任何写入：非旅游包没有品牌快照时不写出旧版渲染的 SOP（装载时已拒绝，这里兜底；plan Open 1 已定）
+  assertBrandForPack(runtimeOf(rt.deps), currentSop().brand, `租户「${rt.deps.tenantSlug}」`);
+  const merged = mergeWithImage(sections, rt.imageSections, spec);
   const sop = joinSop(merged);
   const rendered = rt.deps.render(sop);
   const imported = await readImportVersion(tx);
@@ -193,16 +203,14 @@ async function evaluate(
     knownFields: rt.deps.knownFields,
     baselineEditableChars: budget.baseline,
     systemEditableAdjustment: budget.adjustment,
-    rules: rt.deps.runtime?.contractRules(currentSop().brand ? { brand: currentSop().brand! } : 'legacy'),
-    brand: currentSop().brand,
+    ...contractInputs(runtimeOf(rt.deps), currentSop().brand, policy),
     hardRequirements: rt.deps.render(''),
-    policy,
   });
   return {
     merged,
     rendered,
     hashes: promptHashes(rendered, rt.deps.toolsJson, sop),
-    chars: editableChars(merged),
+    chars: editableChars(merged, spec),
     limit: budget.limit,
     violations,
   };
@@ -255,14 +263,15 @@ export async function getSopOverview(ctx: TenantCtx): Promise<{
       const draft = await readDraft(tx);
       const imported = await readImportVersion(tx);
       const current = draft ?? pub;
-      const merged = mergeWithImage(current.sections, rt.imageSections);
+      const spec = specOf(rt);
+      const merged = mergeWithImage(current.sections, rt.imageSections, spec);
       const budget = budgetFor(rt, merged, imported, pub.sections);
       return {
         ...(preambleWarning(current.sections, rt.imageSections) ? { preambleWarning: true } : {}),
         published: toVersion(pub),
         draft: draft ? { ...toVersion(draft), stale: draft.basedOn !== pub.id } : null,
-        spec: TRAVEL_SOP_SECTIONS,
-        budget: { chars: editableChars(merged), limit: budget.limit },
+        spec,
+        budget: { chars: editableChars(merged, spec), limit: budget.limit },
       };
     },
     { readOnly: true },
@@ -298,28 +307,30 @@ export async function getSopVersion(ctx: TenantCtx, id: string): Promise<SopVers
 export async function saveSopDraft(
   ctx: TenantCtx,
   input: { basedOn: string; rev: number | null; edits: readonly { key: string; body: string }[]; rebaseOnto?: string; policy?: unknown },
-  offline?: { db: Db; imageSections: readonly SopSection[]; policy?: PackPolicy },
+  offline?: { db: Db; imageSections: readonly SopSection[]; policy?: PackPolicy; spec: readonly SectionSpec[] },
 ): Promise<SopVersion> {
   if (input.rev === null && input.rebaseOnto !== undefined) throw new SopInputError('没有草稿，不需要合并');
+  // 08 R10：节表取绑定包的；离线（命令行）写草稿时由调用方按租户的包传入
+  const spec = offline ? offline.spec : specOf(configRuntime());
   const keys = input.edits.map((e) => e.key);
   for (const key of keys) {
-    const spec = TRAVEL_SOP_SECTIONS.find((s) => s.key === key);
-    if (!spec) throw new SopInputError(`没有「${key}」这一节`);
-    if (spec.locked) throw new SopLockedSectionError(key);
+    const section = spec.find((s) => s.key === key);
+    if (!section) throw new SopInputError(`没有「${key}」这一节`);
+    if (section.locked) throw new SopLockedSectionError(key);
   }
   if (new Set(keys).size !== keys.length) throw new SopInputError('同一节在一次保存里出现了两次');
   // 正文按规范形重建；编码不合格在这里抛（SopEncodingError → 422）。空正文、行首「## 」照存，检查时报 structure、发布时拒绝
   const apply = (sections: readonly SopSection[]): SopSection[] =>
     sections.map((s) => {
       const e = input.edits.find((x) => x.key === s.key);
-      const i = TRAVEL_SOP_SECTIONS.findIndex((x) => x.key === s.key);
-      return e ? rebuildSection(TRAVEL_SOP_SECTIONS[i]!, e.body, i === TRAVEL_SOP_SECTIONS.length - 1) : s;
+      const i = spec.findIndex((x) => x.key === s.key);
+      return e ? rebuildSection(spec[i]!, e.body, i === spec.length - 1) : s;
     });
   try {
     const pack = offline ? offline.policy : configRuntime().deps.runtime?.policy;
     if (input.policy !== undefined) {
       if (!pack) throw new SopContractError([{ code: 'policy_invalid', sectionKey: null, detail: '当前行业包不支持政策配置' }]);
-      const violations = policyViolations(input.policy);
+      const violations = pack.lint?.(input.policy) ?? [];
       if (violations.length) throw new SopContractError(violations);
     }
     const suppliedPolicy = input.policy === undefined ? undefined : policySnapshot(pack, input.policy);
@@ -343,7 +354,7 @@ export async function saveSopDraft(
         const row = await insertDraft(tx, {
           tenantId: rt.tenantId,
           packId: pub.packId,
-          sections: apply(mergeWithImage(pub.sections, rt.imageSections)),
+          sections: apply(mergeWithImage(pub.sections, rt.imageSections, spec)),
           policy: suppliedPolicy ? suppliedPolicy.policy : publishedPolicy(pack, pub).policy,
           basedOn: pub.id,
           rev: await nextDraftRev(tx),
@@ -357,11 +368,11 @@ export async function saveSopDraft(
         const pub = await readPublishedSop(tx);
         if (!pub || pub.id !== input.rebaseOnto) throw new SopRevConflictError('线上又有新版本，刷新后重来');
         const base = draft.basedOn ? await readVersionById(tx, draft.basedOn) : null;
-        const r = rebase(base?.sections ?? pub.sections, pub.sections, draft.sections);
+        const r = rebase(spec, base?.sections ?? pub.sections, pub.sections, draft.sections);
         // 撞上的节没给合并结果：形状同发布冲突，current 只带缺的这几节的线上正文
         const missing = r.conflicts.filter((k) => !keys.includes(k));
         if (missing.length) {
-          const online = editableOf(mergeWithImage(pub.sections, rt.imageSections)).filter((s) => missing.includes(s.key));
+          const online = editableOf(spec, mergeWithImage(pub.sections, rt.imageSections, spec)).filter((s) => missing.includes(s.key));
           throw new SopConflictError(missing, online);
         }
         const row = await updateDraftSections(tx, draft.id, draft.rev, apply(r.sections), pub.id, suppliedPolicy?.policy);
@@ -408,7 +419,7 @@ export async function checkSopDraft(ctx: TenantCtx): Promise<{
       const needed = draft.basedOn !== pub.id;
       if (needed) {
         const base = draft.basedOn ? await readVersionById(tx, draft.basedOn) : null;
-        const r = rebase(base?.sections ?? pub.sections, pub.sections, draft.sections);
+        const r = rebase(specOf(rt), base?.sections ?? pub.sections, pub.sections, draft.sections);
         conflicts = r.conflicts;
         if (!conflicts.length) sections = r.sections;
       }
@@ -433,8 +444,9 @@ export async function prepareSopDraft(tx: Tx, rt: ReturnType<typeof configRuntim
   let rebasedFrom: number | null = null;
   if (draft.basedOn !== pub.id) {
     const base = draft.basedOn ? await readVersionById(tx, draft.basedOn) : null;
-    const r = rebase(base?.sections ?? pub.sections, pub.sections, draft.sections);
-    if (r.conflicts.length) throw new SopConflictError(r.conflicts, editableOf(mergeWithImage(pub.sections, rt.imageSections)));
+    const spec = specOf(rt);
+    const r = rebase(spec, base?.sections ?? pub.sections, pub.sections, draft.sections);
+    if (r.conflicts.length) throw new SopConflictError(r.conflicts, editableOf(spec, mergeWithImage(pub.sections, rt.imageSections, spec)));
     mine = r.sections;
     rebasedFrom = base?.versionNo ?? null;
   }
@@ -503,7 +515,10 @@ export async function publishSopDraft(
         gate = passed.id;
       }
     }
-    const changedKeys = EDITABLE.filter((s) => textOf(pub.sections, s.key) !== textOf(ev.merged, s.key)).map((s) => s.key);
+    const spec = specOf(rt);
+    const changedKeys = editableSpec(spec)
+      .filter((s) => textOf(pub.sections, s.key) !== textOf(ev.merged, s.key))
+      .map((s) => s.key);
     const versionNo = (await maxVersionNo(tx)) + 1;
     await archivePublished(tx, pub.id);
     const published = await publishDraft(tx, draft.id, draft.rev, {
@@ -513,7 +528,7 @@ export async function publishSopDraft(
       renderedPrompt: ev.rendered,
       ...ev.hashes,
       policy: policy.policy,
-      renderInputs: renderInputsFor(rt.deps.render, rt.deps.imageSop, rt.deps.toolsJson, undefined, currentSop().brand, policy.policyHash),
+      renderInputs: renderInputsFor(rt.deps.render, rt.deps.imageSop, rt.deps.toolsJson, spec, currentSop().brand, policy.policyHash),
       changeNote: reason ? `${note}\n强发原因：${reason}` : note,
       publishedBy: ctx.actor.userId,
       publishedByName: ctx.actor.name,
@@ -584,7 +599,7 @@ export async function rollbackSop(
       renderedPrompt: ev.rendered,
       ...ev.hashes,
       policy: policy.policy,
-      renderInputs: renderInputsFor(rt.deps.render, rt.deps.imageSop, rt.deps.toolsJson, undefined, currentSop().brand, policy.policyHash),
+      renderInputs: renderInputsFor(rt.deps.render, rt.deps.imageSop, rt.deps.toolsJson, specOf(rt), currentSop().brand, policy.policyHash),
       changeNote: note,
       createdBy: ctx.actor.userId,
       createdByName: ctx.actor.name,

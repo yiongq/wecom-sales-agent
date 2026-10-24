@@ -239,10 +239,10 @@ try {
   const mock = await handleMessage('brand-legacy', '你好', 'web');
   assert.equal(mock.text, legacy.mockOpening);
 
-  const emptyInputs = renderInputsFor(renderSystemPrompt, fs.readFileSync('data/sop.md', 'utf8'), baseline.tools);
+  const emptyInputs = renderInputsFor(renderSystemPrompt, fs.readFileSync('data/sop.md', 'utf8'), baseline.tools, runtime.sopSections);
   assert.equal(emptyInputs.brand, null);
   assert.equal(emptyInputs.brandHash, sha256('null'));
-  const input = renderInputsFor(renderSystemPrompt, '', baseline.tools, undefined, shanhaiBrand);
+  const input = renderInputsFor(renderSystemPrompt, '', baseline.tools, runtime.sopSections, shanhaiBrand);
   assert.deepEqual(input.brand, shanhaiBrand);
   assert.equal(input.brandHash, brandSnapshot({ ...shanhaiBrand }).brandHash);
   const reordered = Object.fromEntries(Object.entries(shanhaiBrand).reverse()) as unknown as BrandProfile;
