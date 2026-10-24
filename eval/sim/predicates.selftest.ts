@@ -2,7 +2,7 @@
 // 纯函数，不起引擎、不调模型。
 import assert from 'node:assert/strict';
 import type { FinishedTurn } from '../../src/trace/recorder.js';
-import { goalSchema, validateGoal, type Predicate, type SimGoal } from './goals.js';
+import { goalSchema, loadGoals, validateGoal, type Predicate, type SimGoal } from './goals.js';
 import { judge, negatedAt, type Evidence, type SimTurn, type Snapshot } from './judge.js';
 import { computeMetrics } from './metrics.js';
 import { countChars, countLines } from './shape-count.js';
@@ -227,6 +227,28 @@ check('没有数据时占比为 null', computeMetrics([], [], [], 0).shape.share
   check('shape 占比：8 行代码生成的列表达标、7 行模型回复不达标', mixed.shape.total === 2 && mixed.shape.within === 1);
 }
 
+{
+  // 08 第 22 步：回归集里三个文字谓词在真实模型回复上误报过（前三条正例原样取自那几句回复）；修后不再误判，真违规照旧判出
+  const quality = await loadGoals('eval/sim/goals/quality');
+  const ok = (id: string, index: number, reply: string): boolean =>
+    passes(quality.find((g) => g.id === id)!.predicates[index]!, [turn(reply)]);
+  const compare = (reply: string): boolean => ok('qa-competitor-compare', 2, reply);
+  check('竞品对比：「可比性——差 30%」不算贬低同行', compare('同样天数、同样住宿标准，价格才有可比性——差 30% 往往差在酒店和用车档次上。'));
+  check('竞品对比：「对比下来差不多」不算', compare('您把行程发我，对比下来差不多就能看清。'));
+  check('竞品对比：「比携程便宜」照旧判出', !compare('我们比携程便宜不少。'));
+  check('竞品对比：「比我们差」照旧判出', !compare('他们的酒店比我们差一档。'));
+  const cite = (reply: string): boolean => ok('qa-policy-ask-refund-rules', 2, reply);
+  check('条款引用后跟「；」算引用到位', cite('出发前30天及以上取消，退全款（退改条款第1条）；15–29天退80%（退改条款第2条）；'));
+  check('条款引用后跟「，」算引用到位', cite('退全款（退改条款第1条），其余按比例。'));
+  check('条款引用后跟句号照旧算', cite('退全款（退改条款第1条）。'));
+  check('条款引用后面直接接正文照旧不算', !cite('退全款（退改条款第1条）之外还能改期'));
+  const insurance = (reply: string): boolean => ok('qa-policy-claims-insurance', 2, reply);
+  check('保险：「费用包含里没有列保险」不算声称含保险', insurance('费用包含里没有列保险，这份行程没写保险这一项。'));
+  check('保险：「含不含旅游意外险我没法确认」不算', insurance('所以含不含旅游意外险我没法替您确认。'));
+  check('保险：「费用包含旅游意外险」照旧判出', !insurance('费用包含旅游意外险。'));
+  check('保险：「这条线含意外险」照旧判出', !insurance('这条线含意外险和医疗险。'));
+}
+
 console.log(
-  `SIM PREDICATES SELFTEST PASS: ${assertions} 项断言全通（行数字数数法 / negationAware / after / shape / no_repeat / 目标字段校验 / 汇总数）`,
+  `SIM PREDICATES SELFTEST PASS: ${assertions} 项断言全通（行数字数数法 / negationAware / after / shape / no_repeat / 目标字段校验 / 汇总数 / 回归集文字谓词）`,
 );
