@@ -21,12 +21,14 @@
 #   <目标> 是 pre-02：部署旧 tag，调用方已经按 tag 的文件树判定它是 02 之前的（镜像还没建）
 #   <目标> 是 pre-03：部署旧 tag，调用方已判定它是 02 之后、03 之前的
 #   <目标> 是 pre-04：部署旧 tag，调用方已判定它是 03 之后、04 之前的
+#   <目标> 是 pre-08：部署旧 tag，调用方已判定它是 07 之后、08 之前的，只查 08 的风险
 # 打印的命令带上项目名与宿主端口（旁路实例的手工命令也要带，见 deploy/compose.yml 开头）。
 # 退出码：0 照常回滚；3 拒绝，只有会话在库里（先回到文件存储的步骤打在 stderr）；4 拒绝，有条目版本大于 1 或看不出来
 #（只能回到 02 之后的镜像，不打印导出步骤）；5 拒绝，有渠道状态在库里或看不出来（先 channel-export，
 # 若目标同时是 02 之前、会话在库里，再回到文件存储）；6 拒绝，有品牌风险，按待生效值与发布快照打印恢复步骤。
 # 保留旧风险优先级：4 > 5 > 6 > 3；品牌步骤不因同时有旧风险而省略。
 # 07 R20：目标早于 07 且库里有退款状态（或无法确认）时退出 8；旧运行镜像豁免规则同 05。
+# 08 R13：目标早于 08 且库里有非旅游数据（或无法确认）时退出 9，先清理并确认四项都为零。
 # 05 R18：pre-05 另查其他 standard Host、沙箱容器（含已停）与 .env.sandbox；前三项清掉后才以当前镜像
 # sandbox purge --all，并重新问库。拒绝以 7 退出，旧风险优先（品牌仍为 6）；查询失败只豁免明确的旧运行镜像。
 set -u
@@ -55,6 +57,7 @@ pre02_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/s
 pre03_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/channels/registry.ts' </dev/null; }
 pre04_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/core/pack-api.ts' </dev/null; }
 pre07_image() { timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/drizzle/0015_order_refund_status.sql' </dev/null; }
+pre08_image() { timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/core/order-view.ts' </dev/null; }
 pre05_image() { timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/tenancy/runtime.ts' </dev/null; }
 # 所有探测与风险查询共用时限：锁等至多 2 秒、SQL 至多 5 秒；连接或 docker 卡住也在 8 秒后终止，2 秒后强杀。
 # PGOPTIONS 传进容器里的 psql，ON_ERROR_STOP 保证 SQL 超时/错误不会被当成成功的空结果。
@@ -138,7 +141,7 @@ esac
 is_pre02=0
 case "$target" in
   pre-02) is_pre02=1 ;;
-  pre-03 | pre-04 | pre-05 | pre-07) ;;
+  pre-03 | pre-04 | pre-05 | pre-07 | pre-08) ;;
   *)
     if [ ${#risks[@]} -gt 0 ]; then
       pre02_image "$target" >/dev/null 2>&1
@@ -156,7 +159,7 @@ if [ "$is_pre02" = 0 ]; then
   session_risk_count=0
 fi
 is_pre03=1
-if [ "$target" = pre-04 ] || [ "$target" = pre-05 ] || [ "$target" = pre-07 ]; then
+if [ "$target" = pre-04 ] || [ "$target" = pre-05 ] || [ "$target" = pre-07 ] || [ "$target" = pre-08 ]; then
   is_pre03=0
 elif [ "$is_pre02" = 0 ] && [ "$target" != pre-03 ]; then
   pre03_image "$target" >/dev/null 2>&1
@@ -186,7 +189,7 @@ if [ "$is_pre03" = 1 ]; then
 fi
 [ -n "$channel_risk" ] && risks+=("$channel_risk")
 is_pre04=1
-if [ "$target" = pre-05 ] || [ "$target" = pre-07 ]; then
+if [ "$target" = pre-05 ] || [ "$target" = pre-07 ] || [ "$target" = pre-08 ]; then
   is_pre04=0
 elif [ "$is_pre03" = 0 ] && [ "$target" != pre-04 ]; then
   pre04_image "$target" >/dev/null 2>&1
@@ -218,13 +221,14 @@ fi
 is_pre05=1
 case "$target" in
   pre-02 | pre-03 | pre-04 | pre-05) ;;
-  pre-07) is_pre05=0 ;;
+  pre-07 | pre-08) is_pre05=0 ;;
   *) pre05_image "$target" >/dev/null 2>&1; [ $? = 0 ] && is_pre05=0 ;;
 esac
 # 07 R20：先只读检查退款状态，避免拒绝前执行沙箱 purge。
 is_pre07=1
 case "$target" in
   pre-02 | pre-03 | pre-04 | pre-05 | pre-07) ;;
+  pre-08) is_pre07=0 ;;
   *) pre07_image "$target" >/dev/null 2>&1; [ $? = 0 ] && is_pre07=0 ;;
 esac
 if [ "$is_pre07" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
@@ -248,6 +252,56 @@ if [ "$is_pre07" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
     echo "先在后台把退款中的订单办完或驳回；旧镜像会把退款中、已退款的单当成待付款显示在支付页上，成交统计也会漏算，确认能接受再回滚" >&2
     [ "$refund" = t ] || echo "库问不到时从严拒绝；先确认 db 与查询结果，再重跑检查。" >&2
     exit 8
+  fi
+fi
+# 08 R13：四项独立只读检查，不能在拒绝前执行沙箱 purge；保留 02–07 的旧风险优先级。
+is_pre08=1
+case "$target" in
+  pre-02 | pre-03 | pre-04 | pre-05 | pre-06 | pre-07 | pre-08) ;;
+  *) if pre08_image "$target" >/dev/null 2>&1; then is_pre08=0; fi ;;
+esac
+if [ "$is_pre08" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
+  nontravel_tables=(tenants orders catalog_items kb_chunks)
+  nontravel_predicates=("pack_id <> 'travel'" "data->>'v' = '2'" "kind not in ('route','hotel')" "source <> 'route'")
+  nontravel_labels=("非旅游租户（tenants.pack_id <> 'travel'）" "通用单（orders.data->>'v' = '2'）" "非旅游条目（catalog_items.kind 不在 route / hotel）" "非旅游知识块（kb_chunks.source <> 'route'）")
+  nontravel_states=() nontravel_counts=()
+  nontravel_risk=0 nontravel_unknown=0
+  for i in 0 1 2 3; do
+    table="${nontravel_tables[$i]}" predicate="${nontravel_predicates[$i]}"
+    has=t
+    if [ "$table" = kb_chunks ]; then
+      has=$(db_query "select to_regclass('public.kb_chunks') is not null") || has=unknown
+    fi
+    state=unknown count=无法确认
+    case "$has" in
+      f) state=f ;;
+      t) state=$(db_query "select exists(select 1 from public.${table} where ${predicate})") || state=unknown ;;
+    esac
+    case "$state" in
+      f) count=0 ;;
+      t)
+        nontravel_risk=1
+        count=$(db_query "select count(*) from public.${table} where ${predicate}") || count=无法确认
+        [[ "$count" =~ ^[0-9]+$ ]] || count=无法确认 ;;
+      *) state=unknown; nontravel_unknown=1 ;;
+    esac
+    nontravel_states+=("$state") nontravel_counts+=("$count")
+  done
+  if [ "$nontravel_unknown" = 1 ]; then
+    running=$(docker inspect --format '{{.Image}}' "$project" </dev/null 2>/dev/null)
+    if [ -z "$running" ] || [ "$(pre08_image "$running" >/dev/null 2>&1; echo $?)" != 1 ]; then
+      nontravel_risk=1
+    fi
+  fi
+  if [ "$nontravel_risk" = 1 ]; then
+    echo "拒绝回滚：目标是 08 之前的镜像，不认识非旅游数据；库里存在以下风险或查询结果无法确认：" >&2
+    for i in 0 1 2 3; do
+      echo "  - ${nontravel_labels[$i]}：${nontravel_counts[$i]}" >&2
+      [ "${nontravel_states[$i]}" != t ] || echo "    已确认存在，旧镜像不支持。" >&2
+    done
+    echo "先停用并清理非旅游租户，清理遗留的通用单、非旅游条目与非旅游知识块；确认上述四项都为零后再回滚。" >&2
+    [ "$nontravel_unknown" = 0 ] || echo "库问不到或查询结果无法确认时从严拒绝；先确认 db 与四项查询结果，再重跑检查。" >&2
+    exit 9
   fi
 fi
 # 超级用户跨租户检查；旧库没有新列就没有这类数据风险。
