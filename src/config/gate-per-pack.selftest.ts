@@ -23,8 +23,8 @@ const TRAVEL_PIN = {
   /** 导入 data/ 之后 sha256(JSON.stringify([routes, hotels])) */
   catalogHash: '8bb4cd17dcdf89663228fdc0cd5c38d671130bb24200d7b15112cbae3fa679e5',
   /** 已发布 SOP 与「tone 节末尾加一行措辞标记甲」的草稿，在 APP_REVISION=gate-selftest、模型 glm-5.2 下的缓存键 */
-  baselineKey: '2df5fbcdcd6169b9df9b2e7dbfb473d756a523135835f9ad1d3b11a70a2aac5a',
-  draftKey: 'c6ed3ac904ebc0799c16882045ee0622e8189f07b59518c1095c605d37d2e6a5',
+  baselineKey: '2df5fbcdcd6169b9df9b2e7dbfb473d756a523135835f9ad1d3b11a70a2aac5a', // gitleaks:allow
+  draftKey: 'c6ed3ac904ebc0799c16882045ee0622e8189f07b59518c1095c605d37d2e6a5', // gitleaks:allow
   /** 闸给子进程写的导出目录里各文件的 sha256；两边的产品库与政策相同，只有 sop.md 不同 */
   common: {
     'hotels.json': 'cd13af1d7d88d70e2e852f8bd45ef0966b5fd688ad8e90c189d2c1fd34680e9a',
