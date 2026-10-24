@@ -13,6 +13,7 @@ import { policyViolations } from '../packs/travel/policy-lint.js';
 import { shanhaiBrand } from '../packs/travel/brand-fixture.js';
 import { splitSop, sectionBody, TRAVEL_SOP_SECTIONS } from '../sop/sections.js';
 import { checkSopContract } from '../sop/contract.js';
+import { contractInputs } from './brand.js';
 import { policySnapshot, publishedPolicy, sha256 } from './hashes.js';
 import { exportConfig, importConfig } from './transfer.js';
 import * as config from './source.js';
@@ -65,7 +66,7 @@ function fileSnapshot(file: string) {
 }
 
 // 当前镜像零违规，并证明只读字段、档位与文字数字检查不误判普通行程。
-check(() => assert.deepEqual(policyViolations(defaultTravelPolicy, splitSop(md)), []));
+check(() => assert.deepEqual(policyViolations(defaultTravelPolicy, splitSop(md, TRAVEL_SOP_SECTIONS)), []));
 const badPolicies = [
   (p: ReturnType<typeof changedPolicy>) => {
     p.refund.tiers[1]!.maxDays = 30;
@@ -210,7 +211,7 @@ async function suite(db: Db, q: Query, slug: string, cliUrl?: string) {
         toolNames: deps.toolNames,
         knownFields: deps.knownFields,
         baselineEditableChars: null,
-        policy: first.policy,
+        ...contractInputs(config.currentPack().runtime, null, first.policy),
       }),
       [],
     ),

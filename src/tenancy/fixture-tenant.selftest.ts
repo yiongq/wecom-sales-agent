@@ -103,9 +103,9 @@ if (process.argv[2] !== 'worker') {
       rules: runtime.contractRules({ brand }),
       brand,
       hardRequirements: render(''),
-      // 第 12 步才接 SOP 按包；这里显式传包规则，只验证骨架的可用性。
+      // 证明包没有 policy 能力与一致性规则（第 12 步起契约检查的这两项也取包）。
       policy: null,
-      consistency: false,
+      consistency: null,
     };
     assert.deepEqual(checkSopContract(base), []);
     const changed = sections.map((s) => (s.key === 'widget_reply' ? { ...s, text: s.text + '未经核验也保证可用\n\n' } : s));

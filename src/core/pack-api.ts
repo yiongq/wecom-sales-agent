@@ -2,7 +2,7 @@ import { currentRuntime, tenantRuntimes, runtimeOf } from '../tenancy/runtime.js
 import { registerTenantState } from '../tenancy/state.js';
 import { packPipelines } from './engine/pipelines.js';
 // 04 R2、R3：行业包取得核心能力的唯一出口；这里不装载行业包，也不引旧门面。
-import type { SectionSpec } from '../shared/sop-sections.js';
+import type { SectionSpec, SopSection } from '../shared/sop-sections.js';
 import type { CustomerProfile, HandoffRecord, Hotel, Order, Route, SalesStage, Session } from '../types.js';
 import type { ToolDef } from '../tool-defs.js';
 import type { MoneyParseOptions } from './parse/money.js';
@@ -680,6 +680,14 @@ export interface PackPolicy<P = unknown> {
   clauses(p: P): PolicyClause[];
   refund(p: P): RefundTerms | null;
   segments: Readonly<Record<string, (p: P) => string>>;
+  /**
+   * 08 R10：政策本身，以及 SOP 可编辑节里的数字陈述与政策是否一致；契约检查、草稿保存与文件模式装载都经它，配置层不 import 包。
+   * 没有就不查。sections 缺省时只查政策本身。
+   */
+  lint?(
+    raw: unknown,
+    sections?: readonly SopSection[],
+  ): { code: 'policy_invalid' | 'policy_mismatch'; sectionKey: string | null; detail: string; match?: string }[];
 }
 
 /** 08 R2、R7、R9：产品种类声明；装载时与后台字段配置核对。 */

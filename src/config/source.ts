@@ -49,15 +49,23 @@ import { packById, runtimeById, legacyTravelRuntime as travelRuntime } from '../
 import { renderSystemPrompt } from '../core/prompt.js';
 import { embedEndpointAllowed, embedEndpointHost } from '../core/llm/endpoints.js';
 import { packPipelines } from '../core/engine/pipelines.js';
-import { bindPack, boundPack, BrandProfileSchema, type PackBinding, type PackSources, type BrandProfile } from '../core/pack-api.js';
+import {
+  bindPack,
+  boundPack,
+  BrandProfileSchema,
+  type PackBinding,
+  type PackPolicy,
+  type PackRuntime,
+  type PackSources,
+  type BrandProfile,
+} from '../core/pack-api.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { ConfigDrift } from '../shared/console-api.js';
 import { deepFreeze } from '../shared/freeze.js';
 import type { IndustryPack } from '../shared/pack.js';
-import { policyViolations as checkSopContractPolicy } from '../packs/travel/policy-lint.js';
-import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
-import { decodeSopFile, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
-import { tenantImage, tenantRenderer, switchPreamble, preambleWarning } from './brand.js';
+import { checkSopContract } from '../sop/contract.js';
+import { joinSop, mergeWithImage, splitSop, type SectionSpec, type SopSection } from '../sop/sections.js';
+import { contractInputs, readImageSop, tenantImage, tenantRenderer, switchPreamble, preambleWarning } from './brand.js';
 import { promptHashes, renderInputsFor, sha256, publishedBrand, policySnapshot, publishedPolicy } from './hashes.js';
 
 export type { TenantLock } from '../db/client.js';
@@ -120,7 +128,10 @@ export interface ConfigDeps {
   tenantSlug: string;
   /** null = 锁在别人手里 */
   lock(tenantId: string): Promise<TenantLock | null>;
-  /** 镜像里 data/sop.md 的全文，启动时读一次，之后的发布、回滚、导出都用这一份 */
+  /**
+   * 镜像 SOP 的全文，装载时读一次，之后的发布、回滚、导出都用这一份。这里的值只给旅游租户用（自测注入）；
+   * 生产组合根（usePackRuntime）留空，装载时按租户的包现读：旅游 data/sop.md，其他包 data/packs/<id>/sop.md（08 R10）。
+   */
   imageSop: string;
   /** JSON.stringify(toolDefs)，与 promptPrefix().tools 相同 */
   toolsJson: string;
@@ -165,7 +176,9 @@ export type ConfigStartupReason =
   | 'no_active_routes'
   | 'catalog_startup'
   | 'embed_endpoint_forbidden'
-  | 'gate_unavailable';
+  | 'gate_unavailable'
+  // 待 owner 确认（plan Open 1）：非旅游包只支持模板模式，租户没有品牌时用它拒绝启动。owner 选别的写法时只改 loadConfig 里抛它的那一处。
+  | 'brand_required';
 export class ConfigStartupError extends Error {
   constructor(
     readonly reason: ConfigStartupReason,
@@ -184,6 +197,25 @@ async function dbStep<T>(what: string, fn: () => Promise<T>): Promise<T> {
   } catch (e) {
     if (e instanceof ConfigStartupError) throw e;
     throw startup('db_unreachable', `${what}：${message(e)}`);
+  }
+}
+
+/** 装载中 d.runtime 一定已按租户的包绑好（loadConfig 先于一切检查）；类型上可选，是因为自测直接造 ConfigDeps */
+export function runtimeOf(d: Pick<ConfigDeps, 'runtime'>): PackRuntime {
+  if (!d.runtime) throw new Error('行业包运行时尚未绑定');
+  return d.runtime;
+}
+
+/**
+ * 08 R10：租户的镜像文本，解析出租户的包之后才取。旅游照旧是 data/sop.md（自测可经 deps.imageSop 注入；生产组合根按包现读）；
+ * 其他包读 data/packs/<id>/sop.md，永远不用注入的旅游文本。读不到或编码不合格是 image_sop_invalid。
+ */
+export function imageSopOf(d: Pick<ConfigDeps, 'usePackRuntime' | 'imageSop'>, packId: string): string {
+  if (packId === 'travel' && !d.usePackRuntime) return d.imageSop;
+  try {
+    return readImageSop(packId);
+  } catch (e) {
+    throw startup('image_sop_invalid', `读不到行业包 ${packId} 的镜像 SOP：${message(e)}`);
   }
 }
 
@@ -317,7 +349,8 @@ export function configDrift(): ConfigDrift {
   const active = Object.entries(catalog.items).flatMap(([kind, items]) =>
     items.map((payload) => ({ kind, code: String((payload as { id: string }).id), payload })),
   );
-  return driftOf(imageDirOf(state.loaded.deps), state.loaded.sop.sections, state.loaded.imageSections, active);
+  const { deps } = state.loaded;
+  return driftOf(imageDirOf(deps), runtimeOf(deps).sopSections, state.loaded.sop.sections, state.loaded.imageSections, active);
 }
 
 /** 配置写入前调：锁连接断开期间一律拒绝（第 7、8 步的写函数用） */
@@ -356,13 +389,6 @@ export async function productionConfigDeps(
   for (const k of ['SOP_PATH', 'ROUTES_PATH', 'HOTELS_PATH']) {
     if (env[k]) console.warn(`[config] DB 模式下忽略 ${k}：它只给文件模式的测试夹具与回归跑法用`);
   }
-  const imagePath = path.join(process.cwd(), 'data', 'sop.md');
-  let imageSop: string;
-  try {
-    imageSop = decodeSopFile(fs.readFileSync(imagePath));
-  } catch (e) {
-    throw startup('image_sop_invalid', `读不到镜像里的 ${imagePath}：${message(e)}`);
-  }
   let opened: Awaited<ReturnType<typeof openDb>>;
   try {
     opened = await openDb(url);
@@ -375,11 +401,15 @@ export async function productionConfigDeps(
     closeDb: opened.close,
     tenantSlug,
     lock: (tenantId) => holdTenantLock(url, tenantId),
-    imageSop,
-    toolsJson: JSON.stringify(currentPack().runtime.tools.map((t) => t.def)),
-    toolNames: currentPack().runtime.tools.map((t) => t.def.function.name),
-    knownFields: SOP_KNOWN_FIELDS,
-    render: (sop) => renderSystemPrompt(sop, currentPack().runtime.legacy.hardRequirements),
+    // 08 R10：下面五项都要等 loadConfig 解析出租户的包之后，由 usePackRuntime 整体换成该包的（镜像按包读 data/sop.md 或
+    // data/packs/<id>/sop.md），所以这里是占位，不取旅游缺省；没换就被用到是 bug，渲染直接抛。
+    imageSop: '',
+    toolsJson: '[]',
+    toolNames: [],
+    knownFields: [],
+    render: () => {
+      throw new Error('渲染器要等解析出租户的包之后才有');
+    },
     gracefulExit,
   };
 }
@@ -614,12 +644,14 @@ function resolvePublished(
   imageSections: readonly SopSection[],
   previousImage: readonly SopSection[],
 ): { merged: SopSection[]; rendered: string; causes: string[] } | null {
+  const runtime = runtimeOf(d);
   const changedBrand =
-    publishedBrand(row.renderInputs).brandHash !== renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null).brandHash;
-  const policy = publishedPolicy(d.runtime?.policy, row);
-  const changedPolicy = (d.runtime?.policy !== undefined && row.policy == null) || row.renderInputs?.policyHash !== policy.policyHash;
+    publishedBrand(row.renderInputs).brandHash !==
+    renderInputsFor(d.render, d.imageSop, d.toolsJson, runtime.sopSections, d.brand ?? null).brandHash;
+  const policy = publishedPolicy(runtime.policy, row);
+  const changedPolicy = (runtime.policy !== undefined && row.policy == null) || row.renderInputs?.policyHash !== policy.policyHash;
   const stored = changedBrand ? switchPreamble(row.sections, previousImage, imageSections) : row.sections;
-  const merged = mergeWithImage(stored, imageSections);
+  const merged = mergeWithImage(stored, imageSections, runtime.sopSections);
   const rendered = d.render(joinSop(merged));
   if (d.render(joinSop(merged)) !== rendered) throw startup('renderer_nondeterministic', '同一份 SOP 渲染两遍结果不同');
   const violations = checkSopContract({
@@ -629,10 +661,8 @@ function resolvePublished(
     toolNames: d.toolNames,
     knownFields: d.knownFields,
     baselineEditableChars: null,
-    rules: d.runtime?.contractRules(d.brand ? { brand: d.brand } : 'legacy'),
-    brand: d.brand,
+    ...contractInputs(runtime, d.brand ?? null, policy.policy),
     hardRequirements: d.render(''),
-    policy: policy.policy,
   });
   if (violations.length) {
     throw startup(
@@ -642,7 +672,7 @@ function resolvePublished(
   }
   const toolsHash = sha256(d.toolsJson);
   if (rendered === row.renderedPrompt && toolsHash === row.toolsHash && !changedBrand && !changedPolicy) return null;
-  const now = renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null, policy.policyHash);
+  const now = renderInputsFor(d.render, d.imageSop, d.toolsJson, runtime.sopSections, d.brand ?? null, policy.policyHash);
   const before = row.renderInputs;
   const causes = (Object.keys(CAUSE) as (keyof typeof CAUSE)[])
     .filter((k) => (k === 'brandHash' ? changedBrand : k === 'policyHash' ? changedPolicy : !before || before[k] !== now[k]))
@@ -657,13 +687,14 @@ function resolvePublished(
  */
 function driftOf(
   dir: string,
+  spec: readonly SectionSpec[],
   merged: readonly SopSection[],
   imageSections: readonly SopSection[],
   active: readonly { kind: CatalogRow['kind']; code: string; payload: unknown }[],
 ): ConfigDrift {
-  const editedSections = TRAVEL_SOP_SECTIONS.filter(
-    (s) => !s.locked && merged.find((x) => x.key === s.key)?.text !== imageSections.find((x) => x.key === s.key)?.text,
-  ).map((s) => s.key);
+  const editedSections = spec
+    .filter((s) => !s.locked && merged.find((x) => x.key === s.key)?.text !== imageSections.find((x) => x.key === s.key)?.text)
+    .map((s) => s.key);
   const catalog: ConfigDrift['catalog'] = {
     route: { changed: [], onlyDb: [], onlyImage: [] },
     hotel: { changed: [], onlyDb: [], onlyImage: [] },
@@ -689,12 +720,16 @@ function driftOf(
   return { editedSections, catalog };
 }
 
-const imageDirOf = (d: ConfigDeps): string => d.imageDataDir ?? path.join(process.cwd(), 'data');
+/** 镜像的配置目录：旅游是 data/，其他包是 data/packs/<id>/（08 R10、R11），那里没有 routes.json、hotels.json，对应的差异就不报 */
+const imageDirOf = (d: ConfigDeps): string =>
+  d.imageDataDir ??
+  (d.runtime && d.runtime.id !== 'travel' ? path.join(process.cwd(), 'data', 'packs', d.runtime.id) : path.join(process.cwd(), 'data'));
 
 /** 启动日志按节、按条目点名库与镜像 data/ 的差异：DB 模式下改 data/ 的可编辑节或产品库不会生效，要让人看得见 */
 function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: readonly SopSection[], rows: readonly CatalogRow[]): void {
-  const drift = driftOf(imageDirOf(d), merged, imageSections, rows);
-  const headings = drift.editedSections.map((k) => TRAVEL_SOP_SECTIONS.find((s) => s.key === k)?.heading ?? k);
+  const spec = runtimeOf(d).sopSections;
+  const drift = driftOf(imageDirOf(d), spec, merged, imageSections, rows);
+  const headings = drift.editedSections.map((k) => spec.find((s) => s.key === k)?.heading ?? k);
   if (headings.length) console.log(`[config] 可编辑节与镜像 data/sop.md 不同（以库为准）：${headings.join('、')}`);
   for (const [kind, file] of [
     ['route', 'routes.json'],
@@ -712,8 +747,9 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
 
 /**
  * deps 为 null：文件模式，装配同目录品牌。否则依次执行，前 8 步只读（第 0 步校验嵌入端点，不碰库）：
- *   0 嵌入端点在境内清单里（07 R15）→ 1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包 → 4 取租户锁
- *   → 5 切分并校验 imageSop → 6 装载已发布 SOP，校验完整性，算出合并、渲染与契约结果 → 7 装载产品库快照（至少一条 active 线路）
+ *   0 嵌入端点在境内清单里（07 R15）→ 1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包；
+ *   非旅游包没有品牌拒绝（brand_required，08 R10），再按租户的包读镜像 → 4 取租户锁
+ *   → 5 切分并校验镜像 → 6 装载已发布 SOP，校验完整性，算出合并、渲染与契约结果 → 7 装载产品库快照（至少一条 active 线路）
  *   → 8 按节、按条目打印 DB 与镜像 data/ 的差异 → 9 需要时写入 rerender 版本 → 10 装上缓存。
  * 任何一步失败都以 ConfigStartupError reject，释放锁、关闭连接池，不留半装载状态
  */
@@ -803,8 +839,12 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
         render: (sop) => renderSystemPrompt(sop, runtime.legacy.hardRequirements),
       };
     }
-    const legacyImage = d.imageSop;
     const brand = (await dbStep('读待生效品牌', () => readBrand(d.db, tenant.id))) ?? null;
+    // 待 owner 确认（plan Open 1）：非旅游包只支持模板模式（08 R10），没有品牌就拒绝启动。owner 选别的写法时只改这一处。
+    if (runtime.id !== 'travel' && brand === null)
+      throw startup('brand_required', `租户「${d.tenantSlug}」的行业包「${runtime.id}」只支持模板模式，要先设置品牌档案`);
+    // 08 R10：镜像在解析出租户的包之后才读（旅游 data/sop.md，其他包 data/packs/<id>/sop.md）
+    const legacyImage = imageSopOf(d, runtime.id);
     d = { ...d, brand, runtime };
     if (brand) d = { ...d, render: tenantRenderer(runtime, brand) };
     // 4
@@ -842,7 +882,7 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
     const rerender = resolvePublished(d, row, imageSections, previousImage);
     assertCatalogStartup(runtime, snapshotOf(tenant.id, items, 0, historyOf(versions)), d.tenantSlug);
     // 8
-    const merged = rerender?.merged ?? mergeWithImage(row.sections, imageSections);
+    const merged = rerender?.merged ?? mergeWithImage(row.sections, imageSections, runtime.sopSections);
     logDrift(d, merged, imageSections, items);
     if (preambleWarning(merged, imageSections)) console.warn('[config] 前言节里可能还有旧品牌名');
     // 9 以上全部通过之后才写：一个事务里归档旧版本、发布一个 source='rerender' 的新版本，运营编辑过的可编辑节原样保留
@@ -905,7 +945,8 @@ async function writeRerender(
   r: { merged: SopSection[]; rendered: string; causes: string[] },
 ): Promise<SopVersionRow> {
   const hashes = promptHashes(r.rendered, d.toolsJson, joinSop(r.merged));
-  const policy = publishedPolicy(d.runtime?.policy, row);
+  const runtime = runtimeOf(d);
+  const policy = publishedPolicy(runtime.policy, row);
   const next = await withTenant(d.db, systemCtx(tenantId), async (tx) => {
     await lockTenantConfig(tx);
     await archivePublished(tx, row.id);
@@ -919,7 +960,7 @@ async function writeRerender(
       renderedPrompt: r.rendered,
       ...hashes,
       policy: policy.policy,
-      renderInputs: renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null, policy.policyHash),
+      renderInputs: renderInputsFor(d.render, d.imageSop, d.toolsJson, runtime.sopSections, d.brand ?? null, policy.policyHash),
       changeNote: `启动重渲染：${r.causes.join('、')} 变了`,
       createdBy: null,
       createdByName: 'system',
@@ -1089,7 +1130,8 @@ async function reloadOnce(cur: Loaded): Promise<boolean> {
   if (currentRuntime().state !== 'serving' || state.loaded !== cur) return true;
   if (state.catalogWrites !== writesBefore) return false;
   // 版本号只增不减（不变式 13）
-  if (row.versionNo! > cur.sop.versionNo) cur.sop = toPublishedSop(cur.tenantId, row, mergeWithImage(row.sections, cur.imageSections));
+  if (row.versionNo! > cur.sop.versionNo)
+    cur.sop = toPublishedSop(cur.tenantId, row, mergeWithImage(row.sections, cur.imageSections, runtimeOf(cur.deps).sopSections));
   state.sopStale = false;
   // 版本只追加：库里读到的并进内存里已有的（内存里有、库里没有的不会出现：只有提交之后才加进内存）
   for (const v of versions) addVersion(cur.history, v.kind, v.code, v.version, v.payload);
@@ -1232,11 +1274,11 @@ export function currentPolicy(): ReturnType<typeof policySnapshot> {
   return readFilePolicy(currentPack().runtime.policy);
 }
 
-function readFilePolicy(pack: import('../core/pack-api.js').PackPolicy | undefined): ReturnType<typeof policySnapshot> {
+function readFilePolicy(pack: PackPolicy | undefined): ReturnType<typeof policySnapshot> {
   const file = path.join(path.dirname(fileSopPath()), 'policy.json');
   const value = fs.existsSync(file) ? JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file))) : pack?.defaults;
   const snapshot = policySnapshot(pack, value);
-  const violations = pack ? checkSopContractPolicy(snapshot.policy) : [];
+  const violations = pack?.lint?.(snapshot.policy) ?? [];
   if (violations.length) throw new Error(`policy_invalid: ${violations.map((v) => v.detail).join('；')}`);
   return deepFreeze(snapshot);
 }
@@ -1259,9 +1301,9 @@ export function renderFileSop(sop: string): string {
   const { runtime, brand } = currentPack();
   if (brand === null) return renderSystemPrompt(sop, runtime.legacy.hardRequirements);
   const image = tenantImage(runtime, sop, brand);
-  const legacyImage = splitSop(decodeSopFile(fs.readFileSync(path.join(process.cwd(), 'data', 'sop.md'))), runtime.sopSections);
+  const legacyImage = splitSop(readImageSop(runtime.id), runtime.sopSections);
   const stored = switchPreamble(splitSop(sop, runtime.sopSections), legacyImage, image);
-  return tenantRenderer(runtime, brand)(joinSop(mergeWithImage(stored, image)));
+  return tenantRenderer(runtime, brand)(joinSop(mergeWithImage(stored, image, runtime.sopSections)));
 }
 
 function installPack(id: string, brand: BrandProfile | null = null): PackBinding {
