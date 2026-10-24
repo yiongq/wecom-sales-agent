@@ -46,9 +46,11 @@ export const predicateSchema = z.discriminatedUnion('kind', [
   // 同一类句子（pattern 命中的句子）不在两条回复里出现；客户那一轮的话命中 unlessCustomer（客户再问）则不计
   z.object({ kind: z.literal('no_repeat'), pattern: regex, unlessCustomer: regex.optional() }).strict(),
 ]);
+const stage = z.enum(['greeting', 'discovery', 'recommend', 'quote', 'objection', 'closing', 'paid', 'handoff']);
+const history = z.array(z.object({ role: z.enum(['customer', 'ai']), content: z.string().min(1) }).strict());
 const initialSchema = z
   .object({
-    stage: z.enum(['greeting', 'discovery', 'recommend', 'quote', 'objection', 'closing', 'paid', 'handoff']).optional(),
+    stage: stage.optional(),
     profile: z.record(z.string(), z.unknown()).optional(),
     orders: z
       .array(
@@ -62,30 +64,81 @@ const initialSchema = z
           .strict(),
       )
       .optional(),
-    history: z.array(z.object({ role: z.enum(['customer', 'ai']), content: z.string().min(1) }).strict()).optional(),
+    history: history.optional(),
   })
   .strict();
+const goalShape = {
+  id: z.string().min(1),
+  persona: z.string().min(1),
+  brand: z.string().min(1).optional(),
+  maxTurns: z.number().int().positive().optional(),
+  allowedTools: z.array(z.string().min(1)),
+  predicates: z.array(predicateSchema).min(1),
+  forbidden: z.array(z.string().min(1)),
+  severity: z.enum(['safety', 'quality']).optional(), // 缺省 quality
+  tags: z.array(z.string().min(1)).optional(),
+  covers: z.array(z.string().min(1)).optional(), // 问题表里的 ID
+  customerScript: z.array(z.string().min(1)).optional(), // 前几轮客户原话固定，之后交给客户模型
+};
 export const goalSchema = z
   .object({
-    id: z.string().min(1),
-    persona: z.string().min(1),
-    brand: z.string().min(1).optional(),
-    maxTurns: z.number().int().positive().optional(),
-    allowedTools: z.array(z.string().min(1)),
-    predicates: z.array(predicateSchema).min(1),
-    forbidden: z.array(z.string().min(1)),
-    severity: z.enum(['safety', 'quality']).optional(), // 缺省 quality
-    tags: z.array(z.string().min(1)).optional(),
-    covers: z.array(z.string().min(1)).optional(), // 问题表里的 ID
+    ...goalShape,
+    // 08 R11：缺省就是 travel；travel 的写法与没有这个字段时完全相同，别的包走 packGoalSchema
+    pack: z.literal('travel').optional(),
     initial: initialSchema.optional(), // 初始会话与订单（真 paid 走订单状态）
-    customerScript: z.array(z.string().min(1)).optional(), // 前几轮客户原话固定，之后交给客户模型
   })
   .strict();
-export type SimGoal = z.infer<typeof goalSchema>;
+
+// ---- 08 R11：非旅游包（pack 不是 travel） ----
+// 画像只收 { attrs, notes }；订单只给条目和数量，单价与金额由包的 priceLine 算（不变量 7），通用单没有退款的两种状态
+const packInitialSchema = z
+  .object({
+    stage: stage.optional(),
+    profile: z
+      .object({ attrs: z.record(z.string(), z.string()).optional(), notes: z.array(z.string()).optional() })
+      .strict()
+      .optional(),
+    orders: z
+      .array(
+        z
+          .object({
+            status: z.enum(['pending_payment', 'paid', 'cancelled', 'superseded']),
+            lines: z
+              .array(z.object({ kind: z.string().min(1), code: z.string().min(1), qty: z.number().int().positive() }).strict())
+              .min(1),
+          })
+          .strict(),
+      )
+      // 同一会话最多一张待付的通用单（R3）：种子按顺序建单，后建的单会把先建的待付单作废，所以 pending_payment 只能是最后一张
+      .refine((orders) => orders.every((o, i) => o.status !== 'pending_payment' || i === orders.length - 1), {
+        message: 'pending_payment 的订单只能排在最后，且最多一张',
+      })
+      .optional(),
+    history: history.optional(),
+  })
+  .strict();
+export const packGoalSchema = z
+  .object({
+    ...goalShape,
+    pack: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]+$/, '只能含字母、数字、下划线和连字符')
+      .refine((id) => id !== 'travel', 'travel 不写 pack 或写 "travel"，走旅游的 schema'),
+    initial: packInitialSchema.optional(),
+  })
+  .strict();
+export type TravelGoal = z.infer<typeof goalSchema>;
+export type PackGoal = z.infer<typeof packGoalSchema>;
+/** 运行器读的目标：旅游与非旅游包共用一个类型，pack 缺省 travel，initial 里的画像与订单按 pack 取旅游或通用单的形状 */
+export type SimGoal = Omit<TravelGoal, 'pack' | 'initial'> & { pack?: string; initial?: TravelGoal['initial'] | PackGoal['initial'] };
 export type Predicate = z.infer<typeof predicateSchema>;
+/** 目标所属的包 id（缺省 travel） */
+export const goalPack = (g: SimGoal): string => g.pack ?? 'travel';
 
 export function validateGoal(value: unknown, file: string): SimGoal {
-  const result = goalSchema.safeParse(value);
+  // 按 pack 分支：没写或写 travel 走旅游（与以前相同），写了别的字符串走非旅游包；写成非字符串由旅游 schema 报错
+  const pack = value && typeof value === 'object' && 'pack' in value ? value.pack : undefined;
+  const result = (typeof pack === 'string' && pack !== 'travel' ? packGoalSchema : goalSchema).safeParse(value);
   if (result.success) return result.data;
   const id = value && typeof value === 'object' && 'id' in value ? String(value.id) : '<无 id>';
   throw new Error(`${file} (${id}): ${result.error.issues.map((e) => `${e.path.join('.') || '<root>'}: ${e.message}`).join('; ')}`);

@@ -1,5 +1,5 @@
 import type { UsageEvent } from '../../src/usage.js';
-import type { SimGoal } from './goals.js';
+import { goalPack, type SimGoal } from './goals.js';
 import { judge, type Evidence, type SimTurn, type Snapshot, type Verdict } from './judge.js';
 import { computeMetrics, turnMetric, type Metrics, type TurnMetric } from './metrics.js';
 
@@ -51,7 +51,10 @@ export interface SimDeps {
   /** 给了 --config-dir 时是它的绝对路径：品牌由目录里的 brand.json 定，目标的 brand 字段不再拒绝。没给是 undefined。 */
   configDir?: string;
   price(model: string, tokens: Tokens): number;
-  start(initial?: SimGoal['initial']): { id: string; initial: Snapshot };
+  /** 通用单的种子要经包的 priceLine 异步建，所以可以返回 Promise；同步的假依赖照旧 */
+  start(initial?: SimGoal['initial']): { id: string; initial: Snapshot } | Promise<{ id: string; initial: Snapshot }>;
+  /** 运行时装载的包 id（08 R11）；给了就核对目标的 pack，假依赖不填就不核对 */
+  pack?: string;
   sales(id: string, customer: { say: string; done: boolean }): Promise<SimTurn>;
   end(id: string): Promise<void>;
 }
@@ -109,7 +112,7 @@ function customerMessage(raw: string): { say: string; done: boolean } | null {
 
 async function executeRun(goal: SimGoal, repetition: number, meter: Meter, deps: SimDeps): Promise<RunResult> {
   const chargeStart = meter.charges.length;
-  const { id, initial } = deps.start(goal.initial);
+  const { id, initial } = await deps.start(goal.initial);
   const run: RunResult = {
     goalId: goal.id,
     repetition,
@@ -197,6 +200,14 @@ function checkBrands(goals: SimGoal[], deps: SimDeps): void {
   }
 }
 
+/** 08 R11：运行时只装载一个包，目标的 pack（缺省 travel）必须是它；拒绝得早，不让旅游目标在别的包上白跑。 */
+function checkPacks(goals: SimGoal[], deps: SimDeps): void {
+  if (deps.pack === undefined) return;
+  for (const goal of goals) {
+    if (goalPack(goal) !== deps.pack) throw new Error(`${goal.id}: pack: 目标是「${goalPack(goal)}」的，运行时装载的是「${deps.pack}」`);
+  }
+}
+
 /** 一遍：客户模型没按协议出话，整遍重跑一次，两次的费用并进同一遍。 */
 async function runOnce(goal: SimGoal, repetition: number, meter: Meter, deps: SimDeps): Promise<RunResult> {
   const chargeStart = meter.charges.length;
@@ -214,6 +225,7 @@ export async function simulate(goals: SimGoal[], k: number, meter: Meter, deps: 
   if (!Number.isSafeInteger(k) || k < 1) throw new Error('--k 必须是正整数');
   const runs: RunResult[] = [];
   checkBrands(goals, deps);
+  checkPacks(goals, deps);
   outer: for (const goal of goals)
     for (let repetition = 1; repetition <= k; repetition++) {
       if (meter.stopped) break outer;
@@ -339,6 +351,7 @@ export async function simulateGate(
 ): Promise<GateReport> {
   if (!Number.isSafeInteger(rerun) || rerun < 0) throw new Error('--rerun 必须是非负整数');
   checkBrands(goals, deps);
+  checkPacks(goals, deps);
   const results: GateGoalResult[] = [];
   const runs: RunResult[] = [];
   for (const goal of goals) {

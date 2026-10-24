@@ -3,13 +3,13 @@ import { hostRuntime, withTenantScope } from '../../src/tenancy/runtime.js';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { validateCase, type CaseV2 } from './schema.js';
+import { isPackCase, packOf, validateCase, type CaseV2 } from './schema.js';
 import type { CaseResult } from './run.js';
 import { installResets, loadResetModules, resetCaseState, setCaseClock } from './isolation.js';
 import { startFakeModel } from './fake-model.js';
 import { normalize, resolveValues, resolvePattern } from './values.js';
 import type { FinishedTurn } from '../../src/trace/recorder.js';
-import type { Order } from '../../src/types.js';
+import type { AnyOrder } from '../../src/core/order-view.js';
 import { installBrand, brandCase } from './brand.js';
 import { observeTurn, type TurnObservation } from './snapshot.js';
 import { readPackFile } from '../../src/config/pack-file.js';
@@ -18,10 +18,19 @@ export interface WorkerDb {
   close(): Promise<void>;
   reset(): Promise<void>;
 }
-type PrepareDb = (varDir: string) => Promise<WorkerDb>;
+/** 第二个参数是用例的包（缺省 travel）：PGlite 配置按包装配租户与配置源 */
+type PrepareDb = (varDir: string, pack: string) => Promise<WorkerDb>;
 interface PoolRuntime {
   db?: WorkerDb;
   used?: boolean;
+}
+
+/** 通用单的 orders.last.lines：条数相同，每条只比对期望里写出的键（title、unit、version 等没写就不比） */
+function linesMatch(actual: unknown, expected: unknown): boolean {
+  if (!Array.isArray(actual) || !Array.isArray(expected) || actual.length !== expected.length) return false;
+  return expected.every((want: Record<string, unknown>, i) =>
+    Object.entries(want).every(([key, value]) => isDeepStrictEqual((actual[i] as Record<string, unknown> | undefined)?.[key], value)),
+  );
 }
 
 function executeCase(c: CaseV2, varDir: string, prepareDb: PrepareDb, runtime?: PoolRuntime): Promise<CaseResult> {
@@ -38,7 +47,7 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
     await import('../../src/store/parity-clock.js');
   }
   const calls = new Map<string, unknown>();
-  let orders = (): Order[] => [];
+  let orders = (): AnyOrder[] => [];
   const values = { calls, orders: () => orders() };
   const fake = await startFakeModel(c.id, values);
   const failures: string[] = [];
@@ -56,6 +65,9 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
     // 08 R11：配置目录里有 pack.json 就是非旅游包的目录，只有 sop.md（品牌、catalog/ 同目录），没有 routes.json / hotels.json
     const packFile = readPackFile(path.dirname(sopPath));
     const packDir = packFile !== null && packFile.id !== 'travel';
+    // 08 R11：写了 pack 的用例必须跑在那个包的配置目录上（由 runner 按 pack 设 SOP_PATH 与 PACK_FIXTURES）；没写 pack 的用例照旧不校验
+    if (isPackCase(c) && (packFile?.id ?? 'travel') !== c.pack)
+      throw new Error(`pack: 用例要的是「${c.pack}」，配置目录装载的是「${packFile?.id ?? 'travel'}」`);
     Object.assign(process.env, {
       LLM_MOCK: '0',
       LLM_PROVIDER: '',
@@ -82,14 +94,14 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
           }),
       PUBLIC_BASE_URL: '',
     });
-    if (c.brand) c = brandCase(c, c.brand);
+    if (!isPackCase(c) && c.brand) c = brandCase(c, c.brand);
     const store = await import('../../src/store.js');
     loadedStore = store;
     if (process.env.CONFIG_TEST_DB === 'pglite') {
-      db = runtime?.db ?? (await prepareDb(varDir));
+      db = runtime?.db ?? (await prepareDb(varDir, packOf(c)));
       if (runtime) runtime.db = db;
     }
-    restoreBrand = installBrand(c.brand, varDir);
+    restoreBrand = installBrand(isPackCase(c) ? undefined : c.brand, varDir);
     const { handleMessage, onToolCall } = await import('../../src/engine.js');
     if (runtime && !runtime.used) await loadResetModules();
     const { onTurnEnd } = await import('../../src/trace/recorder.js');
@@ -100,24 +112,38 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
     Object.assign(session, c.fixtures?.session, { id: sid, channel: 'simulator' });
     // 夹具订单共用同一个 createdAt：listOrders 按 createdAt 倒序，跨毫秒创建时「最后一张」会随机变，快照不稳
     const fixtureCreatedAt = Date.now();
-    for (const fixture of c.fixtures?.orders ?? []) {
-      const q = createQuote(fixture);
-      const order = store.createOrder({
-        sessionId: sid,
-        routeId: fixture.routeId,
-        routeTitle: q.routeTitle,
-        travelers: fixture.travelers,
-        departDate: fixture.departDate,
-        totalPrice: q.total,
-      });
-      order.status = fixture.status;
-      order.createdAt = fixtureCreatedAt;
-      if (['paid', 'refund_pending', 'refunded'].includes(order.status)) order.paidAt = Date.now();
-      store.saveOrder(order);
-      session.orderIds.push(order.id);
+    if (isPackCase(c)) {
+      // 08 R11：通用单只给条目和数量，经包的 priceLine 建（createLineOrder 的入参里没有金额）；状态建好后再改成夹具要的
+      const { createLineOrder } = await import('../../src/core/order-view.js');
+      for (const fixture of c.fixtures?.orders ?? []) {
+        const result = await createLineOrder(session, fixture.lines);
+        if ('rejected' in result) throw new Error(`夹具订单被包拒绝：${JSON.stringify(result.rejected)}`);
+        const order = result.order;
+        order.status = fixture.status;
+        order.createdAt = fixtureCreatedAt;
+        if (order.status === 'paid') order.paidAt = Date.now();
+        store.saveOrder(order);
+      }
+    } else {
+      for (const fixture of c.fixtures?.orders ?? []) {
+        const q = createQuote(fixture);
+        const order = store.createOrder({
+          sessionId: sid,
+          routeId: fixture.routeId,
+          routeTitle: q.routeTitle,
+          travelers: fixture.travelers,
+          departDate: fixture.departDate,
+          totalPrice: q.total,
+        });
+        order.status = fixture.status;
+        order.createdAt = fixtureCreatedAt;
+        if (['paid', 'refund_pending', 'refunded'].includes(order.status)) order.paidAt = Date.now();
+        store.saveOrder(order);
+        session.orderIds.push(order.id);
+      }
     }
     store.saveSession(session);
-    orders = () => store.listOrders().filter((o) => o.sessionId === sid);
+    orders = () => (isPackCase(c) ? store.listAnyOrders() : store.listOrders()).filter((o) => o.sessionId === sid);
     offTool = onToolCall((name, _args, sessionId) => {
       if (sessionId === sid) calls.delete(name);
     });
@@ -188,7 +214,11 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
         check(orders().length === expect.orders.count, 'orders.count', orders().length);
         for (const [key, value] of Object.entries(expect.orders.last ?? {})) {
           const actual = (orders().at(-1) as unknown as Record<string, unknown> | undefined)?.[key];
-          check(isDeepStrictEqual(actual, value), `orders.last.${key}`, actual);
+          check(
+            isPackCase(c) && key === 'lines' ? linesMatch(actual, value) : isDeepStrictEqual(actual, value),
+            `orders.last.${key}`,
+            actual,
+          );
         }
       }
       if (expect.guardVerdicts !== undefined) {

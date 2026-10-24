@@ -62,6 +62,42 @@ const goal = (predicates: Predicate[] = []): SimGoal => ({
 check('目标支持 tags', validateGoal({ ...goal(), tags: ['regression'] }, 'test.json').tags?.[0] === 'regression');
 assert.throws(() => validateGoal({ ...goal(), tags: [''] }, 'test.json'), /tags/);
 assert.throws(() => validateGoal({ ...goal(), unknown: true }, 'test.json'), /Unrecognized key/);
+// 08 R11：pack（缺省 travel）。travel 的写法与没有这个字段时相同；别的包的画像只收 { attrs, notes }，订单只收 { status, lines }，一概不收金额
+{
+  const lineOrder = { status: 'pending_payment', lines: [{ kind: 'widget', code: 'w-a', qty: 200 }] };
+  const packGoal = (initial: unknown) => ({ ...goal(), pack: '__fixture', initial });
+  check('pack: travel 与不写 pack 同样通过', validateGoal({ ...goal(), pack: 'travel' }, 'test.json').pack === 'travel');
+  check('pack 缺省', validateGoal(goal(), 'test.json').pack === undefined);
+  const seeded = validateGoal(
+    packGoal({ profile: { attrs: { color: '红' }, notes: ['老客户'] }, orders: [{ status: 'paid', lines: lineOrder.lines }, lineOrder] }),
+    'test.json',
+  );
+  check(
+    '非旅游包：画像 { attrs, notes } 与 { status, lines } 订单通过',
+    seeded.pack === '__fixture' && seeded.initial?.orders?.length === 2,
+  );
+  for (const [name, bad] of [
+    ['画像里的旅游字段', packGoal({ profile: { destinationInterest: '云南' } })],
+    ['旅游形状的订单', packGoal({ orders: [{ routeId: 'r-sichuan-mid', travelers: 2, departDate: '2027-03-10', status: 'paid' }] })],
+    ['订单行里的单价', packGoal({ orders: [{ ...lineOrder, lines: [{ kind: 'widget', code: 'w-a', qty: 1, unitPriceFen: 1 }] }] })],
+    ['订单行里的行金额', packGoal({ orders: [{ ...lineOrder, lines: [{ kind: 'widget', code: 'w-a', qty: 1, amountFen: 1 }] }] })],
+    ['订单上的合计', packGoal({ orders: [{ ...lineOrder, totalFen: 1 }] })],
+    ['数量不是正整数', packGoal({ orders: [{ ...lineOrder, lines: [{ kind: 'widget', code: 'w-a', qty: 0 }] }] })],
+    ['没有订单行', packGoal({ orders: [{ status: 'paid', lines: [] }] })],
+    ['退款状态', packGoal({ orders: [{ ...lineOrder, status: 'refunded' }] })],
+    ['待付单不在最后', packGoal({ orders: [lineOrder, { status: 'paid', lines: lineOrder.lines }] })],
+    ['pack 不是字符串', { ...goal(), pack: 7 }],
+    ['pack 字符集', { ...goal(), pack: 'bad pack' }],
+    ['旅游目标写通用单', { ...goal(), initial: { orders: [lineOrder] } }],
+    ['pack: travel 写通用单', { ...goal(), pack: 'travel', initial: { orders: [lineOrder] } }],
+  ] as const) {
+    assert.throws(() => validateGoal(bad, 'test.json'), /test\.json.*test/, name);
+    assertions++;
+  }
+  // 证明包的目标按包装载（只过 schema，不需要登记证明包）
+  const fixtureGoals = await loadGoals('eval/sim/goals/__fixture');
+  check('证明包至少 2 个目标，都是 __fixture 的', fixtureGoals.length >= 2 && fixtureGoals.every((g) => g.pack === '__fixture'));
+}
 const orders = { ...initial, orders: [order] };
 const yesNo = (p: Predicate, yes: Evidence, no: Evidence): void => {
   check(`${p.kind} ${'scope' in p ? p.scope : ''} 通过`, judge(goal([p]), yes)[0]!.passed);
@@ -181,7 +217,7 @@ check(
 );
 check(
   '种子订单的出发日期都在夹具时钟之后',
-  quality.every((g) => (g.initial?.orders ?? []).every((o) => o.departDate > '2026-10-10')),
+  quality.every((g) => (g.initial?.orders ?? []).every((o) => 'departDate' in o && o.departDate > '2026-10-10')),
 );
 check(
   'shape 谓词的 minShare 是 owner 定的 P1 = 0.70',
@@ -211,6 +247,12 @@ fakeEnv(sales.url, customer.url);
 const meter = new Meter(1);
 const runtime = await engineRuntime(meter, 'sim-fake-customer', fakePrices);
 try {
+  // 08 R11：运行时只装载一个包；目标的 pack 不是它就在开跑前被拒（证明包的目标在另一个进程里用证明包跑，见 fixture.selftest.ts）
+  check('旅游运行时装载的是 travel', runtime.deps.pack === 'travel');
+  const requestsBeforePack = sales.requests.length + customer.requests.length;
+  await assert.rejects(simulate([{ ...goal(), pack: '__fixture' }], 1, meter, runtime.deps), /test: pack: .*__fixture.*travel/);
+  assertions++;
+  check('包不符的目标一个请求都没发', sales.requests.length + customer.requests.length === requestsBeforePack);
   const execute = async (g: SimGoal = goal(), k = 1) => {
     const report = await simulate([g], k, meter, runtime.deps);
     check('客户脚本恰好消费', customer.script.length === 0);
@@ -354,7 +396,8 @@ try {
     '种子订单是真的 paid，阶段随之为 paid',
     seed.orders.length === 1 && seed.orders[0]!.status === 'paid' && seed.orders[0]!.paidAt !== undefined && seed.stage === 'paid',
   );
-  check('种子订单金额由真实报价算出', seed.orders[0]!.totalPrice > 0 && seed.orders[0]!.routeTitle.includes('熊猫'));
+  const seeded0 = seed.orders[0]!;
+  check('种子订单金额由真实报价算出', 'totalPrice' in seeded0 && seeded0.totalPrice > 0 && seeded0.routeTitle.includes('熊猫'));
   check('种子订单参与 order 谓词', report.summary[0]!.passK);
   check(
     '种子对话进客户模型的视角',
@@ -375,19 +418,19 @@ try {
   check('待付款种子订单与阶段缺省', report.summary[0]!.passK && report.runs[0]!.initial.stage === 'greeting');
 
   for (const status of ['refund_pending', 'refunded'] as const) {
-    const started = runtime.deps.start({ orders: [{ routeId: 'r-sichuan-mid', travelers: 2, departDate: '2027-03-10', status }] });
+    const started = await runtime.deps.start({ orders: [{ routeId: 'r-sichuan-mid', travelers: 2, departDate: '2027-03-10', status }] });
     check(
       `07：${status} 初始订单带 paidAt，阶段仍 paid`,
       started.initial.orders[0]?.status === status && started.initial.orders[0]?.paidAt !== undefined && started.initial.stage === 'paid',
     );
     await runtime.deps.end(started.id);
   }
-  const probe = runtime.deps.start();
+  const probe = await runtime.deps.start();
   check('每遍结束清掉种子订单', report.runs[0]!.initial.orders.length === 1 && probe.initial.orders.length === 0);
   await runtime.deps.end(probe.id);
   // 回归集的种子都能起：真实订单状态、阶段与对话落进会话，脚本不超轮数（不调模型）
   for (const g of quality.filter((q) => q.initial)) {
-    const started = runtime.deps.start(g.initial);
+    const started = await runtime.deps.start(g.initial);
     const want = g.initial!.orders ?? [];
     check(
       `${g.id} 种子能起，订单与状态一致`,

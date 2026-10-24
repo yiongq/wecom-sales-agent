@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import type { AgentReply, Order } from '../../src/types.js';
+import type { AgentReply } from '../../src/types.js';
+import type { AnyOrder } from '../../src/core/order-view.js';
 import type { FinishedTurn, GuardEvent } from '../../src/trace/recorder.js';
 import type { CaseResult } from './run.js';
 import { normalize } from './values.js';
@@ -31,20 +32,30 @@ export interface V2Snapshot {
 // 不泛匹配日期/数字，避免把出发日、人数、金额或业务条目 id 的变化藏掉。
 // ord_… 与 ?v=N/&v=N 沿用 values.ts；sessionId/turnId/订单引用按精确值替换；
 // 实际记录的毫秒时刻及其完整 ISO 表示归一，日期字符串（如 departDate）保留。
-export function observeTurn(reply: AgentReply, handoff: boolean, orders: Order[], finished: FinishedTurn): TurnObservation {
+export function observeTurn(reply: AgentReply, handoff: boolean, orders: AnyOrder[], finished: FinishedTurn): TurnObservation {
   const replacements = new Map<string, string>([
     [finished.turn.conversationId, 'SESSION_NORMALIZED'],
     [finished.turn.turnId, 'TURN_NORMALIZED'],
   ]);
+  // 通用单（08）没有 refund：它不进退款
+  const refundOf = (o: AnyOrder) => ('refund' in o ? o.refund : undefined);
   for (const order of orders) {
     replacements.set(order.id, 'ord_NORMALIZED');
-    if (order.refund) replacements.set(order.refund.id, 'REFUND_NORMALIZED');
+    const refund = refundOf(order);
+    if (refund) replacements.set(refund.id, 'REFUND_NORMALIZED');
     if (order.supersededBy) replacements.set(order.supersededBy, 'ord_NORMALIZED');
   }
   const times = [
     finished.turn.startedAt,
     ...finished.turn.guards.map((g) => g.at),
-    ...orders.flatMap((o) => [o.createdAt, o.paidAt, o.confirmedAt, o.refund?.requestedAt, o.refund?.decision?.at, o.refund?.settled?.at]),
+    ...orders.flatMap((o) => [
+      o.createdAt,
+      o.paidAt,
+      o.confirmedAt,
+      refundOf(o)?.requestedAt,
+      refundOf(o)?.decision?.at,
+      refundOf(o)?.settled?.at,
+    ]),
   ];
   for (const time of times) {
     if (time === undefined) continue;
@@ -141,7 +152,7 @@ export async function serializeSnapshot(snapshot: V2Snapshot): Promise<string> {
  * 默认比对的具名快照（06 R4）：每个有意改变行为的 PR 把它改成自己生成的 `eval/baselines/v2-06-step<N>.json`。
  * 旧快照不删；`EVAL_V2_BASELINE=<文件>` 临时换，`off` 关闭比对。
  */
-export const DEFAULT_BASELINE = 'v2-07-step6.json';
+export const DEFAULT_BASELINE = 'v2-08-step17.json';
 
 export function readBaseline(
   setting = process.env.EVAL_V2_BASELINE,

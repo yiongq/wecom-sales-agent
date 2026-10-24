@@ -1,11 +1,12 @@
 import { isDeepStrictEqual } from 'node:util';
-import type { Order, Session } from '../../src/types.js';
+import type { Session } from '../../src/types.js';
+import type { AnyOrder } from '../../src/core/order-view.js';
 import type { FinishedTurn } from '../../src/trace/recorder.js';
 import type { Predicate, SimGoal } from './goals.js';
 import { countLines } from './shape-count.js';
 
 export interface Snapshot {
-  orders: Order[];
+  orders: AnyOrder[];
   handedOver: boolean;
   handoff: Session['handoff'] | null;
   stage: Session['stage'];
@@ -90,7 +91,9 @@ function testPredicate(p: Predicate, e: Evidence): boolean {
       return (
         orders.length === p.count &&
         orders.every((o) =>
-          Object.entries(p.fields ?? {}).every(([k, v]) => Object.hasOwn(o, k) && isDeepStrictEqual(o[k as keyof Order], v)),
+          Object.entries(p.fields ?? {}).every(
+            ([k, v]) => Object.hasOwn(o, k) && isDeepStrictEqual((o as unknown as Record<string, unknown>)[k], v),
+          ),
         )
       );
     }

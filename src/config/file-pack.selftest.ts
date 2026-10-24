@@ -82,6 +82,8 @@ if (mode === 'parent') {
     __configTest.reset();
   };
   const widgetFile = (dir: string): string => path.join(dir, 'catalog', 'widget.json');
+  /** 参考配置里 widget 的条数：第 17 步起评测 case 往里加了条目，不再写死 3 */
+  const fixtureWidgetCount = (): number => (JSON.parse(fs.readFileSync(widgetFile(fixtureDir), 'utf8')) as unknown[]).length;
   const spyConsoleError = async (fn: () => void | Promise<void>): Promise<string[]> => {
     const saved = console.error;
     const lines: string[] = [];
@@ -178,7 +180,7 @@ if (mode === 'parent') {
         check(() => assert.equal(runtime.metadata.brand, '虚构方盒核验社'));
         check(() => assert.equal(runtime.metadata.config, 'config-dir'));
         check(() => assert.equal(boundPack()?.runtime.id, '__fixture'));
-        check(() => assert.equal(currentCatalog().items.widget?.length, 3));
+        check(() => assert.equal(currentCatalog().items.widget?.length, fixtureWidgetCount()));
       } finally {
         await runtime.close();
       }
@@ -193,9 +195,9 @@ if (mode === 'parent') {
       const oneWidget = copyFixture('one-widget');
       fs.writeFileSync(widgetFile(oneWidget), JSON.stringify([JSON.parse(fs.readFileSync(widgetFile(fixtureDir), 'utf8'))[1]]));
       for (const [label, configDir, expect] of [
-        ['证明包', fixtureDir, { pack: '__fixture', widgets: 3, brand: '虚构方盒核验社' }],
+        ['证明包', fixtureDir, { pack: '__fixture', widgets: fixtureWidgetCount(), brand: '虚构方盒核验社' }],
         ['旅游（data/）', undefined, { pack: 'travel', widgets: null, brand: 'legacy' }],
-        ['证明包（第二次）', fixtureDir, { pack: '__fixture', widgets: 3, brand: '虚构方盒核验社' }],
+        ['证明包（第二次）', fixtureDir, { pack: '__fixture', widgets: fixtureWidgetCount(), brand: '虚构方盒核验社' }],
         ['证明包的另一个目录（只有一条 widget）', oneWidget, { pack: '__fixture', widgets: 1, brand: '虚构方盒核验社' }],
         ['旅游（data/，第二次）', undefined, { pack: 'travel', widgets: null, brand: 'legacy' }],
       ] as const) {
@@ -234,7 +236,7 @@ if (mode === 'parent') {
       }
       const again = await open(fixtureDir);
       try {
-        check(() => assert.equal(currentCatalog().items.widget?.length, 3));
+        check(() => assert.equal(currentCatalog().items.widget?.length, fixtureWidgetCount()));
       } finally {
         await again.close();
       }
@@ -296,14 +298,14 @@ if (mode === 'parent') {
     const lazy = currentCatalog();
     check(() => assert.equal(boundPack()?.runtime.id, '__fixture'));
     check(() => assert.equal(currentPack().brand?.brandName, '虚构方盒核验社'));
-    check(() => assert.equal(lazy.items.widget?.length, 3));
+    check(() => assert.equal(lazy.items.widget?.length, fixtureWidgetCount()));
     check(() => assert.equal(fileCatalogKeys(), 1));
     // 回归 3：重置后不强制绑旅游。SOP_PATH 还指着证明包，重置之后惰性入口照 pack.json 恢复成 __fixture
     __configTest.reset();
     check(() => assert.equal(boundPack(), null));
     check(() => assert.equal(fileCatalogKeys(), 0, '回归 4：重置后状态计数归 0'));
     check(() => assert.equal(currentPack().runtime.id, '__fixture'));
-    check(() => assert.equal(currentCatalog().items.widget?.length, 3));
+    check(() => assert.equal(currentCatalog().items.widget?.length, fixtureWidgetCount()));
     check(() => assert.equal(fileCatalogKeys(), 1, '回归 4：装载后状态计数是 1'));
     __configTest.reset();
     check(() => assert.equal(fileCatalogKeys(), 0));
