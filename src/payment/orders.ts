@@ -16,8 +16,9 @@ import {
 } from '../handoff/takeover.js';
 import { shortIdOf } from '../shared/conversation.js';
 import { cleanText } from '../shared/text.js';
-import { getOrder, getSession, markOrderPaid, queueAudit, saveOrder, saveSession, storeLagging, StoreLaggingError } from '../store.js';
-import type { Order, OrderStatus } from '../types.js';
+import { getAnyOrder, getSession, markOrderPaid, queueAudit, saveOrder, saveSession, storeLagging, StoreLaggingError } from '../store.js';
+import { isLineOrder, orderTotalFen, type AnyOrder } from '../core/order-view.js';
+import type { OrderStatus } from '../types.js';
 import { paymentMode } from './mode.js';
 
 /** 订单状态不允许这个动作 → 409 order_state（unconfirmed：advisor 模式下还没确认价格就确认收款） */
@@ -37,9 +38,9 @@ export class OrderNotFoundError extends Error {
 const SEED_SESSION_RE = /^wecom:cust_/;
 const PAY_NOTICE_FAILED = '⚠️ 上一条付款确认未能发送到客户（推送失败：可能是 48h 会话窗口已关闭或渠道配置问题），请另行告知客户已收到付款';
 
-function orderFor(orderId: string, actor: Actor): Order {
+function orderFor(orderId: string, actor: Actor): AnyOrder {
   if (!handlesConversations(actor.role)) throw new ForbiddenError();
-  const o = getOrder(orderId);
+  const o = getAnyOrder(orderId);
   if (!o) throw new OrderNotFoundError();
   if (supervisesConversations(actor.role)) return o;
   const s = o.sessionId ? getSession(o.sessionId) : undefined;
@@ -50,7 +51,7 @@ function orderFor(orderId: string, actor: Actor): Order {
 const who = (a: Actor) => ({ userId: a.userId, name: a.name });
 
 /** 订单类审计（spec「后台接口」）：target 是订单号，diff 带所属会话的短码 */
-function audit(o: Order, actor: Actor, entry: { action: string; diff: Record<string, unknown> }): void {
+function audit(o: AnyOrder, actor: Actor, entry: { action: string; diff: Record<string, unknown> }): void {
   queueAudit(
     o.sessionId,
     { kind: 'user', userId: actor.userId, name: actor.name, ip: actor.ip ?? null },
@@ -59,20 +60,20 @@ function audit(o: Order, actor: Actor, entry: { action: string; diff: Record<str
 }
 
 /** 确认价格：只对未作废的 pending_payment；重复确认幂等（不改、不再记审计）。调用方再 await flushSession */
-export function confirmOrder(orderId: string, actor: Actor): Order {
+export function confirmOrder(orderId: string, actor: Actor): AnyOrder {
   const o = orderFor(orderId, actor);
   if (o.status !== 'pending_payment') throw new OrderStateError(o.status);
   if (o.confirmedAt != null) return o;
   if (storeLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId);
   o.confirmedAt = Date.now();
   o.confirmedBy = who(actor);
-  audit(o, actor, { action: 'order.confirm', diff: { totalPrice: o.totalPrice } });
+  audit(o, actor, { action: 'order.confirm', diff: isLineOrder(o) ? { totalFen: orderTotalFen(o) } : { totalPrice: o.totalPrice } });
   saveOrder(o);
   return o;
 }
 
 /** 取消订单：pending_payment → cancelled，记原因（≤200 字）。调用方再 await flushSession */
-export function cancelOrder(orderId: string, actor: Actor, reason: string): Order {
+export function cancelOrder(orderId: string, actor: Actor, reason: string): AnyOrder {
   const o = orderFor(orderId, actor);
   if (o.status !== 'pending_payment') throw new OrderStateError(o.status);
   if (storeLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId);
@@ -90,7 +91,7 @@ export function cancelOrder(orderId: string, actor: Actor, reason: string): Orde
  * （真超时也照发，persisted 为 false，调用方据此回 503 store_lagging；poisoned 或冲突时不会再提交，不发，直接 503）。
  * spec 的签名返回 Order，这里多带 persisted
  */
-export async function markPaidByAdvisor(orderId: string, actor: Actor): Promise<{ order: Order; persisted: boolean }> {
+export async function markPaidByAdvisor(orderId: string, actor: Actor): Promise<{ order: AnyOrder; persisted: boolean }> {
   const o = orderFor(orderId, actor);
   if (o.status === 'paid') return { order: o, persisted: (await awaitCommit(o.sessionId)).persisted };
   if (o.status !== 'pending_payment') throw new OrderStateError(o.status);
@@ -98,7 +99,7 @@ export async function markPaidByAdvisor(orderId: string, actor: Actor): Promise<
   if (storeLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId);
   o.paidMarkedBy = who(actor);
   markOrderPaid(o.id);
-  audit(o, actor, { action: 'order.mark_paid', diff: { totalPrice: o.totalPrice } });
+  audit(o, actor, { action: 'order.mark_paid', diff: isLineOrder(o) ? { totalFen: orderTotalFen(o) } : { totalPrice: o.totalPrice } });
   // 不会再提交（poisoned 或冲突）时 awaitCommit 直接抛 StoreLaggingError：不发付款确认，调用方回 503（不变量 20）
   const { persisted } = await awaitCommit(o.sessionId);
   // 付款确认在提交之后才写进会话、发给客户（不变量 20）

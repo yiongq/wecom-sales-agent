@@ -24,7 +24,7 @@ import {
   readRetentionSettings,
   type RetentionSettings,
 } from '../db/repo/retention.js';
-import { forgetSession, getOrder, getSession, holdForPurge, withJobsTx } from '../store.js';
+import { forgetSession, getAnyOrder, getSession, holdForPurge, withJobsTx } from '../store.js';
 import type { JobOutcome, JobSpec } from './runner.js';
 
 /** 持有期间这个会话被改动了：清除事务按这个信号回滚、让这次写赢（不是真的错误，只是「这一轮清不掉」的信号） */
@@ -88,7 +88,7 @@ export function retentionPurgeSpec(now: number): JobSpec {
 function stillWithinRetentionInMemory(sessionId: string, now: number, settings: RetentionSettings): boolean {
   const s = getSession(sessionId);
   if (!s) return false;
-  const paid = s.orderIds.some((id) => getOrder(id)?.paidAt != null);
+  const paid = s.orderIds.some((id) => getAnyOrder(id)?.paidAt != null);
   const days = paid ? settings.customerDays : settings.leadDays;
   return now - s.updatedAt < days * 86_400_000;
 }

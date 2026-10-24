@@ -213,14 +213,14 @@ function paymentEntry(
       type: { text: '待付款' },
       title: conv.needSummary ? [...label, conv.needSummary] : label,
       context: [
-        { text: money(o.totalPrice) },
+        { text: 'display' in o ? o.totalText : money(o.totalPrice) },
         { text: unconfirmed ? '等你确认价格' : `下单${waitDurationText(now - Date.parse(o.createdAt))}未付` },
       ],
       action: '打开会话',
       target: { kind: 'open', id: conv.id },
     },
     emergency: false,
-    amount: o.totalPrice,
+    amount: 'display' in o ? o.totalFen / 100 : o.totalPrice,
     silenceMs: now - Date.parse(o.createdAt),
   };
 }

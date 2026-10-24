@@ -14,7 +14,7 @@ import {
   conversationRef,
   emitAfterCommit,
   flushSession,
-  getOrder,
+  getAnyOrder,
   getSession,
   queueAudit,
   queueJobs,
@@ -237,7 +237,7 @@ export function release(sessionId: string, actor: Actor): void {
   // 只在原阶段是 handoff（被转人工「吸」走）时才还原：否则会把 closing 的客户拉回 quote，终态会话本来就停在终态
   if (s.stage === 'handoff') {
     // 优先用接管前记下的真实阶段；反推只是没有该记录时的兜底。已支付是既成事实，优先级高于记录值（接管期间完成支付）
-    const paid = s.orderIds.map((id) => getOrder(id)).some((o) => !!o && ['paid', 'refund_pending', 'refunded'].includes(o.status));
+    const paid = s.orderIds.map((id) => getAnyOrder(id)).some((o) => !!o && ['paid', 'refund_pending', 'refunded'].includes(o.status));
     const done = terminalStageKey();
     // 08 R4：没有接管前阶段时的反推由包给（旅游：有订单 closing、有报价 quote、否则 discovery）；包没实现就按有订单 closing、否则 discovery
     const inferred = paid ? done : (currentPack().runtime.stageOnReturn?.(s) ?? (s.orderIds.length ? 'closing' : 'discovery'));

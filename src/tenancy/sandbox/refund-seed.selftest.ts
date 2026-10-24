@@ -195,7 +195,7 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   const orderViews = await json<{ items: OrderView[] }>(await request('/api/console/orders?limit=50', token));
   const g01View = orderViews.items.find((o) => o.id === 'ord_seed_7c41a9')!;
   check(() => assert.equal(g01View.status, 'refund_pending'));
-  check(() => assert.equal(g01View.departDate, departDay));
+  check(() => assert.ok('departDate' in g01View && g01View.departDate === departDay));
   check(() =>
     assert.deepEqual(
       { ...g01View.refund, requestedAt: 0 },

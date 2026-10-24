@@ -6,12 +6,13 @@ import { brandTexts } from '../brand.js';
 import './sources.js';
 // 通用对话引擎：并发、历史、入站、模型与出口；行业能力由组合根绑定。
 import fs from 'node:fs';
-import type { AgentReply, ChatMessage, Order, PreparedPush, Session } from '../../types.js';
+import type { AgentReply, ChatMessage, PreparedPush, Session } from '../../types.js';
+import { isLineOrder, orderDisplay, type AnyOrder } from '../order-view.js';
 import { mergeProfile, profileForModel, resetPackState } from '../pack-profile.js';
 import {
   deleteOrdersOfSession,
   getOrCreateSession,
-  getOrder,
+  getAnyOrder,
   getSession,
   noteWindowReset,
   queueInboxState,
@@ -858,7 +859,7 @@ async function finishTurn(
       },
     },
     toolSources: calls,
-    orderSources: session.orderIds.map((id) => getOrder(id)).filter((o): o is Order => !!o),
+    orderSources: session.orderIds.map((id) => getAnyOrder(id)).filter((o): o is AnyOrder => !!o),
     brand: binding.brand,
     thresholds: runtime.thresholds,
     takenOver,
@@ -998,11 +999,17 @@ export async function guardOutbound(session: Session, text: string, _opts: { kin
 export async function notifyPaid(
   orderId: string,
 ): Promise<{ sessionId: string; text: string; message: ChatMessage; prepared: PreparedPush | null } | null> {
-  const order = getOrder(orderId);
+  const order = getAnyOrder(orderId);
   if (!order?.sessionId) return null;
   const session = getSession(order.sessionId);
   if (!session) return null;
-  const text = cleanText(currentPack().runtime.engineHooks.paidText(order));
+  const hooks = currentPack().runtime.engineHooks;
+  // 待 owner 确认（plan Open 2）：包可覆盖通用单付款确认，缺省用核心话术。
+  const text = cleanText(
+    isLineOrder(order)
+      ? (hooks.paidLineText?.(order) ?? `已收到您的付款${orderDisplay(order).totalText}，订单共${order.lines.length}项。`)
+      : hooks.paidText(order),
+  );
   session.stage = terminalStageKey();
   const message: ChatMessage = { role: 'agent', content: text, at: Date.now() };
   session.messages.push(message);

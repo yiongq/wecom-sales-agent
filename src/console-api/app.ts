@@ -187,7 +187,7 @@ import {
   getOrder,
   getSession,
   isDemoClassId,
-  listOrders,
+  listAnyOrders,
   sessionStoreMode,
   storeHealth,
   StoreLaggingError,
@@ -803,6 +803,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
   // 多一个 _draft，所以原样放进 eval/sim/goals/ 过不了校验，开发者要先改写成合成的话（src/console-api/goal-draft.ts）。
   // 只给所有者、管理员；每次下载在同一个事务里写一行审计 trace.export（target 是会话行的 ref），审计写不进去就不给文件
   .get('/conversations/:id/turns/:turnId/goal-draft', canSeeTraces, async (c) => {
+    if (currentPack().runtime.id !== 'travel') return c.notFound();
     // 这是会留审计、给文件的 GET：别的网站把已登录的管理员导航过来（Sec-Fetch-Site: cross-site）不给
     if (isCrossSite(c)) return fail(c, 403, { error: 'cross_site', detail: '跨站请求已拒绝' });
     const s = listedSessionOf(c.req.param('id'));
@@ -913,7 +914,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
     if (!EDITORS.has(c.var.user!.role) && status !== 'pending_payment') {
       return fail(c, 403, { error: 'forbidden', detail: '只有所有者和管理员能看全部订单，其余只能看待付款的' });
     }
-    const all = listOrders().filter((o) => !status || o.status === status);
+    const all = listAnyOrders().filter((o) => !status || o.status === status);
     const body: OrderPage = { items: all.slice(0, limit).map(orderView), total: all.length, paymentMode: paymentMode() };
     return c.json(body, 200);
   })

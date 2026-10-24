@@ -26,6 +26,7 @@ import path from 'node:path';
 import { Hono } from 'hono';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { isLineOrder, orderDisplay, orderTotalFen, type AnyOrder, type PublicLineOrder } from './core/order-view.js';
 import { handleMessage, notifyPaid, promptPrefix, sopFileText } from './engine.js';
 import { enterHandoff, loadHotels, loadRoutes, quoteFor, routeForProposal } from './tools.js';
 import { HANDOFF_REASON } from './handoff/record.js';
@@ -47,7 +48,7 @@ import {
 } from './handoff/takeover.js';
 import {
   flushSession,
-  getOrder,
+  getAnyOrder,
   getSession,
   gracefulExit,
   initSessionStore,
@@ -361,6 +362,18 @@ const publicOrder = (o: Order): PublicOrder => ({
   confirmed: o.confirmedAt != null,
   supersededBy: o.supersededBy ?? null,
 });
+
+/** 通用单用独立白名单；旧版单保留原投影及键顺序。 */
+const publicAnyOrder = (o: AnyOrder): PublicOrder | PublicLineOrder =>
+  isLineOrder(o)
+    ? {
+        id: o.id,
+        status: o.status,
+        display: orderDisplay(o),
+        ...(o.paidAt === undefined ? {} : { paidAt: o.paidAt }),
+        payable: o.status === 'pending_payment' && (paymentMode() !== 'advisor' || o.confirmedAt != null),
+      }
+    : publicOrder(o);
 
 // 主站入口统一进工作台（05 spec R23），不受部署 profile、配置来源或模拟器开关影响。
 app.get('/', (c) => c.redirect('/console/'));
@@ -789,9 +802,9 @@ app.get('/api/orders', anonReadable, (c) => {
 
 // 单订单读取对支付页开放：订单号即凭据（不可猜的随机 ID，列表接口只给登录者与订单本人，不可枚举）。只给白名单字段（R22）
 app.get('/api/orders/:id', lookupLimit, (c) => {
-  const o = getOrder(c.req.param('id'));
+  const o = getAnyOrder(c.req.param('id'));
   if (!o) return c.json({ error: 'order not found' }, 404);
-  return c.json(publicOrder(o));
+  return c.json(publicAnyOrder(o));
 });
 
 /**
@@ -808,14 +821,14 @@ const payAuth: MiddlewareHandler = async (c, next) => {
 // 演示用模拟支付：真实生产必须替换为微信支付服务端回调验签，此端点仅 demo 闭环用
 app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
   const id = c.req.param('id');
-  const order = getOrder(id);
+  const order = getAnyOrder(id);
   if (!order) return c.json({ error: 'order not found' }, 404);
   // 改单后被新订单替代的旧单（或已取消的）不能再付：客户翻聊天记录点开旧链接，此前照样付款成功，一趟行程收两笔钱
   if (order.status === 'superseded' || order.status === 'cancelled') {
-    return c.json({ error: order.status === 'superseded' ? '这笔订单已被新订单替代' : '订单已取消', order: publicOrder(order) }, 409);
+    return c.json({ error: order.status === 'superseded' ? '这笔订单已被新订单替代' : '订单已取消', order: publicAnyOrder(order) }, 409);
   }
   if (order.status === 'refund_pending' || order.status === 'refunded') {
-    return c.json({ error: order.status === 'refund_pending' ? '订单退款中' : '订单已退款', order: publicOrder(order) }, 409);
+    return c.json({ error: order.status === 'refund_pending' ? '订单退款中' : '订单已退款', order: publicAnyOrder(order) }, 409);
   }
   if (order.status !== 'paid') {
     markOrderPaid(id);
@@ -827,7 +840,10 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
       action: 'order.mark_paid',
       targetType: 'order',
       targetId: order.id,
-      diff: { shortId: shortIdOf(order.sessionId), totalPrice: order.totalPrice },
+      diff: {
+        shortId: shortIdOf(order.sessionId),
+        ...(isLineOrder(order) ? { totalFen: orderTotalFen(order) } : { totalPrice: order.totalPrice }),
+      },
     };
     queueAudit(order.sessionId, payAuditActor, payAuditEntry);
     // 付款确认同样在提交之后才对客户发（不变量 20）：真超时（仍可能提交）照发；poisoned / 冲突（不会再提交）
@@ -861,8 +877,8 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
     }
   }
   // 响应体同 GET /api/orders/:id 的白名单（plan「Open」第 1 步带出的第二条，按推荐先做）
-  const after = getOrder(id);
-  return c.json({ ok: true, order: after && publicOrder(after) });
+  const after = getAnyOrder(id);
+  return c.json({ ok: true, order: after && publicAnyOrder(after) });
 });
 
 /**
@@ -878,13 +894,28 @@ app.get('/pay/:orderId', async (c) => {
   const binding = currentPack();
   const html = renderBrandPage(await readFile(path.resolve('public/pay.html'), 'utf8'), 'pay', binding.runtime, binding.brand);
   // 同方案页：标题服务端注入，避免微信里先闪一下网址再变标题
-  const o = getOrder(c.req.param('orderId'));
+  const o = getAnyOrder(c.req.param('orderId'));
   if (!o) return c.html(html);
   const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch] as string);
   // advisor 模式：页面不经 R22 白名单知道收款方式长什么样（里面没有这个字段），只能靠这条路由服务端注入一个标记，
   // 页面 JS 据它决定要不要渲染付款按钮（spec「收款流程」；/pay.html?orderId= 这条静态入口注入不到，在客户端跳到这条路由）。
   // online 模式什么都不加，页面逐字节不变
   const modeTag = paymentMode() === 'advisor' ? '\n<meta name="payment-mode" content="advisor">' : '';
+  if (isLineOrder(o)) {
+    const display = orderDisplay(o);
+    const title = `${display.title} · ${o.status === 'superseded' ? '订单已被替代' : '订单支付'}`;
+    const desc =
+      o.status === 'superseded' ? '这笔订单已被新订单替代，请以最新发给您的支付链接为准' : `${display.summary} · 合计 ${display.totalText}`;
+    return c.html(
+      withHead(
+        html,
+        `<title>${esc(title)}</title>\n` +
+          `<meta name="description" content="${esc(desc)}">\n` +
+          `<meta property="og:title" content="${esc(title)}">\n` +
+          `<meta property="og:description" content="${esc(desc)}">${modeTag}`,
+      ),
+    );
+  }
   // 被替代的旧单：微信里转发出去的卡片标题、摘要也别再写着待支付的金额
   if (o.status === 'superseded') {
     const t = `${o.routeTitle} · 订单已被替代`;
@@ -937,6 +968,7 @@ function isSaneDepartDate(s: string): boolean {
 // 带 ?v= 时按产品库条目的那个版本渲染，不带按版本 1（02「报价快照」）：改价之后已发出的链接报价不变。版本只从内存取，
 // v 不是正整数或大于当前版本时 404，不查库（不变量 35）
 app.get('/api/proposal/:routeId', (c) => {
+  if (!currentPack().runtime.documents?.proposal) return c.notFound();
   const route = routeForProposal(c.req.param('routeId'), c.req.query('v'));
   if (!route?.itinerary?.length) return c.json({ error: 'proposal not available' }, 404);
   const travelers = Math.min(50, Math.max(1, Math.floor(Number(c.req.query('travelers')) || 2)));
@@ -981,6 +1013,7 @@ function renderProposalHtml(html: string, route: Route | null, travelers: number
 
 async function serveProposal(c: Context): Promise<Response> {
   const binding = currentPack();
+  if (!binding.runtime.documents?.proposal) return c.notFound();
   const html = renderBrandPage(await readFile(path.resolve('public/proposal.html'), 'utf8'), 'proposal', binding.runtime, binding.brand);
   const routeId = c.req.param('routeId') ?? '';
   // 人数在路径第二段（/proposal/<id>/<人数>[/<日期]），取不到按 2 人
@@ -1129,6 +1162,7 @@ app.use('/*', async (c, next) => {
   const page = /^\/(pay|proposal|chat)\.html$/i.exec(c.req.path)?.[1]?.toLowerCase() as 'pay' | 'proposal' | 'chat' | undefined;
   if (!page || !['GET', 'HEAD'].includes(c.req.method)) return next();
   const binding = currentPack();
+  if (page === 'proposal' && !binding.runtime.documents?.proposal) return c.notFound();
   if (binding.brand === null && !sandboxSessionOf(c)) return next();
   let html = await readFile(path.resolve(`public/${page}.html`), 'utf8');
   if (page === 'chat' && sandboxSessionOf(c)) {

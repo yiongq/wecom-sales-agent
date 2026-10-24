@@ -13,6 +13,7 @@ import {
   TenantScopeMissing,
   type TenantRuntime,
 } from '../tenancy/runtime.js';
+import { isLineOrder, orderDisplay } from '../core/order-view.js';
 import { currentPack } from '../config/source.js';
 import { brandTexts } from '../core/brand.js';
 import { welcomeText as legacyWelcomeText, welcomeBackText as legacyWelcomeBackText } from '../packs/travel/legacy.js';
@@ -95,7 +96,7 @@ import { withAdvisorPrefix } from '../shared/conversation.js';
 import { convLabel, logQuote, withConversationLog, withLogContext } from '../log.js';
 import {
   getOrCreateSession,
-  getOrder,
+  getAnyOrder,
   getSession,
   onShutdown,
   queueInboxState,
@@ -668,6 +669,7 @@ function extractCard(text: string, baseUrl: string): { title: string; desc: stri
   if ((text.match(ALL_LINKS_RE) ?? []).length !== 1) return null;
   const prop = text.match(/(?:https?:\/\/[^\s]*)?\/proposal\/([A-Za-z0-9_-]+)\/(\d+)(?:\/([\d-]+))?(?:\?v=(\d+))?/);
   if (prop) {
+    if (!currentPack().runtime.documents?.proposal) return null;
     // 卡片上的线路取链接指的那个版本（不带 v 是版本 1），与点开的方案书同一份；版本不存在就不做卡片，原样发纯文本
     const route = routeForProposal(prop[1]!, prop[4]);
     if (!route) return null;
@@ -681,8 +683,17 @@ function extractCard(text: string, baseUrl: string): { title: string; desc: stri
   }
   const pay = text.match(/(?:https?:\/\/[^\s]*)?\/pay\/([A-Za-z0-9_-]+)/);
   if (pay) {
-    const o = getOrder(pay[1]);
+    const o = getAnyOrder(pay[1]);
     if (!o) return null;
+    if (isLineOrder(o)) {
+      const display = orderDisplay(o);
+      return {
+        title: `${display.title} · 待支付`,
+        desc: `${display.summary} · 合计 ${display.totalText}`,
+        url: `${baseUrl}/pay/${o.id}`,
+        raw: pay[0],
+      };
+    }
     return {
       title: `${o.routeTitle} · 待支付`,
       desc: `${o.travelers} 位出行 · ${o.departDate ? cnDate(o.departDate) + '出发' : '日期待定'} · 合计 ¥${o.totalPrice.toLocaleString('zh-CN')}`,

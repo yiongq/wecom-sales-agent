@@ -568,7 +568,9 @@ export interface MessageView {
 }
 
 /** J 页右栏与对话里的订单（ConversationDetail.orders、GET /orders） */
-export interface OrderView {
+export type OrderView = LegacyOrderView | LineOrderView;
+
+export interface LegacyOrderView {
   id: string;
   routeTitle: string;
   travelers: number;
@@ -590,6 +592,24 @@ export interface OrderView {
    * 内存里的会话，第 16 步之后才会出现）时为 null，这种订单的行不画
    */
   conversation: { id: string; channel: string; needSummary: string | null; sandboxOwner?: SandboxConversationOwner } | null;
+}
+
+/** 08 R12：通用单的后台投影，金额为整数分，展示文字由服务端格式化。 */
+export interface LineOrderView extends Pick<
+  LegacyOrderView,
+  'id' | 'createdAt' | 'paidAt' | 'confirmed' | 'handoffBeforePaid' | 'conversation'
+> {
+  status: Exclude<OrderStatus, 'refund_pending' | 'refunded'>;
+  display: {
+    title: string;
+    summary: string;
+    lines: { title: string; qtyText: string; unitPriceText: string; amountText: string; attrs?: Record<string, string> }[];
+    totalFen: number;
+    totalText: string;
+  };
+  totalFen: number;
+  totalText: string;
+  refund?: never;
 }
 
 /** GET /conversations/:id：J 页一次取全 */

@@ -92,6 +92,7 @@ export function createTravelRuntime(sources: PackSources) {
   const consistency = createTravelConsistency((over) => assemble({ ...sources, ...over }));
   const runtime: PackRuntime<TravelRuntimeTypes> = {
     id: 'travel',
+    documents: { proposal: true },
     catalog: {
       route: {
         // 旧版 Route/Hotel 接口没有索引签名；schema 本身仍是同一个对象。
