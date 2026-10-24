@@ -1,13 +1,56 @@
-// R16：只在 PACK_FIXTURES=1 时注册的运行时假包，不复用旅游工具或阶段规则。
-import { deepFreeze, type IndustryPack, type PackRuntime, type SalesStage } from '../../core/pack-api.js';
+// 08 R14：只在 PACK_FIXTURES=1 时注册的证明包，保留 04 R16 的工具、阶段与护栏。
+import { deepFreeze, type IndustryPack, type PackRuntime, type SalesStage, type SopSectionDef } from '../../core/pack-api.js';
+
+const sopSections = [
+  { key: 'preamble', heading: null, locked: false },
+  { key: 'fixture_role', heading: '核验员职责', locked: true },
+  { key: 'widget_intake', heading: '方盒需求采集', locked: false },
+  { key: 'fixture_verify', heading: '方盒核验流程', locked: true },
+  { key: 'widget_reply', heading: '核验答复建议', locked: false },
+  { key: 'fixture_limits', heading: '核验能力边界', locked: true },
+] as const satisfies readonly SopSectionDef[];
 
 export const fixture: IndustryPack = deepFreeze({
   id: '__fixture',
-  name: '运行时假包',
-  entities: [],
-  vocabulary: { customer: '客户', advisor: '顾问', productNoun: '服务', tools: { fixture_inspect: '核验' }, sopFields: {} },
-  sopSections: [],
-  nav: { catalogGroup: '服务', entities: [] },
+  name: '方盒核验证明包',
+  entities: [
+    {
+      kind: 'widget',
+      label: '方盒',
+      icon: 'box',
+      codeLabel: '方盒编号',
+      codeExample: 'w-sample',
+      titleKey: 'title',
+      subtitleKeys: ['$code', 'unit'],
+      groups: [{ key: 'basic', label: '方盒信息' }],
+      lockGroups: {},
+      fields: [
+        { key: '$code', type: 'text', label: '方盒编号', group: 'basic' },
+        { key: 'title', type: 'text', label: '方盒名称', group: 'basic' },
+        { key: 'unitPrice', type: 'money', unitFrom: 'unit', label: '单价', group: 'basic', reprices: true },
+        { key: 'unit', type: 'enum', options: ['件', '盒'], label: '单位', group: 'basic', reprices: true },
+        { key: 'tags', type: 'tags', label: '标签', group: 'basic' },
+        { key: '$status', type: 'status', label: '状态', group: 'basic' },
+      ],
+      list: {
+        columns: ['title', 'unitPrice', 'unit', 'tags', '$status', '$updated'],
+        filters: ['unit', 'tags'],
+        search: ['title', 'tags', '$code'],
+        defaultSort: '-$updated',
+      },
+      csvImport: true,
+      activateLine: '上架后，核验员可查询这件方盒的资料',
+    },
+  ],
+  vocabulary: {
+    customer: '客户',
+    advisor: '核验员',
+    productNoun: '方盒',
+    tools: { fixture_inspect: '核验需求' },
+    sopFields: { title: '方盒名称', unitPrice: '单价', unit: '单位', tags: '标签', inspected: '核验结果' },
+  },
+  sopSections: sopSections.map((s) => ({ ...s, ...(s.locked ? { lockReason: '核验流程由证明包统一维护' } : {}) })),
+  nav: { catalogGroup: '产品', entities: ['widget'] },
   stages: [
     { key: 'greeting', label: '开始' },
     { key: 'objection', label: '核验完成' },
@@ -18,11 +61,11 @@ export function createFixtureRuntime(): PackRuntime {
   return {
     id: fixture.id,
     defaultBrand: {
-      brandName: '测试服务',
-      advisorTitle: '顾问',
-      aiTitle: 'AI 顾问',
-      scopeNoun: '服务',
-      identityLine: '我是测试服务的 AI 顾问',
+      brandName: '虚构方盒核验社',
+      advisorTitle: '方盒核验员',
+      aiTitle: 'AI 方盒核验员',
+      scopeNoun: '方盒核验',
+      identityLine: '我是虚构方盒核验社的 AI 方盒核验员',
     },
     legacy: {
       offTopicReply: '请说明服务需求',
@@ -38,21 +81,28 @@ export function createFixtureRuntime(): PackRuntime {
       handoffFallback: '顾问会处理',
     },
     templates: {
-      hardRequirements: '只输出{scopeNoun}正文。',
-      lockedSectionTemplates: {},
+      hardRequirements:
+        '【硬性要求】\n只输出客户可读的纯文本。先核验再答复；不编造单价，不承诺成交或付款安排。你是{brandName}的{aiTitle}。',
+      lockedSectionTemplates: {
+        fixture_role: '## 核验员职责\n\n你是{brandName}的 {aiTitle}，只负责{scopeNoun}。需要进一步处理时交给{advisorTitle}。\n\n',
+        fixture_verify: '## 方盒核验流程\n\n先调用 fixture_inspect 核验需求，再根据核验结果答复；核验失败时说明尚未完成。\n\n',
+        fixture_limits: '## 核验能力边界\n\n核验结果不代表库存、交付或成交承诺。资料不足时请客户补充，不替客户决定价格与付款。\n',
+      },
       identityAnswer: '{identityLine}',
-      offTopicReply: '请说明{scopeNoun}需求',
-      welcomeText: '欢迎咨询{brandName}',
-      welcomeBackText: '欢迎回来，{brandName}为您服务',
-      webWelcome: '欢迎咨询{brandName}',
-      mockOpening: '请说明{scopeNoun}需求',
+      offTopicReply: '我是{brandName}的{aiTitle}，可以帮助您核验方盒需求。',
+      welcomeText: '欢迎来到{brandName}，我是{aiTitle}。请告诉我方盒需求。',
+      welcomeBackText: '欢迎回来，{brandName}的{aiTitle}继续为您核验方盒需求。',
+      webWelcome: '您好，我是{brandName}的{aiTitle}。请描述需要核验的方盒。',
+      mockOpening: '请告诉我需要核验的方盒名称与单位。',
       quickReplies: [],
-      preamble: '{brandName}',
+      preamble: '# {brandName} · 方盒核验说明\n\n{identityLine}。本说明只使用合成资料，用于验证方盒核验流程。\n\n',
       pages: {},
     },
-    sopSections: [],
-    contractRules: () => [],
-    knownFields: { names: [], sourceFiles: [] },
+    sopSections: sopSections.map((s) => ({ ...s })),
+    contractRules: () => [
+      { id: 'fixture_no_unverified', kind: 'exclude', text: '未经核验也保证可用', from: '证明包：不得把未核验的需求说成已确认' },
+    ],
+    knownFields: { names: ['inspected'], sourceFiles: ['src/packs/__fixture/runtime.ts'] },
     stages: fixture.stages.map((s) => ({ id: s.key as SalesStage })),
     tools: [
       {
