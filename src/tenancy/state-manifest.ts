@@ -545,7 +545,10 @@ export const STATE_MANIFEST: Record<
   'src/shared/console-api.ts:RejectRefundBody': { kind: 'instance', why: '固定的请求体校验规则，不存租户数据。' },
   'src/shared/console-api.ts:CancelOrderBody': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/shared/console-api.ts:CatalogItemParam': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
-  'src/shared/console-api.ts:CatalogKindParam': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
+  'src/shared/console-api.ts:CatalogKindParam': {
+    kind: 'instance',
+    why: '固定 kind 格式校验；包归属由服务端 assertKind 校验，不保存租户数据',
+  },
   'src/shared/console-api.ts:ConvQuery': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/shared/console-api.ts:CreateItemBody': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/shared/console-api.ts:ImportCsvBody': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },

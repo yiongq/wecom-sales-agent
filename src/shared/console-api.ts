@@ -82,8 +82,8 @@ export const PublishBody = z.strictObject({
 
 export const RollbackBody = z.strictObject({ changeNote: str.max(500) });
 
-export const CatalogKindParam = z.object({ kind: z.enum(['route', 'hotel']) });
-export const CatalogItemParam = z.object({ kind: z.enum(['route', 'hotel']), code: str.min(1).max(128) });
+export const CatalogKindParam = z.object({ kind: z.string().regex(/^[a-z][a-z0-9_]{1,31}$/) });
+export const CatalogItemParam = z.object({ kind: z.string().regex(/^[a-z][a-z0-9_]{1,31}$/), code: str.min(1).max(128) });
 
 export const CreateItemBody = z.strictObject({ payload: jsonObject });
 

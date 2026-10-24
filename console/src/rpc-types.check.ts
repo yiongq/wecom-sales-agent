@@ -5,8 +5,9 @@ import { api } from './api.js';
 export async function rpcTypeFixture(): Promise<void> {
   // @ts-expect-error 没有这个端点
   await api.nope.$get();
-  // @ts-expect-error kind 只能是 route / hotel
-  await api.catalog[':kind'].$get({ param: { kind: 'ship' } });
+  // kind 的格式与包归属现在由运行时的 400 / 422 校验；客户端仍必须传 kind。
+  // @ts-expect-error 缺少必填的 kind 参数
+  await api.catalog[':kind'].$get({ param: {} });
   // @ts-expect-error 发布要带 rev 与 changeNote
   await api.sop.draft.publish.$post({ json: { changeNote: '缺rev' } });
   const r = await api.sop.$get();

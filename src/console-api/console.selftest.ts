@@ -1563,11 +1563,13 @@ check(
     pricedNow.status === 200 && v1Http === 1 && cfg.currentCatalog().versions['route:r-http-new'] === 2,
     pricedNow.text.slice(0, 200),
   );
+  const unknownKind = keep(await call('GET', '/catalog/ship', O));
   check(
-    '产品库 HTTP：不存在的条目 → 404；kind 不对 → 400',
+    '产品库 HTTP：不存在的条目 → 404；包外 kind → 422',
     (await call('GET', '/catalog/route/nope', O)).status === 404 &&
       (await call('PATCH', '/catalog/route/nope', { ...O, json: { rev: 1, set: {} } })).status === 404 &&
-      keep(await call('GET', '/catalog/ship', O)).status === 400,
+      unknownKind.status === 422 &&
+      unknownKind.body.error === 'kind_unknown',
   );
   const list = (await call('GET', '/catalog/route', O)).body.items as Body[];
   check(

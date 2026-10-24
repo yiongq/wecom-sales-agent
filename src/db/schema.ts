@@ -276,7 +276,7 @@ export const catalogItems = pgTable(
     tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id),
-    kind: text('kind', { enum: ['route', 'hotel'] }).notNull(),
+    kind: text('kind').notNull(),
     /** 'r-yunnan-mid'、'h-aman-tokyo' */
     code: text('code').notNull(),
     ord: integer('ord').notNull(),
@@ -297,7 +297,7 @@ export const catalogItems = pgTable(
   (t) => [
     unique('catalog_items_tenant_kind_code_uq').on(t.tenantId, t.kind, t.code),
     unique('catalog_items_tenant_kind_ord_uq').on(t.tenantId, t.kind, t.ord),
-    check('catalog_items_kind_check', sql`${t.kind} IN ('route', 'hotel')`),
+    check('catalog_items_kind_check', sql`${t.kind} ~ '^[a-z][a-z0-9_]{1,31}$'`),
     check('catalog_items_code_check', sql`${t.code} ~ '^[a-z0-9][a-z0-9-]{0,63}$'`),
     check('catalog_items_status_check', sql`${t.status} IN ('draft', 'active')`),
     check('catalog_items_payload_check', sql`json_typeof(${t.payload}) = 'object' AND coalesce(${t.payload}->>'id' = ${t.code}, false)`),
