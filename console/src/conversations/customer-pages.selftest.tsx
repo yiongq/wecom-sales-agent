@@ -63,7 +63,7 @@ function element(page: Window, id: string) {
   return node;
 }
 const pause = () => new Promise((resolve) => setTimeout(resolve, 0));
-async function mount(initial: object, options: { advisor?: boolean; failed?: boolean; conflict?: boolean } = {}) {
+async function mount(initial: object, options: { advisor?: boolean; failed?: boolean; conflict?: boolean; pending?: boolean } = {}) {
   const page = new Window({ url: 'http://localhost/pay/ord_pages' });
   page.document.write(html.replace(/<script>[\s\S]*?<\/script>/, ''));
   if (options.advisor) {
@@ -78,7 +78,7 @@ async function mount(initial: object, options: { advisor?: boolean; failed?: boo
     if (init?.method !== 'POST') return { ok: true, json: async () => initial };
     posts++;
     if (options.failed && posts === 1) return { ok: false, status: 503 };
-    const status = options.conflict ? 'superseded' : 'paid';
+    const status = options.conflict ? 'superseded' : options.pending ? 'pending_payment' : 'paid';
     return {
       ok: !options.conflict,
       status: options.conflict ? 409 : 200,
@@ -120,11 +120,41 @@ async function mount(initial: object, options: { advisor?: boolean; failed?: boo
   };
 }
 const initial = { id: 'ord_pages', status: 'pending_payment', display, payable: true };
+function assertPayRows(page: Window): void {
+  const rows = [...page.document.querySelectorAll('#payView .rows > .krow')];
+  assert.equal(rows.length, 2, '支付页恰好两行明细');
+  assert.deepEqual(
+    rows.map((row) => ({
+      title: row.querySelector(':scope > div > div:first-child')?.textContent,
+      detail: row.querySelector('div > .k')?.textContent,
+      amount: row.querySelector('.v')?.textContent,
+      attrs: [...row.querySelectorAll('small')].map((attr) => attr.textContent),
+    })),
+    [
+      { title: '合成方盒甲', detail: '200件 · 单价3.65元/件', amount: '730元', attrs: ['交期：7天', '备注：<img src=x>'] },
+      { title: '合成方盒乙', detail: '50件 · 单价12元/件', amount: '600元', attrs: [] },
+    ],
+    '两行按订单顺序显示名称、数量、单价、行金额与属性小字',
+  );
+}
+{
+  // 支付响应仍为待付，走页面自己的 render() 第二次渲染，验证不会追加重复行。
+  const m = await mount(initial, { pending: true });
+  try {
+    assertPayRows(m.page);
+    await m.click();
+    assert.equal(m.posts(), 1);
+    assertPayRows(m.page);
+  } finally {
+    await m.close();
+  }
+}
 {
   const m = await mount(initial, { failed: true });
   try {
     const view = element(m.page, 'payView');
     assert.equal(view.style.display, 'block');
+    assertPayRows(m.page);
     for (const line of display.lines)
       for (const value of [line.title, line.qtyText, line.unitPriceText, line.amountText]) assert.ok(view.textContent.includes(value));
     assert.doesNotMatch(view.textContent, /出行|出发|线路|¥|NaN|undefined/);

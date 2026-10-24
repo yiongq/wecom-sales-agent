@@ -16,13 +16,14 @@ enterTenantScopeForTest(rt);
 const testing = await withoutTenantScope(() => import('./db/testing.js'));
 const { createFixtureTenant } = await import('./tenancy/fixture-testing.js');
 const { bindPack } = await import('./core/pack-api.js');
-const { packSources, closeConfig, __configTest } = await import('./config/source.js');
+const { packSources, closeConfig, __configTest, currentCatalog } = await import('./config/source.js');
 const { runtimeById, packById } = await import('./packs/registry.js');
 const { createCatalogItem, activateCatalogItem } = await import('./config/catalog.js');
 const { createToolRegistry } = await import('./core/tools/registry.js');
 const { loadGuardPipeline } = await import('./core/guards/execute.js');
 const { handleMessage } = await import('./core/engine/index.js');
-const { withTurnScope, startTurn, endTurn, onTurnEnd, noteGuard, noteGuardVerdict } = await import('./trace/recorder.js');
+const { withTurnScope, startTurn, endTurn, onTurnEnd, noteGuard, noteGuardVerdict, traceToolCall, noteToolResult } =
+  await import('./trace/recorder.js');
 const { sessionState } = await import('./store/project.js');
 const store = await import('./store.js');
 const t = await testing.openTestDb();
@@ -121,6 +122,13 @@ try {
   async function reply(text: string): Promise<string> {
     return withTurnScope(async () => {
       startTurn(s.id);
+      // 沿用 catalog-snapshot 自测的工具结果夹具，从真实快照取条目（不向金额账本补写）。
+      const args = {};
+      traceToolCall('fixture_inspect', args, s.id);
+      noteToolResult(
+        args,
+        JSON.stringify({ rows: currentCatalog().items.widget!.filter((item) => (item as { id: string }).id === 'w-a') }),
+      );
       const result = await main.run(guardContext(text), { onVerdict: noteGuardVerdict });
       endTurn('replied', result.text, s.stage, s.stage);
       return result.text;
@@ -135,6 +143,38 @@ try {
       turns.at(-1)!.turn.guards.map(({ guard, action }) => ({ guard, action })),
       [{ guard: 'money_provenance', action: 'drop_sentence' }],
     );
+    const dropped = turns.at(-1)!;
+    assert.deepEqual(dropped.turn.guards[0]!.removed, ['单价3.80元。']);
+    assert.deepEqual(dropped.turn.guards[0]!.added, []);
+    assert.equal(dropped.finalText, '请确认规格。');
+    store.saveSession(s);
+    await store.flushSession(s.id);
+    const persisted = await t.pg.transaction(async (tx) => {
+      await tx.exec('SET LOCAL ROLE NONE');
+      const guards = await tx.query<{ guard: string; action: string; removed: string[]; added: string[] }>(
+        'select guard, action, removed, added from guard_events where turn_id = $1 order by ord',
+        [dropped.turn.turnId],
+      );
+      const traces = await tx.query<{
+        final_text: string;
+        guard_verdicts: typeof dropped.turn.guardVerdicts;
+        catalog_versions: Record<string, number>;
+      }>('select final_text, guard_verdicts, catalog_versions from turn_traces where id = $1', [dropped.turn.turnId]);
+      return { guards: guards.rows, traces: traces.rows };
+    });
+    assert.deepEqual(persisted.guards, [{ guard: 'money_provenance', action: 'drop_sentence', removed: ['单价3.80元。'], added: [] }]);
+    assert.deepEqual(
+      persisted.guards,
+      dropped.turn.guards.map(({ guard, action, removed, added }) => ({ guard, action, removed, added })),
+    );
+    assert.equal(persisted.traces.length, 1);
+    const trace = persisted.traces[0]!;
+    assert.equal(trace.final_text, dropped.finalText);
+    assert.deepEqual(trace.guard_verdicts, dropped.turn.guardVerdicts);
+    assert.ok(trace.guard_verdicts!.some((v) => v.id === 'money_provenance' && v.action === 'drop_sentence'));
+    assert.deepEqual(trace.catalog_versions, { 'widget:w-a': 1 });
+    assert.deepEqual(trace.catalog_versions, dropped.turn.catalogVersions);
+    console.log('MONEY TRACE DB PASS：按 turn_id 恰好一条删句事件、正文/裁决与内存一致、widget:w-a 版本 1');
     assert.equal(await reply('单价3.80元。'), '金额尚未核验，请先查询。');
     assert.equal(turns.at(-1)!.turn.guards[0]!.action, 'replace');
     assert.equal(await reply('合计7.30元。运费10元。'), '运费10元。');

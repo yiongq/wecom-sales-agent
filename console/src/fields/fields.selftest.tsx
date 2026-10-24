@@ -64,6 +64,7 @@ import {
 } from '../../../src/shared/pack.js';
 import { HttpError } from '../api.js';
 import { CatalogList, type CatalogListProps, FilterButton, MENU_SEARCH_OVER } from '../catalog/CatalogList.js';
+import acceptance from '../catalog/acceptance.fixture.json';
 import {
   type ActivePick,
   activePicks,
@@ -2019,6 +2020,19 @@ const listProps = (over: Partial<CatalogListProps> = {}): CatalogListProps => ({
 const texts = (root: ParentNode, sel: string): string[] => all<HTMLElement>(root, sel).map((e) => (e.textContent ?? '').trim());
 const bodyRows = (root: ParentNode): HTMLTableRowElement[] => all<HTMLTableRowElement>(root, '.list-table tbody tr.ant-table-row');
 const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) => (td.textContent ?? '').trim());
+{
+  // 08 验收 3：真实 GET /pack 配置 + CSV 导入并上架后的真实列表行；后端自测逐字节验证夹具。
+  const pack = acceptance.pack as IndustryPack;
+  const entity = pack.entities.find((item) => item.kind === 'widget')!;
+  const d = await mount(<CatalogList {...listProps({ entity, rows: [acceptance.row], anon: true })} />);
+  try {
+    const rows = bodyRows(d.box);
+    eq('证明包接口夹具：上架列表只有目标条目', rows.length, 1);
+    check('证明包接口夹具：真实列表单元格显示3.65元/件', !!rows[0] && cellsOf(rows[0]).includes('3.65元/件'));
+  } finally {
+    await d.unmount();
+  }
+}
 {
   const d = await mount(<CatalogList {...listProps()} />);
   eq('D 页：页签带数量', texts(d.box, '.list-tabs .ant-tabs-tab'), ['全部21', '已上架20', '草稿1']);

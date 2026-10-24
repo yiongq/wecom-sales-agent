@@ -151,6 +151,20 @@ if (process.argv[2] !== 'worker') {
       [3.65, 12, 1330.5],
     );
     assert.equal(formatYuan(yuanToFen(active[0]!.payload.unitPrice)), '3.65元');
+    // 匿名列表只下发上架条目，完整行没有时间等易变字段，适合跨前后端共享。
+    const anonListed = await consoleApi.request('/api/console/catalog/widget');
+    assert.equal(anonListed.status, 200);
+    const anonItems = ((await anonListed.json()) as { items: { code: string; payload: object }[] }).items;
+    const row = anonItems.find((item) => item.code === 'w-a');
+    assert.ok(row);
+    assert.deepEqual(row.payload, active[0]!.payload);
+    const fixtureUrl = new URL('../console/src/catalog/acceptance.fixture.json', import.meta.url);
+    const fixtureBytes = JSON.stringify({ pack: nav, row });
+    assert.equal(
+      JSON.stringify(JSON.parse(fs.readFileSync(fixtureUrl, 'utf8'))),
+      fixtureBytes,
+      'console 夹具序列化后与真实接口 JSON 逐字节一致',
+    );
     console.log('CATALOG MONEY PASS：换算/格式/数组路径边界；PGlite widget 导航、3 行 CSV 草稿、非法金额拒绝、上架列表保留 3.65 元值');
   } finally {
     await closeConfig();
