@@ -1268,6 +1268,7 @@ export function prefixSummary(file: () => { system: string; tools: string; sop: 
 /** 文件模式与未启动的旧自测入口按 R2 延后装配（文件模式按配置目录的 pack.json，没有就是旅游）；DB 装载成功时显式覆盖绑定。 */
 export function currentPack(): PackBinding {
   const state = configState();
+  if (state.fileCatalog) dropStaleFileCatalog(state);
   const binding = boundPack() ?? (configMode() === 'file' ? installFilePack() : installPack('travel', null));
   return state.loaded ? { ...binding, brand: state.loaded.sop.brand } : binding;
 }
@@ -1329,13 +1330,47 @@ function installFilePack(): PackBinding {
   return installPack(id, brand);
 }
 
+/** 文件模式的配置目录：SOP_PATH 所在目录，pack.json、brand.json、policy.json、catalog/ 都在这里 */
+const fileConfigDir = (): string => path.dirname(fileSopPath());
+
+/**
+ * 产品库快照是按某个配置目录装的。目录变了（评测在同一进程里换 SOP_PATH）就作废；绑定还是装这份快照的那一个（没被 bindPack 换过）
+ * 也一起作废，下一次按当前目录的 pack.json 重新装配。其余绑定（旅游、品牌夹具显式绑的）不动。
+ */
+function dropStaleFileCatalog(state: TenantConfig): void {
+  const cache = state.fileCatalog;
+  if (!cache || cache.dir === fileConfigDir()) return;
+  state.fileCatalog = null;
+  if (boundPack()?.runtime === cache.runtime) unbindPack();
+}
+
+/** 文件模式重置：去掉包绑定，下一次 currentPack() 按当前配置目录重新装配（TenantRuntime.pack 声明为必有，装载后才有，所以绕开类型） */
+function unbindPack(): void {
+  Reflect.set(currentRuntime(), 'pack', undefined);
+}
+
+/**
+ * 评测在同一进程里换配置目录前后用（eval/sim/runtime.ts 的 engineRuntime）：记下现在的包绑定与文件模式产品库快照，
+ * 返回的函数把它们原样放回去。没绑过的恢复成没绑。
+ */
+export function saveFileConfig(): () => void {
+  const rt = currentRuntime();
+  const { fileCatalog: cache } = rt.config;
+  const pack = boundPack();
+  return () => {
+    rt.config.fileCatalog = cache;
+    Reflect.set(rt, 'pack', pack ?? undefined);
+  };
+}
+
 /**
  * 文件模式下 currentCatalog() 的出处。非旅游包读配置目录的 catalog/<kind>.json 拼成快照，进程内读一次（同 DB 模式的启动装载，
  * 手改文件要重启）；旅游（没有 pack.json）与 DB 模式没装载完，都和以前一样抛 ConfigNotReadyError：旅游的工具自己读 ROUTES_PATH。
  */
 function fileCatalog(state: TenantConfig): CatalogSnapshot {
   if (configMode() === 'file') {
-    if (state.fileCatalog) return state.fileCatalog;
+    dropStaleFileCatalog(state);
+    if (state.fileCatalog) return state.fileCatalog.snapshot;
     // 评测不走 initConfig、还没绑包：按 pack.json 认；没有 pack.json 就什么都不装，保持旅游的老样子
     const bound = boundPack() ?? (filePackId() === null ? null : installFilePack());
     if (bound && bound.runtime.id !== 'travel') return loadFileCatalog(bound.runtime);
@@ -1345,7 +1380,7 @@ function fileCatalog(state: TenantConfig): CatalogSnapshot {
 
 /** 包声明的每个 kind 读 catalog/<kind>.json（缺文件就是空数组），逐条过包的 schema，版本恒为 1；再套包的启动检查（catalog_startup） */
 function loadFileCatalog(runtime: PackRuntime): CatalogSnapshot {
-  const dir = path.join(path.dirname(fileSopPath()), 'catalog');
+  const dir = path.join(fileConfigDir(), 'catalog');
   const items: Record<string, unknown[]> = {};
   const versions: Record<string, number> = {};
   for (const [kind, spec] of Object.entries(runtime.catalog)) {
@@ -1360,7 +1395,7 @@ function loadFileCatalog(runtime: PackRuntime): CatalogSnapshot {
     versions,
   });
   assertCatalogStartup(runtime, snapshot, '');
-  configState().fileCatalog = snapshot;
+  configState().fileCatalog = { dir: fileConfigDir(), runtime, snapshot };
   return snapshot;
 }
 
@@ -1456,7 +1491,9 @@ function resetConfig(): void {
   state.dbInstalled = false;
   state.loaded = null;
   state.fileCatalog = null;
-  installPack('travel');
+  // 文件模式：去掉绑定，下一次 currentPack() 按当前配置目录的 pack.json 重新装配（评测在同一进程里换 SOP_PATH 靠它）。
+  // DB 模式没绑包时 currentPack() 暂时还回落旅游，这条留给第 19 步（R5）
+  unbindPack();
   setLogTenant('');
   state.lockState = 'held';
   state.lockTaken = false;
@@ -1492,7 +1529,11 @@ function configRegistration(key: keyof TenantConfig) {
 }
 registerTenantState({ name: 'config.dbInstalled', ...configRegistration('dbInstalled') });
 registerTenantState({ name: 'config.loaded', ...configRegistration('loaded') });
-registerTenantState({ name: 'config.fileCatalog', ...configRegistration('fileCatalog') });
+registerTenantState({
+  name: 'config.fileCatalog',
+  ...configRegistration('fileCatalog'),
+  keyCount: (id) => (tenantRuntimes().find((r) => r.id === id)?.config.fileCatalog ? 1 : 0),
+});
 registerTenantState({ name: 'config.lockState', ...configRegistration('lockState') });
 registerTenantState({ name: 'config.lockTaken', ...configRegistration('lockTaken') });
 registerTenantState({ name: 'config.sopStale', ...configRegistration('sopStale') });
