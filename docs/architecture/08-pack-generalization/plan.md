@@ -136,19 +136,19 @@
   - 做：cases v2 与 `SimGoal` 加 `pack?: string`（缺省 `travel`；`goalSchema` 是 strict 的，同步加）；不是 `travel` 时 `fixtures.session.profile` 只收 `{ attrs, notes }`，`fixtures.orders` 与 `initial.orders` 用 `{ status, lines }`、按包的 `priceLine` 建成通用单，`expect.orders.last` 能断言 `lines` 与 `totalFen`（`eval/v2/worker.ts:102`）；证明包至少 3 条 v2 case（`eval/cases-v2/q08-fixture.json`）、2 个模拟客户目标（`eval/sim/goals/__fixture/`，第 18 步登记为它的 `evalGoalsDir`）；生成 `eval/baselines/v2-08-step17.json`，默认基线改指它。
   - 验：验收 9 第 1 条（`pack: '__fixture'` 的 case 在文件与 PGlite 两种配置下 mock 通过；证明包的模拟目标在 mock 下跑完）；快照与 `v2-07-step6.json` 的 diff 只有新增的 case；`travel` 的 schema 与旧 case 不变。
   - 依赖：9、11、13、14。
-- [ ] 18. 导出与闸按包（R11 的其余部分；1.5 天）
+- [x] 18. 导出与闸按包（R11 的其余部分；1.5 天）——#306，Claude 子 agent
   - 做：`CONFIG_DIR_REQUIRED`、`export-config`、闸的导出、模拟评测的 `--config-dir` 按包，非旅游包导出 `pack.json` 与 `catalog/*.json`；`export-config` 复用输出目录时先删旧的 `routes.json`、`hotels.json`、`pack.json` 与 `catalog/`；闸的子进程靠配置目录里的 `pack.json` 认包，不新增放行的环境变量（`gate.ts:37`）；`PackRuntime.evalGoalsDir`，旅游是 `eval/sim/goals/quality`，证明包是第 17 步的目录。
   - 验：验收 9 第 2–4 条（证明包租户的闸从它的目录取目标，导出目录有 `pack.json` 与 `catalog/widget.json`；向旧的旅游导出目录再导出证明包，`routes.json` 被删；旅游闸的目标集哈希与缓存键与开工时相同）；闸用 `eval/sim/fake.ts` 的假模型跑通证明包。
   - 依赖：17。
-- [ ] 19. 注册表与不回落（R5；1 天）
+- [x] 19. 注册表与不回落（R5；1 天）——#307，Codex
   - 做：`src/packs/registry.ts` 改成表驱动，每个包登记 `{ pack, runtime(sources), quickReplies }`，去掉 `id === 'travel' ? … : 假包` 的分支（`registry.ts:46`）；DB 模式下没绑包时 `currentPack()` 抛错、不回落旅游；文件模式按 `pack.json`；`legacyTravelRuntime` 只给门面用。
   - 验：验收 12 前半（DB 模式不绑包处理一轮，抛错，不用旅游作答）；不变量 11；锁定套件与文件模式照旧。
   - 依赖：16、18。
-- [ ] 20. 依赖方向收口（R5、不变量 10；2 天）
+- [x] 20. 依赖方向收口（R5、不变量 10；2 天）——#309，Claude 子 agent
   - 做：`scripts/check-boundaries.ts` 加两条按语法树判断的规则，只管 `src/` 下的非自测代码：`src/packs/` 与门面之外不 import `src/packs/<名>/**`（`registry.ts` 除外）；R1 的 9 个旅游会话字段不在 `src/packs/travel/`、门面与 `src/types.ts` 之外读写。允许名单的初值是第 0.2 步清单 1、5 减去第 12–19 步已经搬走的；本步把剩下的按 0.2 写的去向搬完，名单清零。`scripts/check-public-boundary.ts` 的包白名单同样管 `data/packs/<名>/`。
   - 验：验收 2 全部（在 `src/config/` 加一行 import 旅游包、在 `src/core/` 读 `session.lastQuote`，`pnpm lint` 失败，去掉后通过；往 `data/packs/` 下加白名单以外的目录，lint 失败；两条规则的允许名单为空）；前缀、锁定套件、0.5 不变。
   - 依赖：19。
-- [ ] 21. 回滚检查（R13；1.5 天，实现者写脚本、协调者演练）
+- [x] 21. 回滚检查（R13；1.5 天，实现者写脚本、协调者演练）——代码 #298（Codex），本机演练 2026-10-24（Claude 子 agent），演练后文案 #310（Codex）
   - 做：`deploy/rollback-guard.sh` 照现有写法加 `pre08_image`（目标镜像里没有 `src/core/order-view.ts`），目标是 pre-02 到 pre-07 的任何一档都跑；四项风险有一项就以 9 退出并打印处理步骤，库问不到按有风险处理；`deploy.sh` 两处 `case` 补 9 的文案，照约定转成 1；部署说明补退出码 9。
   - 验：验收 10，协调者出沙箱用本机真实 docker 经 `deploy.sh` 演练五种情况，结果记进实施记录；02–07 的检查与退出码 4–8 不变。
   - 依赖：8。
@@ -700,6 +700,13 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 - 第 17–19 步（来自第 13 步）：`resolveConfigDir` 对包目录只查 `sop.md`、`pack.json` 与 `catalog/`，逐 kind 的严检与闸、runner 的文案留给第 18 步（清单 7.12–7.14、7.18、7.22、7.23）；`catalog/*.json` 坏数据报 `catalog_startup`、`pack.json` 写坏报 `pack_unknown`，不加新原因；7.17、7.20 留给第 17 步，7.2「DB 模式抛错」与 7.6 `resetConfig` 留给第 19 步。
 - 第 16 步：`fillPayCard` 只在 `public/chat.html`（:529），锁定的 `server.selftest.ts:279-313` 用正则抠出函数头到「两格缩进的 `}`」为止、只给它 `fetch` 与 `cnDate`：函数头原样，新分支内联、不引用函数外的新标识符，函数体里不能出现恰好两格缩进的 `}` 行。`public/pay.html` 的渲染在 `load()`，锁定钉子是 `server.selftest.ts:513-514` 的正则（E10、E11）。另外，第 0.5 步的夹具钉的是 `/pay/<id>` 的完整 HTML：第 16 步给 `pay.html` 加 `display` 分支，会让夹具里 `pay/*` 的 12 条变红，这是 R12 要求的改动。第 16 步的 PR 里用 `UPDATE_LEGACY_BYTES=1` 重生成一次，diff 只许是新加的分支、逐行审，夹具里其余 48 条必须一字不变（spec 第六条 `Revisions:` 二）。
 
+### 第 18–21 步（2026-10-24，#306、#307、#309、#310）
+
+- 第 18 步（#306，Claude 子 agent，返工一轮）：`PackRuntime.evalGoalsDir`；闸、`export-config`、`import-config`、模拟评测的 `--config-dir` 按包。闸的缓存键照 spec 第五条 `Revisions:` 五按声明顺序、一个公式管所有包（协调者起初的说明写成「排序」，改回 spec）；旅游的目标集哈希、产品库哈希、两个缓存键与导出文件的 sha256 在基点上先算出、钉进 `gate-per-pack.selftest.ts`。证明包只在 `PACK_FIXTURES=1` 时登记，闸的子进程拿不到这个变量：生产放行名单不改（R11），只给自测加 `__gateTest.childEnv`（协调者定）。`import-config` 对非旅游租户缺省读 `data/packs/<包>/`（清单 7.23）；服务端文件模式缺 kind 文件仍按空数组、由 `catalogStartupCheck` 兜底。钉住的两个缓存键被 gitleaks 当成 `generic-api-key`，按约定加行内 `gitleaks:allow` 与 `.gitleaksignore` 指纹。合并前 CI 红在 `catalog-snapshot.selftest.ts`：它按源码文字匹配旧的 `[routes, hotels]` 那一行，返工改公式后没重跑；协调者改成匹配新公式（旅游的值仍由 `gate-per-pack` 钉住）。
+- 第 19 步（#307，Codex，一次过）：注册表一张表，每行 `{ pack, runtime(sources), quickReplies }` 加只在注册表内部的可选 `sopConsistency`（协调者定，不进 `PackRuntime`）；DB 模式没绑包时 `currentPack()` 抛 `ConfigNotReadyError`；生产调用方逐个核过都先绑包，没改；`registry-binding.selftest.ts` 验没绑包的一轮抛错、不调模型、不写会话。
+- 第 20 步（#309，Claude 子 agent）：两条语法树规则与 `data/packs/` 的公开边界；基点上规则 (1) 剩 6 个文件（清单 5.7–5.12，比协调者粗扫多出 `src/tool-defs.ts`），规则 (2) 只有 `src/server.ts` 的 `SESSION_EXPOSURE` 那 9 个键（R4 匿名接口白名单要列全会话键）。搬法：企微欢迎语按绑定包的 `runtime.legacy` 现取（锁定套件读的 `__test.WELCOME_TEXT` / `WELCOME_BACK_TEXT` 改成 getter，值不变）；`handoff/triggers.ts` 只留类型（没有非自测的值消费者）；删 `src/prompt/system.ts`（没有非自测消费者）；`sop/contract.ts`、`sop/sections.ts` 不再重导出旅游；`toolDefs` 移到门面 `src/tools.ts`；`SESSION_EXPOSURE` 搬到 `src/types.ts` 的 `Session` 旁边（规则 (2) 允许的位置，协调者认可）。两份允许名单为空，放在 `scripts/boundary-allowlists.ts`。Codex 只读评审找到两处漏判（字符串套括号或类型断言就绕过两条规则），已修：先剥括号与类型断言再判断，补 72 条用例、变异核过。
+- 第 21 步：本机真实 docker 演练见「验收记录 · 验收 10」；演练发现的四处文案与注释问题由 #310 修（7、8、9 的自动回滚拒绝补「服务当前不可用」；08 段对镜像目标打印手工起上一版的命令；四项无法确认时提示新服务器先部署 08 之后的 tag；`deploy.sh` 开头注释与退出码说明、README 补齐 05、07、08），退出码与判定不变。
+
 ### 第 11–13、15–16 步（2026-10-24，#299、#300、#304、#302）
 
 - 第 11 步（#299，Codex）：记账放在核心工具注册表的成功执行之后（金额是非负安全整数分、标签最多 20 字，工具没声明金额就不建账本，留最新 200 条）；放行集合 = 会话账本 + 本会话通用单的单价 / 行金额 / 合计 + 包声明的静态金额，不读整库价格，也不认客户自己报的价；解析用绑定包的 `money` 调 `parseMoney`，容差半分；步骤位置的装载校验在 `core/guards/validate.ts`，报错点名包与步骤。证明包的 `fixture_quote`、`fixture_order` 声明金额，静态运费 1000 分。
@@ -718,7 +725,7 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 - 第 2、3 步各自一个 PR（#295、#297）。第 4–9、14、21 步在分支上依次叠加，最后由协调者把第 14 步与订单链、最新 `dev` 整合成一个 PR（#298）合入，每一步仍是独立提交、各自审过；不逐个开 PR，是因为叠加分支逐个过 CI 要排几个小时，而且每个都改 `package.json` 的 `test` 末尾，合一个冲一个。整合时 `pack-api.ts` 与 `test` 两边都留；合并前在整合后的树上跑过 12 个相互影响的自测、`test:locked`、第 0.5 步的出口字节自测（60 条相同）、`check-migrations`（21 个）与 v2 两条（857 条 0 差异）。
 - 第 2 步：`CatalogKindSpec` 与 `validatePackCatalog`（kind 一致、money 路径与精度一致、至多一个可检索）。第 3 步：迁移 0018、`assertKind` 接到 7 条写路径、包外 kind 422（读也一样），`console.selftest` 与 `db.selftest` 各一条断言随 spec 改。第 4 步：快照 `items`（`routes` / `hotels` 是同一数组的别名），启动判定抽成纯函数 `assertCatalogStartup`（返工一轮：证明包的 DB 端到端启动要第 12 步，移过去了）。第 6 步：迁移 0019，可检索 kind 按包；PGlite 上知识块只在内存（07 R13），持久与逐块增量由 CI 的真实 PG 验。第 5 步：`decimals`、`formatYuan`、`yuanToFen`。第 7 步：`order-view.ts`、`getAnyOrder`。第 8 步：迁移 0020。第 9 步：`createLineOrder`、证明包的阶梯价（`tiers[]`）、起订量与 `fixture_order`。
 - 第 14 步：钩子的返回值比 spec 多了几个可选成员才能让旅游的 JSON 逐字节不变（spec 第七条 `Revisions:`）；`anonSession` 白名单用 `Record<keyof Session, boolean>`，加会话键不表态就编译不过；旅游的工作台、匿名接口、沙箱种子与 08 之前生成的基准（`src/pack-session.golden.json`）逐字节相同。
-- 第 21 步：代码已随 #298 合入（`pre08_image`、`deploy.sh` 的 `pre-08` tag 判定、退出码 9、README）；返工两轮（`deploy.sh` 接 `pre-08` tag、`db.selftest` 的假 docker 与退出码正则）。**本机真实 docker 演练还没做**，做完再打勾。
+- 第 21 步：代码已随 #298 合入（`pre08_image`、`deploy.sh` 的 `pre-08` tag 判定、退出码 9、README）；返工两轮（`deploy.sh` 接 `pre-08` tag、`db.selftest` 的假 docker 与退出码正则）。本机真实 docker 演练 2026-10-24 做完，见「验收记录 · 验收 10」。
 - 第 10 步（#294）：价格词后允许冒号（协调者定：认不出的金额等于放行编造的价）。
 
 ### 第 0.3 步 · 取代与修订条款（2026-10-24，协调者，随 08 的 docs PR）
@@ -738,6 +745,25 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 - 返工一轮：测试辅助起初直接 import 证明包，违反 R5 规则 (1)，改为读参考配置的 `brand.json`。之后把 R5 的边界写进了通用约定，后面各步照做。
 
 ## 验收记录
+
+### 验收 10 · 回滚检查本机演练（2026-10-24，第 21 步，Claude 子 agent，协调者核对）
+
+- 搭法：本机 colima docker，专用 worktree（没有 `.deploy.env`）跑真的 `deploy.sh`；`SERVER` 指向不存在的主机名，`ssh` / `rsync` 替身只认这个名字、在本机执行，别的主机一律拒绝（替身日志 90 次 ssh、12 次 rsync 全在本机）；旁路实例三件套都与线上不同。候选是第 1–19 步合在一起的提交（本地临时 tag），上一版 `demo-v8`。四项风险用 psql 直接写进旁路库：`pack_id='__fixture'` 的租户、一张通用单、`product` 条目、`product` 知识块。
+- 偏离：只为演练跳过 `deploy.sh` 第 2 步的完整 `pnpm test`（三个 tag 都已过 CI，另三项门禁照跑；用演练目录里的副本，仓库文件没动）；colima 只共享家目录，`REMOTE_DIR` 放在家目录下；空旁路库上直接部署 `demo-v8` 会被 9 拒（四项无法确认、从严），所以先部署候选再部署 `demo-v8`。
+- 结果（检查脚本 / `deploy.sh` 退出码）：① 四项都在、部署 `demo-v8`：9 / 1，打印四行计数与处理步骤，拒在第 3 步、没有 rsync；② 只剩一张通用单：9 / 1（另核只剩租户、只剩条目、只剩知识块各一次，都是 9）；③ 部署 pre-04 的 `demo-v4`：目标判为 `pre-04`，9 / 1；④ 四项清零：0 / 0，部署成功，`revision` 为 `demo-v8`；⑤ 候选启动失败（配置目录里放一个指向未登记包的 `pack.json`，候选以 `pack_unknown` 拒绝启动）：库里有风险时自动回滚到 `:prev` 被 9 拒、退出 1；清零后自动回滚放行、服务恢复、退出 1。①–③ 拒绝前后容器 ID、镜像、`revision` 不变。
+- 02–07：`demo-v2`（会话在库）3、`demo-v4`（品牌非空）6、`demo-v7`（已退款订单）8，都在 08 风险仍在时触发，旧风险优先于 9；4、5、7 由 `src/db/rollback-guard.selftest.ts` 覆盖。
+- 清理：容器、卷、网络、镜像与演练前逐项比对一致，临时 tag 与目录已删。**本机部分通过。**
+
+### 页面核对 · 证明包租户（2026-10-24，第 16、22 步，Claude 子 agent 截图，协调者看图）
+
+- 本机一次性 PG（DB 模式、`LLM_MOCK=1`、`PACK_FIXTURES=1`），旅游与证明包各一个租户；截图不进仓库。
+- 通用单在支付页（online、advisor、已付、被替代、不存在、加载中）、聊天付款卡、工作台订单卡（两行明细、`attrs`、合计、确认价格 / 取消）、画像卡、看板（本月成交额 629、另有待付 1,789）都按 `display` 显示，桌面 1280 与手机 375 都没有溢出；这些部分没有「出行」「出发」「线路」。旅游的支付页、聊天付款卡、工作台需求卡与订单卡照旧。
+- 观察（不挡 08，留给下一个行业包的 spec）：证明包没配 `pages`，所以聊天页外壳（标题、头像、署名、输入框占位）与支付页「订单不存在」时的标签标题仍是旅游品牌——真包要配 `pages`；没有报价能力的包在工作台仍显示一张空的「最近报价」卡；总览「客户停在哪一步」把四个字的阶段名截成「核验完…」；聊天付款卡的明细是一段长文本，手机上偏密；旧作战室 `/admin.html` 只认旅游（不在 08 范围，第 16 步约定不改）。
+
+### 验收 13 · v2 mock 耗时（2026-10-24，未完成）
+
+- 同一时段交替跑开工代码（`ba5e1e7`）与 `dev`（`4089c52`），三遍取中位数：文件配置 开工 6.15 s，`dev` 同一组 857 条 5.77 s（−6%），全部 861 条 6.49 s（+5.5%）；PGlite 开工 15.18 s，同一组 857 条 14.99 s（−1%），全部 861 条 17.74 s（+17%）。多出来的是证明包 4 条 case：它们排在队尾，换包重启子进程与证明包租户的 PGlite 装配不与旅游重叠。
+- 当时机器负载很高（load average 18–34，有别的会话在跑变异测试），开工代码自己就在 6.1–9.8 s 之间跳，这组数只能当参考。机器空闲时重测；全部 861 条超 5% 的话，把证明包的 case 排到队首（换包与旅游重叠）再测，仍超就报 owner。
 
 ## 费用记录
 
@@ -791,3 +817,10 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 - 开着 PR、开了自动合并：第 18 步 #306（导出与闸按包）；第 19 步 #307（注册表表驱动、DB 模式不回落，叠在 #306 上）。
 - 在做：第 20 步（Claude 子 agent，worktree `claude-08-s20`，分支 `feat/08-boundaries`，叠在第 19 步上）。
 - 下一步：第 20 步合入后做第 21 步的真实 docker 演练与第 22 步中期验收（含真实模型 k=1 ≤¥1.5、浏览器看证明包租户的支付页、聊天付款卡与工作台）；第 23 步上线要 owner 当次授权。
+
+### 交接（2026-10-24，第 22 步进行中）
+
+- 已合入：第 0–21 步（`dev` `4089c52`）；第 21 步的本机演练做完，演练后的文案 #310 已合。写代码的步骤全部结束。
+- 第 22 步已做：页面核对（证明包租户，见「验收记录」）；验收 13 测了一轮，机器负载太高，数不作数，待空闲时重测。
+- 第 22 步待做：验收 13 重测；验收 14 真实模型（旅游闸 20 个 `regression` 目标 k=1，`--budget 1.5`，命令同第 0.4 步）——要读主仓库 `.env` 里的模型凭据并花钱，自动模式不放行，等 owner 当次授权；验收 1–13 其余本机部分逐条核。
+- 之后：第 23 步上线要 owner 当次授权。
