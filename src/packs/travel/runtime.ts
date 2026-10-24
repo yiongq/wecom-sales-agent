@@ -39,6 +39,7 @@ import { refundQuoteText, refundChooseText, refundTexts, refundNoticeText } from
 import { paidOrderText } from './order-words.js';
 import { travelPolicy } from './policy.js';
 import { createTravelAfterSales } from './after-sales.js';
+import { CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, REPRICE_FIELDS, type CatalogKindSpec } from '../../core/pack-api.js';
 
 const thresholds = { ...travelPriceThresholds, dates: travelDateThresholds, search: travelSearchThresholds };
 interface TravelRuntimeTypes extends PackRuntimeTypes {
@@ -90,6 +91,25 @@ export function createTravelRuntime(sources: PackSources) {
   const consistency = createTravelConsistency((over) => assemble({ ...sources, ...over }));
   const runtime: PackRuntime<TravelRuntimeTypes> = {
     id: 'travel',
+    catalog: {
+      route: {
+        // 旧版 Route/Hotel 接口没有索引签名；schema 本身仍是同一个对象。
+        schema: CATALOG_SCHEMAS.route as unknown as CatalogKindSpec['schema'],
+        titleKey: 'title',
+        lockedWhenActive: LOCKED_WHEN_ACTIVE.route,
+        repriceFields: REPRICE_FIELDS.route,
+        moneyFields: [{ path: 'priceFrom', decimals: 0 }],
+        retrieval: true,
+      },
+      hotel: {
+        schema: CATALOG_SCHEMAS.hotel as unknown as CatalogKindSpec['schema'],
+        titleKey: 'name',
+        lockedWhenActive: LOCKED_WHEN_ACTIVE.hotel,
+        repriceFields: REPRICE_FIELDS.hotel,
+        moneyFields: [{ path: 'nightlyFrom', decimals: 0 }],
+        retrieval: false,
+      },
+    },
     policy: travelPolicy,
     defaultBrand: demoBrand,
     legacy: {

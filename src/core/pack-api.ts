@@ -9,6 +9,7 @@ import type { MoneyParseOptions } from './parse/money.js';
 import type { PaymentMode } from '../shared/conversation-types.js';
 import type { RefundQuote, RefundTexts } from './refund.js';
 import type { CatalogItem } from '../shared/console-api.js';
+import type { CatalogSnapshot } from '../config/source.js';
 import { z } from 'zod';
 
 export type { CustomerProfile, SalesStage, Session, Order, AgentReply, Route, Hotel } from '../types.js';
@@ -681,6 +682,17 @@ export interface PackPolicy<P = unknown> {
   segments: Readonly<Record<string, (p: P) => string>>;
 }
 
+/** 08 R2、R7、R9：产品种类声明；装载时与后台字段配置核对。 */
+export interface CatalogKindSpec {
+  schema: z.ZodType<Record<string, unknown>>;
+  titleKey: string;
+  lockedWhenActive: readonly string[];
+  repriceFields: readonly string[];
+  /** 数组项用 []，如 tiers[].unitPrice。 */
+  moneyFields: readonly { path: string; decimals: 0 | 2 }[];
+  retrieval: boolean;
+}
+
 export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   id: string;
   policy?: PackPolicy;
@@ -716,6 +728,8 @@ export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   fixedReplies?: readonly import('./consistency.js').FixedReply[];
   /** 06 R21：这个包要守的一致性规则 */
   consistencyRules?: readonly import('./consistency.js').ConsistencyRule[];
+  catalog: Readonly<Record<string, CatalogKindSpec>>;
+  catalogStartupCheck?(snapshot: CatalogSnapshot): string | null;
 }
 
 export interface PackBinding<T extends PackRuntimeTypes = PackRuntimeTypes> {
