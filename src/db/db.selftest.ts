@@ -2447,6 +2447,7 @@ await expectWhy([
     routeId: 'r-guizhou',
     status: 'pending_payment',
     totalPrice: 5200,
+    totalFen: null,
     createdAt: new Date(T0),
     paidAt: null,
     confirmedAt: null,

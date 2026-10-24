@@ -3,6 +3,7 @@
 // 纯函数：不 import 库、store、引擎、工具、模型与渠道（scripts/check-boundaries.ts 守），PG 后端与第 6 步的命令行共用。
 // 行的形状与 src/db/repo/ 里的行类型逐字段相同：纯模块不能 import 那边，类型在调用处按结构对上。
 import { cleanText } from '../shared/text.js';
+import { isLineOrder, type AnyOrder } from '../core/order-view.js';
 import type { ChatMessage, Order, Session } from '../types.js';
 
 /** 「真实会话在库里，JSON 只剩 demo 类」的标记文件（spec「导入、导出与切换」）。store.ts 原样再导出，命令行从这里取 */
@@ -92,6 +93,7 @@ export interface OrderRowShape {
   routeId: string;
   status: Order['status'];
   totalPrice: number;
+  totalFen: number | null;
   createdAt: Date;
   paidAt: Date | null;
   confirmedAt: Date | null;
@@ -265,24 +267,26 @@ export function rowToMessage(row: Omit<MessageRowShape, 'seq' | 'turnId'>): Chat
 // ---------------- 订单 ----------------
 
 /** 订单 → orders 的一行：data 是整个订单对象（经 normalizeForStore），列是它的副本；作废（重置）时带上作废的时间与原因 */
-export function orderToRow(o: Order, voided?: { at: number; reason: 'reset' | 'resync' }): OrderRowShape {
-  const data = normalizeForStore(o) as unknown as Record<string, unknown> & Order;
+export function orderToRow(o: AnyOrder, voided?: { at: number; reason: 'reset' | 'resync' }): OrderRowShape {
+  const data = normalizeForStore(o);
+  const line = isLineOrder(data);
   return {
     id: data.id,
     sessionId: data.sessionId ?? null,
-    routeId: data.routeId,
+    routeId: line ? data.lines[0].code : data.routeId,
     status: data.status,
-    totalPrice: data.totalPrice,
+    totalPrice: line ? Math.round(data.totalFen / 100) : data.totalPrice,
+    totalFen: line ? data.totalFen : null,
     createdAt: toDate(data.createdAt, 'order.createdAt'),
     paidAt: optDate(data.paidAt, 'order.paidAt'),
     confirmedAt: optDate(data.confirmedAt, 'order.confirmedAt'),
     voidedAt: voided ? toDate(voided.at, 'order.voidedAt') : null,
     voidReason: voided?.reason ?? null,
-    data,
+    data: data as unknown as Record<string, unknown>,
   };
 }
 
 /** orders 的一行 → 订单：只读 data */
-export function rowToOrder(row: { data: Record<string, unknown> }): Order {
-  return row.data as unknown as Order;
+export function rowToOrder(row: { data: Record<string, unknown> }): AnyOrder {
+  return row.data as unknown as AnyOrder;
 }
