@@ -126,7 +126,8 @@ export async function engineRuntime(
     const store = await import('../../src/store.js');
     const tools = await import('../../src/tools.js');
     const source = await import('../../src/config/source.js');
-    return { usage, llm, engine, recorder, store, tools, source };
+    const orderView = await import('../../src/core/order-view.js');
+    return { usage, llm, engine, recorder, store, tools, source, orderView };
   };
   const modules = await load().catch(async (e: unknown) => {
     await restoreProcess();
@@ -140,6 +141,7 @@ export async function engineRuntime(
   const { onTurnEnd } = modules.recorder;
   const store = modules.store;
   const { createQuote, routeVersion } = modules.tools;
+  const { createLineOrder } = modules.orderView;
   const { currentPack, currentPolicy, prefixSummary } = modules.source;
   const salesCfg = llmCfg();
   const customerCfg = {
@@ -188,7 +190,7 @@ export async function engineRuntime(
   const snapshot = (id: string): Snapshot => {
     const s = store.getSession(id)!;
     return structuredClone({
-      orders: store.listOrders().filter((o) => o.sessionId === id),
+      orders: store.listAnyOrders().filter((o) => o.sessionId === id),
       handedOver: s.handedOver,
       handoff: s.handoff ?? null,
       stage: s.stage,
@@ -214,19 +216,20 @@ export async function engineRuntime(
       checkModel(model);
     // 配置读不出来（policy.json 不合格、brand.json 不合格……）在这里就抛，一个目标都不跑；
     // 两个哈希随报告走，父进程可以核对子进程跑的就是它导出的那一份。
-    let loaded: { policyHash: string; promptHash: string; brand: ReturnType<typeof currentPack>['brand'] };
+    let loaded: { policyHash: string; promptHash: string; brand: ReturnType<typeof currentPack>['brand']; pack: string };
     try {
-      const brand = currentPack().brand;
+      const { brand, runtime: boundRuntime } = currentPack();
       const policyHash = currentPolicy().policyHash;
       const { promptHash } = prefixSummary(() => ({ ...modules.engine.promptPrefix(), sop: modules.engine.sopFileText() }));
-      loaded = { policyHash, promptHash, brand };
+      loaded = { policyHash, promptHash, brand, pack: boundRuntime.id };
     } catch (e) {
       throw new Error(`配置不合格: ${(e instanceof Error ? e.message : String(e)).replace(/\s+/g, ' ')}`, { cause: e });
     }
-    const { brand, policyHash, promptHash } = loaded;
+    const { brand, policyHash, promptHash, pack } = loaded;
     const deps: SimDeps = {
       customerModel: customerCfg.model,
       configDir,
+      pack,
       price,
       async customer(persona, history, retry) {
         const response = await fetch(`${customerCfg.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
@@ -286,7 +289,7 @@ export async function engineRuntime(
           },
         };
       },
-      start(seed) {
+      async start(seed) {
         const id = `sim-eval-${randomUUID()}`;
         const session = store.getOrCreateSession(id, 'simulator');
         if (seed) {
@@ -300,6 +303,17 @@ export async function engineRuntime(
           }));
           Object.assign(session.profile, seed.profile);
           for (const o of seed.orders ?? []) {
+            if ('lines' in o) {
+              // 08 R11：通用单的种子只给条目和数量，经包的 priceLine 建；状态建好后再改成种子要的
+              const result = await createLineOrder(session, o.lines);
+              if ('rejected' in result) throw new Error(`种子订单被包拒绝：${JSON.stringify(result.rejected)}`);
+              if (o.status === 'paid') store.markOrderPaid(result.order.id);
+              else if (o.status !== 'pending_payment') {
+                result.order.status = o.status;
+                store.saveOrder(result.order);
+              }
+              continue;
+            }
             const quote = createQuote({ routeId: o.routeId, travelers: o.travelers, departDate: o.departDate });
             const order = store.createOrder({
               sessionId: id,

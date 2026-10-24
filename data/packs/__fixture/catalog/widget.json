@@ -24,5 +24,32 @@
     "unitPrice": 88,
     "unit": "盒",
     "tags": ["合成", "礼盒"]
+  },
+  {
+    "id": "w-a",
+    "title": "合成方盒甲",
+    "unitPrice": 3.8,
+    "unit": "件",
+    "tags": ["合成", "评测", "阶梯价"],
+    "moq": 10,
+    "tiers": [
+      { "minQty": 100, "unitPrice": 3.65 },
+      { "minQty": 500, "unitPrice": 3.5 }
+    ]
+  },
+  {
+    "id": "w-b",
+    "title": "合成方盒乙",
+    "unitPrice": 12,
+    "unit": "件",
+    "tags": ["合成", "评测"],
+    "moq": 5
+  },
+  {
+    "id": "w-c",
+    "title": "合成方盒丙",
+    "unitPrice": 3.65,
+    "unit": "件",
+    "tags": ["合成", "评测"]
   }
 ]

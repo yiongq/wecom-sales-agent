@@ -8,9 +8,9 @@ import { tenantImage, tenantRenderer } from '../../src/config/brand.js';
 import { brandSnapshot, promptHashes } from '../../src/config/hashes.js';
 import { configMode, currentPack, currentSop, replacePublishedSop } from '../../src/config/source.js';
 import { joinSop } from '../../src/sop/sections.js';
-import type { CaseV2 } from './schema.js';
+import type { TravelCase } from './schema.js';
 
-export function brandCase(c: CaseV2, name: string): CaseV2 {
+export function brandCase(c: TravelCase, name: string): TravelCase {
   if (name !== 'shanhai') throw new Error(`brand: 未注册的夹具 ${name}`);
   const text = (s: string) => s.replaceAll('云途定制旅行', shanhaiBrand.brandName);
   return {

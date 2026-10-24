@@ -76,6 +76,8 @@ if (mode === 'parent') {
     __configTest.reset();
   };
   const widgetFile = (dir: string): string => path.join(dir, 'catalog', 'widget.json');
+  /** 参考配置里 widget 的条数：第 17 步起评测 case 往里加了条目，不再写死 3 */
+  const fixtureWidgetCount = (): number => (JSON.parse(fs.readFileSync(widgetFile(fixtureDir), 'utf8')) as unknown[]).length;
   const spyConsoleError = async (fn: () => void | Promise<void>): Promise<string[]> => {
     const saved = console.error;
     const lines: string[] = [];
@@ -172,7 +174,7 @@ if (mode === 'parent') {
         check(() => assert.equal(runtime.metadata.brand, '虚构方盒核验社'));
         check(() => assert.equal(runtime.metadata.config, 'config-dir'));
         check(() => assert.equal(boundPack()?.runtime.id, '__fixture'));
-        check(() => assert.equal(currentCatalog().items.widget?.length, 3));
+        check(() => assert.equal(currentCatalog().items.widget?.length, fixtureWidgetCount()));
       } finally {
         await runtime.close();
       }
@@ -235,7 +237,7 @@ if (mode === 'parent') {
     const lazy = currentCatalog();
     check(() => assert.equal(boundPack()?.runtime.id, '__fixture'));
     check(() => assert.equal(currentPack().brand?.brandName, '虚构方盒核验社'));
-    check(() => assert.equal(lazy.items.widget?.length, 3));
+    check(() => assert.equal(lazy.items.widget?.length, fixtureWidgetCount()));
     __configTest.reset();
 
     // ---------------- 一、没有 pack.json = 旅游，与以前相同 ----------------

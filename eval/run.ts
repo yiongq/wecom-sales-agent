@@ -27,13 +27,26 @@ if (process.argv[2] === '--v2-worker' || process.argv[2] === '--v2-pool-worker')
   const pooled = process.argv[2] === '--v2-pool-worker';
   process.argv.splice(2, 1);
   const { runWorker, runPoolWorker } = await withoutTenantScope(() => import('./v2/worker.js'));
-  const prepareDb = async (varDir: string) => {
-    const { openTestDb, installSeededConfig, installPgSessionStore } = await withoutTenantScope(() => import('../src/db/testing.js'));
+  const prepareDb = async (varDir: string, pack: string) => {
+    const { openTestDb, installSeededConfig, installPgSessionStore, testConfigDeps } = await withoutTenantScope(
+      () => import('../src/db/testing.js'),
+    );
     const { initSessionStore } = await withoutTenantScope(() => import('../src/store.js'));
     const db = await openTestDb();
     try {
-      await installSeededConfig(db);
-      const fx = await installPgSessionStore(db, { varDir });
+      let slug: string | undefined;
+      if (pack === 'travel') await installSeededConfig(db);
+      else {
+        // 08 R11：非旅游包没有 import-config；用该包的参考配置目录（SOP_PATH 所在目录）造租户、发布 v1、上架条目
+        const packDb = await withoutTenantScope(() => import('./v2/pack-db.js'));
+        slug = packDb.packTenantSlug(pack);
+        await packDb.installSeededPackConfig(db, {
+          packId: pack,
+          dir: path.dirname(process.env.SOP_PATH!),
+          configDeps: testConfigDeps(db, { tenantSlug: slug, usePackRuntime: true, imageDataDir: undefined }),
+        });
+      }
+      const fx = await installPgSessionStore(db, slug === undefined ? { varDir } : { varDir, slug });
       await initSessionStore(fx.deps);
       return {
         close: () => db.close(),

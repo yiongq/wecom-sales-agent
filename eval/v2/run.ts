@@ -4,7 +4,8 @@ import path from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { brandCase } from './brand.js';
-import { validateCases, type CaseV2 } from './schema.js';
+import { isPackCase, validateCases, type CaseV2 } from './schema.js';
+import { readPackFile } from '../../src/config/pack-file.js';
 import { compareCaseSnapshot, createSnapshot, readBaseline, serializeSnapshot, type TurnObservation } from './snapshot.js';
 
 export interface CaseResult {
@@ -33,6 +34,26 @@ export function loadCases(target: string, optional = false): CaseV2[] {
   return validateCases(entries);
 }
 
+const PACK_DIRS = fileURLToPath(new URL('../../data/packs/', import.meta.url));
+
+/**
+ * 08 R11：非旅游包的用例跑在那个包的配置目录上，子进程的环境要在启动前设好（注册表在模块加载时读 PACK_FIXTURES）。
+ * 调用方已经把 SOP_PATH 指到同一个包的目录（pack.json 的 id 相同）就沿用；否则取参考配置 data/packs/<包>/。
+ * 旅游用例不动环境（返回空对象），与以前相同。
+ */
+export function packEnv(c: CaseV2, base: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  if (!isPackCase(c)) return {};
+  const fixture: Record<string, string> = c.pack === '__fixture' ? { PACK_FIXTURES: '1' } : {};
+  try {
+    if (base.SOP_PATH && readPackFile(path.dirname(base.SOP_PATH))?.id === c.pack) return fixture;
+  } catch {
+    // 写坏的 pack.json 不算同一个包，下面改用参考配置
+  }
+  const dir = path.join(PACK_DIRS, c.pack);
+  if (!fs.existsSync(path.join(dir, 'sop.md'))) throw new Error(`pack: 没有「${c.pack}」的参考配置 data/packs/${c.pack}/`);
+  return { SOP_PATH: path.join(dir, 'sop.md'), ...fixture };
+}
+
 /** 每条 case 一个进程：模块级 store、时钟、DB 和环境变量都不跨 case。父进程兜底超时和删状态。 */
 export async function runCaseV2(c: CaseV2, timeoutMs = 30_000): Promise<CaseResult> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-eval-v2-'));
@@ -43,7 +64,7 @@ export async function runCaseV2(c: CaseV2, timeoutMs = 30_000): Promise<CaseResu
     const worker = fileURLToPath(new URL('../run.ts', import.meta.url));
     const child = spawn(process.execPath, ['--import', 'tsx', worker, '--v2-worker', input, dir, output], {
       stdio: ['ignore', 'ignore', 'ignore'],
-      env: { ...process.env, VAR_DIR: dir },
+      env: { ...process.env, VAR_DIR: dir, ...packEnv(c) },
     });
     let timedOut = false;
     const timer = setTimeout(() => {
@@ -88,14 +109,25 @@ export class V2Worker {
   private child?: ChildProcess;
   private dir?: string;
   private exited?: Promise<void>;
+  /** 子进程启动时的包环境（packEnv 的结果）：一个子进程只服务一个包，换包就重启 */
+  private envKey?: string;
 
   async run(c: CaseV2, timeoutMs = 30_000): Promise<CaseResult> {
+    let env: Record<string, string>;
+    try {
+      env = packEnv(c);
+    } catch (e) {
+      return failed(c, e instanceof Error ? e.message : String(e));
+    }
+    const envKey = JSON.stringify(env);
+    if (this.child && this.envKey !== envKey) await this.close();
     if (!this.child) {
       this.dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-eval-v2-'));
+      this.envKey = envKey;
       const entry = fileURLToPath(new URL('../run.ts', import.meta.url));
       this.child = spawn(process.execPath, ['--import', 'tsx', entry, '--v2-pool-worker', this.dir], {
         stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
-        env: { ...process.env, VAR_DIR: this.dir },
+        env: { ...process.env, VAR_DIR: this.dir, ...env },
       });
       this.exited = new Promise((resolve) => {
         this.child!.once('exit', () => resolve());
@@ -156,6 +188,7 @@ export class V2Worker {
       this.child = undefined;
       this.dir = undefined;
       this.exited = undefined;
+      this.envKey = undefined;
     }
   }
 }
@@ -167,13 +200,19 @@ export async function runCasesV2(
   const count = options.isolate ? 1 : (options.workers ?? workerCount());
   if (!Number.isSafeInteger(count) || count < 1) throw new Error('workers 必须是正整数');
   const results: CaseResult[] = [];
+  // 一个子进程只服务一个包（模块级状态与绑定的包不跨包）：非旅游包的用例排在后面、同一个包相邻，旅游的先后顺序不变，
+  // 换包时 V2Worker 重启子进程。结果仍按用例原来的下标放，输出顺序不变
+  const rank = (c: CaseV2): string => (isPackCase(c) ? c.pack : '');
+  const queue = cases
+    .map((_, i) => i)
+    .toSorted((a, b) => (rank(cases[a]!) < rank(cases[b]!) ? -1 : rank(cases[a]!) > rank(cases[b]!) ? 1 : 0));
   let next = 0;
   await Promise.all(
     Array.from({ length: Math.min(count, cases.length) }, async () => {
       const worker = new V2Worker();
       try {
-        while (next < cases.length) {
-          const index = next++;
+        while (next < queue.length) {
+          const index = queue[next++]!;
           const c = cases[index];
           const result = options.isolate ? await runCaseV2(c, options.timeoutMs) : await worker.run(c, options.timeoutMs);
           results[index] = result;
@@ -193,7 +232,7 @@ export async function runV2(cases: CaseV2[]): Promise<boolean> {
   if (brandIndex > 0) {
     const name = process.argv[brandIndex + 1];
     if (!name || name.startsWith('--')) throw new Error('--brand 需要夹具名');
-    cases = cases.map((c) => brandCase(c, name));
+    cases = cases.map((c) => (isPackCase(c) ? c : brandCase(c, name)));
   }
   const writeIndex = process.argv.indexOf('--v2-snapshot-write');
   const writeTarget = writeIndex > 0 ? process.argv[writeIndex + 1] : undefined;

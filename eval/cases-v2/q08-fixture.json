@@ -1,0 +1,354 @@
+[
+  {
+    "version": 2,
+    "id": "q08-fixture-line-order-01",
+    "desc": "R11/验收 4：模型只给条目和数量，两行订单 200×3.65 + 50×12 = 133000 分；同样条目再下单复用待付单；改一行数量旧单作废、新单生效。",
+    "tags": ["q08", "fixture", "line-order"],
+    "pack": "__fixture",
+    "fixtures": { "now": "2026-10-02T12:00:00+08:00" },
+    "turns": [
+      {
+        "say": "甲方盒要200件、乙方盒要50件，帮我下单",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "fixture_order",
+                "args": {
+                  "lines": [
+                    { "kind": "widget", "code": "w-a", "qty": 200 },
+                    { "kind": "widget", "code": "w-b", "qty": 50 }
+                  ]
+                }
+              }
+            ]
+          },
+          { "content": "{{call:fixture_order.text}}\n复用已有订单：{{call:fixture_order.reused}}" }
+        ],
+        "expect": {
+          "replyMatches": ["合成方盒甲 200件 3\\.65元/件 730元", "合成方盒乙 50件 12元/件 600元", "合计1,330元", "复用已有订单：false"],
+          "tools": ["fixture_order"],
+          "orders": {
+            "count": 1,
+            "last": {
+              "v": 2,
+              "status": "pending_payment",
+              "totalFen": 133000,
+              "lines": [
+                { "kind": "widget", "code": "w-a", "qty": 200, "unitPriceFen": 365, "amountFen": 73000 },
+                { "kind": "widget", "code": "w-b", "qty": 50, "unitPriceFen": 1200, "amountFen": 60000 }
+              ]
+            }
+          }
+        }
+      },
+      {
+        "say": "再按刚才的数量下一次单",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "fixture_order",
+                "args": {
+                  "lines": [
+                    { "kind": "widget", "code": "w-b", "qty": 50 },
+                    { "kind": "widget", "code": "w-a", "qty": 200 }
+                  ]
+                }
+              }
+            ]
+          },
+          { "content": "合计{{call:fixture_order.display.totalText}}\n复用已有订单：{{call:fixture_order.reused}}" }
+        ],
+        "expect": {
+          "replyMatches": ["合计1,330元", "复用已有订单：true"],
+          "tools": ["fixture_order"],
+          "orders": {
+            "count": 1,
+            "last": { "status": "pending_payment", "totalFen": 133000 }
+          }
+        }
+      },
+      {
+        "say": "乙方盒改成60件",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "fixture_order",
+                "args": {
+                  "lines": [
+                    { "kind": "widget", "code": "w-a", "qty": 200 },
+                    { "kind": "widget", "code": "w-b", "qty": 60 }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "content": "合计{{call:fixture_order.display.totalText}}\n复用已有订单：{{call:fixture_order.reused}}\n最新订单状态：{{order:0.status}}\n最新订单乙方盒数量：{{order:0.lines.1.qty}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["合计1,450元", "复用已有订单：false", "最新订单状态：pending_payment", "最新订单乙方盒数量：60"],
+          "tools": ["fixture_order"],
+          "orders": {
+            "count": 2,
+            "last": {
+              "status": "superseded",
+              "totalFen": 133000,
+              "lines": [
+                { "kind": "widget", "code": "w-a", "qty": 200, "unitPriceFen": 365, "amountFen": 73000 },
+                { "kind": "widget", "code": "w-b", "qty": 50, "unitPriceFen": 1200, "amountFen": 60000 }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q08-fixture-money-provenance-01",
+    "desc": "R8/验收 6：查询工具报出 3.65 元，回复「单价 3.65 元」放行；「单价 3.80 元」那一句被删；整条只剩这一句换成兜底句；自己算的合计被删；静态运费放行。",
+    "tags": ["q08", "fixture", "money-provenance"],
+    "pack": "__fixture",
+    "fixtures": { "now": "2026-10-02T12:00:00+08:00" },
+    "turns": [
+      {
+        "say": "丙方盒现在多少钱",
+        "script": [{ "toolCalls": [{ "name": "fixture_quote", "args": { "code": "w-c" } }] }, { "content": "单价3.65元。" }],
+        "expect": {
+          "guardVerdicts": [
+            { "id": "pre_clean", "action": "pass" },
+            { "id": "takeover_check:pre", "action": "pass" },
+            { "id": "stage_advance", "action": "pass" },
+            { "id": "fixture_guard", "action": "pass" },
+            { "id": "markdown", "action": "pass" },
+            { "id": "dangling", "action": "pass" },
+            { "id": "advisor_prefix", "action": "pass" },
+            { "id": "identity", "action": "pass" },
+            { "id": "shape_check", "action": "pass" },
+            { "id": "money_provenance", "action": "pass" },
+            { "id": "takeover_check:post", "action": "pass" },
+            { "id": "turn_failure", "action": "pass" },
+            { "id": "final_clean", "action": "pass" }
+          ],
+          "replyMatches": ["^单价3\\.65元。$(?![\\s\\S])"],
+          "tools": ["fixture_quote"]
+        }
+      },
+      {
+        "say": "我记得是3.8吧",
+        "script": [{ "content": "单价3.80元。请确认规格。" }],
+        "expect": {
+          "guardVerdicts": [
+            { "id": "pre_clean", "action": "pass" },
+            { "id": "takeover_check:pre", "action": "pass" },
+            { "id": "stage_advance", "action": "pass" },
+            { "id": "fixture_guard", "action": "pass" },
+            { "id": "markdown", "action": "pass" },
+            { "id": "dangling", "action": "pass" },
+            { "id": "advisor_prefix", "action": "pass" },
+            { "id": "identity", "action": "pass" },
+            { "id": "shape_check", "action": "pass" },
+            { "id": "money_provenance", "action": "drop_sentence" },
+            { "id": "takeover_check:post", "action": "pass" },
+            { "id": "turn_failure", "action": "pass" },
+            { "id": "final_clean", "action": "pass" }
+          ],
+          "replyMatches": ["^请确认规格。$(?![\\s\\S])"],
+          "replyExcludes": ["3\\.80"],
+          "tools": []
+        }
+      },
+      {
+        "say": "那就按3.8算",
+        "script": [{ "content": "单价3.80元。" }],
+        "expect": {
+          "guardVerdicts": [
+            { "id": "pre_clean", "action": "pass" },
+            { "id": "takeover_check:pre", "action": "pass" },
+            { "id": "stage_advance", "action": "pass" },
+            { "id": "fixture_guard", "action": "pass" },
+            { "id": "markdown", "action": "pass" },
+            { "id": "dangling", "action": "pass" },
+            { "id": "advisor_prefix", "action": "pass" },
+            { "id": "identity", "action": "pass" },
+            { "id": "shape_check", "action": "pass" },
+            { "id": "money_provenance", "action": "replace" },
+            { "id": "takeover_check:post", "action": "pass" },
+            { "id": "turn_failure", "action": "pass" },
+            { "id": "final_clean", "action": "pass" }
+          ],
+          "replyMatches": ["^金额尚未核验，请先查询。$(?![\\s\\S])"],
+          "replyExcludes": ["3\\.80"],
+          "tools": []
+        }
+      },
+      {
+        "say": "运费多少",
+        "script": [{ "content": "运费10元。" }],
+        "expect": {
+          "guardVerdicts": [
+            { "id": "pre_clean", "action": "pass" },
+            { "id": "takeover_check:pre", "action": "pass" },
+            { "id": "stage_advance", "action": "pass" },
+            { "id": "fixture_guard", "action": "pass" },
+            { "id": "markdown", "action": "pass" },
+            { "id": "dangling", "action": "pass" },
+            { "id": "advisor_prefix", "action": "pass" },
+            { "id": "identity", "action": "pass" },
+            { "id": "shape_check", "action": "pass" },
+            { "id": "money_provenance", "action": "pass" },
+            { "id": "takeover_check:post", "action": "pass" },
+            { "id": "turn_failure", "action": "pass" },
+            { "id": "final_clean", "action": "pass" }
+          ],
+          "replyMatches": ["^运费10元。$(?![\\s\\S])"],
+          "tools": []
+        }
+      },
+      {
+        "say": "买两件一共多少",
+        "script": [{ "content": "合计7.30元。运费10元。" }],
+        "expect": {
+          "guardVerdicts": [
+            { "id": "pre_clean", "action": "pass" },
+            { "id": "takeover_check:pre", "action": "pass" },
+            { "id": "stage_advance", "action": "pass" },
+            { "id": "fixture_guard", "action": "pass" },
+            { "id": "markdown", "action": "pass" },
+            { "id": "dangling", "action": "pass" },
+            { "id": "advisor_prefix", "action": "pass" },
+            { "id": "identity", "action": "pass" },
+            { "id": "shape_check", "action": "pass" },
+            { "id": "money_provenance", "action": "drop_sentence" },
+            { "id": "takeover_check:post", "action": "pass" },
+            { "id": "turn_failure", "action": "pass" },
+            { "id": "final_clean", "action": "pass" }
+          ],
+          "replyMatches": ["^运费10元。$(?![\\s\\S])"],
+          "replyExcludes": ["7\\.30"],
+          "tools": []
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q08-fixture-attrs-merge-01",
+    "desc": "R4/验收 7：两轮分别抽出 attrs 的两个键（颜色、尺寸）；第三轮的画像里两个键都在，后一轮不整块覆盖前一轮。画像在回复之后才抽取，所以状态要到下一轮才看得到。",
+    "tags": ["q08", "fixture", "attrs"],
+    "pack": "__fixture",
+    "fixtures": { "now": "2026-10-02T12:00:00+08:00" },
+    "turns": [
+      {
+        "say": "颜色：红",
+        "script": [{ "content": "收到，颜色记下了。" }],
+        "expect": {
+          "replyMatches": ["收到，颜色记下了"],
+          "contextMatches": ["客户画像: \\{\\}"],
+          "contextExcludes": ["attrs"]
+        }
+      },
+      {
+        "say": "尺寸：大",
+        "script": [{ "content": "收到，尺寸记下了。" }],
+        "expect": {
+          "replyMatches": ["收到，尺寸记下了"],
+          "contextMatches": ["\"attrs\":\\{\"color\":\"红\"\\}"],
+          "contextExcludes": ["size"]
+        }
+      },
+      {
+        "say": "先确认一下我说的",
+        "script": [{ "content": "好的，已记下颜色和尺寸。" }],
+        "expect": {
+          "replyMatches": ["已记下颜色和尺寸"],
+          "contextMatches": ["\"attrs\":\\{\"color\":\"红\",\"size\":\"大\"\\}"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "id": "q08-fixture-seeded-orders-01",
+    "desc": "R11：夹具按条目和数量经 priceLine 建通用单（一张已付、一张待付），画像夹具只有 attrs 与 notes；同样条目再下单复用待付单，改数量只作废待付单、已付单不动。",
+    "tags": ["q08", "fixture", "line-order", "fixtures"],
+    "pack": "__fixture",
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00",
+      "session": { "profile": { "attrs": { "color": "红" }, "notes": ["老客户"] } },
+      "orders": [
+        { "status": "paid", "lines": [{ "kind": "widget", "code": "w-c", "qty": 10 }] },
+        {
+          "status": "pending_payment",
+          "lines": [
+            { "kind": "widget", "code": "w-a", "qty": 200 },
+            { "kind": "widget", "code": "w-b", "qty": 50 }
+          ]
+        }
+      ]
+    },
+    "turns": [
+      {
+        "say": "还是甲200件乙50件，再来一单",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "fixture_order",
+                "args": {
+                  "lines": [
+                    { "kind": "widget", "code": "w-a", "qty": 200 },
+                    { "kind": "widget", "code": "w-b", "qty": 50 }
+                  ]
+                }
+              }
+            ]
+          },
+          { "content": "合计{{call:fixture_order.display.totalText}}\n复用已有订单：{{call:fixture_order.reused}}" }
+        ],
+        "expect": {
+          "replyMatches": ["合计1,330元", "复用已有订单：true"],
+          "contextMatches": ["\"attrs\":\\{\"color\":\"红\"\\}"],
+          "tools": ["fixture_order"],
+          "orders": {
+            "count": 2,
+            "last": { "status": "pending_payment", "totalFen": 133000 }
+          }
+        }
+      },
+      {
+        "say": "乙方盒改成60件",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "fixture_order",
+                "args": {
+                  "lines": [
+                    { "kind": "widget", "code": "w-a", "qty": 200 },
+                    { "kind": "widget", "code": "w-b", "qty": 60 }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "content": "合计{{call:fixture_order.display.totalText}}\n最新订单状态：{{order:0.status}}\n已付订单状态：{{order:1.status}}"
+          }
+        ],
+        "expect": {
+          "replyMatches": ["合计1,450元", "最新订单状态：pending_payment", "已付订单状态：paid"],
+          "tools": ["fixture_order"],
+          "orders": {
+            "count": 3,
+            "last": { "status": "superseded", "totalFen": 133000 }
+          }
+        }
+      }
+    ]
+  }
+]
