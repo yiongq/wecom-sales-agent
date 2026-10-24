@@ -29,6 +29,8 @@ export {
   type ItemCheck,
 } from '../shared/pack.js';
 export type { QuickReplyDefault } from '../shared/quick-reply-defaults.js';
+export { createLineOrder, orderDisplay, type LinePick } from './order-view.js';
+export { yuanToFen } from '../shared/catalog-money.js';
 export type { SectionSpec, SectionSpec as SopSectionDef, SopSection } from '../shared/sop-sections.js';
 
 // 04 第 7 步：包只经本出口取得通用解析；调用方显式传入金额政策。
@@ -730,6 +732,13 @@ export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   consistencyRules?: readonly import('./consistency.js').ConsistencyRule[];
   catalog: Readonly<Record<string, CatalogKindSpec>>;
   catalogStartupCheck?(snapshot: CatalogSnapshot): string | null;
+  /** 08 R3：确定性计价；没有此钩子的包不能建通用单。 */
+  priceLine?(
+    item: Readonly<Record<string, unknown>>,
+    qty: number,
+    ctx: { kind: string; session: Session },
+  ): { unitPriceFen: number; unit: string; attrs?: Record<string, string> } | { reject: string; detail?: Record<string, unknown> };
+  maxQty?: number;
 }
 
 export interface PackBinding<T extends PackRuntimeTypes = PackRuntimeTypes> {

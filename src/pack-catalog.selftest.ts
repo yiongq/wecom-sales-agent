@@ -60,7 +60,10 @@ if (process.argv[2] !== 'worker') {
       assert.equal(widget.schema.safeParse(payload).success, false);
       assert.ok(checkItem(fixture.entities[0]!, payload).required.length > 0 || Object.hasOwn(payload, 'extra'));
     }
-    assert.deepEqual(widget.moneyFields, [{ path: 'unitPrice', decimals: 2 }]);
+    assert.deepEqual(widget.moneyFields, [
+      { path: 'unitPrice', decimals: 2 },
+      { path: 'tiers[].unitPrice', decimals: 2 },
+    ]);
     assert.ok(widget.schema.safeParse({ ...sample, unitPrice: 3.65 }).success);
 
     const reject = (catalog: Record<string, CatalogKindSpec>, kind: string, reason: string): void => {

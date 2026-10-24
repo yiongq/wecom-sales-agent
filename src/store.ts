@@ -63,7 +63,7 @@ import { isDemoClassId, SESSIONS_IN_DB_MARKER } from './store/project.js';
 import { linkTurn, noteWindowReset, seqOf, turnIdOf, windowStartOf } from './store/seq.js';
 import { flushUsageDaily, startUsageDaily } from './trace/usage-daily.js';
 import type { ChatMessage, MessageAuthor, Session, Order } from './types.js';
-import { isLineOrder, type AnyOrder } from './core/order-view.js';
+import { isLineOrder, type AnyOrder, type LineOrder } from './core/order-view.js';
 
 const tenantState = scopedState(() => ({
   incidentHooks: new Set<(i: StoreIncident) => void>(),
@@ -997,7 +997,7 @@ function emitSaved(s: Session, unseq: readonly ChatMessage[]): void {
 }
 
 /** 订单改动的提交后事件（后台事件流的 order） */
-function emitOrder(o: Order): void {
+function emitOrder(o: AnyOrder): void {
   emitAfterCommit(o.sessionId, {
     type: 'order.changed',
     id: o.sessionId,
@@ -1011,7 +1011,7 @@ function emitOrder(o: Order): void {
  * 不经 createOrder / markOrderPaid / supersedeOrder 的订单改动（02 第 13 步，后台的确认价格、确认收款、取消订单，src/payment/orders.ts）：
  * 排进订单所属会话的下一次落库，提交后发 order.changed
  */
-export function saveOrder(o: Order): void {
+export function saveOrder(o: AnyOrder): void {
   const state = storeState();
   if (state.orders.get(o.id) !== o) return;
   (pgFor(o.sessionId) ?? fileBackendOf(state)).scheduleOrder(o.id);
@@ -1030,6 +1030,22 @@ export function createOrder(o: Omit<Order, 'id' | 'createdAt' | 'status'>): Orde
     createdAt: Date.now(),
   };
   state.orders.set(order.id, order);
+  (pgFor(order.sessionId) ?? fileBackendOf(state)).scheduleOrder(order.id);
+  emitOrder(order);
+  return order;
+}
+
+/** 08 R3：核心完成计价后沿用 02 的编号、写队列与事件；旅游建单入口的类型与行为不变。 */
+export function createStoredLineOrder(o: Omit<LineOrder, 'id' | 'createdAt' | 'status'>): LineOrder {
+  const state = storeState();
+  const order: LineOrder = {
+    ...o,
+    id: 'ord_' + crypto.randomBytes(12).toString('hex'),
+    status: 'pending_payment',
+    createdAt: Date.now(),
+  };
+  const orders: Map<string, AnyOrder> = state.orders;
+  orders.set(order.id, order);
   (pgFor(order.sessionId) ?? fileBackendOf(state)).scheduleOrder(order.id);
   emitOrder(order);
   return order;
