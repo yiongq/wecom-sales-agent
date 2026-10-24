@@ -1,0 +1,19 @@
+{
+  "id": "fixture-order-two-widgets",
+  "pack": "__fixture",
+  "persona": "你是要采购合成方盒的客户。第一句已经说了「先帮我查一下合成方盒甲和合成方盒乙的单价」。看到销售给出单价后，你说「合成方盒甲要200件、合成方盒乙要50件，确认下单」，此前不说下单的话。拿到订单的明细和合计后说「好的，谢谢」并结束。不要自己报价格，不要要求人工。",
+  "maxTurns": 6,
+  "allowedTools": ["fixture_quote", "fixture_inspect", "fixture_order"],
+  "predicates": [
+    { "kind": "order", "count": 1, "fields": { "status": "pending_payment", "totalFen": 133000 } },
+    { "kind": "no_order_before", "turnMatches": "确认下单|下单" },
+    { "kind": "handoff", "expected": false },
+    { "kind": "tool_called", "name": "fixture_order", "min": 1 },
+    { "kind": "reply_matches", "pattern": "1,?330", "scope": "any" },
+    { "kind": "reply_excludes", "pattern": "unitPriceFen|amountFen|totalFen", "scope": "all" }
+  ],
+  "forbidden": ["<tool_call>", "【硬性要求】"],
+  "severity": "quality",
+  "tags": ["fixture", "regression"],
+  "customerScript": ["先帮我查一下合成方盒甲和合成方盒乙的单价"]
+}

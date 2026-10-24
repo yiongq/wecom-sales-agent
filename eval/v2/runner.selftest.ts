@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { runCaseV2, runCasesV2, runV2, V2Worker, loadCases, type CaseResult } from './run.js';
-import { validateCase, type CaseV2 } from './schema.js';
+import { packEnv, runCaseV2, runCasesV2, runV2, V2Worker, loadCases, type CaseResult } from './run.js';
+import { isPackCase, validateCase, type CaseV2, type PackCase } from './schema.js';
 import { normalize, resolveValues, resolvePattern } from './values.js';
 import { startFakeModel } from './fake-model.js';
 import { resetCaseState, resetModuleNames } from './isolation.js';
@@ -625,6 +625,191 @@ await test('session 夹具认 reminders 与 recommendedRoutes，写错字段报�
   const typo = structuredClone(base);
   typo.fixtures = { session: { reminders: { altitude: 2, typo: 1 } as never } };
   assert.throws(() => validateCase(typo), /fixtures\.session\.reminders\.typo/);
+});
+
+// ---- 08 R11：cases v2 的 pack（缺省 travel）。证明包的 case 在 eval/cases-v2/q08-fixture.json ----
+const q08 = loadCases(path.resolve('eval/cases-v2/q08-fixture.json')).filter((c): c is PackCase => isPackCase(c));
+const packBase = (over: Record<string, unknown> = {}): unknown => ({
+  version: 2,
+  id: 'v2-pack-schema',
+  desc: 'pack 分支',
+  tags: [],
+  pack: '__fixture',
+  turns: [{ say: '你好', script: [{ content: '您好' }], expect: {} }],
+  ...over,
+});
+await test('pack 分支：travel 与旧 case 照旧，非旅游包收 { attrs, notes } 与 { status, lines }，金额字段被拒', () => {
+  assert.equal(validateCase(base).pack, undefined);
+  assert.equal(validateCase({ ...base, pack: 'travel' }).pack, 'travel');
+  // 旅游的画像字段、订单形状仍照旧通过
+  assert.doesNotThrow(() =>
+    validateCase({
+      ...base,
+      fixtures: {
+        session: { profile: { destinationInterest: '云南', travelers: '2人' } },
+        orders: [{ status: 'paid', travelers: 2, departDate: '2026-12-10', routeId: 'r-yunnan-mid' }],
+      },
+    }),
+  );
+  const line = { kind: 'widget', code: 'w-a', qty: 200 };
+  const ok = validateCase(
+    packBase({
+      fixtures: {
+        session: { stage: 'objection', profile: { attrs: { color: '红' }, notes: ['老客户'] }, packState: { tier: 'basic' } },
+        orders: [
+          { status: 'paid', lines: [line] },
+          { status: 'pending_payment', lines: [line, { ...line, code: 'w-b', qty: 50 }] },
+        ],
+      },
+      turns: [
+        {
+          say: '你好',
+          expect: {
+            orders: {
+              count: 2,
+              last: {
+                v: 2,
+                status: 'pending_payment',
+                totalFen: 133000,
+                lines: [{ kind: 'widget', code: 'w-a', qty: 200, unitPriceFen: 365, amountFen: 73000 }],
+              },
+            },
+          },
+        },
+      ],
+    }),
+  );
+  assert.ok(isPackCase(ok) && ok.pack === '__fixture');
+  const orders = (list: unknown[]) => packBase({ fixtures: { orders: list } });
+  const bad: [string, unknown, RegExp][] = [
+    [
+      '画像里的旅游字段',
+      packBase({ fixtures: { session: { profile: { destinationInterest: '云南' } } } }),
+      /fixtures\.session\.profile\.destinationInterest: 未知字段/,
+    ],
+    [
+      '会话里的旅游字段',
+      packBase({ fixtures: { session: { lastQuote: { routeId: 'r', routeTitle: 't', travelers: 2 } } } }),
+      /fixtures\.session\.lastQuote: 未知字段/,
+    ],
+    [
+      '旅游形状的订单',
+      orders([{ status: 'paid', travelers: 2, departDate: '2026-12-10', routeId: 'r-yunnan-mid' }]),
+      /fixtures\.orders\.0/,
+    ],
+    ['订单行里的单价', orders([{ status: 'paid', lines: [{ ...line, unitPriceFen: 365 }] }]), /lines\.0\.unitPriceFen: 未知字段/],
+    ['订单行里的行金额', orders([{ status: 'paid', lines: [{ ...line, amountFen: 73000 }] }]), /lines\.0\.amountFen: 未知字段/],
+    ['订单上的合计', orders([{ status: 'paid', lines: [line], totalFen: 73000 }]), /fixtures\.orders\.0\.totalFen: 未知字段/],
+    ['订单上的元数金额', orders([{ status: 'paid', lines: [line], totalPrice: 730 }]), /fixtures\.orders\.0\.totalPrice: 未知字段/],
+    ['数量不是正整数', orders([{ status: 'paid', lines: [{ ...line, qty: 0 }] }]), /lines\.0\.qty/],
+    ['数量不是整数', orders([{ status: 'paid', lines: [{ ...line, qty: 1.5 }] }]), /lines\.0\.qty/],
+    ['没有订单行', orders([{ status: 'paid', lines: [] }]), /fixtures\.orders\.0\.lines/],
+    ['退款状态', orders([{ status: 'refunded', lines: [line] }]), /fixtures\.orders\.0\.status/],
+    [
+      '待付单不在最后',
+      orders([
+        { status: 'pending_payment', lines: [line] },
+        { status: 'paid', lines: [line] },
+      ]),
+      /pending_payment 的订单只能排在最后/,
+    ],
+    [
+      '两张待付单',
+      orders([
+        { status: 'pending_payment', lines: [line] },
+        { status: 'pending_payment', lines: [line] },
+      ]),
+      /pending_payment 的订单只能排在最后/,
+    ],
+    ['旅游的 brand 字段', packBase({ brand: 'shanhai' }), /\$\.brand: 未知字段/],
+    [
+      '断言里的未知键',
+      packBase({ turns: [{ say: '你好', expect: { orders: { count: 1, last: { amountFen: 1 } } } }] }),
+      /orders\.last\.amountFen: 未知字段/,
+    ],
+    [
+      '断言行里的未知键',
+      packBase({ turns: [{ say: '你好', expect: { orders: { count: 1, last: { lines: [{ price: 1 }] } } } }] }),
+      /lines\.0\.price: 未知字段/,
+    ],
+    ['pack 不是字符串', { ...base, pack: 5 }, /v2-selftest.*pack/],
+    ['pack 字符集', packBase({ pack: 'bad pack' }), /\[v2-pack-schema\] pack: 只能含字母/],
+    [
+      'pack: travel 写通用单',
+      { ...base, pack: 'travel', fixtures: { orders: [{ status: 'paid', lines: [line] }] } },
+      /fixtures\.orders\.0/,
+    ],
+    ['旅游 case 写通用单', { ...base, fixtures: { orders: [{ status: 'paid', lines: [line] }] } }, /fixtures\.orders\.0/],
+  ];
+  for (const [name, input, message] of bad) assert.throws(() => validateCase(input), message, name);
+});
+await test('packEnv：旅游不动环境；非旅游包用 data/packs/<包>/，证明包另设 PACK_FIXTURES；同一个包的 SOP_PATH 沿用', () => {
+  assert.deepEqual(packEnv(base), {});
+  assert.deepEqual(packEnv({ ...base, pack: 'travel' }), {});
+  const fixture = q08[0]!;
+  const dir = path.resolve('data/packs/__fixture');
+  assert.deepEqual(packEnv(fixture, {}), { SOP_PATH: path.join(dir, 'sop.md'), PACK_FIXTURES: '1' });
+  assert.deepEqual(packEnv(fixture, { SOP_PATH: 'data/sop.md' }), { SOP_PATH: path.join(dir, 'sop.md'), PACK_FIXTURES: '1' });
+  assert.deepEqual(packEnv(fixture, { SOP_PATH: path.join(dir, 'sop.md') }), { PACK_FIXTURES: '1' });
+  assert.throws(() => packEnv({ ...fixture, pack: 'no-such-pack' }), /没有「no-such-pack」的参考配置/);
+});
+await test('证明包的 q08 case 在文件与 PGlite 配置下与旅游 case 混跑都通过，结果按原顺序，换包重启子进程', async () => {
+  assert.ok(q08.length >= 3, '至少 3 条证明包 case');
+  const previousDb = process.env.CONFIG_TEST_DB;
+  try {
+    for (const db of ['', 'pglite']) {
+      process.env.CONFIG_TEST_DB = db;
+      const travelA: CaseV2 = { ...base, id: `pack-mix-travel-a-${db || 'file'}` };
+      const travelB: CaseV2 = { ...base, id: `pack-mix-travel-b-${db || 'file'}` };
+      const cases: CaseV2[] = [travelA, q08[0]!, travelB, ...q08.slice(1)];
+      const seen: string[] = [];
+      const results = await runCasesV2(cases, { workers: 1, onResult: (r) => seen.push(r.id) });
+      assert.deepEqual(
+        results.map((r) => r.id),
+        cases.map((c) => c.id),
+      );
+      for (const r of results) assert.equal(r.pass, true, `${db || 'file'} ${r.failures.join('\n')}`);
+      // 旅游的先跑，非旅游包的排在后面（同一个子进程只服务一个包）
+      assert.deepEqual(seen.slice(0, 2), [travelA.id, travelB.id]);
+    }
+  } finally {
+    if (previousDb === undefined) delete process.env.CONFIG_TEST_DB;
+    else process.env.CONFIG_TEST_DB = previousDb;
+  }
+});
+await test('通用单断言：totalFen、lines 的 unitPriceFen / 条数 / 状态错了都失败，夹具订单被拒与未知包也报错', async () => {
+  const orderCase = q08.find((c) => c.id === 'q08-fixture-line-order-01')!;
+  const mutate = (change: (c: PackCase) => void): Promise<CaseResult> => {
+    const c = structuredClone(orderCase);
+    change(c);
+    return runCaseV2(c);
+  };
+  assert.equal((await runCaseV2(orderCase)).pass, true);
+  const firstLast = (c: PackCase) => c.turns[0]!.expect.orders!.last!;
+  const wrongTotal = await mutate((c) => (firstLast(c).totalFen = 133001));
+  assert.equal(wrongTotal.pass, false);
+  assert.match(wrongTotal.failures.join('\n'), /第1轮 expect\.orders\.last\.totalFen/);
+  const wrongPrice = await mutate((c) => (firstLast(c).lines![0]!.unitPriceFen = 380));
+  assert.equal(wrongPrice.pass, false);
+  assert.match(wrongPrice.failures.join('\n'), /第1轮 expect\.orders\.last\.lines/);
+  const wrongCount = await mutate((c) => firstLast(c).lines!.pop());
+  assert.equal(wrongCount.pass, false);
+  assert.match(wrongCount.failures.join('\n'), /orders\.last\.lines/);
+  const wrongStatus = await mutate((c) => (firstLast(c).status = 'paid'));
+  assert.equal(wrongStatus.pass, false);
+  assert.match(wrongStatus.failures.join('\n'), /orders\.last\.status/);
+  // 夹具订单被包拒绝（编号不存在 / 低于起订量）：整条 case 失败并点名原因
+  const unknownCode = await mutate(
+    (c) => (c.fixtures = { orders: [{ status: 'paid', lines: [{ kind: 'widget', code: 'w-zzz', qty: 1 }] }] }),
+  );
+  assert.equal(unknownCode.pass, false);
+  assert.match(unknownCode.failures.join('\n'), /夹具订单被包拒绝.*item_inactive/);
+  const belowMoq = await mutate((c) => (c.fixtures = { orders: [{ status: 'paid', lines: [{ kind: 'widget', code: 'w-a', qty: 9 }] }] }));
+  assert.equal(belowMoq.pass, false);
+  assert.match(belowMoq.failures.join('\n'), /夹具订单被包拒绝.*below_moq/);
+  const unknownPack = await mutate((c) => (c.pack = 'no-such-pack'));
+  assert.equal(unknownPack.pass, false);
+  assert.match(unknownPack.failures.join('\n'), /没有「no-such-pack」的参考配置/);
 });
 console.log(`v2 runner 自测：${passed}/${passed} 通过`);
 
