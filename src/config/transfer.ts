@@ -15,6 +15,7 @@ import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
 import { decodeSopFile, editableChars, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
 import { toolDefs } from '../tool-defs.js';
 import { runtimeById } from '../packs/registry.js';
+import { assertKind } from './catalog.js';
 import { packSources } from './source.js';
 import { tenantImage, tenantRenderer, switchPreamble } from './brand.js';
 import { promptHashes, publishedBrand, policySnapshot, publishedPolicy, renderInputsFor, type PromptHashes } from './hashes.js';
@@ -83,6 +84,7 @@ export async function writeTemplateConfig(
   const { tenantId } = currentTenantCtx();
   const runtime = runtimeById(pub.packId, packSources());
   if (!runtime) throw new Error('pack_unknown');
+  for (const row of items) assertKind(pub.packId, row.kind);
   const brand = publishedBrand(pub.renderInputs).brand;
   const policy = publishedPolicy(runtime.policy, pub);
   const render = brand ? tenantRenderer(runtime, brand) : (sop: string) => renderPackSystemPrompt(sop, runtime.legacy.hardRequirements);
@@ -168,6 +170,13 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
   if (!tenant) return fail(`tenant_not_found：没有 slug 为「${o.tenantSlug}」的租户，先跑 tenant-create`);
   const runtime = runtimeById(tenant.packId, packSources());
   if (!runtime) return fail('pack_unknown：没有行业包运行时');
+  // 本步保留旅游文件与循环；在读取、加锁和任何写入之前校验它们的 kind。
+  try {
+    assertKind(tenant.packId, 'route');
+    assertKind(tenant.packId, 'hotel');
+  } catch (e) {
+    return fail(message(e));
+  }
   const brand = (await readBrand(o.db, tenant.id)) ?? null;
   if (brand) code = { ...code, render: tenantRenderer(runtime, brand) };
   // DB 模式的应用在跑时持着锁：拿不到就别动库

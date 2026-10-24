@@ -1509,7 +1509,7 @@ check('约束：payload.id 必须等于 code', (await why(insertItem(A, 'route',
 check('约束：payload 没有 id 被拒', (await why(insertItem(A, 'route', 'r-a', 0, { title: 'x' }))) === 'catalog_items_payload_check');
 check('约束：payload 必须是对象', (await why(insertItem(A, 'route', 'r-a', 0, ['r-a']))) === 'catalog_items_payload_check');
 check('约束：code 不收大写', (await why(insertItem(A, 'route', 'R-A', 0, { id: 'R-A' }))) === 'catalog_items_code_check');
-check('约束：kind 只有 route 与 hotel', (await why(insertItem(A, 'visa', 'v-a', 0, { id: 'v-a' }))) === 'catalog_items_kind_check');
+check('约束：kind 按格式校验', (await why(insertItem(A, 'Bad-Kind', 'v-a', 0, { id: 'v-a' }))) === 'catalog_items_kind_check');
 check(
   '约束：status 只有 draft 与 active',
   (await why(

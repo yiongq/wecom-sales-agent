@@ -57,11 +57,11 @@ export interface CsvShape {
 
 const schemaShapes = new Map<CatalogKind, CsvShape>();
 
-/** 服务端的列：由共用 schema 推出来 */
-function schemaCsvShape(kind: CatalogKind): CsvShape {
-  let shape = schemaShapes.get(kind);
+/** 服务端的列：由传入 schema 推出；包 schema 暂不进旧的 kind 缓存，第 4 步再接包缓存键。 */
+function schemaCsvShape(kind: CatalogKind, schema?: z.ZodType): CsvShape {
+  let shape = schema ? undefined : schemaShapes.get(kind);
   if (shape) return shape;
-  const js = z.toJSONSchema(CATALOG_SCHEMAS[kind], { io: 'input' }) as {
+  const js = z.toJSONSchema(schema ?? CATALOG_SCHEMAS[kind], { io: 'input' }) as {
     properties: Record<string, { type?: string; items?: { type?: string } }>;
     required?: string[];
   };
@@ -74,7 +74,7 @@ function schemaCsvShape(kind: CatalogKind): CsvShape {
   }
   const required = new Set(js.required ?? []);
   shape = { order: Object.keys(js.properties), flat, required, nestedRequired: [...required].filter((k) => !flat.has(k)) };
-  schemaShapes.set(kind, shape);
+  if (!schema) schemaShapes.set(kind, shape);
   return shape;
 }
 
@@ -291,8 +291,8 @@ export function checkCsvRows(
  * 整份 CSV → 待建的 payload（服务端）：先解析，再逐行转换、过 schema、查文件内重复的 id。任何一处不合格就抛 CatalogCsvError，
  * 列出全部问题。表头是字段名或 labels 里的中文标签；payload 的键序按 schema 的字段顺序。库里是否已有同一个 code 由调用方在事务里查
  */
-export function prepareCatalogCsv(kind: CatalogKind, csv: string, labels: CsvLabels = {}): Record<string, unknown>[] {
-  const shape = schemaCsvShape(kind);
+export function prepareCatalogCsv(kind: CatalogKind, csv: string, labels: CsvLabels = {}, schema?: z.ZodType): Record<string, unknown>[] {
+  const shape = schemaCsvShape(kind, schema);
   if (shape.nestedRequired.length) {
     throw whole(`必填字段 ${shape.nestedRequired.join('、')} 不是平铺字段，CSV 只收平铺字段，这一类请在表单里新建`);
   }
@@ -300,9 +300,9 @@ export function prepareCatalogCsv(kind: CatalogKind, csv: string, labels: CsvLab
   if (!rawHeader || !body.length) throw whole('至少要有表头和一行数据');
   if (body.length > CSV_MAX_ROWS) throw whole(`一次最多导入 ${CSV_MAX_ROWS} 行，这份有 ${body.length} 行`);
   const keys = resolveCsvHeader(shape, rawHeader, labels);
-  const schema = CATALOG_SCHEMAS[kind];
+  const validator = schema ?? CATALOG_SCHEMAS[kind];
   const rows = checkCsvRows(shape, keys, body, (payload) => {
-    const r = schema.safeParse(payload);
+    const r = validator.safeParse(payload);
     return r.success ? [] : r.error.issues.map((x) => ({ path: x.path.join('.'), message: x.message }));
   });
   const bad = rows.filter((r) => r.issues.length).map(({ row, issues }) => ({ row, issues }));

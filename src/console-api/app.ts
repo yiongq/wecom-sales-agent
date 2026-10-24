@@ -32,6 +32,8 @@ import {
 import { listAudit } from '../config/audit.js';
 import {
   activateCatalogItem,
+  assertKind,
+  CatalogKindUnknownError,
   CatalogCodeTakenError,
   CatalogCsvError,
   CatalogLockedFieldError,
@@ -435,6 +437,7 @@ function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503
   if (e instanceof SopRevConflictError || e instanceof CatalogRevConflictError) {
     return { status: 409, body: { error: 'rev_conflict', detail: e.message } };
   }
+  if (e instanceof CatalogKindUnknownError) return { status: 422, body: { error: 'kind_unknown', detail: e.message } };
   if (e instanceof CatalogCodeTakenError) return { status: 409, body: { error: 'catalog_code_taken', detail: e.message } };
   if (isUniqueViolation(e)) return { status: 409, body: { error: 'conflict', detail: '并发写入冲突，刷新后重来' } };
   if (e instanceof SopLockedSectionError) return { status: 422, body: { error: 'locked_section', detail: e.message, keys: [e.key] } };
@@ -585,6 +588,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
   // ---------------- 产品库 ----------------
   .get('/catalog/:kind', canRead, zValidator('param', CatalogKindParam, badRequest), async (c) => {
     const { kind } = c.req.valid('param');
+    assertKind(currentTenant().pack.id, kind);
     if (!c.var.user) {
       const snap = currentCatalog();
       const items: AnonCatalogItem[] = (kind === 'route' ? snap.routes : snap.hotels).map((p) => ({ kind, code: p.id, payload: p }));
@@ -595,6 +599,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
   })
   .get('/catalog/:kind/:code', canRead, zValidator('param', CatalogItemParam, badRequest), async (c) => {
     const { kind, code } = c.req.valid('param');
+    assertKind(currentTenant().pack.id, kind);
     if (!c.var.user) {
       const snap = currentCatalog();
       const p = (kind === 'route' ? snap.routes : snap.hotels).find((x) => x.id === code);
