@@ -441,6 +441,7 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
     // orders 算的，留着孤儿订单会让重置后的会话仍显示订单、仍计入经营数据
     deleteOrdersOfSession(session.id);
     session.orderIds = [];
+    delete session.moneyLedger;
     session.handedOver = false;
     // 旧的接管前阶段不清掉，下次交还 AI 时会把新对话恢复成重置前的阶段
     delete session.stageBeforeHandoff;
