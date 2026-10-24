@@ -7,7 +7,8 @@ import { quoteRefund } from '../core/pack-api.js';
 import { shanhaiBrand } from '../packs/travel/brand-fixture.js';
 import { defaultTravelPolicy, travelPolicy, type TravelPolicy } from '../packs/travel/policy.js';
 import { refundChooseText, refundNoticeText, refundQuoteText, refundTexts } from '../packs/travel/refund-words.js';
-import { packById } from '../packs/registry.js';
+import { packSources } from '../core/engine/sources.js';
+import { packById, runtimeById } from '../packs/registry.js';
 import { paidNeedsHuman } from '../shared/conversation.js';
 import { originOf } from '../shared/origin.js';
 import type { Order, PaymentMode, Session } from '../types.js';
@@ -154,11 +155,14 @@ const CREATED_AT = Date.UTC(2026, 9, 22, 3, 0, 0);
 const TODAY = '2026-10-22';
 const words = { quoteText: refundQuoteText, chooseText: refundChooseText, texts: refundTexts, noticeText: refundNoticeText };
 const PACK = packById('travel')!;
+const travelRuntime = runtimeById('travel', packSources())!;
 
 function context(over: Partial<{ policy: TravelPolicy; brand: BrandProfile | null; mode: PaymentMode; today: string }> = {}): SeedContext {
   const policy = over.policy ?? defaultTravelPolicy;
   return {
     today: over.today ?? TODAY,
+    // 08 R4：售后状态由旅游包的 seedSession 钩子写（provision.ts 从绑定的运行时取同一个）
+    seedSession: travelRuntime.seedSession,
     refund: {
       terms: travelPolicy.refund(policy),
       policy,

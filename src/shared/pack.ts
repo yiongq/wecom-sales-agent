@@ -4,7 +4,9 @@
 // console/src 不 import 任何包模块，只读接口返回的这份结构。
 // 本文件另有三样：实体图标集合 ENTITY_ICONS、结构自检 checkPack（不变量 13）、上架前检查 checkItem（spec「校验」、不变量 15），
 // 由 src/packs/packs.selftest.ts 核对。
+import { z } from 'zod';
 import { CATALOG_CODE } from './catalog.js';
+import { yuanToFen } from './catalog-money.js';
 import { storableText, UNSTORABLE_TEXT } from './console-api.js';
 import { monthsReadable } from './season.js';
 
@@ -48,6 +50,8 @@ export interface FieldDef {
   /** 条件显示；显示出来就必填 */
   showWhen?: { key: string; filled: true };
   unit?: string;
+  /** money：元的小数位，缺省 0；2 时收最多两位小数 */
+  decimals?: 0 | 2;
   /** 单位取另一个 enum 字段的值 */
   unitFrom?: string;
   /** intUnit、money 是数值上下限；数组类型（tags、多选 enum、subItems）的 min 是至少几项，拦上架 */
@@ -363,6 +367,7 @@ const NOT_OPTION = '不在可选项里';
 export const CODE_RULE = '只能是小写字母、数字和连字符，以字母或数字开头，最长64位';
 /** zod 的 int() 只收安全整数（绝对值不超过 2^53-1），17 位的数字在输入框里敲得出来 */
 const TOO_BIG = '数字太大';
+const DECIMAL_MONEY = z.number().positive().multipleOf(0.01);
 const MONTHS_RULE = '要写出月份（如「6-9月」「11月-次年4月」）或「全年」';
 
 /** 条数的量词：有序子项取 itemNoun，其余按「项」「个」 */
@@ -403,6 +408,17 @@ function problems(f: FieldDef, v: unknown, path: string, label: string): CheckIs
     case 'monthRange':
       return one(textProblem(v) ?? (monthsReadable(v as string) ? null : MONTHS_RULE));
     case 'money':
+      if (f.decimals === 2) {
+        if (typeof v !== 'number' || !DECIMAL_MONEY.safeParse(v).success) {
+          return one('要是大于0、最多两位小数');
+        }
+        try {
+          yuanToFen(v);
+        } catch {
+          return one(Number.isSafeInteger(Math.round(v * 100)) ? '要是大于0、最多两位小数' : TOO_BIG);
+        }
+        return one(f.min !== undefined && v < f.min ? `至少${f.min}${f.unit ?? ''}` : null);
+      }
       if (typeof v !== 'number' || !Number.isInteger(v) || v <= 0) return one('要是大于0的整数');
       if (!Number.isSafeInteger(v)) return one(TOO_BIG);
       return one(f.min !== undefined && v < f.min ? `至少${f.min}${f.unit ?? ''}` : null);

@@ -16,7 +16,8 @@ import pg from 'pg';
 import { initConfig, type ConfigDeps } from '../config/source.js';
 import { imageCode, importConfig } from '../config/transfer.js';
 import { rebuildSessions, rowToOrder } from '../store/project.js';
-import type { Order, Session } from '../types.js';
+import type { Session } from '../types.js';
+import type { AnyOrder } from '../core/order-view.js';
 import { assertPgUrl, countingLogger, registerDriver, resetSessionTenant, withTenant, type Db, type TenantLock } from './client.js';
 import { MIGRATIONS_DIR, runMigrations } from './migrate.js';
 import { installVectorExtension } from './testing-extensions.js';
@@ -238,7 +239,7 @@ export interface StoredConversation {
   /** 库里这个会话全部消息的 seq（含重置、裁剪推进过去的），按 seq 排 */
   seqs: number[];
   /** 未作废的订单（预载读的那些），与作废了的订单 */
-  liveOrders: Order[];
+  liveOrders: AnyOrder[];
   voided: { id: string; reason: string | null }[];
 }
 

@@ -186,7 +186,7 @@ function writeCache(fp: string, items: readonly Indexed[]): void {
  * 返回 null 是失败（嵌入没成），同 buildOnce。只有缺向量、进程里又没有同目录现成向量的块才发嵌入请求；
  * 没缺就一个请求都不发，也不占沙箱的首次建索引名额
  */
-async function buildFromKb(routes: CatalogItem[]): Promise<readonly Indexed[] | null | 'unavailable'> {
+async function buildFromKb(routes: CatalogItem[], source: string): Promise<readonly Indexed[] | null | 'unavailable'> {
   const rt = currentRuntime();
   const local = state();
   const { db, tenantId } = configRuntime();
@@ -197,6 +197,7 @@ async function buildFromKb(routes: CatalogItem[]): Promise<readonly Indexed[] | 
   const result = await syncKb({
     db,
     tenantId,
+    source,
     model: EMBED_MODEL,
     entries: routes.map((item) => ({ ref: item.code, body: currentPack().runtime.retrievalText(item) })),
     known: peer && new Map(peer.items.map((item) => [item.id, item.vec])),
@@ -216,8 +217,10 @@ async function buildFromKb(routes: CatalogItem[]): Promise<readonly Indexed[] | 
 
 /** 按给定的线路建一次索引：DB 模式先问库；否则先看磁盘缓存（键是整库内容指纹，只文件模式读写），再调 embedding。失败返回 null */
 async function buildOnce(routes: CatalogItem[]): Promise<readonly Indexed[] | null> {
+  const source = Object.entries(currentPack().runtime.catalog).find(([, spec]) => spec.retrieval)?.[0];
+  if (!source) return [];
   if (configMode() === 'db') {
-    const fromKb = await buildFromKb(routes);
+    const fromKb = await buildFromKb(routes, source);
     if (fromKb !== 'unavailable') return fromKb;
   }
   const fp = fingerprint(routes);

@@ -210,7 +210,6 @@ import {
   isListed,
   listedSessions,
   messageView,
-  needVocabulary,
   orderView,
   tracedInDb,
   waitingFirst,
@@ -591,7 +590,11 @@ export const consoleApi = new Hono<ConsoleEnv>()
     assertKind(currentTenant().pack.id, kind);
     if (!c.var.user) {
       const snap = currentCatalog();
-      const items: AnonCatalogItem[] = (kind === 'route' ? snap.routes : snap.hotels).map((p) => ({ kind, code: p.id, payload: p }));
+      const items: AnonCatalogItem[] = (snap.items[kind] ?? []).map((p) => ({
+        kind,
+        code: (p as { id: string }).id,
+        payload: p as AnonCatalogItem['payload'],
+      }));
       return c.json({ items }, 200);
     }
     const items: CatalogItem[] = await listCatalog(ctxOf(c), kind);
@@ -602,9 +605,9 @@ export const consoleApi = new Hono<ConsoleEnv>()
     assertKind(currentTenant().pack.id, kind);
     if (!c.var.user) {
       const snap = currentCatalog();
-      const p = (kind === 'route' ? snap.routes : snap.hotels).find((x) => x.id === code);
+      const p = (snap.items[kind] ?? []).find((x) => (x as { id: string }).id === code);
       if (!p) return fail(c, 404, { error: 'not_found' });
-      const anon: AnonCatalogItem = { kind, code, payload: p };
+      const anon: AnonCatalogItem = { kind, code, payload: p as AnonCatalogItem['payload'] };
       return c.json(anon, 200);
     }
     const item: CatalogItem | null = await getCatalogItem(ctxOf(c), kind, code);
@@ -673,10 +676,9 @@ export const consoleApi = new Hono<ConsoleEnv>()
           (group !== 'paid_needs_human' || inPaidNeedsHuman(s, pack)),
       )
       .toSorted(sandboxOwnedFirst(order === 'waiting_first' ? waitingFirst(pack) : byRecent));
-    const vocab = needVocabulary();
     const page: ConversationPage = {
       total: all.length,
-      items: all.slice(offset, offset + limit).map((s) => conversationRow(s, vocab, c.var.user!.role === 'viewer')),
+      items: all.slice(offset, offset + limit).map((s) => conversationRow(s, c.var.user!.role === 'viewer')),
     };
     return c.json(page, 200);
   })

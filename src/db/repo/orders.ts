@@ -1,4 +1,4 @@
-// 订单（02 spec「数据库」「identity map 与写入」）：按 id upsert，读未作废的。data 列是整个 Order 对象，重建只读它
+// 订单（02 spec「数据库」「identity map 与写入」、08 R3）：按 id upsert，读未作废的。data 是整个 AnyOrder，重建只读它
 import { and, asc, isNull, sql } from 'drizzle-orm';
 import type { OrderStatus } from '../../shared/conversation-types.js';
 import { currentTenantCtx, type Tx } from '../client.js';
@@ -11,13 +11,14 @@ export interface OrderRow {
   routeId: string;
   status: OrderStatus;
   totalPrice: number;
+  totalFen: number | null;
   createdAt: Date;
   /** 写入之后不能改、不能清空（触发器） */
   paidAt: Date | null;
   confirmedAt: Date | null;
   voidedAt: Date | null;
   voidReason: 'reset' | 'resync' | null;
-  /** 整个 Order 对象，键序原样 */
+  /** 整个 AnyOrder 对象，键序原样 */
   data: Record<string, unknown>;
 }
 
@@ -37,6 +38,7 @@ export async function upsertOrders(tx: Tx, rows: readonly OrderRow[]): Promise<v
           routeId: sql`excluded.route_id`,
           status: sql`excluded.status`,
           totalPrice: sql`excluded.total_price`,
+          totalFen: sql`excluded.total_fen`,
           createdAt: sql`excluded.created_at`,
           paidAt: sql`excluded.paid_at`,
           confirmedAt: sql`excluded.confirmed_at`,
@@ -71,6 +73,7 @@ export async function readLiveOrders(tx: Tx, sessionIds: readonly string[]): Pro
       routeId: orders.routeId,
       status: orders.status,
       totalPrice: orders.totalPrice,
+      totalFen: orders.totalFen,
       createdAt: orders.createdAt,
       paidAt: orders.paidAt,
       confirmedAt: orders.confirmedAt,

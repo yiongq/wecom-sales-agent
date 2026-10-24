@@ -2115,6 +2115,7 @@ async function childXfer(ck: Ck, res: ChildResult): Promise<void> {
           after.o.find((o) => o.id === 'ORD-20240501-0007'),
           dbOrder,
         ) &&
+        'totalPrice' in dbOrder &&
         dbOrder.totalPrice === 6000,
     );
     return;

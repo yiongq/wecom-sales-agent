@@ -32,7 +32,7 @@ import { mayHaveDelivered } from '../quota/ledger.js';
 import { shortIdOf } from '../shared/conversation.js';
 import { convLabel, logQuote } from '../log.js';
 import type { ChatMessage, PushOpts, Session, SalesStage } from '../types.js';
-import { profileForPrompt } from '../types.js';
+import { profileForModel } from './pack-profile.js';
 
 const tenantState = scopedState(
   () => ({
@@ -141,7 +141,7 @@ async function composeFollowUp(s: Session): Promise<string> {
     .map((m) => (m.role === 'customer' ? '客户' : '顾问') + '：' + m.content)
     .join('\n');
   const sys = templates().system;
-  const user = `销售阶段：${s.stage}\n客户画像：${JSON.stringify(profileForPrompt(s.profile))}\n最近对话：\n${recent}`;
+  const user = `销售阶段：${s.stage}\n客户画像：${JSON.stringify(profileForModel(currentPack().runtime, s.profile))}\n最近对话：\n${recent}`;
   // 模型输出进会话前去掉 NUL、修好孤立代理项（02 spec 不变量 16），与引擎写进会话的 AI 回复同一口径
   const out = cleanText((await completeText(sys, user, { purpose: 'followup' })).trim().split('\n')[0]);
   // 订单号先抹掉（跟进消息是主动外发，风险更高）：支付链接随之成了半截，白名单按假支付链接抹成空位。网址不在这里清：

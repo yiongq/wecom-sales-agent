@@ -90,6 +90,8 @@ export interface CatalogSnapshot {
   /** 进程内单调递增，每次快照变化加 1。检索索引据此丢弃过期的构建结果；文件模式恒为 0 */
   generation: number;
   /** 只含 active 条目，各自按 ord 升序，deep-frozen */
+  items: Readonly<Record<string, readonly unknown[]>>;
+  /** 旅游兼容别名，直接引用 items 里的数组；缺少对应 kind 时为空数组 */
   routes: readonly Route[];
   hotels: readonly Hotel[];
   /**
@@ -161,6 +163,7 @@ export type ConfigStartupReason =
   | 'renderer_nondeterministic'
   | 'contract_failed'
   | 'no_active_routes'
+  | 'catalog_startup'
   | 'embed_endpoint_forbidden'
   | 'gate_unavailable';
 export class ConfigStartupError extends Error {
@@ -208,10 +211,11 @@ const latestOf = (h: VersionHistory, key: string): number => Math.max(0, ...(h.g
 const currentVersionOf = (row: { kind: CatalogRow['kind']; code: string; version: number }, h: VersionHistory): number =>
   Math.max(row.version, latestOf(h, catalogVersionKey(row.kind, row.code)));
 
-const ordsOf = (rows: readonly CatalogRow[]): Loaded['ords'] => ({
-  route: new Map(rows.filter((r) => r.kind === 'route').map((r) => [r.code, r.ord])),
-  hotel: new Map(rows.filter((r) => r.kind === 'hotel').map((r) => [r.code, r.ord])),
-});
+function ordsOf(rows: readonly CatalogRow[]): Loaded['ords'] {
+  return Object.fromEntries(
+    [...new Set(rows.map((r) => r.kind))].map((kind) => [kind, new Map(rows.filter((r) => r.kind === kind).map((r) => [r.code, r.ord]))]),
+  );
+}
 
 function configState(): TenantConfig {
   return currentRuntime().config;
@@ -310,10 +314,9 @@ export function configDrift(): ConfigDrift {
   const state = configState();
   if (!state.loaded) throw new ConfigNotReadyError();
   const { catalog } = state.loaded;
-  const active = [
-    ...catalog.routes.map((p) => ({ kind: 'route' as const, code: p.id, payload: p })),
-    ...catalog.hotels.map((p) => ({ kind: 'hotel' as const, code: p.id, payload: p })),
-  ];
+  const active = Object.entries(catalog.items).flatMap(([kind, items]) =>
+    items.map((payload) => ({ kind, code: String((payload as { id: string }).id), payload })),
+  );
   return driftOf(imageDirOf(state.loaded.deps), state.loaded.sop.sections, state.loaded.imageSections, active);
 }
 
@@ -513,15 +516,29 @@ function assertIntegrity(row: SopVersionRow): void {
     throw startup('integrity', `已发布版本 v${row.versionNo} 的 sections 与 sop_hash 对不上（有人改过这一行？）`);
 }
 
+/** 兼容数组不复制：别名和通用条目始终指向同一个数组。 */
+function catalogAliases(items: CatalogSnapshot['items']): Pick<CatalogSnapshot, 'routes' | 'hotels'> {
+  return { routes: (items.route ?? []) as readonly Route[], hotels: (items.hotel ?? []) as readonly Hotel[] };
+}
+
 function snapshotOf(tenantId: string, rows: readonly CatalogRow[], gen: number, history: VersionHistory): CatalogSnapshot {
-  const of = <T>(kind: CatalogRow['kind']): T[] => rows.filter((r) => r.kind === kind).map((r) => r.payload as T);
+  const active = rows.filter((r) => r.status === 'active');
+  const items = Object.fromEntries(
+    [...new Set(active.map((r) => r.kind))].map((kind) => [
+      kind,
+      active
+        .filter((r) => r.kind === kind)
+        .toSorted((a, b) => a.ord - b.ord)
+        .map((r) => r.payload),
+    ]),
+  );
   const versions: Record<string, number> = {};
-  for (const r of rows) {
+  for (const r of active) {
     const key = catalogVersionKey(r.kind, r.code);
     const v = currentVersionOf(r, history);
     if (v > 0) versions[key] = v;
   }
-  return deepFreeze({ tenantId, generation: gen, routes: of<Route>('route'), hotels: of<Hotel>('hotel'), versions });
+  return deepFreeze({ tenantId, generation: gen, items, ...catalogAliases(items), versions });
 }
 
 type VersionWrite = { kind: CatalogRow['kind']; code: string; version: number; payload: Record<string, unknown> };
@@ -736,6 +753,14 @@ function assertGateAvailable(env: NodeJS.ProcessEnv): void {
   if (env.LLM_MOCK === '1' || !key) throw startup('gate_unavailable', '发布闸要求真实模型配置，不能使用 LLM_MOCK 或空模型密钥');
 }
 
+/** 08 R2：只按包与快照判定产品库能否启动，不依赖 SOP 装载或租户作用域。 */
+export function assertCatalogStartup(runtime: PackBinding['runtime'], snapshot: CatalogSnapshot, tenantSlug: string): void {
+  const detail = runtime.catalogStartupCheck?.(snapshot);
+  if (detail === undefined || detail === null) return;
+  if (runtime.id === 'travel') throw startup('no_active_routes', `租户「${tenantSlug}」${detail}`);
+  throw startup('catalog_startup', detail);
+}
+
 async function loadConfig(deps: ConfigDeps | null): Promise<void> {
   const state = configState();
   if (!deps) {
@@ -815,7 +840,7 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
     assertIntegrity(row);
     const previousImage = tenantImage(runtime, legacyImage, publishedBrand(row.renderInputs).brand);
     const rerender = resolvePublished(d, row, imageSections, previousImage);
-    if (!items.some((r) => r.kind === 'route')) throw startup('no_active_routes', `租户「${d.tenantSlug}」没有 active 的线路`);
+    assertCatalogStartup(runtime, snapshotOf(tenant.id, items, 0, historyOf(versions)), d.tenantSlug);
     // 8
     const merged = rerender?.merged ?? mergeWithImage(row.sections, imageSections);
     logDrift(d, merged, imageSections, items);
@@ -851,9 +876,16 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
     // 缓存照常装上（对话要用），配置写入暂停、开始重取
     if (lostWhileLoading) onLockLost();
     const { sop } = state.loaded;
-    console.log(
-      `[config] DB 模式：租户 ${d.tenantSlug} · SOP v${sop.versionNo} · 线路 ${state.loaded.catalog.routes.length} 条、酒店 ${state.loaded.catalog.hotels.length} 家 · 前缀 ${sop.prefixHash.slice(0, 12)}`,
-    );
+    if (runtime.id === 'travel') {
+      console.log(
+        `[config] DB 模式：租户 ${d.tenantSlug} · SOP v${sop.versionNo} · 线路 ${state.loaded.catalog.routes.length} 条、酒店 ${state.loaded.catalog.hotels.length} 家 · 前缀 ${sop.prefixHash.slice(0, 12)}`,
+      );
+    } else {
+      const counts = Object.keys(runtime.catalog)
+        .map((kind) => `${kind} ${state.loaded!.catalog.items[kind]?.length ?? 0} 条`)
+        .join('、');
+      console.log(`[config] DB 模式：租户 ${d.tenantSlug} · SOP v${sop.versionNo} · ${counts} · 前缀 ${sop.prefixHash.slice(0, 12)}`);
+    }
   } catch (e) {
     state.dbInstalled = false;
     await lock?.release().catch(() => {});
@@ -973,16 +1005,16 @@ export function applyCatalogRow(row: {
   addVersion(cur.history, row.kind, row.code, row.version, row.payload);
   // 内容没变的写入（原样提交）带回的是这一列上的版本，启动补写之后它可能落后于历史：取大（见 currentVersionOf）
   const versions = { ...cur.catalog.versions, [catalogVersionKey(row.kind, row.code)]: currentVersionOf(row, cur.history) };
-  const key = row.kind === 'route' ? 'routes' : 'hotels';
-  const ords = cur.ords[row.kind];
+  const ords = Object.hasOwn(cur.ords, row.kind) ? cur.ords[row.kind]! : (cur.ords[row.kind] = new Map());
   const idOf = (x: unknown): string => String((x as { id: unknown }).id);
-  const items: { ord: number; payload: unknown }[] = (cur.catalog[key] as readonly unknown[])
+  const items: { ord: number; payload: unknown }[] = (cur.catalog.items[row.kind] ?? [])
     .filter((x) => idOf(x) !== row.code)
     .map((x) => ({ ord: ords.get(idOf(x)) ?? Number.MAX_SAFE_INTEGER, payload: x }));
   items.push({ ord: row.ord, payload: structuredClone(row.payload) });
   ords.set(row.code, row.ord);
   const list = items.toSorted((a, b) => a.ord - b.ord).map((x) => x.payload);
-  setCatalog(cur, { ...cur.catalog, [key]: list, versions, generation: cur.catalog.generation + 1 });
+  const nextItems = { ...cur.catalog.items, [row.kind]: list };
+  setCatalog(cur, { ...cur.catalog, items: nextItems, ...catalogAliases(nextItems), versions, generation: cur.catalog.generation + 1 });
 }
 
 // ---------------- 锁丢失 ----------------
@@ -1064,8 +1096,7 @@ async function reloadOnce(cur: Loaded): Promise<boolean> {
   const next = snapshotOf(cur.tenantId, items, cur.catalog.generation, cur.history);
   cur.ords = ordsOf(items);
   if (
-    JSON.stringify(next.routes) !== JSON.stringify(cur.catalog.routes) ||
-    JSON.stringify(next.hotels) !== JSON.stringify(cur.catalog.hotels) ||
+    JSON.stringify(next.items) !== JSON.stringify(cur.catalog.items) ||
     JSON.stringify(next.versions) !== JSON.stringify(cur.catalog.versions)
   ) {
     setCatalog(cur, { ...next, generation: cur.catalog.generation + 1 });

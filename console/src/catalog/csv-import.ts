@@ -22,10 +22,10 @@ import {
   toCsv,
   unguardCell,
 } from '../../../src/shared/catalog-csv.js';
-import { digits, money, quantity } from '../../../src/shared/format.js';
+import { digits, quantity } from '../../../src/shared/format.js';
 import { CODE_RULE, checkItem, type EntityType, type FieldDef, type IndustryPack } from '../../../src/shared/pack.js';
 import type { CsvEncoding } from '../csvFile.js';
-import { moneyUnit, nounOf, type Payload } from '../fields/model.js';
+import { moneyText, moneyUnit, nounOf, type Payload } from '../fields/model.js';
 import { STATUS_LABEL } from '../parts/Status.js';
 import { fieldOfPath, itemTitle, subPathOf } from './detail.js';
 import { headerLabel, type ListRow, textWidth } from './list.js';
@@ -70,7 +70,7 @@ function howToFill(pack: IndustryPack, f: FieldDef): string {
     case 'monthRange':
       return `写出月份，如「6-9月」「11月-次年4月」，或写「${f.yearRoundLabel ?? '全年'}」`;
     case 'money':
-      return '整数（元），不写逗号';
+      return f.decimals === 2 ? '大于0、最多两位小数（元），不写逗号' : '整数（元），不写逗号';
     case 'intUnit':
       return f.unit ? `整数（${f.unit}）` : '整数';
     case 'boolean':
@@ -287,7 +287,7 @@ export function cellText(f: FieldDef, row: RowResult, keys: readonly (string | n
   const key = f.key === '$code' ? 'id' : f.key;
   const v = row.payload[key];
   if (typeof v === 'number') {
-    if (f.type === 'money') return f.unit ? digits(v) : money(v, moneyUnit(f, row.payload));
+    if (f.type === 'money') return moneyText(f, v, f.unit ? '' : moneyUnit(f, row.payload));
     return quantity(v, f.unit ?? '');
   }
   if (typeof v === 'boolean') return v ? (f.trueLabel ?? '是') : (f.falseLabel ?? '否');

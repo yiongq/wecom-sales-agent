@@ -9,7 +9,7 @@ import { registerTenantState } from '../tenancy/state.js';
 // trace 里有客户原话与工具参数（个人信息）：只按 spec 的字段存，日志里不打它们。
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { randomUUID } from 'node:crypto';
-import { catalogVersionKey, configMode, currentCatalog, currentSop } from '../config/source.js';
+import { catalogVersionKey, configMode, currentCatalog, currentSop, currentPack } from '../config/source.js';
 import { onLlmCall, type CallTrace } from '../llm.js';
 import { noteTurnLog, withLogContext } from '../log.js';
 import { sentenceUnits } from '../core/parse/sentences.js';
@@ -281,16 +281,16 @@ function utf8Head(s: string, maxBytes: number): string {
   return s.slice(0, i);
 }
 
-/** 结果与参数里点到的条目 id（id、routeId、hotelId 三个键，往下看三层） */
-function idsIn(v: unknown, out: Set<string>, depth = 0): void {
+/** 结果与参数里点到的条目 id（id 与包的 kind + Id，往下看三层） */
+function idsIn(v: unknown, out: Set<string>, keys: ReadonlySet<string>, depth = 0): void {
   if (depth > 3 || !v || typeof v !== 'object') return;
   if (Array.isArray(v)) {
-    for (const x of v) idsIn(x, out, depth + 1);
+    for (const x of v) idsIn(x, out, keys, depth + 1);
     return;
   }
   for (const [k, x] of Object.entries(v as Record<string, unknown>)) {
-    if ((k === 'id' || k === 'routeId' || k === 'hotelId') && typeof x === 'string') out.add(x);
-    else if (x && typeof x === 'object') idsIn(x, out, depth + 1);
+    if (keys.has(k) && typeof x === 'string') out.add(x);
+    else if (x && typeof x === 'object') idsIn(x, out, keys, depth + 1);
   }
 }
 
@@ -309,12 +309,15 @@ function noteCatalogVersions(ctx: TurnContext, args: Record<string, unknown>, re
   } catch {
     return;
   }
+  const kinds = Object.keys(currentPack().runtime.catalog);
+  const keys = new Set(['id', ...kinds.map((kind) => `${kind}Id`)]);
   const ids = new Set<string>();
-  idsIn(parsed, ids);
+  idsIn(parsed, ids, keys);
   // 参数里的 routeId（报价、方案书、下单的结果里没有 id 字段）只在这次调用没出错时算
-  if (!(parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'error' in parsed)) idsIn(args, ids);
+  if (!(parsed && typeof parsed === 'object' && !Array.isArray(parsed) && 'error' in parsed)) idsIn(args, ids, keys);
   for (const id of ids) {
-    for (const key of [catalogVersionKey('route', id), catalogVersionKey('hotel', id)]) {
+    for (const kind of kinds) {
+      const key = catalogVersionKey(kind, id);
       const v = versions[key];
       if (typeof v === 'number') ctx.catalogVersions[key] = v;
     }

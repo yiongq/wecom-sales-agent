@@ -38,7 +38,8 @@ import {
   SESSIONS_JSON,
   SPILL_FILE_RE,
 } from '../store/project.js';
-import type { Order, Session } from '../types.js';
+import type { Session } from '../types.js';
+import type { AnyOrder } from '../core/order-view.js';
 
 export const EXIT = { ok: 0, error: 1, inconsistent: 2, locked: 3 } as const;
 export type ExitCode = (typeof EXIT)[keyof typeof EXIT];
@@ -128,7 +129,7 @@ const errLabel = (e: unknown): string => {
 interface VarFiles {
   /** 与文件后端的读法相同：按 id，同 id 以后出现的为准，顺序是第一次出现的位置 */
   sessions: Map<string, Session>;
-  orders: Map<string, Order>;
+  orders: Map<string, AnyOrder>;
 }
 
 function readArrayFile<T>(varDir: string, name: string): Map<string, T> {
@@ -159,7 +160,7 @@ function readArrayFile<T>(varDir: string, name: string): Map<string, T> {
 
 const readVar = (varDir: string): VarFiles => ({
   sessions: readArrayFile<Session>(varDir, SESSIONS_JSON),
-  orders: readArrayFile<Order>(varDir, ORDERS_JSON),
+  orders: readArrayFile<AnyOrder>(varDir, ORDERS_JSON),
 });
 
 interface Split {
@@ -167,9 +168,9 @@ interface Split {
   real: Session[];
   /** 改写之后留在 JSON 里的：demo 类会话，demo 类会话的订单与孤儿订单（所属会话不在真实会话里） */
   demo: Session[];
-  kept: Order[];
+  kept: AnyOrder[];
   /** 订单跟着所属会话走 */
-  ordersOf: Map<string, Order[]>;
+  ordersOf: Map<string, AnyOrder[]>;
 }
 
 function split(v: VarFiles): Split {
@@ -177,8 +178,8 @@ function split(v: VarFiles): Split {
   const demo: Session[] = [];
   for (const s of v.sessions.values()) (isDemoClassId(s.id) ? demo : real).push(s);
   const realIds = new Set(real.map((s) => s.id));
-  const ordersOf = new Map<string, Order[]>();
-  const kept: Order[] = [];
+  const ordersOf = new Map<string, AnyOrder[]>();
+  const kept: AnyOrder[] = [];
   for (const o of v.orders.values()) {
     const sid = (o as { sessionId?: unknown }).sessionId;
     if (typeof sid === 'string' && realIds.has(sid)) ordersOf.set(sid, [...(ordersOf.get(sid) ?? []), o]);
@@ -331,14 +332,14 @@ function writeAtomic(file: string, data: string): void {
 }
 
 /** 两个 JSON 的写法与文件后端落盘相同 */
-const jsonOf = (items: readonly (Session | Order)[]): string => JSON.stringify(items, null, 2);
+const jsonOf = (items: readonly (Session | AnyOrder)[]): string => JSON.stringify(items, null, 2);
 
 // ---------------- 库：读法与启动预载相同 ----------------
 
 interface DbConv {
   row: ConversationRow;
   session: Session;
-  orders: Order[];
+  orders: AnyOrder[];
 }
 
 /** 启动预载的一页：afterId 之后按 id 的 500 个会话（窗口内的消息）与它们的未作废订单，同样的读法、同样的重建 */
@@ -373,7 +374,7 @@ async function readAll(tx: Tx): Promise<Map<string, DbConv>> {
 const byId = (a: { id: string }, b: { id: string }): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 
 /** JSON 里的一个真实会话与库里重建出来的哪里不同（两边都经 normalizeForStore）；相同返回 null。说明里不带客户原话 */
-function difference(s: Session, orders: readonly Order[], db: DbConv | undefined): string | null {
+function difference(s: Session, orders: readonly AnyOrder[], db: DbConv | undefined): string | null {
   if (!db) return '库里没有这个会话';
   const want = normalizeForStore(s);
   if (!isDeepStrictEqual(want, db.session)) {
@@ -429,7 +430,7 @@ async function writeNew(tx: Tx, s: Session): Promise<void> {
 }
 
 /** 05 R9：调用方已经创建新租户并持有同一个事务；复用首次导入的投影与写入。 */
-export async function writeSeedSessions(tx: Tx, sessions: readonly Session[], orders: readonly Order[]): Promise<void> {
+export async function writeSeedSessions(tx: Tx, sessions: readonly Session[], orders: readonly AnyOrder[]): Promise<void> {
   for (const session of sessions) await writeNew(tx, normalizeForStore(session));
   await writeOrders(
     tx,
@@ -787,7 +788,7 @@ export async function exportSessions(o: TransferOptions): Promise<SessionsResult
       }
       const sessions = new Map(files.sessions);
       const orders = new Map(files.orders);
-      const live = new Map<string, Order>();
+      const live = new Map<string, AnyOrder>();
       let messages = 0;
       for (const c of all.values()) {
         sessions.set(c.session.id, c.session);

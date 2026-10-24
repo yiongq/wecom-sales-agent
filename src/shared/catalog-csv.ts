@@ -8,6 +8,7 @@
 // 中文标签的表由调用方从行业包传入（src/shared 不 import src/packs）
 import { z } from 'zod';
 import { CATALOG_SCHEMAS, type CatalogKind } from './catalog.js';
+import { yuanToFen } from './catalog-money.js';
 import { parseCsv } from './csv.js';
 import type { EntityType, FieldDef } from './pack.js';
 
@@ -42,7 +43,7 @@ export const CSV_REASON_HEADER = '不合格原因';
 
 // ---------------- 列 ----------------
 
-type FlatType = 'string' | 'integer' | 'boolean' | 'strings';
+type FlatType = 'string' | 'integer' | 'decimal' | 'boolean' | 'strings';
 /** 中文标签 → payload 的键 */
 export type CsvLabels = Readonly<Record<string, string>>;
 
@@ -55,32 +56,37 @@ export interface CsvShape {
   nestedRequired: string[];
 }
 
-const schemaShapes = new Map<CatalogKind, CsvShape>();
+const schemaShapes = new Map<string, CsvShape>();
 
-/** 服务端的列：由传入 schema 推出；包 schema 暂不进旧的 kind 缓存，第 4 步再接包缓存键。 */
-function schemaCsvShape(kind: CatalogKind, schema?: z.ZodType): CsvShape {
-  let shape = schema ? undefined : schemaShapes.get(kind);
+/** 服务端的列：由包 schema 推出；同名 kind 按 packId 隔离。旧调用默认旅游。 */
+function schemaCsvShape(kind: CatalogKind, schema?: z.ZodType, packId = 'travel'): CsvShape {
+  const key = `${packId}:${kind}`;
+  let shape = schemaShapes.get(key);
   if (shape) return shape;
   const js = z.toJSONSchema(schema ?? CATALOG_SCHEMAS[kind], { io: 'input' }) as {
-    properties: Record<string, { type?: string; items?: { type?: string } }>;
+    properties: Record<string, { type?: string; multipleOf?: number; items?: { type?: string } }>;
     required?: string[];
   };
   const flat = new Map<string, FlatType>();
   for (const [k, p] of Object.entries(js.properties)) {
     if (p.type === 'string') flat.set(k, 'string');
-    else if (p.type === 'integer' || p.type === 'number') flat.set(k, 'integer');
+    else if (p.type === 'integer' || p.type === 'number') flat.set(k, p.multipleOf === 0.01 ? 'decimal' : 'integer');
     else if (p.type === 'boolean') flat.set(k, 'boolean');
     else if (p.type === 'array' && p.items?.type === 'string') flat.set(k, 'strings');
   }
   const required = new Set(js.required ?? []);
   shape = { order: Object.keys(js.properties), flat, required, nestedRequired: [...required].filter((k) => !flat.has(k)) };
-  if (!schema) schemaShapes.set(kind, shape);
+  schemaShapes.set(key, shape);
   return shape;
 }
 
 /** 这个 kind 的 CSV 能用哪些列；必填字段里有嵌套结构时 importable 为 false */
-export function catalogCsvColumns(kind: CatalogKind): { importable: boolean; columns: string[]; nestedRequired: string[] } {
-  const shape = schemaCsvShape(kind);
+export function catalogCsvColumns(
+  kind: CatalogKind,
+  schema?: z.ZodType,
+  packId = 'travel',
+): { importable: boolean; columns: string[]; nestedRequired: string[] } {
+  const shape = schemaCsvShape(kind, schema, packId);
   return {
     importable: !shape.nestedRequired.length,
     columns: shape.order.filter((k) => shape.flat.has(k)),
@@ -96,6 +102,7 @@ function flatTypeOf(f: FieldDef): FlatType | null {
     case 'monthRange':
       return 'string';
     case 'money':
+      return f.decimals === 2 ? 'decimal' : 'integer';
     case 'intUnit':
       return 'integer';
     case 'boolean':
@@ -218,7 +225,7 @@ export function resolveCsvHeader(shape: CsvShape, rawHeader: readonly string[], 
 
 /**
  * 一行 → payload：空格子就是这个键不存在（必填的数组给 []）；格子先去掉防公式前缀、再去首尾空白；
- * 数值只认整数写法；布尔认 是/否、true/false；数组按「、」切。payload 的键按 shape.order 排
+ * 整数列只认整数写法，两位小数的金额列收大于0、最多两位小数；布尔认 是/否、true/false；数组按「、」切。payload 的键按 shape.order 排
  */
 export function convertCsvRow(
   shape: CsvShape,
@@ -240,6 +247,15 @@ export function convertCsvRow(
     else if (type === 'integer') {
       if (/^-?[0-9]+$/.test(cell)) values[h] = Number(cell);
       else issues.push({ path: h, message: `要写整数，写的是「${cell}」` });
+    } else if (type === 'decimal') {
+      try {
+        const n = Number(cell);
+        if (!/^[0-9]+(?:\.[0-9]{1,2})?$/.test(cell) || n <= 0) throw new Error();
+        yuanToFen(n);
+        values[h] = n;
+      } catch {
+        issues.push({ path: h, message: `要写大于0、最多两位小数，写的是「${cell}」` });
+      }
     } else if (type === 'boolean') {
       if (['是', 'true', 'TRUE', '1'].includes(cell)) values[h] = true;
       else if (['否', 'false', 'FALSE', '0'].includes(cell)) values[h] = false;
@@ -291,8 +307,14 @@ export function checkCsvRows(
  * 整份 CSV → 待建的 payload（服务端）：先解析，再逐行转换、过 schema、查文件内重复的 id。任何一处不合格就抛 CatalogCsvError，
  * 列出全部问题。表头是字段名或 labels 里的中文标签；payload 的键序按 schema 的字段顺序。库里是否已有同一个 code 由调用方在事务里查
  */
-export function prepareCatalogCsv(kind: CatalogKind, csv: string, labels: CsvLabels = {}, schema?: z.ZodType): Record<string, unknown>[] {
-  const shape = schemaCsvShape(kind, schema);
+export function prepareCatalogCsv(
+  kind: CatalogKind,
+  csv: string,
+  labels: CsvLabels = {},
+  schema?: z.ZodType,
+  packId = 'travel',
+): Record<string, unknown>[] {
+  const shape = schemaCsvShape(kind, schema, packId);
   if (shape.nestedRequired.length) {
     throw whole(`必填字段 ${shape.nestedRequired.join('、')} 不是平铺字段，CSV 只收平铺字段，这一类请在表单里新建`);
   }

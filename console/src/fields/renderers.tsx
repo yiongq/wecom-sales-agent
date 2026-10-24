@@ -7,7 +7,7 @@
 import { AutoComplete, Button, type GetRef, Input, InputNumber, Segmented, Select, Tooltip } from 'antd';
 import { ArrowDown, ArrowUp, Check, CircleX, Lock, Plus, Trash2, TriangleAlert, X } from 'lucide-react';
 import { type ComponentType, type ReactNode, type RefObject, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { digits, money, monthRangeText, parseMonthRange, quantity } from '../../../src/shared/format.js';
+import { monthRangeText, parseMonthRange, quantity } from '../../../src/shared/format.js';
 import type { FieldDef, FieldType } from '../../../src/shared/pack.js';
 import { popupRegion } from '../parts/popupRegion.js';
 import { Status } from '../parts/Status.js';
@@ -36,6 +36,7 @@ import {
   keepLockedMembers,
   labelFitsNode,
   moneyUnit,
+  moneyText,
   moveItem,
   nounOf,
   overSoftMax,
@@ -264,7 +265,8 @@ function NumberForm(p: FormProps & { unit: string; min?: number; max?: number; k
       value={CODECS[kind].read(value, field)}
       min={min}
       max={max}
-      precision={0}
+      precision={kind === 'money' ? (field.decimals ?? 0) : 0}
+      step={kind === 'money' && field.decimals === 2 ? 0.01 : undefined}
       controls={false}
       formatter={withCommas}
       parser={withoutCommas}
@@ -279,11 +281,11 @@ function NumberForm(p: FormProps & { unit: string; min?: number; max?: number; k
 function MoneyCell({ field, value, row }: CellProps) {
   if (typeof value !== 'number') return <>{shown(value)}</>;
   // 单位写在表头，单元格只写数；单位随另一个字段变（unitFrom）时表头写不了，跟在数后面
-  return <span className="field-num">{field.unit ? digits(value) : money(value, moneyUnit(field, row))}</span>;
+  return <span className="field-num">{moneyText(field, value, field.unit ? '' : moneyUnit(field, row))}</span>;
 }
 
 function MoneyView({ field, value, row }: ViewProps) {
-  return <span className="field-text">{typeof value === 'number' ? money(value, moneyUnit(field, row)) : shown(value)}</span>;
+  return <span className="field-text">{typeof value === 'number' ? moneyText(field, value, moneyUnit(field, row)) : shown(value)}</span>;
 }
 
 function MoneyForm(p: FormProps) {
