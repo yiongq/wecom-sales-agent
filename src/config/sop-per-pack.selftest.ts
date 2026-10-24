@@ -588,7 +588,7 @@ if (process.argv[2] !== 'worker') {
     }
 
     // 验收 8：把品牌清掉之后重启以 brand_required 拒绝（非旅游包只支持模板模式），库没动。
-    // 待 owner 确认（plan Open 1）：原因码 brand_required 是推荐写法；owner 选别的写法时，改 source.ts 里抛它的那一处和这里的原因码。
+    // owner 2026-10-24 定（plan Open 1）：缺品牌的拒绝原因是 brand_required。
     const versionsBefore = async () =>
       (await t.pg.query<{ n: number }>('select count(*)::int as n from sop_versions where tenant_id = $1', [tenant.id])).rows[0]!.n;
     await t.pg.exec('RESET ROLE');

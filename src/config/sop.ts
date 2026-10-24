@@ -188,7 +188,7 @@ async function evaluate(
   policy: unknown,
 ): Promise<Evaluated> {
   const spec = specOf(rt);
-  // 检查、发布、回滚都经这里，早于任何写入：非旅游包没有品牌快照时不写出旧版渲染的 SOP（装载时已拒绝，这里兜底；待 owner 确认，plan Open 1）
+  // 检查、发布、回滚都经这里，早于任何写入：非旅游包没有品牌快照时不写出旧版渲染的 SOP（装载时已拒绝，这里兜底；plan Open 1 已定）
   assertBrandForPack(runtimeOf(rt.deps), currentSop().brand, `租户「${rt.deps.tenantSlug}」`);
   const merged = mergeWithImage(sections, rt.imageSections, spec);
   const sop = joinSop(merged);

@@ -177,7 +177,7 @@ export type ConfigStartupReason =
   | 'catalog_startup'
   | 'embed_endpoint_forbidden'
   | 'gate_unavailable'
-  // 待 owner 确认（plan Open 1）：非旅游包只支持模板模式，租户没有品牌时用它拒绝启动。owner 选别的写法时只改 loadConfig 里抛它的那一处。
+  // owner 2026-10-24 定（plan Open 1）：非旅游包只支持模板模式，租户没有品牌时用它拒绝启动。
   | 'brand_required';
 export class ConfigStartupError extends Error {
   constructor(
@@ -220,7 +220,7 @@ export function imageSopOf(d: Pick<ConfigDeps, 'imageSop'>, packId: string): str
 }
 
 /**
- * 待 owner 确认（plan Open 1）：非旅游包只支持模板模式（08 R10），没有品牌就不能启动，也不能写出已发布的 SOP。
+ * owner 2026-10-24 定（plan Open 1）：非旅游包只支持模板模式（08 R10），没有品牌就不能启动，也不能写出已发布的 SOP。
  * 启动、沙箱模板复制、首次导入都经这一处，原因都是 brand_required；owner 选别的写法时只改这里。
  * subject 点名是谁缺品牌（租户或沙箱模板），进错误文案。
  */
@@ -858,7 +858,7 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
       };
     }
     const brand = (await dbStep('读待生效品牌', () => readBrand(d.db, tenant.id))) ?? null;
-    // 待 owner 确认（plan Open 1）：非旅游包只支持模板模式（08 R10），没有品牌就拒绝启动，规则在 assertBrandForPack
+    // owner 2026-10-24 定（plan Open 1）：非旅游包只支持模板模式（08 R10），没有品牌就拒绝启动，规则在 assertBrandForPack
     assertBrandForPack(runtime, brand, `租户「${d.tenantSlug}」`);
     // 08 R10：旅游用连库之前读好的 data/sop.md，其他包在这里（解析出租户的包之后）读 data/packs/<id>/sop.md
     const legacyImage = imageSopOf(d, runtime.id);
