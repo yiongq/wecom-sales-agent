@@ -866,3 +866,5 @@ registerTenantState({
     for (const rt of tenantRuntimes()) Reflect.deleteProperty(rt, 'pack');
   },
 });
+
+export type { LineOrder } from './order-view.js';

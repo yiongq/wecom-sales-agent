@@ -63,6 +63,7 @@ import { isDemoClassId, SESSIONS_IN_DB_MARKER } from './store/project.js';
 import { linkTurn, noteWindowReset, seqOf, turnIdOf, windowStartOf } from './store/seq.js';
 import { flushUsageDaily, startUsageDaily } from './trace/usage-daily.js';
 import type { ChatMessage, MessageAuthor, Session, Order } from './types.js';
+import { isLineOrder, type AnyOrder } from './core/order-view.js';
 
 const tenantState = scopedState(() => ({
   incidentHooks: new Set<(i: StoreIncident) => void>(),
@@ -1035,6 +1036,12 @@ export function createOrder(o: Omit<Order, 'id' | 'createdAt' | 'status'>): Orde
 }
 
 export function getOrder(id: string): Order | undefined {
+  const o = getAnyOrder(id);
+  return o && !isLineOrder(o) ? o : undefined;
+}
+
+/** 两种订单均返回内存里的活对象，不拷贝。 */
+export function getAnyOrder(id: string): AnyOrder | undefined {
   const state = storeState();
   return state.orders.get(id);
 }
@@ -1093,6 +1100,10 @@ export function deleteOrdersOfSession(sessionId: string): number {
 }
 
 export function listOrders(): Order[] {
+  return listAnyOrders().filter((o): o is Order => !isLineOrder(o));
+}
+
+export function listAnyOrders(): AnyOrder[] {
   const state = storeState();
   return [...state.orders.values()].toSorted((a, b) => b.createdAt - a.createdAt);
 }
