@@ -12,6 +12,7 @@ import type { FinishedTurn } from '../../src/trace/recorder.js';
 import type { Order } from '../../src/types.js';
 import { installBrand, brandCase } from './brand.js';
 import { observeTurn, type TurnObservation } from './snapshot.js';
+import { readPackFile } from '../../src/config/pack-file.js';
 
 export interface WorkerDb {
   close(): Promise<void>;
@@ -51,6 +52,10 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
   let db: WorkerDb | undefined;
   let loadedStore: typeof import('../../src/store.js') | undefined;
   try {
+    const sopPath = process.env.SOP_PATH || path.resolve('data/sop.md');
+    // 08 R11：配置目录里有 pack.json 就是非旅游包的目录，只有 sop.md（品牌、catalog/ 同目录），没有 routes.json / hotels.json
+    const packFile = readPackFile(path.dirname(sopPath));
+    const packDir = packFile !== null && packFile.id !== 'travel';
     Object.assign(process.env, {
       LLM_MOCK: '0',
       LLM_PROVIDER: '',
@@ -68,9 +73,13 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
       WECOM_CORP_ID: '',
       WECOM_APP_SECRET: '',
       WECOM_KF_OPEN_KFID: '',
-      SOP_PATH: process.env.SOP_PATH || path.resolve('data/sop.md'),
-      ROUTES_PATH: process.env.ROUTES_PATH || path.resolve('data/routes.json'),
-      HOTELS_PATH: process.env.HOTELS_PATH || path.resolve('data/hotels.json'),
+      SOP_PATH: sopPath,
+      ...(packDir
+        ? {}
+        : {
+            ROUTES_PATH: process.env.ROUTES_PATH || path.resolve('data/routes.json'),
+            HOTELS_PATH: process.env.HOTELS_PATH || path.resolve('data/hotels.json'),
+          }),
       PUBLIC_BASE_URL: '',
     });
     if (c.brand) c = brandCase(c, c.brand);

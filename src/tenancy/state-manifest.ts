@@ -10,6 +10,7 @@ export const STATE_MANIFEST: Record<
   'src/db/schema.ts:sopGateRuns': { kind: 'instance', why: 'Drizzle 静态表定义，不保存行或租户快照。' },
   'src/config/gate.ts:slot': { kind: 'instance', why: '进程唯一发布闸调度槽；只串行调度，租户项登记在 gate.progress，摘下时取消。' },
   'src/config/gate.ts:progress': { kind: 'tenant', state: 'gate.progress' },
+  'src/config/pack-file.ts:PackFileSchema': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
 
   'src/tenancy/sandbox/limits.ts:provisioned': { kind: 'instance', why: '进程开通的小时与 IP 日计数；崩溃归零，不随沙箱删除减去。' },
   'src/tenancy/sandbox/limits.ts:tenantState': { kind: 'tenant', state: 'sandbox.limits.writes' },

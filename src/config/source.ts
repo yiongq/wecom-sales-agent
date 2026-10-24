@@ -16,6 +16,7 @@ import { registerTenantState } from '../tenancy/state.js';
 import { createTenantConfig, type Loaded, type TenantConfig } from './state.js';
 // 配置源（docs/architecture/01-pg-config-console/spec.md「两种模式与启动装载」）。
 // 文件模式（CONFIG_SOURCE 未设、空串或 file）读有效 SOP_PATH 同目录品牌，引擎和工具照旧读文件。
+// 08 R11：同目录有 pack.json（{ "id": "<包>" }）就按这个包装载，非旅游包的产品库读 catalog/<kind>.json；没有就是旅游，与以前相同。
 // DB 模式在启动时一次装载已发布的 SOP 与 active 条目，放进进程内缓存；每轮对话只读缓存、不查库。
 // 本模块不加载存储与发送能力：启动时按 pack_id 绑定包，运行时能力经延后调用的函数注入。
 // 02 加了产品库条目版本（02 spec「报价快照与产品库字段开放」）：全部版本启动时读进内存，之后的新版本提交后加进来；
@@ -53,6 +54,7 @@ import {
   bindPack,
   boundPack,
   BrandProfileSchema,
+  type CatalogKindSpec,
   type PackBinding,
   type PackPolicy,
   type PackRuntime,
@@ -66,6 +68,7 @@ import type { IndustryPack } from '../shared/pack.js';
 import { checkSopContract } from '../sop/contract.js';
 import { joinSop, mergeWithImage, splitSop, type SectionSpec, type SopSection } from '../sop/sections.js';
 import { contractInputs, readImageSop, tenantImage, tenantRenderer, switchPreamble, preambleWarning } from './brand.js';
+import { readPackFile } from './pack-file.js';
 import { promptHashes, renderInputsFor, sha256, publishedBrand, policySnapshot, publishedPolicy } from './hashes.js';
 
 export type { TenantLock } from '../db/client.js';
@@ -267,7 +270,7 @@ export function currentSop(): PublishedSop {
 }
 export function currentCatalog(): CatalogSnapshot {
   const state = configState();
-  if (!state.loaded) throw new ConfigNotReadyError();
+  if (!state.loaded) return fileCatalog(state);
   const pinned = turnPin.getStore();
   return pinned && pinned.tenantId === state.loaded.tenantId ? pinned : state.loaded.catalog;
 }
@@ -800,8 +803,11 @@ export function assertCatalogStartup(runtime: PackBinding['runtime'], snapshot: 
 async function loadConfig(deps: ConfigDeps | null): Promise<void> {
   const state = configState();
   if (!deps) {
-    const binding = installPack('travel', readFileBrand());
+    // 08 R11：配置目录有 pack.json 就按它装载（非旅游包还要读 catalog/），没有就是旅游，与以前逐字节相同
+    state.fileCatalog = null;
+    const binding = installFilePack();
     readFilePolicy(binding.runtime.policy);
+    if (binding.runtime.id !== 'travel') loadFileCatalog(binding.runtime);
     return;
   }
   let d = deps;
@@ -1259,10 +1265,10 @@ export function prefixSummary(file: () => { system: string; tools: string; sop: 
   return { sopVersion: null, ...promptHashes(f.system, f.tools, f.sop) };
 }
 
-/** 文件模式与未启动的旧自测入口按 R2 延后装配旅游；DB 装载成功时显式覆盖绑定。 */
+/** 文件模式与未启动的旧自测入口按 R2 延后装配（文件模式按配置目录的 pack.json，没有就是旅游）；DB 装载成功时显式覆盖绑定。 */
 export function currentPack(): PackBinding {
   const state = configState();
-  const binding = boundPack() ?? installPack('travel', configMode() === 'file' ? readFileBrand() : null);
+  const binding = boundPack() ?? (configMode() === 'file' ? installFilePack() : installPack('travel', null));
   return state.loaded ? { ...binding, brand: state.loaded.sop.brand } : binding;
 }
 
@@ -1294,6 +1300,97 @@ function readFileBrand(): BrandProfile | null {
   // 严格解码：非法字节不能被替换成 U+FFFD 后照样通过校验、把损坏的品牌渲染进锁定节
   const text = new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file));
   return BrandProfileSchema.parse(JSON.parse(text));
+}
+
+// ---------------- 文件模式：按 pack.json 装载（08 R11） ----------------
+
+/** 配置目录的 pack.json 指的非旅游包 id。没有这个文件、或写的就是 travel，都是旅游（null）；写坏了以 pack_unknown 拒绝 */
+function filePackId(): string | null {
+  let file: ReturnType<typeof readPackFile>;
+  try {
+    file = readPackFile(path.dirname(fileSopPath()));
+  } catch (e) {
+    throw startup('pack_unknown', message(e));
+  }
+  return file === null || file.id === 'travel' ? null : file.id;
+}
+
+/**
+ * 文件模式装配行业包：配置目录有 pack.json 就按它的 id，没有就是旅游（与以前完全相同，不读 catalog/）。
+ * 非旅游包只支持模板模式（08 R10）：镜像取 data/packs/<id>/sop.md，品牌取同目录的 brand.json，没有品牌拒绝（brand_required，同 DB 模式）；
+ * 注册表里没有这个包以 pack_unknown 拒绝。
+ */
+function installFilePack(): PackBinding {
+  const id = filePackId();
+  if (id === null) return installPack('travel', readFileBrand());
+  if (!packById(id)) throw startup('pack_unknown', `配置目录的 pack.json 指向行业包「${id}」，它不在注册表里`);
+  const brand = readFileBrand();
+  if (brand === null) throw startup('brand_required', `行业包「${id}」只支持模板模式，配置目录里要有 brand.json（品牌档案）`);
+  return installPack(id, brand);
+}
+
+/**
+ * 文件模式下 currentCatalog() 的出处。非旅游包读配置目录的 catalog/<kind>.json 拼成快照，进程内读一次（同 DB 模式的启动装载，
+ * 手改文件要重启）；旅游（没有 pack.json）与 DB 模式没装载完，都和以前一样抛 ConfigNotReadyError：旅游的工具自己读 ROUTES_PATH。
+ */
+function fileCatalog(state: TenantConfig): CatalogSnapshot {
+  if (configMode() === 'file') {
+    if (state.fileCatalog) return state.fileCatalog;
+    // 评测不走 initConfig、还没绑包：按 pack.json 认；没有 pack.json 就什么都不装，保持旅游的老样子
+    const bound = boundPack() ?? (filePackId() === null ? null : installFilePack());
+    if (bound && bound.runtime.id !== 'travel') return loadFileCatalog(bound.runtime);
+  }
+  throw new ConfigNotReadyError();
+}
+
+/** 包声明的每个 kind 读 catalog/<kind>.json（缺文件就是空数组），逐条过包的 schema，版本恒为 1；再套包的启动检查（catalog_startup） */
+function loadFileCatalog(runtime: PackRuntime): CatalogSnapshot {
+  const dir = path.join(path.dirname(fileSopPath()), 'catalog');
+  const items: Record<string, unknown[]> = {};
+  const versions: Record<string, number> = {};
+  for (const [kind, spec] of Object.entries(runtime.catalog)) {
+    items[kind] = readCatalogFile(dir, kind, spec);
+    for (const item of items[kind]) versions[catalogVersionKey(kind, (item as { id: string }).id)] = 1;
+  }
+  const snapshot: CatalogSnapshot = deepFreeze({
+    tenantId: currentRuntime().id,
+    generation: 0,
+    items,
+    ...catalogAliases(items),
+    versions,
+  });
+  assertCatalogStartup(runtime, snapshot, '');
+  configState().fileCatalog = snapshot;
+  return snapshot;
+}
+
+function readCatalogFile(dir: string, kind: string, spec: CatalogKindSpec): unknown[] {
+  const name = `catalog/${kind}.json`;
+  // kind 拼进文件名：包声明里的 kind 也不许带路径
+  if (!/^[A-Za-z0-9_-]+$/.test(kind)) throw startup('catalog_startup', `kind「${kind}」不能当文件名用`);
+  const file = path.join(dir, `${kind}.json`);
+  if (!fs.existsSync(file)) return [];
+  let raw: unknown;
+  try {
+    // 严格解码：非法字节不能被替换成 U+FFFD 后照样通过校验
+    raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file)));
+  } catch (e) {
+    throw startup('catalog_startup', `${name} 读不出来：${message(e)}`);
+  }
+  if (!Array.isArray(raw)) throw startup('catalog_startup', `${name} 必须是数组`);
+  const seen = new Set<string>();
+  raw.forEach((item: unknown, i) => {
+    const parsed = spec.schema.safeParse(item);
+    if (!parsed.success) {
+      const why = parsed.error.issues.map((x) => `${x.path.join('.') || '(根)'}：${x.message}`).join('；');
+      throw startup('catalog_startup', `${name} 第 ${i + 1} 条不合格：${why}`);
+    }
+    const id = (item as Record<string, unknown>).id;
+    if (typeof id !== 'string' || !id) throw startup('catalog_startup', `${name} 第 ${i + 1} 条没有字符串 id`);
+    if (seen.has(id)) throw startup('catalog_startup', `${name} 里 id「${id}」重复`);
+    seen.add(id);
+  });
+  return raw;
 }
 
 /** 文件模式保留可编辑节，只把锁定节与硬性要求按装载的品牌渲染；旧版原文不经过切分。 */
@@ -1358,6 +1455,7 @@ function resetConfig(): void {
   state.reacquireTimer = null;
   state.dbInstalled = false;
   state.loaded = null;
+  state.fileCatalog = null;
   installPack('travel');
   setLogTenant('');
   state.lockState = 'held';
@@ -1394,6 +1492,7 @@ function configRegistration(key: keyof TenantConfig) {
 }
 registerTenantState({ name: 'config.dbInstalled', ...configRegistration('dbInstalled') });
 registerTenantState({ name: 'config.loaded', ...configRegistration('loaded') });
+registerTenantState({ name: 'config.fileCatalog', ...configRegistration('fileCatalog') });
 registerTenantState({ name: 'config.lockState', ...configRegistration('lockState') });
 registerTenantState({ name: 'config.lockTaken', ...configRegistration('lockTaken') });
 registerTenantState({ name: 'config.sopStale', ...configRegistration('sopStale') });

@@ -24,6 +24,8 @@ export interface Loaded {
 
 export interface TenantConfig {
   loaded: Loaded | null;
+  /** 08 R11：文件模式下非旅游包的产品库快照（配置目录的 catalog/<kind>.json），装载时读一次。旅游与 DB 模式恒为 null */
+  fileCatalog: CatalogSnapshot | null;
   dbInstalled: boolean;
   lockState: 'held' | 'lost';
   lockTaken: boolean;
@@ -42,6 +44,7 @@ export interface TenantConfig {
 export function createTenantConfig(): TenantConfig {
   return {
     loaded: null,
+    fileCatalog: null,
     dbInstalled: false,
     lockState: 'held',
     lockTaken: false,
