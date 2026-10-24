@@ -26,7 +26,7 @@ import { activePack, isTerminalStage } from '../handoff/record.js';
 import { startedNotifyKey, WINDOW_NOTICE_MS, type HandoffNotifyPayload, type HandoffNotifyReason } from '../jobs/notify.js';
 import { sendWindow } from '../quota/ledger.js';
 import { channelCustomerLabel, shortIdOf, type HandoffNoticeKind } from '../shared/conversation.js';
-import { getOrder, getSession, onCommitted, onHandoffUnsaved, patchQueuedJob, type HandoffStartedEvent } from '../store.js';
+import { getAnyOrder, getSession, onCommitted, onHandoffUnsaved, patchQueuedJob, type HandoffStartedEvent } from '../store.js';
 import type { Session } from '../types.js';
 import { NotifySendError, notifier, workbenchLink, type HandoffNotice } from './notifier.js';
 
@@ -104,7 +104,7 @@ export async function runHandoffNotifyJob(job: JobRow, now: number): Promise<Job
   const p = payloadOf(job.payload);
   if (!p) return done('bad_payload');
   if (p.reason === 'order_unconfirmed') {
-    const o = p.orderId ? getOrder(p.orderId) : undefined;
+    const o = p.orderId ? getAnyOrder(p.orderId) : undefined;
     const s = getSession(p.sessionId);
     if (!o || o.sessionId !== p.sessionId || o.status !== 'pending_payment' || o.confirmedAt != null) return done('order_settled');
     if (!s) return done('no_session');

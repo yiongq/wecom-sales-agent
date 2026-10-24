@@ -43,7 +43,7 @@ if (process.argv[2] !== 'worker') {
     assert.equal(runtime.id, pack.id);
     assert.deepEqual(
       runtime.stages,
-      pack.stages.map(({ key }) => ({ id: key })),
+      pack.stages.map(({ key, terminal }) => ({ id: key, ...(terminal ? { terminal: true } : {}) })),
     );
     assert.deepEqual(
       runtime.sopSections,

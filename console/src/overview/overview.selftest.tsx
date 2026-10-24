@@ -537,6 +537,16 @@ eq('本月成交额：数字不带单位（标签已经写了「元」），明�
   caption: ['本月已付款订单的总额'],
   breakdown: ['另有待付85,600元'],
 });
+eq(
+  '本月成交额与待付款金额保留角分，整数元仍按原字节显示',
+  [
+    monthlyRevenueKpi({ ...SUMMARY, paidTotal: 1330.5, pendingTotal: 1330.5 }).value,
+    monthlyRevenueKpi({ ...SUMMARY, paidTotal: 1330.5, pendingTotal: 1330.5 }).breakdown,
+    monthlyRevenueKpi({ ...SUMMARY, paidTotal: 1330, pendingTotal: 1330 }).value,
+    monthlyRevenueKpi({ ...SUMMARY, paidTotal: 1330, pendingTotal: 1330 }).breakdown,
+  ],
+  ['1,330.50元', ['另有待付1,330.50元'], '1,330', ['另有待付1,330元']],
+);
 eq('本月成交额：没有待付款时不写明细', monthlyRevenueKpi({ ...SUMMARY, pendingCount: 0 }).breakdown, null);
 const NO_DEALS = { aiOnly: 0, aiOnlyAmount: 0, aiOnlyRefunded: 0, assisted: 0, assistedAmount: 0, assistedRefunded: 0, refunded: 0 };
 const EMPTY_HANDOFF = { sessions: 0, byKind: {}, takeovers: 0 };
@@ -627,6 +637,17 @@ eq(
     ],
   ],
 );
+{
+  const cents = {
+    ...METRICS,
+    deals: { ...METRICS.deals, customer: { ...METRICS.deals.customer, aiOnlyAmount: 1330.5, assistedAmount: 1330.5 } },
+  };
+  eq(
+    '成交拆分两类金额保留角分',
+    [dealsKpi(cents, 'customer').rows?.[0]?.value[1], dealsKpi(cents, 'customer').rows?.[2]?.value[1]],
+    ['1,330.50元', '1,330.50元'],
+  );
+}
 eq(
   '成交拆分：访客、种子各取各的，全部是三类相加（7 单：AI 独立 4 单 43,000 元，协同 3 单 157,600 元）',
   [

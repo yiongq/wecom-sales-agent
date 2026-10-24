@@ -3,15 +3,16 @@ import { registerTenantState } from '../tenancy/state.js';
 import { currentRuntime, type TenantRuntime } from '../tenancy/runtime.js';
 // 后台 AI 洞察 / 下一步建议：聚合真实数据 → LLM 生成 → 缓存。
 // LLM 不可用（mock / 未配 key / 失败）时返回空，前端回退到规则版。
-import type { Session, Order } from '../types.js';
+import { orderTotalFen, type AnyOrder } from './order-view.js';
+import type { Session } from '../types.js';
 import { profileForModel } from './pack-profile.js';
-import { listSessions, listOrders } from '../store.js';
+import { listSessions, listAnyOrders } from '../store.js';
 import { completeText } from './llm/client.js';
 import { currentPack } from '../config/source.js';
 const prompts = () => currentPack().runtime.insightPrompts;
 
 /** 纯函数，导出供自测直接核（07 R23 把转人工贡献的成交额改按 handoffBeforePaid 算） */
-export function aggregate(sessions: Session[], orders: Order[]) {
+export function aggregate(sessions: Session[], orders: AnyOrder[]) {
   const active = sessions.filter((s) => s.stage !== 'handoff');
   const names = prompts().funnelNames;
   const cnt = [1, 2, 3, 4, 5].map((min) => active.filter((s) => (prompts().reach[s.stage] ?? -1) >= min).length);
@@ -19,10 +20,10 @@ export function aggregate(sessions: Session[], orders: Order[]) {
   const refunded = orders.filter((o) => o.status === 'refunded');
   const paidSids = new Set(paid.map((o) => o.sessionId));
   const handoff = sessions.filter((s) => s.handedOver);
-  const gmv = paid.reduce((a, o) => a + o.totalPrice, 0);
+  const gmv = paid.reduce((a, o) => a + orderTotalFen(o), 0) / 100;
   // 07 R23：转人工贡献的成交额按付款时有没有转过人工（Order.handoffBeforePaid，持久）算；原先看会话现在是不是还在转人工
   //（handedOver，交还时会清掉），交还之后的人机协同单会被算成 AI 独立成交
-  const hoGmv = paid.filter((o) => o.handoffBeforePaid === true).reduce((a, o) => a + o.totalPrice, 0);
+  const hoGmv = paid.filter((o) => o.handoffBeforePaid === true).reduce((a, o) => a + orderTotalFen(o), 0) / 100;
   const stuck = sessions.filter((s) => prompts().stuckStages.includes(s.stage) && Date.now() - s.updatedAt >= 10 * 60000).length;
   return {
     total: sessions.length,
@@ -33,7 +34,7 @@ export function aggregate(sessions: Session[], orders: Order[]) {
     gmv,
     deals: paid.length,
     refundedCount: refunded.length,
-    refundedTotal: refunded.reduce((a, o) => a + o.totalPrice, 0),
+    refundedTotal: refunded.reduce((a, o) => a + orderTotalFen(o), 0) / 100,
     stuckQuotes: stuck,
   };
 }
@@ -67,7 +68,7 @@ export async function getInsights(): Promise<string[]> {
   const rt = currentRuntime();
   const state = caches.get(rt);
   if (state.insightCache && Date.now() - state.insightCache.at < INSIGHT_TTL) return state.insightCache.data;
-  const agg = aggregate(listSessions(), listOrders());
+  const agg = aggregate(listSessions(), listAnyOrders());
   const sys = prompts().insights;
   const user =
     '实时数据：\n' +
