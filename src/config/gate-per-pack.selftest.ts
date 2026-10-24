@@ -15,16 +15,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-/** 开工时（基点 96f1159）算出的旅游值。重新钉住时的算法见各处注释 */
+/**
+ * 开工时（基点 96f1159）算出的旅游值。重新钉住时的算法见各处注释。
+ * 08 第 22 步之后修了回归集里三个文字谓词的误报（28、47、48 三个目标的 pattern），目标集哈希与两个缓存键随之重新钉住；产品库与导出文件不变。
+ */
 const TRAVEL_PIN = {
   /** regression 目标的条数与 sha256(JSON.stringify([{ id, text }, …]))，即 gateTargets().hash */
   goalCount: 20,
-  goalsHash: '47493523bcc78159654d79b863a74f258654598ac10c9ef4300bbbba66a4a271',
+  goalsHash: '6e9aeece6bed186e17e39c08fcfa88402b1f0301072aaa60f5a6fb1b972d2a97',
   /** 导入 data/ 之后 sha256(JSON.stringify([routes, hotels])) */
   catalogHash: '8bb4cd17dcdf89663228fdc0cd5c38d671130bb24200d7b15112cbae3fa679e5',
   /** 已发布 SOP 与「tone 节末尾加一行措辞标记甲」的草稿，在 APP_REVISION=gate-selftest、模型 glm-5.2 下的缓存键 */
-  baselineKey: '2df5fbcdcd6169b9df9b2e7dbfb473d756a523135835f9ad1d3b11a70a2aac5a', // gitleaks:allow
-  draftKey: 'c6ed3ac904ebc0799c16882045ee0622e8189f07b59518c1095c605d37d2e6a5', // gitleaks:allow
+  baselineKey: '758e9146082ffb0a524c035a4eaaa818c5f8c8307e296738d0814051b05b2f0b', // gitleaks:allow
+  draftKey: 'e4e3e9205261e8172cdc94f2d1ca6c6dac7d0ab5a660b7463cc7fff3f14779c2', // gitleaks:allow
   /** 闸给子进程写的导出目录里各文件的 sha256；两边的产品库与政策相同，只有 sop.md 不同 */
   common: {
     'hotels.json': 'cd13af1d7d88d70e2e852f8bd45ef0966b5fd688ad8e90c189d2c1fd34680e9a',
