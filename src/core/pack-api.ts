@@ -706,6 +706,8 @@ export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   engineHooks: EnginePackHooks;
   vocab: { handoff: T['HandoffVocab']; dejargon: T['DejargonVocab'] };
   thresholds: T['PackThresholds'];
+  /** 08 R6：金额解析选项（PackThresholds 是不透明对象，放不进去）。没给的包按各调用方自己传的选项走；`decimals: true` 才认两位小数与低单价。 */
+  money?: MoneyParseOptions;
   retrievalText(item: CatalogItem): string;
   retrievalItems(): CatalogItem[];
   retrievalCacheFile: string;
