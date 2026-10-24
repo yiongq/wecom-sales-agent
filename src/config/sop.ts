@@ -27,7 +27,16 @@ import { editableChars, joinSop, mergeWithImage, rebuildSection, type SectionSpe
 import type { PackPolicy } from '../core/pack-api.js';
 import type { PolicyView, SopVersion } from '../shared/console-api.js';
 import { promptHashes, publishedBrand, policySnapshot, publishedPolicy, renderInputsFor, type PromptHashes } from './hashes.js';
-import { assertConfigWritable, configRuntime, currentSop, reloadFromDb, replacePublishedSop, runtimeOf, toPublishedSop } from './source.js';
+import {
+  assertBrandForPack,
+  assertConfigWritable,
+  configRuntime,
+  currentSop,
+  reloadFromDb,
+  replacePublishedSop,
+  runtimeOf,
+  toPublishedSop,
+} from './source.js';
 
 import { currentCatalog } from './source.js';
 import { currentRuntime } from '../tenancy/runtime.js';
@@ -179,6 +188,8 @@ async function evaluate(
   policy: unknown,
 ): Promise<Evaluated> {
   const spec = specOf(rt);
+  // 检查、发布、回滚都经这里，早于任何写入：非旅游包没有品牌快照时不写出旧版渲染的 SOP（装载时已拒绝，这里兜底；待 owner 确认，plan Open 1）
+  assertBrandForPack(runtimeOf(rt.deps), currentSop().brand, `租户「${rt.deps.tenantSlug}」`);
   const merged = mergeWithImage(sections, rt.imageSections, spec);
   const sop = joinSop(merged);
   const rendered = rt.deps.render(sop);

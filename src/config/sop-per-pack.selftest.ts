@@ -44,6 +44,7 @@ if (process.argv[2] !== 'worker') {
   const { checkSopContract, SOP_CONTRACT, SOP_KNOWN_FIELDS } = await import('../sop/contract.js');
   const { contractInputs, readImageSop, tenantImage, tenantRenderer } = await import('./brand.js');
   const { imageCode, exportConfig, writeTemplateConfig } = await import('./transfer.js');
+  const sopApi = await import('./sop.js');
   const { promptHashes, publishedBrand, renderInputsFor, sha256 } = await import('./hashes.js');
   const { policyViolations } = await import('../packs/travel/policy-lint.js');
   const { defaultTravelPolicy } = await import('../packs/travel/policy.js');
@@ -191,12 +192,50 @@ if (process.argv[2] !== 'worker') {
     check(() => assert.notEqual(inputsOf(fixtureSpec).sectionTableHash, inputsOf(travelRuntime.sopSections).sectionTableHash));
   }
 
-  // 非旅游包的镜像永远读自己的参考配置，不用注入的旅游文本
-  check(() => assert.equal(source.imageSopOf({ usePackRuntime: false, imageSop: travelMd }, '__fixture'), fixtureMd));
-  check(() => assert.equal(source.imageSopOf({ usePackRuntime: false, imageSop: travelMd }, 'travel'), travelMd));
-  check(() => assert.equal(source.imageSopOf({ usePackRuntime: true, imageSop: '' }, 'travel'), travelMd));
+  // 旅游用提前读好的 deps.imageSop；非旅游包永远读自己的参考配置，不用旅游的文本
+  check(() => assert.equal(source.imageSopOf({ imageSop: travelMd }, '__fixture'), fixtureMd));
+  check(() => assert.equal(source.imageSopOf({ imageSop: travelMd }, 'travel'), travelMd));
   check(() => assert.equal(readImageSop('__fixture'), fixtureMd));
   check(() => assert.throws(() => readImageSop('../travel'), /不合法/));
+
+  /** 在没有 data/ 的空目录里跑 fn（镜像文件按进程的当前目录找），跑完回到原目录 */
+  const inEmptyDir = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const origin = process.cwd();
+    process.chdir(fs.mkdtempSync(path.join(dir, 'empty-cwd-')));
+    try {
+      return await fn();
+    } finally {
+      process.chdir(origin);
+    }
+  };
+  // 旅游的启动顺序不变：生产路径在连库之前读并校验 data/sop.md。镜像缺失与连不上库同时发生时，报 image_sop_invalid 而不是 db_unreachable
+  {
+    const env = { DATABASE_URL: 'postgres://app@127.0.0.1:1/none', DEFAULT_TENANT_SLUG: 'demo', DEPLOY_PROFILE: 'demo' };
+    await inEmptyDir(async () => {
+      await assert.rejects(
+        source.productionConfigDeps(env, () => {}),
+        (e: unknown) => {
+          assert.ok(e instanceof ConfigStartupError, String(e));
+          assert.equal(e.reason, 'image_sop_invalid');
+          assert.match(e.detail, /data\/sop\.md/);
+          return true;
+        },
+      );
+      checks++;
+    });
+    // 对照：镜像在，同一个连不上的地址不再是 image_sop_invalid（连库是后面的事）
+    const outcome = await source
+      .productionConfigDeps(env, () => {})
+      .then(
+        async (deps) => {
+          await deps.closeDb?.().catch(() => {});
+          assert.equal(deps.imageSop, travelMd);
+          return 'ok';
+        },
+        (e: unknown) => (e instanceof ConfigStartupError ? e.reason : String(e)),
+      );
+    check(() => assert.notEqual(outcome, 'image_sop_invalid'));
+  }
 
   // ---------------- 三、DB 模式 ----------------
   const t = await openTestDb();
@@ -278,6 +317,12 @@ if (process.argv[2] !== 'worker') {
       assert.equal(rt.config.loaded, null);
       return detail;
     };
+
+    // 非旅游包的镜像（data/packs/<id>/sop.md）缺失：解析出租户的包之后 image_sop_invalid，点名这个包，没有半装载状态
+    await inEmptyDir(async () => {
+      assert.match(await failsWith('image_sop_invalid'), /__fixture/);
+      checks++;
+    });
 
     // 验收 3 第 5 条端到端：没有 active 的 widget → catalog_startup（旅游的 no_active_routes 另有自测）
     assert.equal(await failsWith('catalog_startup'), '没有 active 的 widget');
@@ -408,6 +453,21 @@ if (process.argv[2] !== 'worker') {
     const refusedBody = (await refused.json()) as { error: string; violations: Violation[] };
     check(() => assert.equal(refusedBody.error, 'contract'));
     check(() => assert.deepEqual(refusedBody.violations, expected));
+    // 兜底：已装载的发布版本没有品牌快照（装载时已拒绝，实际不会发生）时，检查、发布都在写入之前以 brand_required 失败
+    {
+      const loaded = rt.config.loaded!;
+      const kept = loaded.sop;
+      loaded.sop = { ...kept, brand: null };
+      try {
+        const brandRequired = (e: unknown): boolean => e instanceof ConfigStartupError && e.reason === 'brand_required';
+        await assert.rejects(sopApi.checkSopDraft(ctx), brandRequired);
+        await assert.rejects(sopApi.publishSopDraft(ctx, { rev: violatingDraft.rev, changeNote: '应被拒' }), brandRequired);
+        checks += 2;
+      } finally {
+        loaded.sop = kept;
+      }
+      assert.equal(currentSop().versionNo, 2);
+    }
     assert.equal((await request('POST', '/sop/draft/discard', { rev: violatingDraft.rev }, auth)).status, 200);
 
     // 旅游的规则不套用到证明包：旅游的禁用短语不报，也不要求旅游的必含短语；工具名按证明包的工具查
@@ -469,7 +529,7 @@ if (process.argv[2] !== 'worker') {
     await t.pg.exec('SET ROLE agent_app');
     const copyCtx = { ...ctx, tenantId: copy.id };
     const hashes = await withTenant(t.db, copyCtx, (tx) =>
-      writeTemplateConfig(tx, pub, items, source.imageSopOf({ usePackRuntime: false, imageSop: travelMd }, pub.packId)),
+      writeTemplateConfig(tx, pub, items, source.imageSopOf({ imageSop: travelMd }, pub.packId)),
     );
     check(() => assert.equal(hashes.promptHash, pub.promptHash));
     check(() => assert.deepEqual(publishedBrand(pub.renderInputs).brand, brand));
@@ -478,6 +538,54 @@ if (process.argv[2] !== 'worker') {
     check(() => assert.equal(currentSop().versionNo, 1));
     await closeConfig();
     __configTest.reset();
+
+    // 沙箱模板的已发布版本没有品牌快照（旧版模式渲染）：非旅游包不复制，在开通事务提交之前以 brand_required 失败，库里没有新版本也没有条目
+    {
+      await t.pg.exec('RESET ROLE');
+      const legacySource = await createFixtureTenant(t.db, { slug: 'fixture-legacy' });
+      const sandbox = await createFixtureTenant(t.db, { slug: 'fixture-sbx' });
+      await t.pg.exec('SET ROLE agent_app');
+      const legacyCode = imageCode(fixtureRuntime);
+      const legacySections = splitSop(fixtureMd, fixtureSpec);
+      const legacySop = joinSop(legacySections);
+      const legacyRendered = legacyCode.render(legacySop);
+      await withTenant(t.db, { ...ctx, tenantId: legacySource.id }, (tx) =>
+        insertPublishedSop(tx, {
+          tenantId: legacySource.id,
+          versionNo: 1,
+          source: 'import',
+          packId: '__fixture',
+          sections: legacySections,
+          basedOn: null,
+          renderedPrompt: legacyRendered,
+          ...promptHashes(legacyRendered, legacyCode.toolsJson, legacySop),
+          policy: null,
+          renderInputs: renderInputsFor(legacyCode.render, fixtureMd, legacyCode.toolsJson, fixtureSpec, null, sha256('null')),
+          changeNote: null,
+          createdBy: null,
+          createdByName: 'sop-per-pack-selftest',
+        }),
+      );
+      const legacyPub = (await withTenant(t.db, { ...ctx, tenantId: legacySource.id }, readPublishedSop))!;
+      check(() => assert.equal(publishedBrand(legacyPub.renderInputs).brand, null));
+      const sandboxCtx = { ...ctx, tenantId: sandbox.id };
+      await assert.rejects(
+        withTenant(t.db, sandboxCtx, (tx) => writeTemplateConfig(tx, legacyPub, [], fixtureMd)),
+        (e: unknown) => {
+          assert.ok(e instanceof ConfigStartupError, String(e));
+          assert.equal(e.reason, 'brand_required');
+          assert.match(e.detail, /沙箱模板/);
+          return true;
+        },
+      );
+      await t.pg.exec('RESET ROLE');
+      const count = async (table: 'sop_versions' | 'catalog_items') =>
+        (await t.pg.query<{ n: number }>(`select count(*)::int as n from ${table} where tenant_id = $1`, [sandbox.id])).rows[0]!.n;
+      assert.equal(await count('sop_versions'), 0);
+      assert.equal(await count('catalog_items'), 0);
+      await t.pg.exec('SET ROLE agent_app');
+      checks += 2;
+    }
 
     // 验收 8：把品牌清掉之后重启以 brand_required 拒绝（非旅游包只支持模板模式），库没动。
     // 待 owner 确认（plan Open 1）：原因码 brand_required 是推荐写法；owner 选别的写法时，改 source.ts 里抛它的那一处和这里的原因码。
