@@ -372,12 +372,8 @@ export const STATE_MANIFEST: Record<
   'src/otel/export.ts:warnExport': { kind: 'instance', why: '唯一进程 OTel 导出器 / 节流；租户字段由调用作用域取（第 7 步）' },
   'src/otel/export.ts:warnFlush': { kind: 'instance', why: '唯一进程 OTel 导出器 / 节流；租户字段由调用作用域取（第 7 步）' },
   'src/packs/__fixture/runtime.ts:fixture': { kind: 'instance', why: '固定包 / 元数据（此写法不在 R5 字面豁免内），不含运行时租户数据' },
-  'src/packs/registry.ts:PACKS': { kind: 'instance', why: '固定包 / 元数据（此写法不在 R5 字面豁免内），不含运行时租户数据' },
+  'src/packs/registry.ts:REGISTRY': { kind: 'instance', why: '固定包 / 元数据（此写法不在 R5 字面豁免内），不含运行时租户数据' },
   'src/packs/registry.ts:PACK_IDS': { kind: 'instance', why: '固定包 / 元数据（此写法不在 R5 字面豁免内），不含运行时租户数据' },
-  'src/packs/registry.ts:QUICK_REPLY_DEFAULTS': {
-    kind: 'instance',
-    why: '固定包 / 元数据（此写法不在 R5 字面豁免内），不含运行时租户数据',
-  },
   'src/packs/registry.ts:legacyTravel': { kind: 'instance', why: '04 永久旧旅游门面；依赖是调用时读配置的能力，不是已发布租户快照' },
   'src/packs/travel/brand-fixture.ts:shanhaiBrand': {
     kind: 'instance',
