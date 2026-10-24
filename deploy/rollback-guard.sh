@@ -301,6 +301,16 @@ if [ "$is_pre08" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
     done
     echo "先停用并清理非旅游租户，清理遗留的通用单、非旅游条目与非旅游知识块；确认上述四项都为零后再回滚。" >&2
     [ "$nontravel_unknown" = 0 ] || echo "库问不到或查询结果无法确认时从严拒绝；先确认 db 与四项查询结果，再重跑检查。" >&2
+    [ "$nontravel_unknown" = 0 ] || echo "若这是库还没建、四项都无法确认的新服务器，先部署 08 之后的 tag，或确认库里确实没有这四类数据后再处理。" >&2
+    case "$target" in
+      pre-02 | pre-03 | pre-04 | pre-05 | pre-06 | pre-07 | pre-08)
+        echo "四项都为零、重跑回滚检查通过后，再部署旧 tag。" >&2 ;;
+      *)
+        echo "四项都为零、重跑回滚检查退出码 0 后，直接起目标镜像并重打 :current（不跑迁移）：" >&2
+        echo "  APP_IMAGE=${target} APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f deploy/compose.yml up -d --no-deps app && docker tag ${target} ${project}:current" >&2
+        echo "  curl -fsS http://127.0.0.1:${port}/healthz" >&2
+        echo "  （确认 revision 是 ${target} 的 APP_REVISION）" >&2 ;;
+    esac
     exit 9
   fi
 fi
