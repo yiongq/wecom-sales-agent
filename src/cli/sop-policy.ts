@@ -8,7 +8,7 @@ import { findTenantBySlug } from '../db/repo/tenants.js';
 import { readDraft, readPublishedSop } from '../db/repo/sop.js';
 import { saveSopDraft, SopContractError } from '../config/sop.js';
 import { publishedBrand } from '../config/hashes.js';
-import { tenantImage } from '../config/brand.js';
+import { readImageSop, tenantImage } from '../config/brand.js';
 import { packSources } from '../config/source.js';
 import { runtimeById } from '../packs/registry.js';
 import { dbFromEnv, main } from './common.js';
@@ -34,7 +34,7 @@ export async function runSopPolicy(argv: string[], deps: { connect(): Promise<{ 
         readOnly: true,
       });
       if (!pub) throw new Error('no_published_sop');
-      const image = fs.readFileSync(path.join(process.cwd(), 'data', 'sop.md'), 'utf8');
+      const image = readImageSop(runtime.id);
       await saveSopDraft(
         ctx,
         { basedOn: pub.id, rev: draft?.rev ?? null, edits: [], policy },
@@ -42,6 +42,7 @@ export async function runSopPolicy(argv: string[], deps: { connect(): Promise<{ 
           db,
           imageSections: tenantImage(runtime, image, publishedBrand(pub.renderInputs).brand),
           policy: runtime.policy,
+          spec: runtime.sopSections,
         },
       );
       console.log('[sop-policy] 已保存退改条款草稿，请在后台发布');

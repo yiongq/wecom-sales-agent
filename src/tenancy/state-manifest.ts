@@ -83,7 +83,6 @@ export const STATE_MANIFEST: Record<
   'src/channels/transitions.ts:OUTBOUND_KEEPS_PAYLOAD': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/channels/transitions.ts:OUTBOUND_TRANSITIONS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/cli/tenant-create.ts:USAGE': { kind: 'instance', why: '固定模板、解析词表或序列化规则；不保存按租户变化的业务状态。' },
-  'src/config/sop.ts:EDITABLE': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/config/source.ts:CAUSE': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/config/source.ts:PRIVILEGED': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/config/source.ts:RELOAD_BACKOFF_MS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },

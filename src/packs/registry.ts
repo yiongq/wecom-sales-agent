@@ -11,6 +11,7 @@ import {
   type PackSources,
 } from '../core/pack-api.js';
 import { createTravelRuntime } from './travel/runtime.js';
+import { sopConsistencyViolations } from './travel/consistency-sop.js';
 import { fixture, createFixtureRuntime } from './__fixture/runtime.js';
 import { travel } from './travel/console-pack.js';
 import { travelQuickReplyDefaults } from './travel/quick-reply-defaults.js';
@@ -44,6 +45,15 @@ let legacyTravel: ReturnType<typeof createTravelRuntime> | undefined;
 /** 旧门面始终适配旧版旅游，不跟随测试里临时绑定的其他包。 */
 export function legacyTravelRuntime(sources: PackSources): ReturnType<typeof createTravelRuntime> {
   return (legacyTravel ??= createTravelRuntime(sources));
+}
+
+/**
+ * 08 R10：契约检查里话术与代码固定文字的一致性检查（违规码 consistency），按包给。
+ * 包登记了含 'sop' 范围的 consistencyRules 才查（06 R21），没登记的包（证明包）不查，不再拿旅游的报价模板规则去比。
+ */
+export function sopConsistencyOf(runtime: Pick<PackRuntime, 'id' | 'consistencyRules'>): typeof sopConsistencyViolations | null {
+  if (!runtime.consistencyRules?.some((rule) => rule.scope.includes('sop'))) return null;
+  return runtime.id === 'travel' ? sopConsistencyViolations : null;
 }
 
 /** 08 R2、R9：纯内存校验，不读配置、不改传入对象；失败点名包与 kind。 */

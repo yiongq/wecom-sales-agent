@@ -8,16 +8,15 @@ import { countCatalogItems, insertActiveItems, readActiveCatalog, type CatalogKi
 import { insertCatalogVersion } from '../db/repo/catalog-versions.js';
 import { countSopVersions, insertPublishedSop, readPublishedSop } from '../db/repo/sop.js';
 import { findTenantBySlug, readBrand } from '../db/repo/tenants.js';
-import { renderSystemPrompt } from '../prompt/system.js';
 import { renderSystemPrompt as renderPackSystemPrompt } from '../core/prompt.js';
+import type { PackRuntime } from '../core/pack-api.js';
 import { HotelSchema, RouteSchema } from '../shared/catalog.js';
-import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
-import { decodeSopFile, editableChars, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
-import { toolDefs } from '../tool-defs.js';
+import { checkSopContract } from '../sop/contract.js';
+import { decodeSopFile, editableChars, joinSop, mergeWithImage, splitSop, type SopSection } from '../sop/sections.js';
 import { runtimeById } from '../packs/registry.js';
 import { assertKind } from './catalog.js';
-import { packSources } from './source.js';
-import { tenantImage, tenantRenderer, switchPreamble } from './brand.js';
+import { assertBrandForPack, ConfigStartupError, packSources } from './source.js';
+import { contractInputs, tenantImage, tenantRenderer, switchPreamble } from './brand.js';
 import { promptHashes, publishedBrand, policySnapshot, publishedPolicy, renderInputsFor, type PromptHashes } from './hashes.js';
 
 export const EXIT = { ok: 0, error: 1, inconsistent: 2, locked: 3 } as const;
@@ -31,18 +30,19 @@ export interface TransferResult {
   versionNo?: number;
 }
 
-/** 渲染与契约检查用到的代码侧输入，默认取本镜像的 */
+/** 渲染与契约检查用到的代码侧输入，默认取绑定包的运行时（08 R10） */
 export interface CodeInputs {
   toolsJson: string;
   toolNames: readonly string[];
   knownFields: readonly string[];
   render(sop: string): string;
 }
-export const imageCode = (): CodeInputs => ({
-  toolsJson: JSON.stringify(toolDefs),
-  toolNames: toolDefs.map((t) => t.function.name),
-  knownFields: SOP_KNOWN_FIELDS,
-  render: renderSystemPrompt,
+/** 工具、已知字段与旧版渲染都从包的运行时派生，不再取旅游的模块级常量；旅游取到的字节与原来相同 */
+export const imageCode = (runtime: PackRuntime): CodeInputs => ({
+  toolsJson: JSON.stringify(runtime.tools.map((t) => t.def)),
+  toolNames: runtime.tools.map((t) => t.def.function.name),
+  knownFields: runtime.knownFields.names,
+  render: (sop) => renderPackSystemPrompt(sop, runtime.legacy.hardRequirements),
 });
 
 const fail = (message: string): TransferResult => ({ code: EXIT.error, message });
@@ -86,10 +86,12 @@ export async function writeTemplateConfig(
   if (!runtime) throw new Error('pack_unknown');
   for (const row of items) assertKind(pub.packId, row.kind);
   const brand = publishedBrand(pub.renderInputs).brand;
+  // 非旅游包的模板没有品牌快照就不复制：在开通事务提交之前失败，与启动同一个原因 brand_required（owner 2026-10-24 定，plan Open 1）
+  assertBrandForPack(runtime, brand, '沙箱模板');
   const policy = publishedPolicy(runtime.policy, pub);
   const render = brand ? tenantRenderer(runtime, brand) : (sop: string) => renderPackSystemPrompt(sop, runtime.legacy.hardRequirements);
   const imageSections = tenantImage(runtime, imageSop, brand);
-  const merged = mergeWithImage(pub.sections, imageSections);
+  const merged = mergeWithImage(pub.sections, imageSections, runtime.sopSections);
   const sop = joinSop(merged);
   const rendered = render(sop);
   const toolsJson = JSON.stringify(runtime.tools.map((t) => t.def));
@@ -102,11 +104,9 @@ export async function writeTemplateConfig(
     rendered,
     toolNames: runtime.tools.map((t) => t.def.function.name),
     knownFields: runtime.knownFields.names,
-    baselineEditableChars: editableChars(merged),
-    rules: runtime.contractRules(brand ? { brand } : 'legacy'),
-    brand,
+    baselineEditableChars: editableChars(merged, runtime.sopSections),
+    ...contractInputs(runtime, brand, policy.policy),
     hardRequirements: render(''),
-    policy: policy.policy,
   });
   if (violations.length) throw new Error('sandbox_template_contract_failed');
   await insertPublishedSop(tx, {
@@ -152,8 +152,11 @@ export interface ImportOptions {
   tenantSlug: string;
   /** --data：sop.md、routes.json、hotels.json 所在目录 */
   dataDir: string;
-  /** 镜像里 data/sop.md 的全文：锁定节以它为准 */
-  imageSop: string;
+  /**
+   * 镜像 SOP 的全文，锁定节以它为准。给函数时在解析出租户的包之后才取（旅游 data/sop.md，其他包 data/packs/<id>/sop.md，08 R10），
+   * 命令行用 readImageSop；自测直接给字符串。
+   */
+  imageSop: string | ((packId: string) => string);
   lock(tenantId: string): Promise<TenantLock | null>;
   dryRun?: boolean;
   code?: CodeInputs;
@@ -165,11 +168,12 @@ export interface ImportOptions {
  * 之后的修改走后台，这里不覆盖任何东西
  */
 export async function importConfig(o: ImportOptions): Promise<TransferResult> {
-  let code = o.code ?? imageCode();
   const tenant = await findTenantBySlug(o.db, o.tenantSlug);
   if (!tenant) return fail(`tenant_not_found：没有 slug 为「${o.tenantSlug}」的租户，先跑 tenant-create`);
   const runtime = runtimeById(tenant.packId, packSources());
   if (!runtime) return fail('pack_unknown：没有行业包运行时');
+  let code = o.code ?? imageCode(runtime);
+  const spec = runtime.sopSections;
   // 本步保留旅游文件与循环；在读取、加锁和任何写入之前校验它们的 kind。
   try {
     assertKind(tenant.packId, 'route');
@@ -178,6 +182,20 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
     return fail(message(e));
   }
   const brand = (await readBrand(o.db, tenant.id)) ?? null;
+  // owner 2026-10-24 定（plan Open 1）：非旅游包只支持模板模式（08 R10），没有品牌的租户启动会被 brand_required 拒绝，所以不导入
+  try {
+    assertBrandForPack(runtime, brand, `租户「${o.tenantSlug}」`);
+  } catch (e) {
+    if (e instanceof ConfigStartupError) return fail(e.message);
+    throw e;
+  }
+  // 镜像在解析出租户的包之后才取
+  let imageSop: string;
+  try {
+    imageSop = typeof o.imageSop === 'string' ? o.imageSop : o.imageSop(tenant.packId);
+  } catch (e) {
+    return fail(`image_sop_invalid：读不到行业包「${tenant.packId}」的镜像 SOP：${message(e)}`);
+  }
   if (brand) code = { ...code, render: tenantRenderer(runtime, brand) };
   // DB 模式的应用在跑时持着锁：拿不到就别动库
   const lock = await o.lock(tenant.id);
@@ -198,22 +216,22 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
       return fail('policy_invalid：policy.json 不合格');
     }
     try {
-      imageSections = tenantImage(runtime, o.imageSop, brand);
-      sections = splitSop(decodeSopFile(fs.readFileSync(path.join(o.dataDir, 'sop.md'))));
+      imageSections = tenantImage(runtime, imageSop, brand);
+      sections = splitSop(decodeSopFile(fs.readFileSync(path.join(o.dataDir, 'sop.md'))), spec);
       routes = readItems(o.dataDir, 'routes.json', 'route');
       hotels = readItems(o.dataDir, 'hotels.json', 'hotel');
     } catch (e) {
       return fail(`文件不合格：${message(e)}`);
     }
-    const changed = TRAVEL_SOP_SECTIONS.filter(
+    const changed = spec.filter(
       (s) =>
         s.locked &&
         sections.find((x) => x.key === s.key)?.text !== imageSections.find((x) => x.key === s.key)?.text &&
-        sections.find((x) => x.key === s.key)?.text !== splitSop(o.imageSop).find((x) => x.key === s.key)?.text,
+        sections.find((x) => x.key === s.key)?.text !== splitSop(imageSop, spec).find((x) => x.key === s.key)?.text,
     );
     if (changed.length) return fail(`locked_changed：sop.md 的锁定节与镜像不一致：${changed.map((s) => s.heading).join('、')}`);
-    const stored = brand ? switchPreamble(sections, splitSop(o.imageSop), imageSections) : sections;
-    const merged = mergeWithImage(stored, imageSections);
+    const stored = brand ? switchPreamble(sections, splitSop(imageSop, spec), imageSections) : sections;
+    const merged = mergeWithImage(stored, imageSections, spec);
     const sopText = joinSop(merged);
     const rendered = code.render(sopText);
     // 预算基线就是它自己：导入不会 over_budget
@@ -223,11 +241,9 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
       rendered,
       toolNames: code.toolNames,
       knownFields: code.knownFields,
-      baselineEditableChars: editableChars(merged),
-      rules: runtime.contractRules(brand ? { brand } : 'legacy'),
-      brand,
+      baselineEditableChars: editableChars(merged, spec),
+      ...contractInputs(runtime, brand, policy.policy),
       hardRequirements: code.render(''),
-      policy: policy.policy,
     });
     if (violations.length)
       return fail(`contract_failed：${violations.map((v) => `${v.code}${v.sectionKey ? `@${v.sectionKey}` : ''} ${v.detail}`).join('；')}`);
@@ -247,7 +263,7 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
           renderedPrompt: rendered,
           ...hashes,
           policy: policy.policy,
-          renderInputs: renderInputsFor(code.render, joinSop(imageSections), code.toolsJson, runtime.sopSections, brand, policy.policyHash),
+          renderInputs: renderInputsFor(code.render, joinSop(imageSections), code.toolsJson, spec, brand, policy.policyHash),
           changeNote: '首次导入',
           createdBy: null,
           createdByName: 'import-config',
@@ -277,8 +293,8 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
       // 已有内容：一致 = 当前已发布版本的可编辑节等于文件切出的可编辑节，且每条 active 条目与文件完全一致。
       // rerender 版本（只动锁定节）和 draft 条目不影响判定
       const pub = await readPublishedSop(tx);
-      const editable = TRAVEL_SOP_SECTIONS.filter((s) => !s.locked);
-      const pubMerged = pub ? mergeWithImage(pub.sections, imageSections) : [];
+      const editable = spec.filter((s) => !s.locked);
+      const pubMerged = pub ? mergeWithImage(pub.sections, imageSections, spec) : [];
       const sopSame =
         !!pub &&
         publishedPolicy(runtime.policy, pub).policyHash === policy.policyHash &&
@@ -304,8 +320,8 @@ export interface ExportOptions {
   db: Db;
   tenantSlug: string;
   outDir: string;
-  /** 镜像里 data/sop.md 的全文 */
-  imageSop: string;
+  /** 镜像 SOP 的全文；给函数时在读出租户的包之后才取，同 ImportOptions.imageSop */
+  imageSop: string | ((packId: string) => string);
   /** --image-sop：回到旧版本时，用目标版本的 data/sop.md 合并锁定节 */
   targetImageSop?: string;
   code?: CodeInputs;
@@ -316,7 +332,6 @@ export interface ExportOptions {
  * 只读库，应用可以照常在跑
  */
 export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
-  let code = o.code ?? imageCode();
   const tenant = await findTenantBySlug(o.db, o.tenantSlug);
   if (!tenant) return fail(`tenant_not_found：没有 slug 为「${o.tenantSlug}」的租户`);
   const { pub, items } = await withTenant(
@@ -335,14 +350,16 @@ export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
     return fail(`品牌快照不合格：${message(e)}`);
   }
   const policy = publishedPolicy(runtime.policy, pub);
+  let code = o.code ?? imageCode(runtime);
   if (brand) code = { ...code, render: tenantRenderer(runtime, brand) };
+  const spec = runtime.sopSections;
   let target: SopSection[];
   try {
-    target = tenantImage(runtime, o.targetImageSop ?? o.imageSop, brand);
+    target = tenantImage(runtime, o.targetImageSop ?? (typeof o.imageSop === 'string' ? o.imageSop : o.imageSop(pub.packId)), brand);
   } catch (e) {
     return fail(`目标镜像的 sop.md 不合格：${message(e)}`);
   }
-  const merged = mergeWithImage(pub.sections, target);
+  const merged = mergeWithImage(pub.sections, target, spec);
   const sopText = joinSop(merged);
   const rendered = code.render(sopText);
   const hashes = { ...promptHashes(rendered, code.toolsJson, sopText), policyHash: policy.policyHash };
@@ -355,10 +372,8 @@ export async function exportConfig(o: ExportOptions): Promise<TransferResult> {
       toolNames: code.toolNames,
       knownFields: code.knownFields,
       baselineEditableChars: null,
-      rules: runtime.contractRules(brand ? { brand } : 'legacy'),
-      brand,
+      ...contractInputs(runtime, brand, policy.policy),
       hardRequirements: code.render(''),
-      policy: policy.policy,
     });
     if (violations.length)
       return fail(
