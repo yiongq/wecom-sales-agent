@@ -161,6 +161,8 @@ export interface Session {
    * 重置时只清 resetKeys 里的键。旅游不写这个键（旅游会话的 state json 与 08 之前逐字节相同）；匿名接口不带它
    */
   packState?: Record<string, unknown>;
+  /** 08 R8：仅声明 amounts 的工具写入，最多留最新 200 条；重置清除，不进模型或匿名接口。 */
+  moneyLedger?: import('./core/pack-api.js').MoneyEntry[];
   /** 本次转人工的记录（R9）：交还、重置时清 */
   handoff?: HandoffRecord;
   /** 第一次转人工的时间，永不清 */

@@ -292,6 +292,7 @@ const SESSION_EXPOSURE = {
   consentAskCount: true,
   channelAccountId: true,
   packState: false,
+  moneyLedger: false,
 } as const satisfies Record<keyof Session, boolean>;
 /** 运行时挂在会话上、不在 Session 类型里的键：core/followup 的跟进记账，web/routes 的轮次上限标记（08 之前就随会话外露） */
 const RUNTIME_EXPOSURE = { followup: true, webTurnLimited: true } as const;
