@@ -1151,7 +1151,7 @@ async function channelChecks(env: PurgeEnv, label: string): Promise<void> {
     'kb_chunks：同一租户同一（source, ref）只能有一行',
     (await why(chunk('route', 'r-1', goodHash))) === 'kb_chunks_tenant_id_source_ref_uq',
   );
-  check('kb_chunks：source 目前只收线路', (await why(chunk('hotel', 'h-1', goodHash))) === 'kb_chunks_source_check');
+  check('kb_chunks：source 必须符合 kind 格式', (await why(chunk('Bad-Kind', 'bad', goodHash))) === 'kb_chunks_source_check');
   check(
     'kb_chunks：body_hash 必须是 64 位小写十六进制',
     (await why(chunk('route', 'r-2', 'A'.repeat(64)))) === 'kb_chunks_body_hash_check',

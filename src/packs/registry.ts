@@ -80,7 +80,7 @@ export function validatePackCatalog(pack: IndustryPack, runtime: Pick<PackRuntim
 export function runtimeById(id: string, sources: PackSources): PackRuntime | null {
   const pack = packById(id);
   if (!pack) return null;
-  const runtime = id === 'travel' ? legacyTravelRuntime(sources).runtime : createFixtureRuntime();
+  const runtime = id === 'travel' ? legacyTravelRuntime(sources).runtime : createFixtureRuntime(sources);
   if (
     runtime.id !== pack.id ||
     JSON.stringify(runtime.stages) !==

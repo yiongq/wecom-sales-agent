@@ -703,7 +703,7 @@ export const consents = pgTable(
 // 两张派生表，都带 tenant_id、套 01 的 RLS 模板（迁移里），agent_app 有 SELECT / INSERT / UPDATE / DELETE：丢了可以按产品库重建。
 // 每轮对话照旧不查库：装载与产品库变化时读进内存，相似度在进程内算，库里没有 HNSW。
 
-/** 目前只收线路：一条线路一块，正文是 PackRuntime.retrievalText 的输出；正文变了换 body_hash，身份是（source, ref） */
+/** 包内可检索的 kind：一条目一块，正文是 PackRuntime.retrievalText 的输出；身份是（source, ref） */
 export const kbChunks = pgTable(
   'kb_chunks',
   {
@@ -711,7 +711,7 @@ export const kbChunks = pgTable(
       .notNull()
       .references(() => tenants.id),
     id: uuid('id').notNull().defaultRandom(),
-    source: text('source', { enum: ['route'] }).notNull(),
+    source: text('source').notNull(),
     ref: text('ref').notNull(),
     body: text('body').notNull(),
     /** body 的 sha256 小写十六进制 */
@@ -720,7 +720,7 @@ export const kbChunks = pgTable(
   (t) => [
     primaryKey({ columns: [t.tenantId, t.id] }),
     unique('kb_chunks_tenant_id_source_ref_uq').on(t.tenantId, t.source, t.ref),
-    check('kb_chunks_source_check', sql`${t.source} IN ('route')`),
+    check('kb_chunks_source_check', sql`${t.source} ~ '^[a-z][a-z0-9_]{1,31}$'`),
     check('kb_chunks_body_hash_check', sql`${t.bodyHash} ~ '^[0-9a-f]{64}$'`),
   ],
 );

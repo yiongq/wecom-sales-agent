@@ -2,8 +2,10 @@
 import {
   deepFreeze,
   UNSTORABLE_TEXT,
+  type CatalogItem,
   type IndustryPack,
   type PackRuntime,
+  type PackSources,
   type SalesStage,
   type SopSectionDef,
 } from '../../core/pack-api.js';
@@ -65,7 +67,7 @@ export const fixture: IndustryPack = deepFreeze({
   ],
 });
 
-export function createFixtureRuntime(): PackRuntime {
+export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog'>): PackRuntime {
   const widgetText = z
     .string()
     .min(1)
@@ -184,7 +186,24 @@ export function createFixtureRuntime(): PackRuntime {
       dejargon: { english: {}, internal: [] },
     },
     thresholds: {},
-    retrievalItems: () => [],
+    retrievalItems: () => {
+      if (!sources) return [];
+      const snapshot = sources.currentCatalog();
+      return (snapshot.items.widget ?? []).map((payload, ord) => {
+        // CatalogItem.payload 暂留旅游兼容类型；快照里的真实数据已经过 widget schema 校验。
+        const item = payload as CatalogItem['payload'];
+        return {
+          kind: 'widget',
+          code: item.id,
+          ord,
+          status: 'active',
+          rev: snapshot.versions[`widget:${item.id}`] ?? 1,
+          payload: item,
+          updatedByName: null,
+          updatedAt: '',
+        };
+      });
+    },
     retrievalCacheFile: 'fixture-vectors.json',
     retrievalText: (item) => JSON.stringify(item.payload),
     followupTemplates: { idleMinutes: {}, byStage: {}, fallback: '需要帮助随时说', system: '写一句服务跟进' },
