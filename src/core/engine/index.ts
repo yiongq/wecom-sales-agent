@@ -1003,14 +1003,15 @@ export async function notifyPaid(
   if (!order?.sessionId) return null;
   const session = getSession(order.sessionId);
   if (!session) return null;
+  const terminal = terminalStageKey();
   const hooks = currentPack().runtime.engineHooks;
-  // 待 owner 确认（plan Open 2）：包可覆盖通用单付款确认，缺省用核心话术。
+  // owner 2026-10-24 定（plan Open 2）：包可覆盖通用单付款确认，缺省用核心话术。
   const text = cleanText(
     isLineOrder(order)
       ? (hooks.paidLineText?.(order) ?? `已收到您的付款${orderDisplay(order).totalText}，订单共${order.lines.length}项。`)
       : hooks.paidText(order),
   );
-  session.stage = terminalStageKey();
+  session.stage = terminal;
   const message: ChatMessage = { role: 'agent', content: text, at: Date.now() };
   session.messages.push(message);
   saveSession(session);

@@ -24,7 +24,18 @@ import type {
 import { auditRuns, describeAudit, type AuditLookups, type AuditPart } from '../../../src/shared/audit-text.js';
 import { isHandoffKind, type PaymentMode } from '../../../src/shared/conversation-types.js';
 import { ORIGINS, type OriginView } from '../../../src/shared/origin.js';
-import { absoluteTime, clockTime, dateText, dayKey, dayTime, digits, money, percent, relativeTime } from '../../../src/shared/format.js';
+import {
+  absoluteTime,
+  clockTime,
+  dateText,
+  dayKey,
+  dayTime,
+  digits,
+  formatYuan,
+  money,
+  percent,
+  relativeTime,
+} from '../../../src/shared/format.js';
 import { HANDOFF_NOTICE_TEXT, terminalStages } from '../../../src/shared/conversation.js';
 import { checkItem, type CheckIssue, type EntityType, type IndustryPack, valueAt } from '../../../src/shared/pack.js';
 import { sectionBody, SopStructureError } from '../../../src/shared/sop-sections.js';
@@ -433,9 +444,12 @@ export function monthlyRevenueKpi(summary: OrderSummary, view: OriginView = 'all
   return {
     key: 'monthlyRevenue',
     label: '本月成交额（元）',
-    value: digits(part.paidTotal),
+    value: Number.isInteger(part.paidTotal) ? digits(part.paidTotal) : formatYuan(Math.round(part.paidTotal * 100)),
     caption: view === 'all' ? ['本月已付款订单的总额'] : ['本月已付款订单的总额', originViewLabel(view)],
-    breakdown: part.pendingCount > 0 ? [`另有待付${money(part.pendingTotal)}`] : null,
+    breakdown:
+      part.pendingCount > 0
+        ? [`另有待付${Number.isInteger(part.pendingTotal) ? money(part.pendingTotal) : formatYuan(Math.round(part.pendingTotal * 100))}`]
+        : null,
   };
 }
 
@@ -530,9 +544,21 @@ export function dealsKpi(m: MetricsView, view: OriginView): StaticKpi {
     caption: [`${days}付过款的订单`],
     breakdown: null,
     rows: [
-      { label: 'AI独立成交', value: [`${digits(d.aiOnly)}单`, money(d.aiOnlyAmount)] },
+      {
+        label: 'AI独立成交',
+        value: [
+          `${digits(d.aiOnly)}单`,
+          Number.isInteger(d.aiOnlyAmount) ? money(d.aiOnlyAmount) : formatYuan(Math.round(d.aiOnlyAmount * 100)),
+        ],
+      },
       { label: '其中已退款', value: [`${digits(d.aiOnlyRefunded)}单`], sub: true },
-      { label: '人机协同成交', value: [`${digits(d.assisted)}单`, money(d.assistedAmount)] },
+      {
+        label: '人机协同成交',
+        value: [
+          `${digits(d.assisted)}单`,
+          Number.isInteger(d.assistedAmount) ? money(d.assistedAmount) : formatYuan(Math.round(d.assistedAmount * 100)),
+        ],
+      },
       { label: '其中已退款', value: [`${digits(d.assistedRefunded)}单`], sub: true },
     ],
   };

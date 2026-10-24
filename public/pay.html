@@ -505,6 +505,13 @@
             detail.className = 'k';
             detail.textContent = line.qtyText + ' · 单价' + line.unitPriceText;
             item.append(name, detail);
+            for (const [key, value] of Object.entries(line.attrs || {})) {
+              const attr = document.createElement('small');
+              attr.className = 'k';
+              attr.style.display = 'block';
+              attr.textContent = key + '：' + value;
+              item.append(attr);
+            }
             const amount = document.createElement('span');
             amount.className = 'v';
             amount.textContent = line.amountText;

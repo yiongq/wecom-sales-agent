@@ -13,7 +13,7 @@ const display = {
   totalFen: 133000,
   totalText: '1,330元',
   lines: [
-    { title: '合成方盒甲', qtyText: '200件', unitPriceText: '3.65元/件', amountText: '730元' },
+    { title: '合成方盒甲', qtyText: '200件', unitPriceText: '3.65元/件', amountText: '730元', attrs: { 交期: '7天', 备注: '<img src=x>' } },
     { title: '合成方盒乙', qtyText: '50件', unitPriceText: '12元/件', amountText: '600元' },
   ],
 };
@@ -27,7 +27,11 @@ for (const [status, want] of [
   const card = {
     querySelector(selector: string) {
       if (!elements.has(selector))
-        elements.set(selector, { textContent: selector === '.pc-btn' ? '立即支付' : '', hidden: true, classList: { add() {} } });
+        elements.set(selector, {
+          textContent: selector === '.pc-btn' ? '立即支付' : selector === '.pc-head' ? '云途定制旅行 · 订单' : '',
+          hidden: true,
+          classList: { add() {} },
+        });
       return elements.get(selector)!;
     },
   };
@@ -36,6 +40,9 @@ for (const [status, want] of [
   const fill = new Function('fetch', 'cnDate', `${fnSrc}; return fillPayCard;`)(fetch, (d: string) => d);
   await fill(card, { orderId: 'ord_pages' });
   assert.equal(card.querySelector('.pc-title').textContent, display.title);
+  assert.equal(card.querySelector('.pc-head').textContent, '订单');
+  assert.ok(card.querySelector('.pc-trip').textContent.includes('交期：7天'));
+  assert.ok(card.querySelector('.pc-trip').textContent.includes('备注：<img src=x>'));
   assert.equal(card.querySelector('.pc-num').textContent, '1,330元');
   assert.equal(card.querySelector('.pc-cur').hidden, true);
   assert.equal(card.querySelector('.pc-btn').textContent, want);
@@ -121,6 +128,10 @@ const initial = { id: 'ord_pages', status: 'pending_payment', display, payable: 
     for (const line of display.lines)
       for (const value of [line.title, line.qtyText, line.unitPriceText, line.amountText]) assert.ok(view.textContent.includes(value));
     assert.doesNotMatch(view.textContent, /出行|出发|线路|¥|NaN|undefined/);
+    assert.ok(view.textContent.includes('交期：7天'));
+    assert.ok(view.textContent.includes('备注：<img src=x>'));
+    assert.equal(view.querySelector('img'), null);
+    assert.ok(view.querySelector('small'));
     await m.click();
     assert.equal(m.posts(), 1);
     assert.equal(m.alerts.length, 1);

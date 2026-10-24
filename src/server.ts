@@ -29,7 +29,7 @@ import { streamSSE } from 'hono/streaming';
 import { isLineOrder, orderDisplay, orderTotalFen, type AnyOrder, type PublicLineOrder } from './core/order-view.js';
 import { handleMessage, notifyPaid, promptPrefix, sopFileText } from './engine.js';
 import { enterHandoff, loadHotels, loadRoutes, quoteFor, routeForProposal } from './tools.js';
-import { HANDOFF_REASON } from './handoff/record.js';
+import { HANDOFF_REASON, terminalStageKey } from './handoff/record.js';
 import {
   AssignedToOtherError,
   awaitCommit,
@@ -831,6 +831,7 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
     return c.json({ error: order.status === 'refund_pending' ? '订单退款中' : '订单已退款', order: publicAnyOrder(order) }, 409);
   }
   if (order.status !== 'paid') {
+    if (isLineOrder(order)) terminalStageKey();
     markOrderPaid(id);
     // 共享工作台的操作记一行审计（02 spec「收款流程」）：这条旧路径不要求先经 confirmOrder 确认价格
     // （advisor 模式下也一样，与三个新接口那条规则不同——这条路径从模拟支付时代就有，保持原样）
@@ -908,7 +909,7 @@ app.get('/pay/:orderId', async (c) => {
       o.status === 'superseded' ? '这笔订单已被新订单替代，请以最新发给您的支付链接为准' : `${display.summary} · 合计 ${display.totalText}`;
     return c.html(
       withHead(
-        html,
+        html.replaceAll('出行人数', '数量').replaceAll('出发日期', '交付日期'),
         `<title>${esc(title)}</title>\n` +
           `<meta name="description" content="${esc(desc)}">\n` +
           `<meta property="og:title" content="${esc(title)}">\n` +

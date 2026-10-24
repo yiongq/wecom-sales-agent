@@ -215,18 +215,18 @@ export const windowTurnIds = (s: Session): string[] =>
  * 订单所属会话的最小投影（A2「待付款」行用）：会话被清除（第 16 步之后才会出现）时为 null。不带短码——
  * console 一侧 conversationLabel(row, pack) 已经会从 id 现算 shortIdOf，这里重复发一遍只是多一个字段
  */
-function orderConversation(o: AnyOrder): OrderView['conversation'] {
+function orderConversation(o: AnyOrder, viewer: boolean): OrderView['conversation'] {
   const s = getSession(o.sessionId);
   if (!s) return null;
   return {
     id: s.id,
     ...(sandboxConversationOwner(s) ? { sandboxOwner: sandboxConversationOwner(s)! } : {}),
     channel: s.channel,
-    needSummary: currentPack().runtime.profileView(s.profile).title || null,
+    needSummary: titleOf(s, viewer),
   };
 }
 
-export function orderView(o: AnyOrder): OrderView {
+export function orderView(o: AnyOrder, viewer = false): OrderView {
   if (isLineOrder(o)) {
     const display = orderDisplay(o);
     return {
@@ -239,7 +239,7 @@ export function orderView(o: AnyOrder): OrderView {
       paidAt: o.paidAt != null ? iso(o.paidAt) : null,
       confirmed: o.confirmedAt != null ? { at: iso(o.confirmedAt), by: o.confirmedBy?.name ?? '' } : null,
       handoffBeforePaid: o.handoffBeforePaid ?? null,
-      conversation: orderConversation(o),
+      conversation: orderConversation(o, viewer),
     };
   }
   return {
@@ -269,7 +269,7 @@ export function orderView(o: AnyOrder): OrderView {
           },
         }
       : {}),
-    conversation: orderConversation(o),
+    conversation: orderConversation(o, viewer),
   };
 }
 
@@ -339,7 +339,7 @@ export function conversationDetail(
     ...(quote.quoteCard ? { quoteCard: quote.quoteCard } : {}),
     orders: s.orderIds.flatMap((id) => {
       const o = getAnyOrder(id);
-      return o ? [orderView(o)] : [];
+      return o ? [orderView(o, viewer)] : [];
     }),
     sendWindow: s.channel === 'wecom' ? sendWindow(s.id, now) : null,
     paymentMode: paymentMode(),

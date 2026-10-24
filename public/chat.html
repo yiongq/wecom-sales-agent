@@ -533,11 +533,12 @@
       if (!res.ok) throw new Error('http ' + res.status);
       const o = await res.json();
       if (o.display) {
+        q('.pc-head').textContent = '订单';
         q('.pc-title').textContent = o.display.title;
         q('.pc-num').textContent = o.display.totalText;
         q('.pc-cur').hidden = true;
         const trip = q('.pc-trip');
-        trip.textContent = o.display.summary + ' · ' + o.display.lines.map((line) => line.title + ' ' + line.qtyText + ' · 单价' + line.unitPriceText + ' · 小计' + line.amountText).join('；');
+        trip.textContent = o.display.summary + ' · ' + o.display.lines.map((line) => line.title + ' ' + line.qtyText + ' · 单价' + line.unitPriceText + ' · 小计' + line.amountText + Object.entries(line.attrs || {}).map(([key, value]) => ' · ' + key + '：' + value).join('')).join('；');
         trip.hidden = false;
         const done = { paid: '已支付 · 查看订单', superseded: '已被新订单替代', cancelled: '订单已取消' }[o.status];
         if (done) { q('.pc-btn').textContent = done; q('.pc-btn').classList.add('done'); }

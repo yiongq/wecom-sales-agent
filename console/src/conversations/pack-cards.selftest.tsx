@@ -22,7 +22,7 @@ const display: LineOrderView['display'] = {
   totalFen: 133000,
   totalText: '1,330元',
   lines: [
-    { title: '合成方盒甲', qtyText: '200件', unitPriceText: '3.65元/件', amountText: '730元' },
+    { title: '合成方盒甲', qtyText: '200件', unitPriceText: '3.65元/件', amountText: '730元', attrs: { 交期: '7天', 备注: '<img src=x>' } },
     { title: '合成方盒乙', qtyText: '50件', unitPriceText: '12元/件', amountText: '600元' },
   ],
 };
@@ -57,6 +57,10 @@ const lineText = text(lineHtml);
 for (const value of ['合成方盒甲', '200件', '3.65元/件', '730元', '合成方盒乙', '50件', '12元/件', '600元', '合计1,330元'])
   assert.ok(lineText.includes(value), value);
 assert.equal((lineHtml.match(/<li>/g) ?? []).length, 2);
+assert.ok(lineText.includes('交期：7天'));
+assert.ok(lineText.includes('备注：<img src=x>'));
+assert.ok(lineHtml.includes('&lt;img src=x&gt;'));
+assert.ok(!lineHtml.includes('<img '));
 assert.doesNotMatch(lineText, /出行|出发|线路|¥|NaN|undefined/);
 const escaped = { ...order, display: { ...display, lines: [{ ...display.lines[0]!, title: '<img src=x onerror=alert(1)>' }] } };
 assert.ok(renderToStaticMarkup(<OrderRow o={escaped} {...props} />).includes('&lt;img'));

@@ -915,7 +915,11 @@ export const consoleApi = new Hono<ConsoleEnv>()
       return fail(c, 403, { error: 'forbidden', detail: '只有所有者和管理员能看全部订单，其余只能看待付款的' });
     }
     const all = listAnyOrders().filter((o) => !status || o.status === status);
-    const body: OrderPage = { items: all.slice(0, limit).map(orderView), total: all.length, paymentMode: paymentMode() };
+    const body: OrderPage = {
+      items: all.slice(0, limit).map((order) => orderView(order, c.var.user!.role === 'viewer')),
+      total: all.length,
+      paymentMode: paymentMode(),
+    };
     return c.json(body, 200);
   })
   // 本月成交额：服务器时区的自然月里付了款的订单（作废的已不在内存里）；待付款是现在所有 pending_payment 的。

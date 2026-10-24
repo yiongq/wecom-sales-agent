@@ -135,17 +135,18 @@ if (process.argv[2] !== 'worker') {
     assert.deepEqual(projected.display, display);
     assert.equal(projected.totalFen, 133000);
     assert.equal(projected.totalText, '1,330元');
-    for (const text of [JSON.stringify(publicBody), head, JSON.stringify(card), JSON.stringify(projected)]) {
+    for (const text of [JSON.stringify(publicBody), html, JSON.stringify(card), JSON.stringify(projected)]) {
       assert.doesNotMatch(text, /出行|出发|线路/);
+    }
+    for (const text of [JSON.stringify(publicBody), head, JSON.stringify(card), JSON.stringify(projected)]) {
       assert.doesNotMatch(text, /routeId|routeTitle|travelers|departDate|totalPrice/);
     }
-    // HTML 模板仍含旧客户端脚本，第 16 步再改；这里验证本步负责的 head 注入。
     const escaped = await makeOrder('readers-escape');
     escaped.order.lines[0].title = '<合成&"$&>';
     store.saveOrder(escaped.order);
     const escapedHtml = await (await get(`/pay/${escaped.order.id}`)).text();
     assert.ok(escapedHtml.includes('&lt;合成&amp;&quot;$&amp;&gt;'));
-    console.log('ORDER READERS PASS：133000分、公开白名单、支付 head、同步企微卡、后台两行投影，无旅游字段/词，HTML 转义');
+    console.log('ORDER READERS PASS：133000分、公开白名单、支付完整 HTML 无旅游词、同步企微卡、后台两行投影，无旅游字段，HTML 转义');
 
     // 方案书能力门禁与旅游回归由同一个 app 验证。
     for (const url of ['/proposal/r-yunnan-mid/2', '/proposal/r-yunnan-mid', '/api/proposal/r-yunnan-mid', '/proposal.html']) {
@@ -202,6 +203,55 @@ if (process.argv[2] !== 'worker') {
     assert.ok(!(await legacyList.json()).some((o: { id: string }) => o.id === order.id));
     console.log('ORDER READERS PASS：A2 与会话详情包含通用单，旧管理列表不混入；证明包方案书/草稿路由 404');
 
+    // 只读成员关联订单的标题与会话行使用同一个打码入口，两条 HTTP 出口都不能漏号码。
+    const originalProfile = session.profile;
+    session.profile = { attrs: { color: '红', size: '13812345678' } };
+    store.saveSession(session);
+    await store.flushSession(session.id);
+    const viewerLoginBody = JSON.stringify({ email: 'viewer-readers@example.com', password: 'readers-test-password' });
+    await t.pg.exec('SET ROLE agent_platform');
+    try {
+      const made = await accounts.createUser(t.db, {
+        tenantSlug: tenant.slug,
+        email: 'viewer-readers@example.com',
+        name: '合成只读成员',
+        role: 'viewer',
+        password: async () => 'readers-test-password',
+      });
+      assert.equal(made.code, 0, made.message);
+    } finally {
+      await t.pg.exec('SET ROLE agent_app');
+    }
+    const viewerLogin = await app.request('/api/console/auth/login', {
+      method: 'POST',
+      body: viewerLoginBody,
+      headers: {
+        'content-type': 'application/json',
+        'content-length': String(Buffer.byteLength(viewerLoginBody)),
+        'x-forwarded-for': '198.51.100.50',
+      },
+    });
+    assert.equal(viewerLogin.status, 200);
+    const viewerCookie = (viewerLogin.headers.get('set-cookie') ?? '').split(';')[0]!;
+    const viewerGet = (url: string) =>
+      app.request(`/api/console${url}`, { headers: { cookie: viewerCookie, 'x-forwarded-for': '198.51.100.51' } });
+    const viewerDetailResponse = await viewerGet(`/conversations/${session.id}`);
+    assert.equal(viewerDetailResponse.status, 200);
+    const viewerDetail = await viewerDetailResponse.json();
+    assert.equal(viewerDetail.row.needSummary, '红*******5678');
+    assert.equal(viewerDetail.orders[0].conversation.needSummary, viewerDetail.row.needSummary);
+    const viewerOrdersResponse = await viewerGet('/orders?status=pending_payment');
+    assert.equal(viewerOrdersResponse.status, 200);
+    const viewerOrders = await viewerOrdersResponse.json();
+    assert.equal(viewerOrders.items.find((item: OrderView) => item.id === order.id).conversation.needSummary, '红*******5678');
+    assert.doesNotMatch(JSON.stringify([viewerDetail, viewerOrders]), /13812345678/);
+    const ownerDetail = await (await consoleGet(`/conversations/${session.id}`)).json();
+    assert.equal(ownerDetail.orders[0].conversation.needSummary, '红13812345678');
+    session.profile = originalProfile;
+    store.saveSession(session);
+    await store.flushSession(session.id);
+    console.log('ORDER READERS PASS：viewer 会话详情与待付款列表的关联标题均打码，所有者仍看原值');
+
     let seenOrderIds: string[] = [];
     bindPack(
       {
@@ -225,7 +275,46 @@ if (process.argv[2] !== 'worker') {
     bindPack(runtime, runtime.defaultBrand);
     console.log('ORDER READERS PASS：引擎 orderSources 包含本会话通用单');
 
-    // 待 owner 确认（plan Open 2）：默认确认与包覆盖两条路径都要发消息、进入终态。
+    const unusable = await makeOrder('readers-no-terminal');
+    confirmOrder(unusable.order.id, actor);
+    await store.flushSession(unusable.session.id);
+    const configBefore = rt.config.loaded!;
+    const stateBefore = JSON.stringify([unusable.order, unusable.session]);
+    const { withTenant: auditTx } = await import('./db/client.js');
+    const { readAudit: audits } = await import('./db/repo/audit.js');
+    const auditBefore = await auditTx(t.db, ctx, (tx) => audits(tx, { limit: 100, action: 'order.mark_paid' }));
+    let paidHookCalled = false;
+    rt.config.loaded = { ...configBefore, pack: { ...pack, stages: pack.stages.filter((stage) => !stage.terminal) } };
+    bindPack(
+      {
+        ...runtime,
+        stages: runtime.stages.filter((stage) => !stage.terminal),
+        engineHooks: {
+          ...runtime.engineHooks,
+          paidLineText: () => {
+            paidHookCalled = true;
+            return '不应调用';
+          },
+        },
+      },
+      runtime.defaultBrand,
+    );
+    try {
+      await assert.rejects(notifyPaid(unusable.order.id), /__fixture.*终态/);
+      assert.equal(paidHookCalled, false);
+      const refused = await app.request(`/api/orders/${unusable.order.id}/pay`, { method: 'POST' });
+      assert.equal(refused.status, 500);
+      await assert.rejects(markPaidByAdvisor(unusable.order.id, actor), /__fixture.*终态/);
+      assert.equal(JSON.stringify([unusable.order, unusable.session]), stateBefore);
+      const auditAfter = await auditTx(t.db, ctx, (tx) => audits(tx, { limit: 100, action: 'order.mark_paid' }));
+      assert.deepEqual(auditAfter, auditBefore);
+    } finally {
+      rt.config.loaded = configBefore;
+      bindPack(runtime, runtime.defaultBrand);
+    }
+    console.log('ORDER READERS PASS：缺终态在通知、模拟付款与顾问收款前拒绝，不改订单/会话、不记收款审计');
+
+    // owner 2026-10-24 定（plan Open 2）：默认确认与包覆盖两条路径都要发消息、进入终态。
     assert.equal(runtime.engineHooks.paidLineText, undefined);
     const paid = await app.request(`/api/orders/${order.id}/pay`, { method: 'POST' });
     assert.equal(paid.status, 200, await paid.clone().text());

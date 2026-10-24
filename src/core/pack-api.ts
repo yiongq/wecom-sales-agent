@@ -843,7 +843,7 @@ export interface EnginePackHooks {
   createOrderTool: string | null;
   resetSession(session: Session): void;
   paidText(order: Order): string;
-  /** 待 owner 确认（plan Open 2）：通用单付款确认，未实现时由核心给默认话术。 */
+  /** owner 2026-10-24 定（plan Open 2）：通用单付款确认，未实现时由核心给默认话术。 */
   paidLineText?(order: LineOrder): string;
   /** 07 R19：退款文字由包提供，核心与后台只负责提交和通知。 */
   refund?: {

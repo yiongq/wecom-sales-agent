@@ -717,6 +717,11 @@ export function OrderRow({
                 <p className="wb-order-line">{cjk(line.title)}</p>
                 <p>{cjk(`${line.qtyText} · 单价${line.unitPriceText}`)}</p>
                 <p>{cjk(`小计${line.amountText}`)}</p>
+                {Object.entries(line.attrs ?? {}).map(([key, value]) => (
+                  <p className="wb-order-status" key={key}>
+                    {cjk(`${key}：${value}`)}
+                  </p>
+                ))}
               </li>
             ))}
           </ul>

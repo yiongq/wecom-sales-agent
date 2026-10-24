@@ -47,7 +47,13 @@ export function legacyTravelRuntime(sources: PackSources): ReturnType<typeof cre
 }
 
 /** 08 R2、R9：纯内存校验，不读配置、不改传入对象；失败点名包与 kind。 */
-export function validatePackCatalog(pack: IndustryPack, runtime: Pick<PackRuntime, 'catalog'>): void {
+export function validatePackCatalog(
+  pack: IndustryPack,
+  runtime: Pick<PackRuntime, 'catalog'> & Partial<Pick<PackRuntime, 'priceLine' | 'stages'>>,
+): void {
+  if (runtime.priceLine && (!pack.stages.some((stage) => stage.terminal) || !runtime.stages?.some((stage) => stage.terminal))) {
+    throw new Error(`行业包 ${pack.id} 声明了 priceLine，但没有终态阶段`);
+  }
   const entityKinds = new Set(pack.entities.map((entity) => entity.kind));
   for (const kind of new Set([...entityKinds, ...Object.keys(runtime.catalog)])) {
     if (!entityKinds.has(kind) || !Object.hasOwn(runtime.catalog, kind)) {

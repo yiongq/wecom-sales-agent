@@ -19,6 +19,7 @@ import { cleanText } from '../shared/text.js';
 import { getAnyOrder, getSession, markOrderPaid, queueAudit, saveOrder, saveSession, storeLagging, StoreLaggingError } from '../store.js';
 import { isLineOrder, orderTotalFen, type AnyOrder } from '../core/order-view.js';
 import type { OrderStatus } from '../types.js';
+import { terminalStageKey } from '../handoff/record.js';
 import { paymentMode } from './mode.js';
 
 /** 订单状态不允许这个动作 → 409 order_state（unconfirmed：advisor 模式下还没确认价格就确认收款） */
@@ -97,6 +98,7 @@ export async function markPaidByAdvisor(orderId: string, actor: Actor): Promise<
   if (o.status !== 'pending_payment') throw new OrderStateError(o.status);
   if (paymentMode() === 'advisor' && o.confirmedAt == null) throw new OrderStateError('unconfirmed');
   if (storeLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId);
+  if (isLineOrder(o)) terminalStageKey();
   o.paidMarkedBy = who(actor);
   markOrderPaid(o.id);
   audit(o, actor, { action: 'order.mark_paid', diff: isLineOrder(o) ? { totalFen: orderTotalFen(o) } : { totalPrice: o.totalPrice } });
