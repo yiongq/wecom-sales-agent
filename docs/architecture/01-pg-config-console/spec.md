@@ -1,6 +1,8 @@
 # 01 · Postgres 底座 + 配置入库 + 后台 v0
 
 Status: implemented
+Superseded in part by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md) — 产品库的 kind 只能是 `route` / `hotel`：「编辑规则」的 `CatalogKind`（第 564 行）、「DDL」里 `catalog_items.kind` 的 CHECK（第 781 行）、「后台 API 与页面」`/catalog/:kind` 的取值（第 1016–1021 行）、「导入、导出与回滚」`catalog-fix` 的 `--kind route|hotel`（第 1097 行）；「产品库：存储、快照、编辑、检索」导入时用 `RouteSchema` / `HotelSchema` 校验（第 550 行）；启动时没有 active 线路就拒绝：「两种模式与启动装载」第 7 步（第 236 行）、验收 8 末条（第 1244 行）与验收 13 的「没有 active 线路」（第 1283 行）。kind 改由包定义，库里只做格式检查，写入用包的 schema 校验，启动检查由包给出；旅游的取值、schema、`no_active_routes` 与文案都不变（08 R2）。按 08 的 plan 落地。
+Amended by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md)（只做新增，全文见该 spec 顶部 `Amends:`：「两种模式与启动装载」的 `CatalogSnapshot` 加 `items`，`routes` / `hotels` 保留（第 185–192 行）；`ConfigStartupError` 的原因加 `catalog_startup`（第 261–266 行），见 08 R2）。
 Superseded in part by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md) — 「启动重渲染」第 5 步「直接用存下的行」的条件加「`policyHash` 也相同」，第 6 步的原因清单与「审计」表 `sop.rerender` 的 `causes` 枚举加 `policy`（07 R1）。
 Amended by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md)（只做新增，全文见该 spec 顶部 `Amends:`：「版本与发布」「渲染与哈希」「导入、导出与回滚」的 `sop_versions.policy` 列、`render_inputs.policyHash`、导出与导入的 `policy.json`、违规码 `policy_invalid` / `policy_mismatch`、发布请求的 `gateRunId` / `override`、审计动作 `sop.policy_draft`，见 07 R1、R4、R5、R7）。
 Superseded in part by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md) — 不变量 3、23、24，R9 末句的单租户装载与公开路由（05 R1、R2、R4、R7）。
