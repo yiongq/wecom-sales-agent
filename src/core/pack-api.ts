@@ -208,6 +208,12 @@ export const BRAND_FIELDS = [
 /** 当前工具的 wire 结果仍是 JSON 字符串，不在本步改变工具契约。 */
 export type ToolResult = string;
 
+/** 08 R8：确定性工具给出的整数分；标签仅供追溯，不进入模型上下文。 */
+export interface MoneyEntry {
+  fen: number;
+  label: string;
+}
+
 export interface ToolSpec<Context = ToolContext> {
   def: ToolDef;
   sideEffects: ReadonlyArray<'session' | 'order' | 'handoff' | 'notify'>;
@@ -215,6 +221,7 @@ export interface ToolSpec<Context = ToolContext> {
   blocksRetry: boolean;
   onReuse?(result: ToolResult, ctx: Context): void;
   execute(args: unknown, ctx: Context): Promise<ToolResult>;
+  amounts?(result: ToolResult, args: unknown): readonly MoneyEntry[];
 }
 
 // 04 第 11 步：模型输入与离线策略，旅游解析留在包内。
@@ -593,6 +600,7 @@ export interface ReplyGuardContext extends GuardContext<GuardContextTypes & { fl
 }
 
 export { replyStep } from './guards/reply-step.js';
+export { moneyProvenanceStep, moneyProvenanceFollowupStep } from './money-provenance.js';
 
 /** 06 R21：一致性检查的登记类型；通用的检查函数在 core/consistency.ts，包只登记文字和规则 */
 export type {

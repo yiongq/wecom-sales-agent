@@ -66,7 +66,7 @@ import type { ConfigDrift } from '../shared/console-api.js';
 import { deepFreeze } from '../shared/freeze.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { checkSopContract } from '../sop/contract.js';
-import { joinSop, mergeWithImage, splitSop, type SectionSpec, type SopSection } from '../sop/sections.js';
+import { decodeSopFile, joinSop, mergeWithImage, splitSop, type SectionSpec, type SopSection } from '../sop/sections.js';
 import { contractInputs, readImageSop, tenantImage, tenantRenderer, switchPreamble, preambleWarning } from './brand.js';
 import { readPackFile } from './pack-file.js';
 import { promptHashes, renderInputsFor, sha256, publishedBrand, policySnapshot, publishedPolicy } from './hashes.js';
@@ -132,8 +132,8 @@ export interface ConfigDeps {
   /** null = 锁在别人手里 */
   lock(tenantId: string): Promise<TenantLock | null>;
   /**
-   * 镜像 SOP 的全文，装载时读一次，之后的发布、回滚、导出都用这一份。这里的值只给旅游租户用（自测注入）；
-   * 生产组合根（usePackRuntime）留空，装载时按租户的包现读：旅游 data/sop.md，其他包 data/packs/<id>/sop.md（08 R10）。
+   * 旅游租户的镜像 SOP 全文（data/sop.md），装载时用一次，之后的发布、回滚、导出都用这一份。生产组合根在连库之前读并校验它
+   * （读不到是 image_sop_invalid）。非旅游包不用它：解析出租户的包之后读 data/packs/<id>/sop.md（08 R10）。
    */
   imageSop: string;
   /** JSON.stringify(toolDefs)，与 promptPrefix().tools 相同 */
@@ -180,7 +180,7 @@ export type ConfigStartupReason =
   | 'catalog_startup'
   | 'embed_endpoint_forbidden'
   | 'gate_unavailable'
-  // 待 owner 确认（plan Open 1）：非旅游包只支持模板模式，租户没有品牌时用它拒绝启动。owner 选别的写法时只改 loadConfig 里抛它的那一处。
+  // owner 2026-10-24 定（plan Open 1）：非旅游包只支持模板模式，租户没有品牌时用它拒绝启动。
   | 'brand_required';
 export class ConfigStartupError extends Error {
   constructor(
@@ -210,16 +210,26 @@ export function runtimeOf(d: Pick<ConfigDeps, 'runtime'>): PackRuntime {
 }
 
 /**
- * 08 R10：租户的镜像文本，解析出租户的包之后才取。旅游照旧是 data/sop.md（自测可经 deps.imageSop 注入；生产组合根按包现读）；
- * 其他包读 data/packs/<id>/sop.md，永远不用注入的旅游文本。读不到或编码不合格是 image_sop_invalid。
+ * 08 R10：租户的镜像文本，解析出租户的包之后才取。旅游就是 deps.imageSop（生产组合根在连库之前读好的 data/sop.md，自测可注入）；
+ * 其他包读 data/packs/<id>/sop.md，永远不用旅游的文本。读不到或编码不合格是 image_sop_invalid。
  */
-export function imageSopOf(d: Pick<ConfigDeps, 'usePackRuntime' | 'imageSop'>, packId: string): string {
-  if (packId === 'travel' && !d.usePackRuntime) return d.imageSop;
+export function imageSopOf(d: Pick<ConfigDeps, 'imageSop'>, packId: string): string {
+  if (packId === 'travel') return d.imageSop;
   try {
     return readImageSop(packId);
   } catch (e) {
     throw startup('image_sop_invalid', `读不到行业包 ${packId} 的镜像 SOP：${message(e)}`);
   }
+}
+
+/**
+ * owner 2026-10-24 定（plan Open 1）：非旅游包只支持模板模式（08 R10），没有品牌就不能启动，也不能写出已发布的 SOP。
+ * 启动、沙箱模板复制、首次导入都经这一处，原因都是 brand_required；owner 选别的写法时只改这里。
+ * subject 点名是谁缺品牌（租户或沙箱模板），进错误文案。
+ */
+export function assertBrandForPack(runtime: Pick<PackRuntime, 'id'>, brand: BrandProfile | null, subject: string): void {
+  if (runtime.id !== 'travel' && brand === null)
+    throw startup('brand_required', `${subject}的行业包「${runtime.id}」只支持模板模式，要先设置品牌档案`);
 }
 
 // ---------------- 状态 ----------------
@@ -392,6 +402,14 @@ export async function productionConfigDeps(
   for (const k of ['SOP_PATH', 'ROUTES_PATH', 'HOTELS_PATH']) {
     if (env[k]) console.warn(`[config] DB 模式下忽略 ${k}：它只给文件模式的测试夹具与回归跑法用`);
   }
+  // 旅游的镜像照旧在连库之前读并校验：镜像缺失与连不上库同时发生时，先报 image_sop_invalid（08 R10 不改旅游的启动顺序）
+  const imagePath = path.join(process.cwd(), 'data', 'sop.md');
+  let imageSop: string;
+  try {
+    imageSop = decodeSopFile(fs.readFileSync(imagePath));
+  } catch (e) {
+    throw startup('image_sop_invalid', `读不到镜像里的 ${imagePath}：${message(e)}`);
+  }
   let opened: Awaited<ReturnType<typeof openDb>>;
   try {
     opened = await openDb(url);
@@ -404,9 +422,9 @@ export async function productionConfigDeps(
     closeDb: opened.close,
     tenantSlug,
     lock: (tenantId) => holdTenantLock(url, tenantId),
-    // 08 R10：下面五项都要等 loadConfig 解析出租户的包之后，由 usePackRuntime 整体换成该包的（镜像按包读 data/sop.md 或
-    // data/packs/<id>/sop.md），所以这里是占位，不取旅游缺省；没换就被用到是 bug，渲染直接抛。
-    imageSop: '',
+    imageSop,
+    // 08 R10：下面四项都要等 loadConfig 解析出租户的包之后，由 usePackRuntime 整体换成该包的，所以这里是占位，不取旅游缺省；
+    // 没换就被用到是 bug，渲染直接抛。
     toolsJson: '[]',
     toolNames: [],
     knownFields: [],
@@ -751,7 +769,7 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
 /**
  * deps 为 null：文件模式，装配同目录品牌。否则依次执行，前 8 步只读（第 0 步校验嵌入端点，不碰库）：
  *   0 嵌入端点在境内清单里（07 R15）→ 1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包；
- *   非旅游包没有品牌拒绝（brand_required，08 R10），再按租户的包读镜像 → 4 取租户锁
+ *   非旅游包没有品牌拒绝（brand_required，08 R10），再读它自己的镜像（旅游的 data/sop.md 在连库之前已读） → 4 取租户锁
  *   → 5 切分并校验镜像 → 6 装载已发布 SOP，校验完整性，算出合并、渲染与契约结果 → 7 装载产品库快照（至少一条 active 线路）
  *   → 8 按节、按条目打印 DB 与镜像 data/ 的差异 → 9 需要时写入 rerender 版本 → 10 装上缓存。
  * 任何一步失败都以 ConfigStartupError reject，释放锁、关闭连接池，不留半装载状态
@@ -846,10 +864,9 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
       };
     }
     const brand = (await dbStep('读待生效品牌', () => readBrand(d.db, tenant.id))) ?? null;
-    // 待 owner 确认（plan Open 1）：非旅游包只支持模板模式（08 R10），没有品牌就拒绝启动。owner 选别的写法时只改这一处。
-    if (runtime.id !== 'travel' && brand === null)
-      throw startup('brand_required', `租户「${d.tenantSlug}」的行业包「${runtime.id}」只支持模板模式，要先设置品牌档案`);
-    // 08 R10：镜像在解析出租户的包之后才读（旅游 data/sop.md，其他包 data/packs/<id>/sop.md）
+    // owner 2026-10-24 定（plan Open 1）：非旅游包只支持模板模式（08 R10），没有品牌就拒绝启动，规则在 assertBrandForPack
+    assertBrandForPack(runtime, brand, `租户「${d.tenantSlug}」`);
+    // 08 R10：旅游用连库之前读好的 data/sop.md，其他包在这里（解析出租户的包之后）读 data/packs/<id>/sop.md
     const legacyImage = imageSopOf(d, runtime.id);
     d = { ...d, brand, runtime };
     if (brand) d = { ...d, render: tenantRenderer(runtime, brand) };

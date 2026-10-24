@@ -45,6 +45,23 @@ export function validateGuardSteps<Context extends GuardContext>(steps: readonly
   // 跟进表没有 turn_failure；主回复只要带失败计数，就必须先经过后置接管检查。
   const failure = positions.get('turn_failure');
   const takeover = positions.get('takeover_check:post');
+  const money = positions.get('money_provenance');
+  // 跟进表没有 stage_advance / 后置接管 / 失败计数；它只删句。
+  if (money !== undefined && (positions.has('stage_advance') || takeover !== undefined || failure !== undefined)) {
+    const step = steps[money]!;
+    if (!step.after?.includes('stage_advance')) {
+      throw new GuardStepValidationError(step.id, 'stage_advance', '金额出处必须声明 after stage_advance');
+    }
+    if (!step.writes?.includes('guardHit')) {
+      throw new GuardStepValidationError(step.id, 'guardHit', '金额出处必须声明写入 guardHit');
+    }
+    for (const id of ['takeover_check:post', 'turn_failure']) {
+      const position = positions.get(id);
+      if (position === undefined || money >= position) {
+        throw new GuardStepValidationError(step.id, id, '金额出处必须排在后置接管检查与交互失败判定之前');
+      }
+    }
+  }
   if (failure !== undefined && (takeover === undefined || takeover >= failure)) {
     throw new GuardStepValidationError('turn_failure', 'takeover_check:post', '后置接管检查必须排在交互失败判定之前');
   }

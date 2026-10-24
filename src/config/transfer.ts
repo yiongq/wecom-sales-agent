@@ -15,7 +15,7 @@ import { checkSopContract } from '../sop/contract.js';
 import { decodeSopFile, editableChars, joinSop, mergeWithImage, splitSop, type SopSection } from '../sop/sections.js';
 import { runtimeById } from '../packs/registry.js';
 import { assertKind } from './catalog.js';
-import { packSources } from './source.js';
+import { assertBrandForPack, ConfigStartupError, packSources } from './source.js';
 import { contractInputs, tenantImage, tenantRenderer, switchPreamble } from './brand.js';
 import { promptHashes, publishedBrand, policySnapshot, publishedPolicy, renderInputsFor, type PromptHashes } from './hashes.js';
 
@@ -86,6 +86,8 @@ export async function writeTemplateConfig(
   if (!runtime) throw new Error('pack_unknown');
   for (const row of items) assertKind(pub.packId, row.kind);
   const brand = publishedBrand(pub.renderInputs).brand;
+  // 非旅游包的模板没有品牌快照就不复制：在开通事务提交之前失败，与启动同一个原因 brand_required（owner 2026-10-24 定，plan Open 1）
+  assertBrandForPack(runtime, brand, '沙箱模板');
   const policy = publishedPolicy(runtime.policy, pub);
   const render = brand ? tenantRenderer(runtime, brand) : (sop: string) => renderPackSystemPrompt(sop, runtime.legacy.hardRequirements);
   const imageSections = tenantImage(runtime, imageSop, brand);
@@ -180,8 +182,13 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
     return fail(message(e));
   }
   const brand = (await readBrand(o.db, tenant.id)) ?? null;
-  // 待 owner 确认（plan Open 1）：非旅游包只支持模板模式（08 R10），没有品牌的租户启动会被 brand_required 拒绝，所以不导入
-  if (runtime.id !== 'travel' && brand === null) return fail(`brand_required：行业包「${runtime.id}」只支持模板模式，租户要先设置品牌档案`);
+  // owner 2026-10-24 定（plan Open 1）：非旅游包只支持模板模式（08 R10），没有品牌的租户启动会被 brand_required 拒绝，所以不导入
+  try {
+    assertBrandForPack(runtime, brand, `租户「${o.tenantSlug}」`);
+  } catch (e) {
+    if (e instanceof ConfigStartupError) return fail(e.message);
+    throw e;
+  }
   // 镜像在解析出租户的包之后才取
   let imageSop: string;
   try {
