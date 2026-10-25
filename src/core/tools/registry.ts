@@ -1,5 +1,5 @@
 // 04 R2/R3：核心只认工具声明与钩子；缓存命中与是否重试由第 11 步模型循环决定。
-import type { ToolCallRecorder, ToolContext, ToolHooks, ToolResult, ToolSpec } from '../pack-api.js';
+import type { Session, ToolCallRecorder, ToolContext, ToolHooks, ToolResult, ToolSpec } from '../pack-api.js';
 
 export function createToolRegistry<Context = ToolContext>(tools: readonly ToolSpec<Context>[], hooks: ToolHooks<Context> = {}) {
   const byName = new Map<string, ToolSpec<Context>>();
@@ -21,6 +21,17 @@ export function createToolRegistry<Context = ToolContext>(tools: readonly ToolSp
       const actualArgs = prepared && 'args' in prepared ? prepared.args : args;
       recorder?.recordCall(name, actualArgs);
       const result = !tool ? JSON.stringify({ error: `未知工具: ${name}` }) : await tool.execute(actualArgs, ctx);
+      if (tool?.amounts) {
+        const entries = tool.amounts(result, actualArgs);
+        if (entries.some((entry) => !Number.isSafeInteger(entry.fen) || entry.fen < 0 || [...entry.label].length > 20)) {
+          throw new Error(`工具 ${name} 的 amounts 声明无效`);
+        }
+        if (entries.length) {
+          if (!ctx || typeof ctx !== 'object' || !('session' in ctx)) throw new Error(`工具 ${name} 记账缺少会话`);
+          const session = ctx.session as Session;
+          session.moneyLedger = [...(session.moneyLedger ?? []), ...entries.map(({ fen, label }) => ({ fen, label }))].slice(-200);
+        }
+      }
       recorder?.recordResult(name, result);
       if (tool) hooks.afterTool?.(name, result, ctx);
       return result;

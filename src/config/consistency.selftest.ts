@@ -22,11 +22,12 @@ const config = await withoutTenantScope(() => import('./source.js'));
 await config.initConfig(null);
 const { legacyTravelRuntime } = await withoutTenantScope(() => import('../packs/registry.js'));
 const { createFixtureRuntime } = await withoutTenantScope(() => import('../packs/__fixture/runtime.js'));
-const { tenantImage } = await withoutTenantScope(() => import('./brand.js'));
-const { splitSop, joinSop, TRAVEL_SOP_SECTIONS, withBody, sectionBody } = await withoutTenantScope(() => import('../sop/sections.js'));
+const { tenantImage, contractInputs } = await withoutTenantScope(() => import('./brand.js'));
+const { splitSop, joinSop, withBody, sectionBody } = await withoutTenantScope(() => import('../sop/sections.js'));
+const { TRAVEL_SOP_SECTIONS } = await withoutTenantScope(() => import('../packs/travel/sop.js'));
 const { checkSopContract } = await withoutTenantScope(() => import('../sop/contract.js'));
-const { renderSystemPrompt } = await withoutTenantScope(() => import('../prompt/system.js'));
-const { toolDefs } = await withoutTenantScope(() => import('../tool-defs.js'));
+const { renderSystemPrompt: renderWithRequirements } = await withoutTenantScope(() => import('../core/prompt.js'));
+const { toolDefs } = await withoutTenantScope(() => import('../packs/travel/tool-defs.js'));
 const cons = await import('../packs/travel/consistency.js');
 const { MODE_CTX, declaredOrigin, FIXED_REPLY_STEPS } = await import('../packs/travel/fixed-replies.js');
 const { replyLineCount } = await import('../core/guards/shape.js');
@@ -41,6 +42,8 @@ type ConsistencyText = import('../core/consistency.js').ConsistencyText;
 const travel = legacyTravelRuntime(packSources());
 const consistency = travel.consistency;
 const runtime = travel.runtime;
+// 08 R5：旧版（无品牌）的 system prompt = SOP + 绑定包的旧版硬性要求；原先 prompt/system.ts 里绑旅游的单参数入口已收走，自测按运行时自己取
+const renderSystemPrompt = (sop: string) => renderWithRequirements(sop, runtime.legacy.hardRequirements);
 
 let passed = 0;
 const failures: string[] = [];
@@ -103,7 +106,7 @@ const fixed = await cons.flattenFixed(allFixedReplies);
 
 // ---------------- 渲染后的 SOP ----------------
 const sopMd = fs.readFileSync(path.join(root, 'data', 'sop.md'), 'utf8');
-const legacySop = splitSop(sopMd);
+const legacySop = splitSop(sopMd, TRAVEL_SOP_SECTIONS);
 const templateSop = tenantImage(runtime, sopMd, shanhaiBrand);
 const sopUnits = [...cons.splitSopUnits(legacySop), ...cons.splitSopUnits(templateSop)];
 
@@ -385,16 +388,20 @@ const SOP_VS_WORDLIST_ITEMS = (): ConsistencyText[] => {
 {
   const spec = TRAVEL_SOP_SECTIONS;
   const toolNames = toolDefs.map((t) => t.function.name);
-  const contract = (sections: ReturnType<typeof splitSop>, over: { consistency?: boolean } = {}) =>
-    checkSopContract({
+  // 08 R10：契约检查的包相关输入取绑定的旅游包；consistency 传 false 时关掉一致性检查
+  const contract = (sections: ReturnType<typeof splitSop>, over: { consistency?: boolean } = {}) => {
+    const inputs = contractInputs(runtime, null, runtime.policy!.defaults);
+    return checkSopContract({
       sections,
       imageSections: legacySop,
       rendered: renderSystemPrompt(joinSop(sections)),
       toolNames,
       knownFields: runtime.knownFields.names,
       baselineEditableChars: null,
-      ...over,
+      ...inputs,
+      consistency: over.consistency === false ? null : inputs.consistency,
     });
+  };
   const edit = (key: string, extra: string) =>
     legacySop.map((s, i) => (s.key === key ? withBody(spec[i]!, `${sectionBody(s, spec[i]!)}\n${extra}`, i === spec.length - 1) : s));
   const draft = edit('tone', '- 报价要写成「起价，按最终行程微调」，总价 ¥1 不作数。');

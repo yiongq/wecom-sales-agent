@@ -2,7 +2,7 @@
 // 话术页的额度条要按服务端的同一口径实时算字数，所以 sectionBody、editableChars 从 src/sop/sections.ts 挪到这里，
 // 连同它们用到的 SopStructureError、SopSection、SectionSpec。src/sop/sections.ts 原样再导出同一个类：
 // 契约检查靠 instanceof SopStructureError 捕获结构错误，两处要是各有一个类，就捕获不到这里抛的。
-// 节表属于行业包，这里的 editableChars 不带默认节表；src/sop/sections.ts 包一层补上 TRAVEL_SOP_SECTIONS。
+// 节表属于行业包，这里的 editableChars 不带默认节表；src/sop/sections.ts 的同名函数也一样，节表必传（08 R10）。
 // 正文的规范形 canonicalBody 也在这里（spec 顶部 Revisions，第 5.1 步评审之后）：服务端保存草稿时先规范化再计数，
 // 额度条和目录的「改过」要按规范化以后的正文算才是同一口径。服务端的 normalizeBody 在它前后再查编码、不合格就抛。
 

@@ -1,14 +1,15 @@
 // 锁定字段的紧急修正（spec「导入、导出与回滚 · catalog-fix」）。要取租户锁，所以先停应用：
 //   docker compose stop app
-//   docker compose run --rm app node --import tsx src/cli/catalog-fix.ts --tenant <slug> --kind route|hotel --code <code> --set '<json>' --reason <text>
+//   docker compose run --rm app node --import tsx src/cli/catalog-fix.ts --tenant <slug> --kind <kind> --code <code> --set '<json>' --reason <text>
 //   docker compose up -d app        # 启动时重新装载快照
 // 退出码：0 已修正；3 应用还在跑（拿不到租户锁）；1 其他错误
+import { CatalogKindParam } from '../shared/console-api.js';
 import { fixLockedFields } from '../config/catalog.js';
 import { holdTenantLock } from '../db/client.js';
 import { findTenantBySlug } from '../db/repo/tenants.js';
 import { args, dbFromEnv, main, need } from './common.js';
 
-const USAGE = "catalog-fix --tenant <slug> --kind route|hotel --code <code> --set '<json>' --reason <text>";
+const USAGE = "catalog-fix --tenant <slug> --kind <kind> --code <code> --set '<json>' --reason <text>";
 main(async () => {
   const a = args(
     { tenant: { type: 'string' }, kind: { type: 'string' }, code: { type: 'string' }, set: { type: 'string' }, reason: { type: 'string' } },
@@ -18,8 +19,8 @@ main(async () => {
   const kind = need(a.kind, '--kind', USAGE);
   const code = need(a.code, '--code', USAGE);
   const reason = need(a.reason, '--reason', USAGE);
-  if (kind !== 'route' && kind !== 'hotel') {
-    console.error('--kind 只能是 route 或 hotel');
+  if (!CatalogKindParam.safeParse({ kind }).success) {
+    console.error('--kind 要符合 ^[a-z][a-z0-9_]{1,31}$');
     return 1;
   }
   let set: Record<string, unknown>;

@@ -1,0 +1,20 @@
+{
+  "id": "fixture-quote-freight-no-order",
+  "pack": "__fixture",
+  "persona": "你只是咨询合成方盒丙的单价和运费，第一句已经问了。得到答复后说「好的，我再想想，谢谢」并结束。不下单，不要求人工，不自己报价格。",
+  "maxTurns": 4,
+  "allowedTools": ["fixture_quote", "fixture_inspect", "fixture_order"],
+  "predicates": [
+    { "kind": "order", "count": 0 },
+    { "kind": "handoff", "expected": false },
+    { "kind": "tool_called", "name": "fixture_quote", "min": 1 },
+    { "kind": "tool_called", "name": "fixture_order", "min": 0, "max": 0 },
+    { "kind": "reply_matches", "pattern": "3\\.65", "scope": "any" },
+    { "kind": "reply_matches", "pattern": "运费[^。\\n]{0,6}10|10[^。\\n]{0,4}运费", "scope": "any" },
+    { "kind": "reply_excludes", "pattern": "3\\.80|unitPriceFen|amountFen|totalFen", "scope": "all" }
+  ],
+  "forbidden": ["<tool_call>", "【硬性要求】"],
+  "severity": "quality",
+  "tags": ["fixture", "regression"],
+  "customerScript": ["合成方盒丙单价多少？运费另算吗？"]
+}

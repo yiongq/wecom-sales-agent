@@ -6,12 +6,13 @@ import { brandTexts } from '../brand.js';
 import './sources.js';
 // 通用对话引擎：并发、历史、入站、模型与出口；行业能力由组合根绑定。
 import fs from 'node:fs';
-import type { AgentReply, ChatMessage, Order, PreparedPush, Session } from '../../types.js';
-import { profileForPrompt } from '../../types.js';
+import type { AgentReply, ChatMessage, PreparedPush, Session } from '../../types.js';
+import { isLineOrder, orderDisplay, type AnyOrder } from '../order-view.js';
+import { mergeProfile, profileForModel, resetPackState } from '../pack-profile.js';
 import {
   deleteOrdersOfSession,
   getOrCreateSession,
-  getOrder,
+  getAnyOrder,
   getSession,
   noteWindowReset,
   queueInboxState,
@@ -98,7 +99,7 @@ function loadSop(): string {
   return fs.readFileSync(p, 'utf8');
 }
 
-// system prompt 的拼装与前缀缓存的讲究见 prompt/system.ts。这里只决定 SOP 从哪来：
+// system prompt 的拼装与前缀缓存的讲究见 core/prompt.ts。这里只决定 SOP 从哪来：
 // DB 模式取发布时渲染好的那一串（每轮逐字节复用，从不重新渲染），文件模式每轮按 data/sop.md 现渲染
 export function buildSystemPrompt(): string {
   return configMode() === 'db' ? currentSop().renderedPrompt : renderFileSop(loadSop());
@@ -441,10 +442,13 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
     // orders 算的，留着孤儿订单会让重置后的会话仍显示订单、仍计入经营数据
     deleteOrdersOfSession(session.id);
     session.orderIds = [];
+    delete session.moneyLedger;
     session.handedOver = false;
     // 旧的接管前阶段不清掉，下次交还 AI 时会把新对话恢复成重置前的阶段
     delete session.stageBeforeHandoff;
     runtime.engineHooks.resetSession(session);
+    // 08 R4：包的状态槽只清它声明的 resetKeys（旅游没有，什么都不做）
+    resetPackState(runtime, session);
     // 转人工记录、接手人与两种计数一起清（R9）；firstHandoffAt、handoffCount 永不清。待执行的转人工通知一并取消，随这次落库提交
     // （db 存储；文件存储与 demo 类没有任务表，queueJobs 什么都不做）
     queueJobs(session.id, cancelHandoffNotifyOps(session.id));
@@ -762,7 +766,7 @@ async function callModel(state: TurnState, turnContext: TurnContext, runTool: Re
     '【当前会话状态】',
     `今天日期: ${todayIso()}（客户说的月日一律按未来最近的日期理解）`,
     `销售阶段: ${session.stage}`,
-    `客户画像: ${JSON.stringify(profileForPrompt(session.profile))}`,
+    `客户画像: ${JSON.stringify(profileForModel(runtime, session.profile))}`,
     ...runtime.contextNote(turnContext),
     advisorInWindow ? ADVISOR_NOTE : '',
     // 问过还没有结论的敏感信息类别（R23）：提示模型别在回复里主动提它，没问过或已有结论的会话一个字节都不变
@@ -855,13 +859,13 @@ async function finishTurn(
       },
     },
     toolSources: calls,
-    orderSources: session.orderIds.map((id) => getOrder(id)).filter((o): o is Order => !!o),
+    orderSources: session.orderIds.map((id) => getAnyOrder(id)).filter((o): o is AnyOrder => !!o),
     brand: binding.brand,
     thresholds: runtime.thresholds,
     takenOver,
     isTerminalStage,
     advanceStage: (session, turn) => runtime.advanceStage(session, turn) ?? session.stage,
-    extractProfile: (session, calls, text) => ({ ...session.profile, ...runtime.extractProfile(text, session, calls) }),
+    extractProfile: (session, calls, text) => mergeProfile(session.profile, runtime.extractProfile(text, session, calls)),
     fallbackReply,
     answerIdentity,
     handoffReply: (s, t, k, o) => handoffReply(s, t, k, { brand: binding.brand, identity: IDENTITY_QUESTION.test(t), ...o }),
@@ -995,12 +999,19 @@ export async function guardOutbound(session: Session, text: string, _opts: { kin
 export async function notifyPaid(
   orderId: string,
 ): Promise<{ sessionId: string; text: string; message: ChatMessage; prepared: PreparedPush | null } | null> {
-  const order = getOrder(orderId);
+  const order = getAnyOrder(orderId);
   if (!order?.sessionId) return null;
   const session = getSession(order.sessionId);
   if (!session) return null;
-  const text = cleanText(currentPack().runtime.engineHooks.paidText(order));
-  session.stage = terminalStageKey();
+  const terminal = terminalStageKey();
+  const hooks = currentPack().runtime.engineHooks;
+  // owner 2026-10-24 定（plan Open 2）：包可覆盖通用单付款确认，缺省用核心话术。
+  const text = cleanText(
+    isLineOrder(order)
+      ? (hooks.paidLineText?.(order) ?? `已收到您的付款${orderDisplay(order).totalText}，订单共${order.lines.length}项。`)
+      : hooks.paidText(order),
+  );
+  session.stage = terminal;
   const message: ChatMessage = { role: 'agent', content: text, at: Date.now() };
   session.messages.push(message);
   saveSession(session);

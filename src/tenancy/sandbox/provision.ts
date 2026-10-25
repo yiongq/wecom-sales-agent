@@ -1,6 +1,6 @@
 // 05 第 14 步：HTTP / cookie 之外的开通核心。第 15 步直接调用，只有成功装载才交出登录令牌。
 import { createHash, randomBytes } from 'node:crypto';
-import { ConfigStartupError, packSources, type ConfigDeps } from '../../config/source.js';
+import { ConfigStartupError, imageSopOf, packSources, type ConfigDeps } from '../../config/source.js';
 import { publishedBrand, publishedPolicy } from '../../config/hashes.js';
 import { writeTemplateConfig } from '../../config/transfer.js';
 import { writeSeedSessions } from '../../cli/session-transfer.js';
@@ -121,6 +121,7 @@ function seedContext(pub: Parameters<typeof publishedPolicy>[1] & { packId: stri
   if (!terms) return { today, refund: null };
   return {
     today,
+    ...(runtime.seedSession ? { seedSession: runtime.seedSession.bind(runtime) } : {}),
     refund: {
       terms,
       policy,
@@ -160,7 +161,8 @@ async function provision(o: ProvisionOptions): Promise<ProvisionedSandbox> {
         userAgent: o.userAgent,
       },
       async (tx, tenant) => {
-        await writeTemplateConfig(tx, template.pub, template.items, o.deps.imageSop);
+        // 08 R10：镜像按模板租户的包取，不把旅游文本喂给非旅游模板
+        await writeTemplateConfig(tx, template.pub, template.items, imageSopOf(o.deps, template.pub.packId));
         if (template.privacy) await seedSandboxPrivacy(tx, template.privacy.body);
         await copyQuickReplies(tx, template.replies);
         // 07 R13：块与向量跟着同一个只读快照走，开通不发嵌入请求

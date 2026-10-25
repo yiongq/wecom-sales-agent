@@ -276,7 +276,7 @@ export const catalogItems = pgTable(
     tenantId: uuid('tenant_id')
       .notNull()
       .references(() => tenants.id),
-    kind: text('kind', { enum: ['route', 'hotel'] }).notNull(),
+    kind: text('kind').notNull(),
     /** 'r-yunnan-mid'、'h-aman-tokyo' */
     code: text('code').notNull(),
     ord: integer('ord').notNull(),
@@ -297,7 +297,7 @@ export const catalogItems = pgTable(
   (t) => [
     unique('catalog_items_tenant_kind_code_uq').on(t.tenantId, t.kind, t.code),
     unique('catalog_items_tenant_kind_ord_uq').on(t.tenantId, t.kind, t.ord),
-    check('catalog_items_kind_check', sql`${t.kind} IN ('route', 'hotel')`),
+    check('catalog_items_kind_check', sql`${t.kind} ~ '^[a-z][a-z0-9_]{1,31}$'`),
     check('catalog_items_code_check', sql`${t.code} ~ '^[a-z0-9][a-z0-9-]{0,63}$'`),
     check('catalog_items_status_check', sql`${t.status} IN ('draft', 'active')`),
     check('catalog_items_payload_check', sql`json_typeof(${t.payload}) = 'object' AND coalesce(${t.payload}->>'id' = ${t.code}, false)`),
@@ -402,17 +402,19 @@ export const orders = pgTable(
     id: text('id').notNull(),
     /** 会话被清除或删除后置空。外键 (tenant_id, session_id) → conversations ON DELETE SET NULL (session_id) 在 custom 迁移里 */
     sessionId: text('session_id'),
-    /** 不对产品库建外键 */
+    /** 主条目编号；不对产品库建外键 */
     routeId: text('route_id').notNull(),
     status: text('status', { enum: ['pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending', 'refunded'] }).notNull(),
     totalPrice: integer('total_price').notNull(),
+    /** 通用单的整数分；旧版旅游单留空，不回填 */
+    totalFen: bigint('total_fen', { mode: 'number' }),
     createdAt: tstz('created_at').notNull(),
     /** 触发器：写入之后不能改、不能清空 */
     paidAt: tstz('paid_at'),
     confirmedAt: tstz('confirmed_at'),
     voidedAt: tstz('voided_at'),
     voidReason: text('void_reason', { enum: ['reset', 'resync'] }),
-    /** 整个 Order 对象，键序原样；重建只读它 */
+    /** 整个 AnyOrder 对象，键序原样；重建只读它 */
     data: json('data').$type<Record<string, unknown>>().notNull(),
   },
   (t) => [
@@ -421,6 +423,11 @@ export const orders = pgTable(
     check('orders_status_check', sql`${t.status} IN ('pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending', 'refunded')`),
     check('orders_refund_paid_check', sql`${t.status} NOT IN ('refund_pending', 'refunded') OR ${t.paidAt} IS NOT NULL`),
     check('orders_total_price_check', sql`${t.totalPrice} >= 0`),
+    check('orders_total_fen_check', sql`${t.totalFen} IS NULL OR ${t.totalFen} >= 0`),
+    check(
+      'orders_line_total_fen_check',
+      sql`(${t.data}->>'v') IS DISTINCT FROM '2' OR (${t.totalFen} IS NOT NULL AND ${t.totalFen} = (${t.data}->>'totalFen')::bigint)`,
+    ),
     check('orders_void_reason_check', sql`${t.voidReason} IN ('reset', 'resync')`),
     check('orders_data_check', sql`json_typeof(${t.data}) = 'object' AND coalesce(${t.data}->>'id' = ${t.id}, false)`),
     index('orders_by_status').on(t.tenantId, t.status, t.createdAt),
@@ -703,7 +710,7 @@ export const consents = pgTable(
 // 两张派生表，都带 tenant_id、套 01 的 RLS 模板（迁移里），agent_app 有 SELECT / INSERT / UPDATE / DELETE：丢了可以按产品库重建。
 // 每轮对话照旧不查库：装载与产品库变化时读进内存，相似度在进程内算，库里没有 HNSW。
 
-/** 目前只收线路：一条线路一块，正文是 PackRuntime.retrievalText 的输出；正文变了换 body_hash，身份是（source, ref） */
+/** 包内可检索的 kind：一条目一块，正文是 PackRuntime.retrievalText 的输出；身份是（source, ref） */
 export const kbChunks = pgTable(
   'kb_chunks',
   {
@@ -711,7 +718,7 @@ export const kbChunks = pgTable(
       .notNull()
       .references(() => tenants.id),
     id: uuid('id').notNull().defaultRandom(),
-    source: text('source', { enum: ['route'] }).notNull(),
+    source: text('source').notNull(),
     ref: text('ref').notNull(),
     body: text('body').notNull(),
     /** body 的 sha256 小写十六进制 */
@@ -720,7 +727,7 @@ export const kbChunks = pgTable(
   (t) => [
     primaryKey({ columns: [t.tenantId, t.id] }),
     unique('kb_chunks_tenant_id_source_ref_uq').on(t.tenantId, t.source, t.ref),
-    check('kb_chunks_source_check', sql`${t.source} IN ('route')`),
+    check('kb_chunks_source_check', sql`${t.source} ~ '^[a-z][a-z0-9_]{1,31}$'`),
     check('kb_chunks_body_hash_check', sql`${t.bodyHash} ~ '^[0-9a-f]{64}$'`),
   ],
 );

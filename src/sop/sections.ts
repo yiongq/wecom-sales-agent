@@ -17,9 +17,6 @@ import {
 
 export { sectionBody, SopStructureError, type SectionSpec, type SopSection };
 
-import { TRAVEL_SOP_SECTIONS } from '../packs/travel/sop.js';
-export { TRAVEL_SOP_SECTIONS };
-
 /** BOM、\r、非 NFC、孤立代理项、\n 与 \t 以外的 C0 控制字符、U+2028 / U+2029 */
 export class SopEncodingError extends Error {}
 
@@ -113,7 +110,7 @@ export function withBody(spec: SectionSpec, body: string, isLast: boolean): SopS
  * 按节表切开并校验：先过编码检查；标题序列必须与节表逐条相同；每个标题行之后紧跟一个空行；
  * 每节正文非空且已是规范形（导入不改写任何字节，不是规范形就拒绝）
  */
-export function splitSop(md: string, spec: readonly SectionSpec[] = TRAVEL_SOP_SECTIONS): SopSection[] {
+export function splitSop(md: string, spec: readonly SectionSpec[]): SopSection[] {
   assertSopEncoding(md);
   const starts = [...md.matchAll(/^## /gm)].map((m) => m.index);
   const hasPreamble = spec[0]?.heading === null;
@@ -153,11 +150,7 @@ export function joinSop(sections: readonly SopSection[]): string {
  * 从 stored 取的节按当前节表重建标题行和结尾：节表换了标题、在末尾加了节时，拼出来仍是合法的 SOP；
  * 节表没变时重建结果与原文逐字节相同
  */
-export function mergeWithImage(
-  stored: readonly SopSection[],
-  image: readonly SopSection[],
-  spec: readonly SectionSpec[] = TRAVEL_SOP_SECTIONS,
-): SopSection[] {
+export function mergeWithImage(stored: readonly SopSection[], image: readonly SopSection[], spec: readonly SectionSpec[]): SopSection[] {
   return spec.map((s, i) => {
     const fromImage = image.find((x) => x.key === s.key);
     if (!fromImage) throw new SopStructureError(`镜像的 SOP 里没有「${s.key}」节`);
@@ -171,7 +164,7 @@ export function mergeWithImage(
   });
 }
 
-/** 可编辑节正文的总长度（UTF-16 码元，即 String.length）；节表默认是旅游包的，现有调用处不用改 */
-export function editableChars(sections: readonly SopSection[], spec: readonly SectionSpec[] = TRAVEL_SOP_SECTIONS): number {
+/** 可编辑节正文的总长度（UTF-16 码元，即 String.length）；节表取绑定包的 */
+export function editableChars(sections: readonly SopSection[], spec: readonly SectionSpec[]): number {
   return editableCharsOf(sections, spec);
 }

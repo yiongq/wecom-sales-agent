@@ -461,6 +461,102 @@
       const res = await fetch('/api/orders/' + encodeURIComponent(orderId));
       if (!res.ok) return show('err');
       order = await res.json();
+      if (order.display) {
+        // 通用单只读 display；所有动态文字走 textContent，旅游路径保持原样。
+        const render = () => {
+          const display = order.display;
+          document.title = display.title + ' · ' + ({ paid: '支付成功', superseded: '订单已被替代', cancelled: '订单已取消' }[order.status] || '订单支付');
+          if (order.status === 'superseded' || order.status === 'cancelled') {
+            $('errView').textContent = order.status === 'superseded' ? '这笔订单已被新订单替代，请以最新发给您的支付链接为准' : '订单已取消';
+            return show('err');
+          }
+          if (order.status === 'paid') {
+            $('successView').querySelector('p').textContent = '付款已收到，请留意会话消息';
+            $('successAmt').textContent = display.totalText;
+            show('success');
+            return;
+          }
+          const card = document.createElement('div');
+          card.className = 'card';
+          const title = document.createElement('div');
+          title.className = 'merchant';
+          title.textContent = display.title;
+          const total = document.createElement('div');
+          total.className = 'amount';
+          const number = document.createElement('span');
+          number.className = 'num';
+          number.textContent = display.totalText;
+          total.append(number);
+          const summary = document.createElement('p');
+          summary.className = 'ddl';
+          summary.textContent = display.summary;
+          const rows = document.createElement('div');
+          rows.className = 'rows';
+          for (const line of display.lines) {
+            const row = document.createElement('div');
+            row.className = 'krow';
+            const item = document.createElement('div');
+            item.style.flex = '1';
+            item.style.minWidth = '0';
+            item.style.overflowWrap = 'anywhere';
+            const name = document.createElement('div');
+            name.textContent = line.title;
+            const detail = document.createElement('div');
+            detail.className = 'k';
+            detail.textContent = line.qtyText + ' · 单价' + line.unitPriceText;
+            item.append(name, detail);
+            for (const [key, value] of Object.entries(line.attrs || {})) {
+              const attr = document.createElement('small');
+              attr.className = 'k';
+              attr.style.display = 'block';
+              attr.textContent = key + '：' + value;
+              item.append(attr);
+            }
+            const amount = document.createElement('span');
+            amount.className = 'v';
+            amount.textContent = line.amountText;
+            row.append(item, amount);
+            rows.append(row);
+          }
+          const id = document.createElement('p');
+          id.className = 'ddl';
+          id.textContent = '订单号：' + order.id;
+          card.append(title, total, summary, rows, id);
+          const bar = document.createElement('div');
+          bar.className = 'paybar';
+          if (paymentMode !== 'advisor' && order.payable) {
+            const button = document.createElement('button');
+            button.className = 'paybtn';
+            button.textContent = '支付' + display.totalText;
+            button.addEventListener('click', async () => {
+              button.disabled = true;
+              button.textContent = '支付中…';
+              try {
+                const paid = await fetch('/api/orders/' + encodeURIComponent(orderId) + '/pay', { method: 'POST' });
+                if (!paid.ok && paid.status !== 409) throw new Error('pay failed');
+                const body = await paid.json();
+                if (!body.order || !body.order.display) throw new Error('bad order');
+                order = body.order;
+                render();
+              } catch {
+                button.disabled = false;
+                button.textContent = '支付' + order.display.totalText;
+                alert('支付失败，请重试');
+              }
+            });
+            bar.append(button);
+          } else {
+            const status = document.createElement('p');
+            status.className = 'secure';
+            status.textContent = '请在会话里与顾问核对付款方式';
+            bar.append(status);
+          }
+          $('payView').replaceChildren(card, bar);
+          show('pay');
+        };
+        render();
+        return;
+      }
       if (paymentMode === 'advisor') return renderAdvisor();
       if (order.refund) return renderAdvisor();
       if (order.status === 'paid') return renderSuccess();

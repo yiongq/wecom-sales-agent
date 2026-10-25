@@ -5,3 +5,9 @@
 03e0d995ded0c0ad6821d5d828d820c1bdaddcb8:src/notify/notify.selftest.ts:generic-api-key:28
 2fb85b7b923798716d873938045b02b330a8f39c:src/notify/notify.selftest.ts:generic-api-key:28
 dfbf3a3b021a5ab4adb76597a1e965963785315a:src/notify/notify.selftest.ts:generic-api-key:28
+
+# 08 第 18 步：src/config/gate-per-pack.selftest.ts 第 26、27 行是旅游闸的两个缓存键（sha256 十六进制，由提示词哈希、政策哈希、
+# 产品库哈希、目标集哈希、代码版本与模型名算出），钉住「旅游闸缓存键与开工时相同」；字段名带 Key 被 generic-api-key 误报，不是密钥。
+# 首个提交按指纹忽略，之后那两行带行内的 gitleaks:allow。
+8d06c29b0c54961c64cf516322e30f450fe860bf:src/config/gate-per-pack.selftest.ts:generic-api-key:26
+8d06c29b0c54961c64cf516322e30f450fe860bf:src/config/gate-per-pack.selftest.ts:generic-api-key:27

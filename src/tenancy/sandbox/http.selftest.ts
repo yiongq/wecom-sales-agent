@@ -11,7 +11,9 @@ import { readSandboxSteps } from '../../db/repo/sandbox-steps.js';
 import { openDb, withTenant, type Db } from '../../db/client.js';
 import { createRealPgFixture, fakeLock, openTestDb, testConfigDeps, purgeTestSandbox } from '../../db/testing.js';
 import { importConfig } from '../../config/transfer.js';
-import { closeConfig, initConfig, currentSop, currentCatalog, currentTenant } from '../../config/source.js';
+import { closeConfig, initConfig, currentSop, currentCatalog, currentTenant, packSources } from '../../config/source.js';
+import { bindPack } from '../../core/pack-api.js';
+import { runtimeById } from '../../packs/registry.js';
 import { expireBrokenSandbox } from '../../db/sandbox-process.js';
 import { sandboxSessionResolve } from '../../db/repo/sandbox.js';
 import { csrfFor, __authTest } from '../../auth/session.js';
@@ -416,6 +418,8 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
   // 宿主比较器和投影保持原样，即使有同名 sbx/wecom 会话也不视为沙箱访客。
   const sandboxPack = withTenantScope(a, () => currentTenant().pack);
   withTenantScope(host, () => {
+    // 仅用于宿主投影比较的夹具尚未 initConfig，必须显式绑包（08 R5），不能依赖 DB 模式回落。
+    bindPack(runtimeById('travel', packSources())!, null);
     const samples = withTenantScope(a, listSessions);
     const pack = sandboxPack;
     for (const compare of [byRecent, waitingFirst(pack)])
@@ -425,11 +429,7 @@ async function suite(db: Db, q: Query, real: boolean): Promise<void> {
           [...samples].sort(compare).map((s) => s.id),
         ),
       );
-    check(() =>
-      assert.ok(
-        samples.every((s) => !('sandboxOwner' in conversationRow({ ...s, orderIds: [] }, { destinations: [], segments: {} }, false))),
-      ),
-    );
+    check(() => assert.ok(samples.every((s) => !('sandboxOwner' in conversationRow({ ...s, orderIds: [] }, false)))));
     check(() => assert.equal(sandboxOwnConversationId(), null));
   });
   const html = await page(`/chat.html?c=${sbxId}`, token);

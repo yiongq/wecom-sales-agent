@@ -6,6 +6,8 @@
 //   规则之外的旧值照原文保留，不自动改写；
 // - 控件取值与写回走 CODECS（Record<FieldType, …>），不变量 16 的往返测的就是这一对；
 // - 字段是可改、上架后锁定还是只读（fieldMode）；表单网格的列数与跨行（groupGrid）只看字段类型和锁定状态，不看是哪个行业包。
+import { yuanToFen } from '../../../src/shared/catalog-money.js';
+import { formatYuan, money } from '../../../src/shared/format.js';
 import { sameValue } from '../../../src/shared/catalog.js';
 import { type EntityType, type FieldDef, type FieldType, filled, valueAt } from '../../../src/shared/pack.js';
 
@@ -378,6 +380,16 @@ export function moneyUnit(f: FieldDef, row: Payload): string {
   if (f.unit) return f.unit;
   const u = f.unitFrom === undefined ? undefined : valueAt(row, f.unitFrom);
   return typeof u === 'string' && u ? `元/${u}` : '元';
+}
+
+/** 按字段精度显示元值；整数金额沿用旧写法，小数金额经整数分格式化。 */
+export function moneyText(f: FieldDef, value: number, unit = '元'): string {
+  if (f.decimals !== 2) return money(value, unit);
+  try {
+    return formatYuan(yuanToFen(value)).slice(0, -1) + unit;
+  } catch {
+    return '—';
+  }
 }
 
 /** 有序子项的量词（「天」「条」「个节点」），没写时「项」 */

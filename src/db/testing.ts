@@ -13,10 +13,12 @@ import { drizzle as drizzleNodePg } from 'drizzle-orm/node-postgres';
 import { drizzle } from 'drizzle-orm/pglite';
 import { migrate } from 'drizzle-orm/pglite/migrator';
 import pg from 'pg';
-import { initConfig, type ConfigDeps } from '../config/source.js';
+import { initConfig, packSources, type ConfigDeps } from '../config/source.js';
+import { runtimeById } from '../packs/registry.js';
 import { imageCode, importConfig } from '../config/transfer.js';
 import { rebuildSessions, rowToOrder } from '../store/project.js';
-import type { Order, Session } from '../types.js';
+import type { Session } from '../types.js';
+import type { AnyOrder } from '../core/order-view.js';
 import { assertPgUrl, countingLogger, registerDriver, resetSessionTenant, withTenant, type Db, type TenantLock } from './client.js';
 import { MIGRATIONS_DIR, runMigrations } from './migrate.js';
 import { installVectorExtension } from './testing-extensions.js';
@@ -113,7 +115,8 @@ const DATA_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '
 
 /** 生产依赖的测试版：库是 PGlite，锁是假的，其余与生产相同。逐项可以替换 */
 export function testConfigDeps(t: Pick<TestDb, 'db'>, over: Partial<ConfigDeps> = {}): ConfigDeps {
-  const code = imageCode();
+  // 默认是旅游租户（demo）；别的包的租户用 usePackRuntime，由装载时按租户的包换成它的工具、字段、渲染与镜像
+  const code = imageCode(runtimeById('travel', packSources())!);
   return {
     db: t.db,
     tenantSlug: 'demo',
@@ -238,7 +241,7 @@ export interface StoredConversation {
   /** 库里这个会话全部消息的 seq（含重置、裁剪推进过去的），按 seq 排 */
   seqs: number[];
   /** 未作废的订单（预载读的那些），与作废了的订单 */
-  liveOrders: Order[];
+  liveOrders: AnyOrder[];
   voided: { id: string; reason: string | null }[];
 }
 

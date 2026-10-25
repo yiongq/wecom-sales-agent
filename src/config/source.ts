@@ -16,6 +16,7 @@ import { registerTenantState } from '../tenancy/state.js';
 import { createTenantConfig, type Loaded, type TenantConfig } from './state.js';
 // 配置源（docs/architecture/01-pg-config-console/spec.md「两种模式与启动装载」）。
 // 文件模式（CONFIG_SOURCE 未设、空串或 file）读有效 SOP_PATH 同目录品牌，引擎和工具照旧读文件。
+// 08 R11：同目录有 pack.json（{ "id": "<包>" }）就按这个包装载，非旅游包的产品库读 catalog/<kind>.json；没有就是旅游，与以前相同。
 // DB 模式在启动时一次装载已发布的 SOP 与 active 条目，放进进程内缓存；每轮对话只读缓存、不查库。
 // 本模块不加载存储与发送能力：启动时按 pack_id 绑定包，运行时能力经延后调用的函数注入。
 // 02 加了产品库条目版本（02 spec「报价快照与产品库字段开放」）：全部版本启动时读进内存，之后的新版本提交后加进来；
@@ -49,15 +50,25 @@ import { packById, runtimeById, legacyTravelRuntime as travelRuntime } from '../
 import { renderSystemPrompt } from '../core/prompt.js';
 import { embedEndpointAllowed, embedEndpointHost } from '../core/llm/endpoints.js';
 import { packPipelines } from '../core/engine/pipelines.js';
-import { bindPack, boundPack, BrandProfileSchema, type PackBinding, type PackSources, type BrandProfile } from '../core/pack-api.js';
+import {
+  bindPack,
+  boundPack,
+  BrandProfileSchema,
+  type CatalogKindSpec,
+  type PackBinding,
+  type PackPolicy,
+  type PackRuntime,
+  type PackSources,
+  type BrandProfile,
+} from '../core/pack-api.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { ConfigDrift } from '../shared/console-api.js';
 import { deepFreeze } from '../shared/freeze.js';
 import type { IndustryPack } from '../shared/pack.js';
-import { policyViolations as checkSopContractPolicy } from '../packs/travel/policy-lint.js';
-import { checkSopContract, SOP_KNOWN_FIELDS } from '../sop/contract.js';
-import { decodeSopFile, joinSop, mergeWithImage, splitSop, TRAVEL_SOP_SECTIONS, type SopSection } from '../sop/sections.js';
-import { tenantImage, tenantRenderer, switchPreamble, preambleWarning } from './brand.js';
+import { checkSopContract } from '../sop/contract.js';
+import { decodeSopFile, joinSop, mergeWithImage, splitSop, type SectionSpec, type SopSection } from '../sop/sections.js';
+import { contractInputs, readImageSop, tenantImage, tenantRenderer, switchPreamble, preambleWarning } from './brand.js';
+import { readPackFile } from './pack-file.js';
 import { promptHashes, renderInputsFor, sha256, publishedBrand, policySnapshot, publishedPolicy } from './hashes.js';
 
 export type { TenantLock } from '../db/client.js';
@@ -90,6 +101,8 @@ export interface CatalogSnapshot {
   /** 进程内单调递增，每次快照变化加 1。检索索引据此丢弃过期的构建结果；文件模式恒为 0 */
   generation: number;
   /** 只含 active 条目，各自按 ord 升序，deep-frozen */
+  items: Readonly<Record<string, readonly unknown[]>>;
+  /** 旅游兼容别名，直接引用 items 里的数组；缺少对应 kind 时为空数组 */
   routes: readonly Route[];
   hotels: readonly Hotel[];
   /**
@@ -118,7 +131,10 @@ export interface ConfigDeps {
   tenantSlug: string;
   /** null = 锁在别人手里 */
   lock(tenantId: string): Promise<TenantLock | null>;
-  /** 镜像里 data/sop.md 的全文，启动时读一次，之后的发布、回滚、导出都用这一份 */
+  /**
+   * 旅游租户的镜像 SOP 全文（data/sop.md），装载时用一次，之后的发布、回滚、导出都用这一份。生产组合根在连库之前读并校验它
+   * （读不到是 image_sop_invalid）。非旅游包不用它：解析出租户的包之后读 data/packs/<id>/sop.md（08 R10）。
+   */
   imageSop: string;
   /** JSON.stringify(toolDefs)，与 promptPrefix().tools 相同 */
   toolsJson: string;
@@ -134,8 +150,8 @@ export interface ConfigDeps {
 }
 
 export class ConfigNotReadyError extends Error {
-  constructor() {
-    super('DB 模式的配置源还没装载完成');
+  constructor(detail = 'DB 模式的配置源还没装载完成') {
+    super(detail);
   }
 }
 /** 锁连接断开期间的配置写入 → 503 lock_lost */
@@ -161,8 +177,11 @@ export type ConfigStartupReason =
   | 'renderer_nondeterministic'
   | 'contract_failed'
   | 'no_active_routes'
+  | 'catalog_startup'
   | 'embed_endpoint_forbidden'
-  | 'gate_unavailable';
+  | 'gate_unavailable'
+  // owner 2026-10-24 定（plan Open 1）：非旅游包只支持模板模式，租户没有品牌时用它拒绝启动。
+  | 'brand_required';
 export class ConfigStartupError extends Error {
   constructor(
     readonly reason: ConfigStartupReason,
@@ -182,6 +201,35 @@ async function dbStep<T>(what: string, fn: () => Promise<T>): Promise<T> {
     if (e instanceof ConfigStartupError) throw e;
     throw startup('db_unreachable', `${what}：${message(e)}`);
   }
+}
+
+/** 装载中 d.runtime 一定已按租户的包绑好（loadConfig 先于一切检查）；类型上可选，是因为自测直接造 ConfigDeps */
+export function runtimeOf(d: Pick<ConfigDeps, 'runtime'>): PackRuntime {
+  if (!d.runtime) throw new Error('行业包运行时尚未绑定');
+  return d.runtime;
+}
+
+/**
+ * 08 R10：租户的镜像文本，解析出租户的包之后才取。旅游就是 deps.imageSop（生产组合根在连库之前读好的 data/sop.md，自测可注入）；
+ * 其他包读 data/packs/<id>/sop.md，永远不用旅游的文本。读不到或编码不合格是 image_sop_invalid。
+ */
+export function imageSopOf(d: Pick<ConfigDeps, 'imageSop'>, packId: string): string {
+  if (packId === 'travel') return d.imageSop;
+  try {
+    return readImageSop(packId);
+  } catch (e) {
+    throw startup('image_sop_invalid', `读不到行业包 ${packId} 的镜像 SOP：${message(e)}`);
+  }
+}
+
+/**
+ * owner 2026-10-24 定（plan Open 1）：非旅游包只支持模板模式（08 R10），没有品牌就不能启动，也不能写出已发布的 SOP。
+ * 启动、沙箱模板复制、首次导入都经这一处，原因都是 brand_required；owner 选别的写法时只改这里。
+ * subject 点名是谁缺品牌（租户或沙箱模板），进错误文案。
+ */
+export function assertBrandForPack(runtime: Pick<PackRuntime, 'id'>, brand: BrandProfile | null, subject: string): void {
+  if (runtime.id !== 'travel' && brand === null)
+    throw startup('brand_required', `${subject}的行业包「${runtime.id}」只支持模板模式，要先设置品牌档案`);
 }
 
 // ---------------- 状态 ----------------
@@ -208,10 +256,11 @@ const latestOf = (h: VersionHistory, key: string): number => Math.max(0, ...(h.g
 const currentVersionOf = (row: { kind: CatalogRow['kind']; code: string; version: number }, h: VersionHistory): number =>
   Math.max(row.version, latestOf(h, catalogVersionKey(row.kind, row.code)));
 
-const ordsOf = (rows: readonly CatalogRow[]): Loaded['ords'] => ({
-  route: new Map(rows.filter((r) => r.kind === 'route').map((r) => [r.code, r.ord])),
-  hotel: new Map(rows.filter((r) => r.kind === 'hotel').map((r) => [r.code, r.ord])),
-});
+function ordsOf(rows: readonly CatalogRow[]): Loaded['ords'] {
+  return Object.fromEntries(
+    [...new Set(rows.map((r) => r.kind))].map((kind) => [kind, new Map(rows.filter((r) => r.kind === kind).map((r) => [r.code, r.ord]))]),
+  );
+}
 
 function configState(): TenantConfig {
   return currentRuntime().config;
@@ -231,7 +280,7 @@ export function currentSop(): PublishedSop {
 }
 export function currentCatalog(): CatalogSnapshot {
   const state = configState();
-  if (!state.loaded) throw new ConfigNotReadyError();
+  if (!state.loaded) return fileCatalog(state);
   const pinned = turnPin.getStore();
   return pinned && pinned.tenantId === state.loaded.tenantId ? pinned : state.loaded.catalog;
 }
@@ -310,11 +359,11 @@ export function configDrift(): ConfigDrift {
   const state = configState();
   if (!state.loaded) throw new ConfigNotReadyError();
   const { catalog } = state.loaded;
-  const active = [
-    ...catalog.routes.map((p) => ({ kind: 'route' as const, code: p.id, payload: p })),
-    ...catalog.hotels.map((p) => ({ kind: 'hotel' as const, code: p.id, payload: p })),
-  ];
-  return driftOf(imageDirOf(state.loaded.deps), state.loaded.sop.sections, state.loaded.imageSections, active);
+  const active = Object.entries(catalog.items).flatMap(([kind, items]) =>
+    items.map((payload) => ({ kind, code: String((payload as { id: string }).id), payload })),
+  );
+  const { deps } = state.loaded;
+  return driftOf(imageDirOf(deps), runtimeOf(deps).sopSections, state.loaded.sop.sections, state.loaded.imageSections, active);
 }
 
 /** 配置写入前调：锁连接断开期间一律拒绝（第 7、8 步的写函数用） */
@@ -353,6 +402,7 @@ export async function productionConfigDeps(
   for (const k of ['SOP_PATH', 'ROUTES_PATH', 'HOTELS_PATH']) {
     if (env[k]) console.warn(`[config] DB 模式下忽略 ${k}：它只给文件模式的测试夹具与回归跑法用`);
   }
+  // 旅游的镜像照旧在连库之前读并校验：镜像缺失与连不上库同时发生时，先报 image_sop_invalid（08 R10 不改旅游的启动顺序）
   const imagePath = path.join(process.cwd(), 'data', 'sop.md');
   let imageSop: string;
   try {
@@ -373,10 +423,14 @@ export async function productionConfigDeps(
     tenantSlug,
     lock: (tenantId) => holdTenantLock(url, tenantId),
     imageSop,
-    toolsJson: JSON.stringify(currentPack().runtime.tools.map((t) => t.def)),
-    toolNames: currentPack().runtime.tools.map((t) => t.def.function.name),
-    knownFields: SOP_KNOWN_FIELDS,
-    render: (sop) => renderSystemPrompt(sop, currentPack().runtime.legacy.hardRequirements),
+    // 08 R10：下面四项都要等 loadConfig 解析出租户的包之后，由 usePackRuntime 整体换成该包的，所以这里是占位，不取旅游缺省；
+    // 没换就被用到是 bug，渲染直接抛。
+    toolsJson: '[]',
+    toolNames: [],
+    knownFields: [],
+    render: () => {
+      throw new Error('渲染器要等解析出租户的包之后才有');
+    },
     gracefulExit,
   };
 }
@@ -513,15 +567,29 @@ function assertIntegrity(row: SopVersionRow): void {
     throw startup('integrity', `已发布版本 v${row.versionNo} 的 sections 与 sop_hash 对不上（有人改过这一行？）`);
 }
 
+/** 兼容数组不复制：别名和通用条目始终指向同一个数组。 */
+function catalogAliases(items: CatalogSnapshot['items']): Pick<CatalogSnapshot, 'routes' | 'hotels'> {
+  return { routes: (items.route ?? []) as readonly Route[], hotels: (items.hotel ?? []) as readonly Hotel[] };
+}
+
 function snapshotOf(tenantId: string, rows: readonly CatalogRow[], gen: number, history: VersionHistory): CatalogSnapshot {
-  const of = <T>(kind: CatalogRow['kind']): T[] => rows.filter((r) => r.kind === kind).map((r) => r.payload as T);
+  const active = rows.filter((r) => r.status === 'active');
+  const items = Object.fromEntries(
+    [...new Set(active.map((r) => r.kind))].map((kind) => [
+      kind,
+      active
+        .filter((r) => r.kind === kind)
+        .toSorted((a, b) => a.ord - b.ord)
+        .map((r) => r.payload),
+    ]),
+  );
   const versions: Record<string, number> = {};
-  for (const r of rows) {
+  for (const r of active) {
     const key = catalogVersionKey(r.kind, r.code);
     const v = currentVersionOf(r, history);
     if (v > 0) versions[key] = v;
   }
-  return deepFreeze({ tenantId, generation: gen, routes: of<Route>('route'), hotels: of<Hotel>('hotel'), versions });
+  return deepFreeze({ tenantId, generation: gen, items, ...catalogAliases(items), versions });
 }
 
 type VersionWrite = { kind: CatalogRow['kind']; code: string; version: number; payload: Record<string, unknown> };
@@ -597,12 +665,14 @@ function resolvePublished(
   imageSections: readonly SopSection[],
   previousImage: readonly SopSection[],
 ): { merged: SopSection[]; rendered: string; causes: string[] } | null {
+  const runtime = runtimeOf(d);
   const changedBrand =
-    publishedBrand(row.renderInputs).brandHash !== renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null).brandHash;
-  const policy = publishedPolicy(d.runtime?.policy, row);
-  const changedPolicy = (d.runtime?.policy !== undefined && row.policy == null) || row.renderInputs?.policyHash !== policy.policyHash;
+    publishedBrand(row.renderInputs).brandHash !==
+    renderInputsFor(d.render, d.imageSop, d.toolsJson, runtime.sopSections, d.brand ?? null).brandHash;
+  const policy = publishedPolicy(runtime.policy, row);
+  const changedPolicy = (runtime.policy !== undefined && row.policy == null) || row.renderInputs?.policyHash !== policy.policyHash;
   const stored = changedBrand ? switchPreamble(row.sections, previousImage, imageSections) : row.sections;
-  const merged = mergeWithImage(stored, imageSections);
+  const merged = mergeWithImage(stored, imageSections, runtime.sopSections);
   const rendered = d.render(joinSop(merged));
   if (d.render(joinSop(merged)) !== rendered) throw startup('renderer_nondeterministic', '同一份 SOP 渲染两遍结果不同');
   const violations = checkSopContract({
@@ -612,10 +682,8 @@ function resolvePublished(
     toolNames: d.toolNames,
     knownFields: d.knownFields,
     baselineEditableChars: null,
-    rules: d.runtime?.contractRules(d.brand ? { brand: d.brand } : 'legacy'),
-    brand: d.brand,
+    ...contractInputs(runtime, d.brand ?? null, policy.policy),
     hardRequirements: d.render(''),
-    policy: policy.policy,
   });
   if (violations.length) {
     throw startup(
@@ -625,7 +693,7 @@ function resolvePublished(
   }
   const toolsHash = sha256(d.toolsJson);
   if (rendered === row.renderedPrompt && toolsHash === row.toolsHash && !changedBrand && !changedPolicy) return null;
-  const now = renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null, policy.policyHash);
+  const now = renderInputsFor(d.render, d.imageSop, d.toolsJson, runtime.sopSections, d.brand ?? null, policy.policyHash);
   const before = row.renderInputs;
   const causes = (Object.keys(CAUSE) as (keyof typeof CAUSE)[])
     .filter((k) => (k === 'brandHash' ? changedBrand : k === 'policyHash' ? changedPolicy : !before || before[k] !== now[k]))
@@ -640,13 +708,14 @@ function resolvePublished(
  */
 function driftOf(
   dir: string,
+  spec: readonly SectionSpec[],
   merged: readonly SopSection[],
   imageSections: readonly SopSection[],
   active: readonly { kind: CatalogRow['kind']; code: string; payload: unknown }[],
 ): ConfigDrift {
-  const editedSections = TRAVEL_SOP_SECTIONS.filter(
-    (s) => !s.locked && merged.find((x) => x.key === s.key)?.text !== imageSections.find((x) => x.key === s.key)?.text,
-  ).map((s) => s.key);
+  const editedSections = spec
+    .filter((s) => !s.locked && merged.find((x) => x.key === s.key)?.text !== imageSections.find((x) => x.key === s.key)?.text)
+    .map((s) => s.key);
   const catalog: ConfigDrift['catalog'] = {
     route: { changed: [], onlyDb: [], onlyImage: [] },
     hotel: { changed: [], onlyDb: [], onlyImage: [] },
@@ -672,12 +741,16 @@ function driftOf(
   return { editedSections, catalog };
 }
 
-const imageDirOf = (d: ConfigDeps): string => d.imageDataDir ?? path.join(process.cwd(), 'data');
+/** 镜像的配置目录：旅游是 data/，其他包是 data/packs/<id>/（08 R10、R11），那里没有 routes.json、hotels.json，对应的差异就不报 */
+const imageDirOf = (d: ConfigDeps): string =>
+  d.imageDataDir ??
+  (d.runtime && d.runtime.id !== 'travel' ? path.join(process.cwd(), 'data', 'packs', d.runtime.id) : path.join(process.cwd(), 'data'));
 
 /** 启动日志按节、按条目点名库与镜像 data/ 的差异：DB 模式下改 data/ 的可编辑节或产品库不会生效，要让人看得见 */
 function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: readonly SopSection[], rows: readonly CatalogRow[]): void {
-  const drift = driftOf(imageDirOf(d), merged, imageSections, rows);
-  const headings = drift.editedSections.map((k) => TRAVEL_SOP_SECTIONS.find((s) => s.key === k)?.heading ?? k);
+  const spec = runtimeOf(d).sopSections;
+  const drift = driftOf(imageDirOf(d), spec, merged, imageSections, rows);
+  const headings = drift.editedSections.map((k) => spec.find((s) => s.key === k)?.heading ?? k);
   if (headings.length) console.log(`[config] 可编辑节与镜像 data/sop.md 不同（以库为准）：${headings.join('、')}`);
   for (const [kind, file] of [
     ['route', 'routes.json'],
@@ -695,8 +768,9 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
 
 /**
  * deps 为 null：文件模式，装配同目录品牌。否则依次执行，前 8 步只读（第 0 步校验嵌入端点，不碰库）：
- *   0 嵌入端点在境内清单里（07 R15）→ 1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包 → 4 取租户锁
- *   → 5 切分并校验 imageSop → 6 装载已发布 SOP，校验完整性，算出合并、渲染与契约结果 → 7 装载产品库快照（至少一条 active 线路）
+ *   0 嵌入端点在境内清单里（07 R15）→ 1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包；
+ *   非旅游包没有品牌拒绝（brand_required，08 R10），再读它自己的镜像（旅游的 data/sop.md 在连库之前已读） → 4 取租户锁
+ *   → 5 切分并校验镜像 → 6 装载已发布 SOP，校验完整性，算出合并、渲染与契约结果 → 7 装载产品库快照（至少一条 active 线路）
  *   → 8 按节、按条目打印 DB 与镜像 data/ 的差异 → 9 需要时写入 rerender 版本 → 10 装上缓存。
  * 任何一步失败都以 ConfigStartupError reject，释放锁、关闭连接池，不留半装载状态
  */
@@ -736,11 +810,22 @@ function assertGateAvailable(env: NodeJS.ProcessEnv): void {
   if (env.LLM_MOCK === '1' || !key) throw startup('gate_unavailable', '发布闸要求真实模型配置，不能使用 LLM_MOCK 或空模型密钥');
 }
 
+/** 08 R2：只按包与快照判定产品库能否启动，不依赖 SOP 装载或租户作用域。 */
+export function assertCatalogStartup(runtime: PackBinding['runtime'], snapshot: CatalogSnapshot, tenantSlug: string): void {
+  const detail = runtime.catalogStartupCheck?.(snapshot);
+  if (detail === undefined || detail === null) return;
+  if (runtime.id === 'travel') throw startup('no_active_routes', `租户「${tenantSlug}」${detail}`);
+  throw startup('catalog_startup', detail);
+}
+
 async function loadConfig(deps: ConfigDeps | null): Promise<void> {
   const state = configState();
   if (!deps) {
-    const binding = installPack('travel', readFileBrand());
+    // 08 R11：配置目录有 pack.json 就按它装载（非旅游包还要读 catalog/），没有就是旅游，与以前逐字节相同
+    state.fileCatalog = null;
+    const binding = installFilePack();
     readFilePolicy(binding.runtime.policy);
+    if (binding.runtime.id !== 'travel') loadFileCatalog(binding.runtime);
     return;
   }
   let d = deps;
@@ -778,8 +863,11 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
         render: (sop) => renderSystemPrompt(sop, runtime.legacy.hardRequirements),
       };
     }
-    const legacyImage = d.imageSop;
     const brand = (await dbStep('读待生效品牌', () => readBrand(d.db, tenant.id))) ?? null;
+    // owner 2026-10-24 定（plan Open 1）：非旅游包只支持模板模式（08 R10），没有品牌就拒绝启动，规则在 assertBrandForPack
+    assertBrandForPack(runtime, brand, `租户「${d.tenantSlug}」`);
+    // 08 R10：旅游用连库之前读好的 data/sop.md，其他包在这里（解析出租户的包之后）读 data/packs/<id>/sop.md
+    const legacyImage = imageSopOf(d, runtime.id);
     d = { ...d, brand, runtime };
     if (brand) d = { ...d, render: tenantRenderer(runtime, brand) };
     // 4
@@ -815,9 +903,9 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
     assertIntegrity(row);
     const previousImage = tenantImage(runtime, legacyImage, publishedBrand(row.renderInputs).brand);
     const rerender = resolvePublished(d, row, imageSections, previousImage);
-    if (!items.some((r) => r.kind === 'route')) throw startup('no_active_routes', `租户「${d.tenantSlug}」没有 active 的线路`);
+    assertCatalogStartup(runtime, snapshotOf(tenant.id, items, 0, historyOf(versions)), d.tenantSlug);
     // 8
-    const merged = rerender?.merged ?? mergeWithImage(row.sections, imageSections);
+    const merged = rerender?.merged ?? mergeWithImage(row.sections, imageSections, runtime.sopSections);
     logDrift(d, merged, imageSections, items);
     if (preambleWarning(merged, imageSections)) console.warn('[config] 前言节里可能还有旧品牌名');
     // 9 以上全部通过之后才写：一个事务里归档旧版本、发布一个 source='rerender' 的新版本，运营编辑过的可编辑节原样保留
@@ -851,9 +939,16 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
     // 缓存照常装上（对话要用），配置写入暂停、开始重取
     if (lostWhileLoading) onLockLost();
     const { sop } = state.loaded;
-    console.log(
-      `[config] DB 模式：租户 ${d.tenantSlug} · SOP v${sop.versionNo} · 线路 ${state.loaded.catalog.routes.length} 条、酒店 ${state.loaded.catalog.hotels.length} 家 · 前缀 ${sop.prefixHash.slice(0, 12)}`,
-    );
+    if (runtime.id === 'travel') {
+      console.log(
+        `[config] DB 模式：租户 ${d.tenantSlug} · SOP v${sop.versionNo} · 线路 ${state.loaded.catalog.routes.length} 条、酒店 ${state.loaded.catalog.hotels.length} 家 · 前缀 ${sop.prefixHash.slice(0, 12)}`,
+      );
+    } else {
+      const counts = Object.keys(runtime.catalog)
+        .map((kind) => `${kind} ${state.loaded!.catalog.items[kind]?.length ?? 0} 条`)
+        .join('、');
+      console.log(`[config] DB 模式：租户 ${d.tenantSlug} · SOP v${sop.versionNo} · ${counts} · 前缀 ${sop.prefixHash.slice(0, 12)}`);
+    }
   } catch (e) {
     state.dbInstalled = false;
     await lock?.release().catch(() => {});
@@ -873,7 +968,8 @@ async function writeRerender(
   r: { merged: SopSection[]; rendered: string; causes: string[] },
 ): Promise<SopVersionRow> {
   const hashes = promptHashes(r.rendered, d.toolsJson, joinSop(r.merged));
-  const policy = publishedPolicy(d.runtime?.policy, row);
+  const runtime = runtimeOf(d);
+  const policy = publishedPolicy(runtime.policy, row);
   const next = await withTenant(d.db, systemCtx(tenantId), async (tx) => {
     await lockTenantConfig(tx);
     await archivePublished(tx, row.id);
@@ -887,7 +983,7 @@ async function writeRerender(
       renderedPrompt: r.rendered,
       ...hashes,
       policy: policy.policy,
-      renderInputs: renderInputsFor(d.render, d.imageSop, d.toolsJson, undefined, d.brand ?? null, policy.policyHash),
+      renderInputs: renderInputsFor(d.render, d.imageSop, d.toolsJson, runtime.sopSections, d.brand ?? null, policy.policyHash),
       changeNote: `启动重渲染：${r.causes.join('、')} 变了`,
       createdBy: null,
       createdByName: 'system',
@@ -973,16 +1069,16 @@ export function applyCatalogRow(row: {
   addVersion(cur.history, row.kind, row.code, row.version, row.payload);
   // 内容没变的写入（原样提交）带回的是这一列上的版本，启动补写之后它可能落后于历史：取大（见 currentVersionOf）
   const versions = { ...cur.catalog.versions, [catalogVersionKey(row.kind, row.code)]: currentVersionOf(row, cur.history) };
-  const key = row.kind === 'route' ? 'routes' : 'hotels';
-  const ords = cur.ords[row.kind];
+  const ords = Object.hasOwn(cur.ords, row.kind) ? cur.ords[row.kind]! : (cur.ords[row.kind] = new Map());
   const idOf = (x: unknown): string => String((x as { id: unknown }).id);
-  const items: { ord: number; payload: unknown }[] = (cur.catalog[key] as readonly unknown[])
+  const items: { ord: number; payload: unknown }[] = (cur.catalog.items[row.kind] ?? [])
     .filter((x) => idOf(x) !== row.code)
     .map((x) => ({ ord: ords.get(idOf(x)) ?? Number.MAX_SAFE_INTEGER, payload: x }));
   items.push({ ord: row.ord, payload: structuredClone(row.payload) });
   ords.set(row.code, row.ord);
   const list = items.toSorted((a, b) => a.ord - b.ord).map((x) => x.payload);
-  setCatalog(cur, { ...cur.catalog, [key]: list, versions, generation: cur.catalog.generation + 1 });
+  const nextItems = { ...cur.catalog.items, [row.kind]: list };
+  setCatalog(cur, { ...cur.catalog, items: nextItems, ...catalogAliases(nextItems), versions, generation: cur.catalog.generation + 1 });
 }
 
 // ---------------- 锁丢失 ----------------
@@ -1057,15 +1153,15 @@ async function reloadOnce(cur: Loaded): Promise<boolean> {
   if (currentRuntime().state !== 'serving' || state.loaded !== cur) return true;
   if (state.catalogWrites !== writesBefore) return false;
   // 版本号只增不减（不变式 13）
-  if (row.versionNo! > cur.sop.versionNo) cur.sop = toPublishedSop(cur.tenantId, row, mergeWithImage(row.sections, cur.imageSections));
+  if (row.versionNo! > cur.sop.versionNo)
+    cur.sop = toPublishedSop(cur.tenantId, row, mergeWithImage(row.sections, cur.imageSections, runtimeOf(cur.deps).sopSections));
   state.sopStale = false;
   // 版本只追加：库里读到的并进内存里已有的（内存里有、库里没有的不会出现：只有提交之后才加进内存）
   for (const v of versions) addVersion(cur.history, v.kind, v.code, v.version, v.payload);
   const next = snapshotOf(cur.tenantId, items, cur.catalog.generation, cur.history);
   cur.ords = ordsOf(items);
   if (
-    JSON.stringify(next.routes) !== JSON.stringify(cur.catalog.routes) ||
-    JSON.stringify(next.hotels) !== JSON.stringify(cur.catalog.hotels) ||
+    JSON.stringify(next.items) !== JSON.stringify(cur.catalog.items) ||
     JSON.stringify(next.versions) !== JSON.stringify(cur.catalog.versions)
   ) {
     setCatalog(cur, { ...next, generation: cur.catalog.generation + 1 });
@@ -1186,10 +1282,15 @@ export function prefixSummary(file: () => { system: string; tools: string; sop: 
   return { sopVersion: null, ...promptHashes(f.system, f.tools, f.sop) };
 }
 
-/** 文件模式与未启动的旧自测入口按 R2 延后装配旅游；DB 装载成功时显式覆盖绑定。 */
+/** 文件模式按 pack.json 延后装配（没有就是旅游）；DB 模式必须已经显式绑定包（08 R5）。 */
 export function currentPack(): PackBinding {
   const state = configState();
-  const binding = boundPack() ?? installPack('travel', configMode() === 'file' ? readFileBrand() : null);
+  if (state.fileCatalog) dropStaleFileCatalog(state);
+  let binding = boundPack();
+  if (!binding) {
+    if (configMode() === 'db') throw new ConfigNotReadyError('DB 模式没有绑定行业包');
+    binding = installFilePack();
+  }
   return state.loaded ? { ...binding, brand: state.loaded.sop.brand } : binding;
 }
 
@@ -1201,11 +1302,11 @@ export function currentPolicy(): ReturnType<typeof policySnapshot> {
   return readFilePolicy(currentPack().runtime.policy);
 }
 
-function readFilePolicy(pack: import('../core/pack-api.js').PackPolicy | undefined): ReturnType<typeof policySnapshot> {
+function readFilePolicy(pack: PackPolicy | undefined): ReturnType<typeof policySnapshot> {
   const file = path.join(path.dirname(fileSopPath()), 'policy.json');
   const value = fs.existsSync(file) ? JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file))) : pack?.defaults;
   const snapshot = policySnapshot(pack, value);
-  const violations = pack ? checkSopContractPolicy(snapshot.policy) : [];
+  const violations = pack?.lint?.(snapshot.policy) ?? [];
   if (violations.length) throw new Error(`policy_invalid: ${violations.map((v) => v.detail).join('；')}`);
   return deepFreeze(snapshot);
 }
@@ -1223,14 +1324,139 @@ function readFileBrand(): BrandProfile | null {
   return BrandProfileSchema.parse(JSON.parse(text));
 }
 
+// ---------------- 文件模式：按 pack.json 装载（08 R11） ----------------
+
+/** 配置目录的 pack.json 指的非旅游包 id。没有这个文件、或写的就是 travel，都是旅游（null）；写坏了以 pack_unknown 拒绝 */
+function filePackId(): string | null {
+  let file: ReturnType<typeof readPackFile>;
+  try {
+    file = readPackFile(path.dirname(fileSopPath()));
+  } catch (e) {
+    throw startup('pack_unknown', message(e));
+  }
+  return file === null || file.id === 'travel' ? null : file.id;
+}
+
+/**
+ * 文件模式装配行业包：配置目录有 pack.json 就按它的 id，没有就是旅游（与以前完全相同，不读 catalog/）。
+ * 非旅游包只支持模板模式（08 R10）：镜像取 data/packs/<id>/sop.md，品牌取同目录的 brand.json，没有品牌拒绝（brand_required，同 DB 模式）；
+ * 注册表里没有这个包以 pack_unknown 拒绝。
+ */
+function installFilePack(): PackBinding {
+  const id = filePackId();
+  if (id === null) return installPack('travel', readFileBrand());
+  if (!packById(id)) throw startup('pack_unknown', `配置目录的 pack.json 指向行业包「${id}」，它不在注册表里`);
+  const brand = readFileBrand();
+  if (brand === null) throw startup('brand_required', `行业包「${id}」只支持模板模式，配置目录里要有 brand.json（品牌档案）`);
+  return installPack(id, brand);
+}
+
+/** 文件模式的配置目录：SOP_PATH 所在目录，pack.json、brand.json、policy.json、catalog/ 都在这里 */
+const fileConfigDir = (): string => path.dirname(fileSopPath());
+
+/**
+ * 产品库快照是按某个配置目录装的。目录变了（评测在同一进程里换 SOP_PATH）就作废；绑定还是装这份快照的那一个（没被 bindPack 换过）
+ * 也一起作废，下一次按当前目录的 pack.json 重新装配。其余绑定（旅游、品牌夹具显式绑的）不动。
+ */
+function dropStaleFileCatalog(state: TenantConfig): void {
+  const cache = state.fileCatalog;
+  if (!cache || cache.dir === fileConfigDir()) return;
+  state.fileCatalog = null;
+  if (boundPack()?.runtime === cache.runtime) unbindPack();
+}
+
+/** 重置时去掉包绑定（TenantRuntime.pack 装载后才有，所以绕开类型）；文件模式下一次按配置目录重新装配。 */
+function unbindPack(): void {
+  Reflect.set(currentRuntime(), 'pack', undefined);
+}
+
+/**
+ * 评测在同一进程里换配置目录前后用（eval/sim/runtime.ts 的 engineRuntime）：记下现在的包绑定与文件模式产品库快照，
+ * 返回的函数把它们原样放回去。没绑过的恢复成没绑。
+ */
+export function saveFileConfig(): () => void {
+  const rt = currentRuntime();
+  const { fileCatalog: cache } = rt.config;
+  const pack = boundPack();
+  return () => {
+    rt.config.fileCatalog = cache;
+    Reflect.set(rt, 'pack', pack ?? undefined);
+  };
+}
+
+/**
+ * 文件模式下 currentCatalog() 的出处。非旅游包读配置目录的 catalog/<kind>.json 拼成快照，进程内读一次（同 DB 模式的启动装载，
+ * 手改文件要重启）；旅游（没有 pack.json）与 DB 模式没装载完，都和以前一样抛 ConfigNotReadyError：旅游的工具自己读 ROUTES_PATH。
+ */
+function fileCatalog(state: TenantConfig): CatalogSnapshot {
+  if (configMode() === 'file') {
+    dropStaleFileCatalog(state);
+    if (state.fileCatalog) return state.fileCatalog.snapshot;
+    // 评测不走 initConfig、还没绑包：按 pack.json 认；没有 pack.json 就什么都不装，保持旅游的老样子
+    const bound = boundPack() ?? (filePackId() === null ? null : installFilePack());
+    if (bound && bound.runtime.id !== 'travel') return loadFileCatalog(bound.runtime);
+  }
+  throw new ConfigNotReadyError();
+}
+
+/** 包声明的每个 kind 读 catalog/<kind>.json（缺文件就是空数组），逐条过包的 schema，版本恒为 1；再套包的启动检查（catalog_startup） */
+function loadFileCatalog(runtime: PackRuntime): CatalogSnapshot {
+  const dir = path.join(fileConfigDir(), 'catalog');
+  const items: Record<string, unknown[]> = {};
+  const versions: Record<string, number> = {};
+  for (const [kind, spec] of Object.entries(runtime.catalog)) {
+    items[kind] = readCatalogFile(dir, kind, spec);
+    for (const item of items[kind]) versions[catalogVersionKey(kind, (item as { id: string }).id)] = 1;
+  }
+  const snapshot: CatalogSnapshot = deepFreeze({
+    tenantId: currentRuntime().id,
+    generation: 0,
+    items,
+    ...catalogAliases(items),
+    versions,
+  });
+  assertCatalogStartup(runtime, snapshot, '');
+  configState().fileCatalog = { dir: fileConfigDir(), runtime, snapshot };
+  return snapshot;
+}
+
+function readCatalogFile(dir: string, kind: string, spec: CatalogKindSpec): unknown[] {
+  const name = `catalog/${kind}.json`;
+  // kind 拼进文件名：包声明里的 kind 也不许带路径
+  if (!/^[A-Za-z0-9_-]+$/.test(kind)) throw startup('catalog_startup', `kind「${kind}」不能当文件名用`);
+  const file = path.join(dir, `${kind}.json`);
+  if (!fs.existsSync(file)) return [];
+  let raw: unknown;
+  try {
+    // 严格解码：非法字节不能被替换成 U+FFFD 后照样通过校验
+    raw = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file)));
+  } catch (e) {
+    throw startup('catalog_startup', `${name} 读不出来：${message(e)}`);
+  }
+  if (!Array.isArray(raw)) throw startup('catalog_startup', `${name} 必须是数组`);
+  const seen = new Set<string>();
+  raw.forEach((item: unknown, i) => {
+    const parsed = spec.schema.safeParse(item);
+    if (!parsed.success) {
+      const why = parsed.error.issues.map((x) => `${x.path.join('.') || '(根)'}：${x.message}`).join('；');
+      throw startup('catalog_startup', `${name} 第 ${i + 1} 条不合格：${why}`);
+    }
+    const id = (item as Record<string, unknown>).id;
+    if (typeof id !== 'string' || !id) throw startup('catalog_startup', `${name} 第 ${i + 1} 条没有字符串 id`);
+    if (seen.has(id)) throw startup('catalog_startup', `${name} 里 id「${id}」重复`);
+    seen.add(id);
+  });
+  return raw;
+}
+
 /** 文件模式保留可编辑节，只把锁定节与硬性要求按装载的品牌渲染；旧版原文不经过切分。 */
 export function renderFileSop(sop: string): string {
   const { runtime, brand } = currentPack();
   if (brand === null) return renderSystemPrompt(sop, runtime.legacy.hardRequirements);
   const image = tenantImage(runtime, sop, brand);
-  const legacyImage = splitSop(decodeSopFile(fs.readFileSync(path.join(process.cwd(), 'data', 'sop.md'))), runtime.sopSections);
+  const legacyImage = splitSop(readImageSop(runtime.id), runtime.sopSections);
   const stored = switchPreamble(splitSop(sop, runtime.sopSections), legacyImage, image);
-  return tenantRenderer(runtime, brand)(joinSop(mergeWithImage(stored, image)));
+  return tenantRenderer(runtime, brand)(joinSop(mergeWithImage(stored, image, runtime.sopSections)));
 }
 
 function installPack(id: string, brand: BrandProfile | null = null): PackBinding {
@@ -1285,7 +1511,10 @@ function resetConfig(): void {
   state.reacquireTimer = null;
   state.dbInstalled = false;
   state.loaded = null;
-  installPack('travel');
+  state.fileCatalog = null;
+  // 文件模式：去掉绑定，下一次 currentPack() 按当前配置目录的 pack.json 重新装配（评测在同一进程里换 SOP_PATH 靠它）。
+  // DB 模式必须重新显式绑定；CONFIG_SOURCE=db 时，重置后的 currentPack() 直接抛错（08 R5）。
+  unbindPack();
   setLogTenant('');
   state.lockState = 'held';
   state.lockTaken = false;
@@ -1321,6 +1550,11 @@ function configRegistration(key: keyof TenantConfig) {
 }
 registerTenantState({ name: 'config.dbInstalled', ...configRegistration('dbInstalled') });
 registerTenantState({ name: 'config.loaded', ...configRegistration('loaded') });
+registerTenantState({
+  name: 'config.fileCatalog',
+  ...configRegistration('fileCatalog'),
+  keyCount: (id) => (tenantRuntimes().find((r) => r.id === id)?.config.fileCatalog ? 1 : 0),
+});
 registerTenantState({ name: 'config.lockState', ...configRegistration('lockState') });
 registerTenantState({ name: 'config.lockTaken', ...configRegistration('lockTaken') });
 registerTenantState({ name: 'config.sopStale', ...configRegistration('sopStale') });

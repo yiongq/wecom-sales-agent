@@ -38,7 +38,10 @@ import { createTravelConsistency } from './consistency.js';
 import { refundQuoteText, refundChooseText, refundTexts, refundNoticeText } from './refund-words.js';
 import { paidOrderText } from './order-words.js';
 import { travelPolicy } from './policy.js';
+import { policyViolations } from './policy-lint.js';
 import { createTravelAfterSales } from './after-sales.js';
+import { CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, REPRICE_FIELDS, profileForPrompt, type CatalogKindSpec } from '../../core/pack-api.js';
+import { createTravelSessionHooks } from './session-hooks.js';
 
 const thresholds = { ...travelPriceThresholds, dates: travelDateThresholds, search: travelSearchThresholds };
 interface TravelRuntimeTypes extends PackRuntimeTypes {
@@ -90,7 +93,28 @@ export function createTravelRuntime(sources: PackSources) {
   const consistency = createTravelConsistency((over) => assemble({ ...sources, ...over }));
   const runtime: PackRuntime<TravelRuntimeTypes> = {
     id: 'travel',
-    policy: travelPolicy,
+    documents: { proposal: true },
+    catalog: {
+      route: {
+        // 旧版 Route/Hotel 接口没有索引签名；schema 本身仍是同一个对象。
+        schema: CATALOG_SCHEMAS.route as unknown as CatalogKindSpec['schema'],
+        titleKey: 'title',
+        lockedWhenActive: LOCKED_WHEN_ACTIVE.route,
+        repriceFields: REPRICE_FIELDS.route,
+        moneyFields: [{ path: 'priceFrom', decimals: 0 }],
+        retrieval: true,
+      },
+      hotel: {
+        schema: CATALOG_SCHEMAS.hotel as unknown as CatalogKindSpec['schema'],
+        titleKey: 'name',
+        lockedWhenActive: LOCKED_WHEN_ACTIVE.hotel,
+        repriceFields: REPRICE_FIELDS.hotel,
+        moneyFields: [{ path: 'nightlyFrom', decimals: 0 }],
+        retrieval: false,
+      },
+    },
+    catalogStartupCheck: (snapshot) => (snapshot.routes.length ? null : '没有 active 的线路'),
+    policy: { ...travelPolicy, lint: policyViolations },
     defaultBrand: demoBrand,
     legacy: {
       ...legacy,
@@ -102,16 +126,25 @@ export function createTravelRuntime(sources: PackSources) {
     },
     templates: travelTemplates,
     sopSections: [...TRAVEL_SOP_SECTIONS],
-    contractRules: (mode) =>
-      SOP_CONTRACT.map((rule) =>
+    contractRules: (mode) => [
+      ...SOP_CONTRACT.map((rule) =>
         mode !== 'legacy' && rule.id === 'advisor-on-wechat' && rule.kind === 'include' ? { ...rule, text: '顾问会联系您' } : rule,
       ),
+      // 08 R10：模板模式下，代码所有的固定内容（锁定节与硬性要求）里不能出现旧品牌名（档案本身允许的品牌名除外）。
+      // id 以 brand-fixed: 开头的 exclude 规则只查这部分，不查整段渲染结果，核心不再写死这个词。
+      ...(mode === 'legacy'
+        ? []
+        : [{ id: 'brand-fixed:legacy-brand', kind: 'exclude' as const, text: '云途', from: '模板模式的固定要求不带旧品牌名' }]),
+    ],
     knownFields,
     stages: runtimeStages,
     tools: catalog.tools,
     beforeTool: turnHooks.beforeTool,
     afterTool: turnHooks.afterTool,
     extractProfile,
+    // 08 R4：旅游的画像与会话钩子；profileForPrompt 就是 types.ts 里今天的那个函数
+    profileForPrompt,
+    ...createTravelSessionHooks(sources),
     advanceStage,
     prefetch: turnHooks.prefetch,
     contextNote: turnHooks.contextNote,
@@ -183,6 +216,7 @@ export function createTravelRuntime(sources: PackSources) {
         updatedAt: '',
       })),
     retrievalCacheFile: 'route-vectors.json',
+    evalGoalsDir: 'eval/sim/goals/quality',
     followupTemplates,
     insightPrompts,
     mock: travelMock,

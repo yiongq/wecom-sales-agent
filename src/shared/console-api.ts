@@ -82,8 +82,8 @@ export const PublishBody = z.strictObject({
 
 export const RollbackBody = z.strictObject({ changeNote: str.max(500) });
 
-export const CatalogKindParam = z.object({ kind: z.enum(['route', 'hotel']) });
-export const CatalogItemParam = z.object({ kind: z.enum(['route', 'hotel']), code: str.min(1).max(128) });
+export const CatalogKindParam = z.object({ kind: z.string().regex(/^[a-z][a-z0-9_]{1,31}$/) });
+export const CatalogItemParam = z.object({ kind: z.string().regex(/^[a-z][a-z0-9_]{1,31}$/), code: str.min(1).max(128) });
 
 export const CreateItemBody = z.strictObject({ payload: jsonObject });
 
@@ -568,7 +568,9 @@ export interface MessageView {
 }
 
 /** J 页右栏与对话里的订单（ConversationDetail.orders、GET /orders） */
-export interface OrderView {
+export type OrderView = LegacyOrderView | LineOrderView;
+
+export interface LegacyOrderView {
   id: string;
   routeTitle: string;
   travelers: number;
@@ -592,7 +594,57 @@ export interface OrderView {
   conversation: { id: string; channel: string; needSummary: string | null; sandboxOwner?: SandboxConversationOwner } | null;
 }
 
+/** 08 R12：通用单的后台投影，金额为整数分，展示文字由服务端格式化。 */
+export interface LineOrderView extends Pick<
+  LegacyOrderView,
+  'id' | 'createdAt' | 'paidAt' | 'confirmed' | 'handoffBeforePaid' | 'conversation'
+> {
+  status: Exclude<OrderStatus, 'refund_pending' | 'refunded'>;
+  display: {
+    title: string;
+    summary: string;
+    lines: { title: string; qtyText: string; unitPriceText: string; amountText: string; attrs?: Record<string, string> }[];
+    totalFen: number;
+    totalText: string;
+  };
+  totalFen: number;
+  totalText: string;
+  refund?: never;
+}
+
 /** GET /conversations/:id：J 页一次取全 */
+/** ConversationDetail.need：旅游沿用的需求要素形状 */
+export interface ConversationNeed {
+  destination: string | null;
+  segment: string | null;
+  travelers: string | null;
+  dates: string | null;
+  budget: string | null;
+}
+
+/** ConversationDetail.quote：旅游沿用的最近报价形状 */
+export interface ConversationQuote {
+  routeId: string;
+  routeTitle: string;
+  travelers: number;
+  perPerson: number | null;
+  total: number | null;
+  departDate: string | null;
+}
+
+/** 08 R4：包的 profileView 下发的画像卡（会话标题后半段加若干行） */
+export interface ConversationProfileCard {
+  title: string;
+  rows: { label: string; value: string }[];
+}
+
+/** 08 R4：包的 quoteCard 下发的报价卡；amountFen 是整数分，null 表示有报价但没有金额 */
+export interface ConversationQuoteCard {
+  title: string;
+  amountFen: number | null;
+  lines: string[];
+}
+
 export interface ConversationDetail {
   row: ConversationRow;
   /** 内存窗口，按 seq 升序 */
@@ -609,16 +661,14 @@ export interface ConversationDetail {
     stageBefore: string | null;
     assigneeName: string | null;
   } | null;
-  /** 需求要素：规范化的取值，与 needSummary 同源 */
-  need: { destination: string | null; segment: string | null; travelers: string | null; dates: string | null; budget: string | null };
-  quote: {
-    routeId: string;
-    routeTitle: string;
-    travelers: number;
-    perPerson: number | null;
-    total: number | null;
-    departDate: string | null;
-  } | null;
+  /** 需求要素：规范化的取值，与 needSummary 同源。非旅游包的字段全是 null，画像卡走 profileCard */
+  need: ConversationNeed;
+  /** 最近一次报价（旅游沿用的形状）。非旅游包恒为 null，报价卡走 quoteCard */
+  quote: ConversationQuote | null;
+  /** 08 R4：非旅游包的画像卡（包的 profileView，viewer 已打码）；旅游没有这个键，只有 need */
+  profileCard?: ConversationProfileCard;
+  /** 08 R4：非旅游包的报价卡（包的 quoteCard，viewer 已打码）；旅游没有这个键，只有 quote */
+  quoteCard?: ConversationQuoteCard;
   orders: OrderView[];
   /** 企微渠道才有 */
   sendWindow: SendWindow | null;

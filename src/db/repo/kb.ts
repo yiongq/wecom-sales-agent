@@ -63,15 +63,18 @@ export interface KbWrite {
 
 /**
  * 一次同步的全部写入，调用方放在同一个事务里：
- * ① 删掉不在 keep 里的块（产品库里已经没有的线路；kb_vectors 随外键级联）
+ * ① 删掉 source 下不在 keep 里的块（产品库里已经没有的条目；kb_vectors 随外键级联）
  * ② 逐块 upsert：身份是（source, ref），正文变了就换 body_hash；块变了它名下旧正文的向量作废，先删掉
  * ③ 写向量：（块, 模型）一行；别的模型的向量是上一代模型留下的，一并清掉
  * kb_vectors 不在时只写块（调用方不会走到这里，守一道）
  */
-export async function writeKbSync(tx: Tx, o: { model: string; keep: readonly string[]; writes: readonly KbWrite[] }): Promise<void> {
+export async function writeKbSync(
+  tx: Tx,
+  o: { source: KbSource; model: string; keep: readonly string[]; writes: readonly KbWrite[] },
+): Promise<void> {
   const { tenantId } = currentTenantCtx();
   const installed = await kbVectorsInstalled(tx);
-  const gone = o.keep.length ? and(eq(kbChunks.source, 'route'), notInArray(kbChunks.ref, [...o.keep])) : eq(kbChunks.source, 'route');
+  const gone = o.keep.length ? and(eq(kbChunks.source, o.source), notInArray(kbChunks.ref, [...o.keep])) : eq(kbChunks.source, o.source);
   await tx.delete(kbChunks).where(gone);
   for (let i = 0; i < o.writes.length; i += 50) {
     const batch = o.writes.slice(i, i + 50);

@@ -22,12 +22,25 @@ process.env.LLM_MOCK = '1';
 process.env.CONFIG_SOURCE = 'file';
 
 const root = path.join(import.meta.dirname, '..', '..');
-const { TRAVEL_SOP_SECTIONS, splitSop, joinSop, sectionBody, withBody, normalizeBody, mergeWithImage, editableChars, assertSopEncoding } =
-  await withoutTenantScope(() => import('../sop/sections.js'));
-const { SOP_CONTRACT, SOP_KNOWN_FIELDS, BUDGET_RATIO, checkSopContract } = await withoutTenantScope(() => import('../sop/contract.js'));
-const { knownFields } = await withoutTenantScope(() => import('../packs/travel/sop.js'));
-const { renderSystemPrompt } = await withoutTenantScope(() => import('../prompt/system.js'));
-const toolDefsModule = await withoutTenantScope(() => import('../tool-defs.js'));
+const sopSections = await withoutTenantScope(() => import('../sop/sections.js'));
+const { joinSop, sectionBody, withBody, normalizeBody, assertSopEncoding } = sopSections;
+const { TRAVEL_SOP_SECTIONS, SOP_CONTRACT, SOP_KNOWN_FIELDS, knownFields } = await withoutTenantScope(
+  () => import('../packs/travel/sop.js'),
+);
+// 08 R10：节表是必传参数。这份自测测的是旅游，在这里绑一次旅游节表，下面的调用写法不变
+const splitSop = (text: string) => sopSections.splitSop(text, TRAVEL_SOP_SECTIONS);
+const mergeWithImage = (stored: readonly SopSection[], img: readonly SopSection[]) =>
+  sopSections.mergeWithImage(stored, img, TRAVEL_SOP_SECTIONS);
+const editableChars = (sections: readonly SopSection[]) => sopSections.editableChars(sections, TRAVEL_SOP_SECTIONS);
+const { BUDGET_RATIO, checkSopContract } = await withoutTenantScope(() => import('../sop/contract.js'));
+const { contractInputs } = await withoutTenantScope(() => import('./brand.js'));
+const { runtimeById } = await withoutTenantScope(() => import('../packs/registry.js'));
+const { packSources } = await withoutTenantScope(() => import('./source.js'));
+const travelRuntime = runtimeById('travel', packSources())!;
+// 08 R5：旧版（无品牌）的 system prompt = SOP + 绑定包的旧版硬性要求；原先 prompt/system.ts 里绑旅游的单参数入口已收走，自测按运行时自己取
+const { renderSystemPrompt: renderWithRequirements } = await withoutTenantScope(() => import('../core/prompt.js'));
+const renderSystemPrompt = (sop: string) => renderWithRequirements(sop, travelRuntime.legacy.hardRequirements);
+const toolDefsModule = await withoutTenantScope(() => import('../packs/travel/tool-defs.js'));
 const { toolDefs: toolDefsViaTools } = await withoutTenantScope(() => import('../tools.js'));
 const { promptPrefix, __engineTest } = await withoutTenantScope(() => import('../engine.js'));
 const { loadRoutes, loadHotels, searchHotels } = await withoutTenantScope(() => import('../tools.js'));
@@ -214,6 +227,8 @@ const contract = (sections: readonly SopSection[], over: Partial<Parameters<type
     toolNames,
     knownFields: SOP_KNOWN_FIELDS,
     baselineEditableChars: null,
+    // 08 R10：契约检查的包相关输入取绑定的旅游包；旧版模式，政策取包默认值
+    ...contractInputs(travelRuntime, null, travelRuntime.policy!.defaults),
     ...over,
   });
 const codes = (vs: { code: ViolationCode; sectionKey: string | null }[]): string =>
@@ -1156,7 +1171,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
     tenantSlug: 'demo',
     outDir: out,
     imageSop: md,
-    code: { ...imageCode(), render: (s) => `${renderSystemPrompt(s)}\n新规则` },
+    code: { ...imageCode(travelRuntime), render: (s) => `${renderSystemPrompt(s)}\n新规则` },
   });
   check('导出：本地渲染的 promptHash 与库里的不同 → 退出码 1', changedCode.code === EXIT.error, changedCode.message);
 }
@@ -1518,7 +1533,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
   await expectFail('解析租户时库断开', 'db_unreachable', d({ db: tenantLookupFails }), '解析租户');
   await expectFail('锁连接连不上库', 'db_unreachable', d({ lock: async () => dropped() }), '取租户锁');
   await expectFail('读已发布 SOP 与产品库时库断开', 'db_unreachable', d({ db: dropsAfter(0) }), '读已发布 SOP');
-  const changedTools = JSON.parse(imageCode().toolsJson) as { function: { description: string } }[];
+  const changedTools = JSON.parse(imageCode(travelRuntime).toolsJson) as { function: { description: string } }[];
   changedTools[0]!.function.description += '（改了一个字）';
   await expectFail(
     '写 rerender 版本时库断开',
@@ -2021,7 +2036,7 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 
     // 只改工具定义 → prompt_hash 不变，tools_hash 与 prefix_hash 变了
     const beforeTools = cfg.currentSop();
-    const tools = JSON.parse(imageCode().toolsJson) as { function: { description: string } }[];
+    const tools = JSON.parse(imageCode(travelRuntime).toolsJson) as { function: { description: string } }[];
     tools[0]!.function.description += '（改了一个字）';
     await reinit({
       imageSop: lockedImage,

@@ -9,8 +9,8 @@ import { brandSnapshot, promptHashes, publishedBrand, renderInputsFor, sha256 } 
 import { shanhaiBrand, shanhaiPreamble } from '../packs/travel/brand-fixture.js';
 import { brandTexts, renderBrandPage, renderBrandTemplate } from '../core/brand.js';
 import { bindPack, partsOf, type BrandProfile } from '../core/pack-api.js';
-import { toolDefs } from '../tool-defs.js';
-import { renderSystemPrompt } from '../prompt/system.js';
+import { toolDefs } from '../packs/travel/tool-defs.js';
+import { renderSystemPrompt as renderWithRequirements } from '../core/prompt.js';
 import { hostRuntime, withoutTenantScope } from '../tenancy/runtime.js';
 import { enterTenantScopeForTest } from '../tenancy/testing.js';
 
@@ -38,6 +38,8 @@ const { __test: wecom, syncFromCallback } = await withoutTenantScope(() => impor
 const { installAccounts } = await withoutTenantScope(() => import('../channels/accounts.js'));
 
 const runtime = config.currentPack().runtime;
+// 08 R5：旧版（无品牌）的 system prompt = SOP + 绑定包的旧版硬性要求；原先 prompt/system.ts 里绑旅游的单参数入口已收走，自测按运行时自己取
+const renderSystemPrompt = (sop: string) => renderWithRequirements(sop, runtime.legacy.hardRequirements);
 const baseline = promptPrefix();
 const legacy = brandTexts(runtime, null);
 const rendered = brandTexts(runtime, shanhaiBrand);
@@ -111,7 +113,18 @@ try {
         baselineHtml = baselineHtml.replace(branch, '');
       }
     }
-    assert.equal(sha256(baselineHtml), hash, `${page} 除授权页脚与 R20 退款分支外必须与开工时逐字节相同`);
+    if (page === 'pay' || page === 'chat') {
+      // 08 R12 给通用单加 `display` 分支：只剔除这段新增字节，原页面哈希及其余字节继续锁住。
+      const start = page === 'pay' ? '      if (order.display) {\n' : '      if (o.display) {\n';
+      const end = page === 'pay' ? '        render();\n        return;\n      }\n' : '        return;\n      }\n';
+      const startAt = baselineHtml.indexOf(start);
+      assert.notEqual(startAt, -1, `${page} R12 display 分支起点必须存在`);
+      assert.equal(baselineHtml.indexOf(start, startAt + start.length), -1, `${page} R12 display 分支起点必须恰好出现一次`);
+      const endAt = baselineHtml.indexOf(end, startAt + start.length);
+      assert.notEqual(endAt, -1, `${page} R12 display 分支终点必须存在`);
+      baselineHtml = baselineHtml.slice(0, startAt) + baselineHtml.slice(endAt + end.length);
+    }
+    assert.equal(sha256(baselineHtml), hash, `${page} 除授权页脚、R20 退款分支与 R12 display 分支外必须与开工时逐字节相同`);
     assert.equal(renderBrandPage(html, name, runtime, null), html);
     const next = renderBrandPage(html, name, runtime, shanhaiBrand);
     // 检查全部客户文案（含 JS 中的动态文案）；技术注释不属于客户文案，支付产品名保留。
@@ -228,10 +241,10 @@ try {
   const mock = await handleMessage('brand-legacy', '你好', 'web');
   assert.equal(mock.text, legacy.mockOpening);
 
-  const emptyInputs = renderInputsFor(renderSystemPrompt, fs.readFileSync('data/sop.md', 'utf8'), baseline.tools);
+  const emptyInputs = renderInputsFor(renderSystemPrompt, fs.readFileSync('data/sop.md', 'utf8'), baseline.tools, runtime.sopSections);
   assert.equal(emptyInputs.brand, null);
   assert.equal(emptyInputs.brandHash, sha256('null'));
-  const input = renderInputsFor(renderSystemPrompt, '', baseline.tools, undefined, shanhaiBrand);
+  const input = renderInputsFor(renderSystemPrompt, '', baseline.tools, runtime.sopSections, shanhaiBrand);
   assert.deepEqual(input.brand, shanhaiBrand);
   assert.equal(input.brandHash, brandSnapshot({ ...shanhaiBrand }).brandHash);
   const reordered = Object.fromEntries(Object.entries(shanhaiBrand).reverse()) as unknown as BrandProfile;

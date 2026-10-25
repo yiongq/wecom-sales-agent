@@ -1,6 +1,8 @@
 # 04 · 行业包抽取
 
 Status: implemented
+Superseded in part by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md) — R16 假包的能力范围（第 76 行；升级为证明包，08 R14）；「`PackRuntime`」一节 `extractProfile` 注释里的「字段仍是现有 8 个」（第 116 行；画像加 `attrs`，08 R4）。按 08 的 plan 落地。
+Amended by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md)（只做新增或收紧，全文见该 spec 顶部 `Amends:`：R2 的 `check-boundaries` 加两条规则（第 62 行，08 R5）；R10、R11 与「评测」的 `CaseV2`、`SimGoal` 加可选的 `pack`，非旅游包的订单夹具用通用单（第 70、71、201、235 行，08 R11）；R12 的 `MoneyParseOptions` 加可选的 `decimals`（第 72 行，08 R6）；R14 的回滚检查加 pre-08 与退出码 9（第 74 行，08 R13）；「配置导出与文件模式」的配置目录加 `pack.json` 与 `catalog/*.json`（第 193 行，08 R11））。
 Superseded in part by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md) — 「主流程」里「紧急、撤回同意、已接管静默、重置口令关着时的回复、明确要人工、负面情绪在记客户消息之后」这一串顺序：在「重置口令关着时的回复」与「明确要人工」之间插入包的售后钩子 `afterSales`（07 R18）；不变量 4 与验收 7（06 已改写）的步骤表再加 07 新增的 `policy_claims`，原有步骤的相对顺序不变（07 R22）。
 Amended by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md)（只做新增，全文见该 spec 顶部 `Amends:`：`PackRuntime` 新增可选成员 `policy`，`EnginePackHooks` 新增可选成员 `afterSales`，`pack-api` 新增纯函数 `quoteRefund`，`SimGoal` 新增 `tags`、`initial.orders.status` 加两个新值，模拟评测运行时新增 `--config-dir`，见 07 R1、R8、R9、R18）。
 Superseded in part by: [06 · AI 回复质量](../06-reply-quality/spec.md) — 不变量 4 与验收 7 的「执行顺序 / 标识顺序等于开工步骤表」改为等于开工步骤表加 06 新增的步骤，原有步骤的相对顺序不变（06 R10–R13、R7）。

@@ -3,7 +3,8 @@ import { and, asc, eq, sql } from 'drizzle-orm';
 import type { Tx } from '../client.js';
 import { catalogItems } from '../schema.js';
 
-export type CatalogKind = 'route' | 'hotel';
+import type { CatalogKind } from '../../shared/catalog.js';
+export type { CatalogKind } from '../../shared/catalog.js';
 
 export interface CatalogRow {
   kind: CatalogKind;

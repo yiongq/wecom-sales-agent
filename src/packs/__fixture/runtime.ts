@@ -1,28 +1,168 @@
-// R16：只在 PACK_FIXTURES=1 时注册的运行时假包，不复用旅游工具或阶段规则。
-import { deepFreeze, type IndustryPack, type PackRuntime, type SalesStage } from '../../core/pack-api.js';
+// 08 R14：只在 PACK_FIXTURES=1 时注册的证明包，保留 04 R16 的工具、阶段与护栏。
+import {
+  deepFreeze,
+  createLineOrder,
+  orderDisplay,
+  yuanToFen,
+  moneyProvenanceStep,
+  moneyProvenanceFollowupStep,
+  UNSTORABLE_TEXT,
+  type CatalogItem,
+  type IndustryPack,
+  type PackRuntime,
+  type PackSources,
+  type SalesStage,
+  type Session,
+  type SopSectionDef,
+} from '../../core/pack-api.js';
+import { z } from 'zod';
+
+const sopSections = [
+  { key: 'preamble', heading: null, locked: false },
+  { key: 'fixture_role', heading: '核验员职责', locked: true },
+  { key: 'widget_intake', heading: '方盒需求采集', locked: false },
+  { key: 'fixture_verify', heading: '方盒核验流程', locked: true },
+  { key: 'widget_reply', heading: '核验答复建议', locked: false },
+  { key: 'fixture_limits', heading: '核验能力边界', locked: true },
+] as const satisfies readonly SopSectionDef[];
 
 export const fixture: IndustryPack = deepFreeze({
   id: '__fixture',
-  name: '运行时假包',
-  entities: [],
-  vocabulary: { customer: '客户', advisor: '顾问', productNoun: '服务', tools: { fixture_inspect: '核验' }, sopFields: {} },
-  sopSections: [],
-  nav: { catalogGroup: '服务', entities: [] },
+  name: '方盒核验证明包',
+  entities: [
+    {
+      kind: 'widget',
+      label: '方盒',
+      icon: 'box',
+      codeLabel: '方盒编号',
+      codeExample: 'w-sample',
+      titleKey: 'title',
+      subtitleKeys: ['$code', 'unit'],
+      groups: [{ key: 'basic', label: '方盒信息' }],
+      lockGroups: {},
+      fields: [
+        { key: '$code', type: 'text', label: '方盒编号', group: 'basic' },
+        { key: 'title', type: 'text', label: '方盒名称', group: 'basic' },
+        { key: 'unitPrice', type: 'money', decimals: 2, unitFrom: 'unit', label: '单价', group: 'basic', reprices: true },
+        { key: 'unit', type: 'enum', options: ['件', '盒'], label: '单位', group: 'basic', reprices: true },
+        { key: 'moq', type: 'intUnit', min: 1, label: '起订量', unit: '件', group: 'basic', required: false, reprices: true },
+        {
+          key: 'tiers',
+          type: 'subItems',
+          label: '阶梯价',
+          group: 'basic',
+          required: false,
+          reprices: true,
+          item: [
+            { key: 'minQty', type: 'intUnit', min: 1, label: '起始数量', group: '' },
+            { key: 'unitPrice', type: 'money', decimals: 2, label: '单价', group: '' },
+          ],
+        },
+        { key: 'tags', type: 'tags', label: '标签', group: 'basic' },
+        { key: '$status', type: 'status', label: '状态', group: 'basic' },
+      ],
+      list: {
+        columns: ['title', 'unitPrice', 'unit', 'tags', '$status', '$updated'],
+        filters: ['unit', 'tags'],
+        search: ['title', 'tags', '$code'],
+        defaultSort: '-$updated',
+      },
+      csvImport: true,
+      activateLine: '上架后，核验员可查询这件方盒的资料',
+    },
+  ],
+  vocabulary: {
+    customer: '客户',
+    advisor: '核验员',
+    productNoun: '方盒',
+    tools: { fixture_inspect: '核验需求', fixture_order: '建立方盒订单' },
+    sopFields: { title: '方盒名称', unitPrice: '单价', unit: '单位', tags: '标签', inspected: '核验结果' },
+  },
+  sopSections: sopSections.map((s) => ({ ...s, ...(s.locked ? { lockReason: '核验流程由证明包统一维护' } : {}) })),
+  nav: { catalogGroup: '产品', entities: ['widget'] },
   stages: [
     { key: 'greeting', label: '开始' },
     { key: 'objection', label: '核验完成' },
+    { key: 'paid', label: '已付款', terminal: true },
   ],
 });
 
-export function createFixtureRuntime(): PackRuntime {
+export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog'>): PackRuntime {
+  const widgetText = z
+    .string()
+    .min(1)
+    .refine((text) => !/[\0\p{Cs}]/u.test(text), UNSTORABLE_TEXT);
+  const unitPrice = z
+    .number()
+    .positive()
+    .multipleOf(0.01)
+    .max(Number.MAX_SAFE_INTEGER / 100);
+  const WidgetSchema = z.strictObject({
+    id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,63}$/),
+    title: widgetText,
+    unitPrice,
+    unit: z.enum(['件', '盒']),
+    tags: z.array(widgetText),
+    tiers: z.array(z.strictObject({ minQty: z.number().int().positive(), unitPrice })).optional(),
+    moq: z.number().int().positive().optional(),
+  });
+  // 08 R4：状态槽两个键——inspections 计核验次数（重置清掉），tier 记客户的核验档位（重置保留）
+  const StateSchema = z.strictObject({
+    inspections: z.number().int().min(0).optional(),
+    tier: z.string().min(1).max(20).optional(),
+  });
+  const profileFields = [
+    { key: 'color', label: '颜色' },
+    { key: 'size', label: '尺寸' },
+  ] as const;
+  /** 包写状态槽一律先过 schema（核心只存取、不解读） */
+  const writeState = (session: Session, patch: z.infer<typeof StateSchema>): void => {
+    session.packState = StateSchema.parse({ ...session.packState, ...patch });
+  };
   return {
     id: fixture.id,
+    money: { minimumAmount: 0.01, precisionTolerance: 0.5, decimals: true },
+    sessionState: { schema: StateSchema, resetKeys: ['inspections'] },
+    profileFields,
+    // 只发业务字段；attrs 只发声明过的键（核心还会再筛一次）
+    profileForPrompt(profile) {
+      const attrs = Object.fromEntries(profileFields.flatMap(({ key }) => (profile.attrs?.[key] ? [[key, profile.attrs[key]]] : [])));
+      return {
+        ...(profile.notes?.length ? { notes: profile.notes } : {}),
+        ...(Object.keys(attrs).length ? { attrs } : {}),
+      };
+    },
+    profileView(profile) {
+      const rows = profileFields.flatMap(({ key, label }) => (profile.attrs?.[key] ? [{ label, value: profile.attrs[key] }] : []));
+      return { title: rows.map((r) => r.value).join(''), rows };
+    },
+    catalog: {
+      widget: {
+        schema: WidgetSchema,
+        titleKey: 'title',
+        lockedWhenActive: ['id'],
+        repriceFields: ['unitPrice', 'unit', 'tiers', 'moq'],
+        moneyFields: [
+          { path: 'unitPrice', decimals: 2 },
+          { path: 'tiers[].unitPrice', decimals: 2 },
+        ],
+        retrieval: true,
+      },
+    },
+    catalogStartupCheck: (snapshot) => (snapshot.items.widget?.length ? null : '没有 active 的 widget'),
+    priceLine(item, qty) {
+      const widget = WidgetSchema.parse(item);
+      if (widget.moq !== undefined && qty < widget.moq) return { reject: 'below_moq', detail: { moq: widget.moq } };
+      const eligible = widget.tiers?.filter((tier) => qty >= tier.minQty) ?? [];
+      const price = eligible.length ? Math.min(...eligible.map((tier) => tier.unitPrice)) : widget.unitPrice;
+      return { unitPriceFen: yuanToFen(price), unit: widget.unit };
+    },
     defaultBrand: {
-      brandName: '测试服务',
-      advisorTitle: '顾问',
-      aiTitle: 'AI 顾问',
-      scopeNoun: '服务',
-      identityLine: '我是测试服务的 AI 顾问',
+      brandName: '虚构方盒核验社',
+      advisorTitle: '方盒核验员',
+      aiTitle: 'AI 方盒核验员',
+      scopeNoun: '方盒核验',
+      identityLine: '我是虚构方盒核验社的 AI 方盒核验员',
     },
     legacy: {
       offTopicReply: '请说明服务需求',
@@ -38,38 +178,155 @@ export function createFixtureRuntime(): PackRuntime {
       handoffFallback: '顾问会处理',
     },
     templates: {
-      hardRequirements: '只输出{scopeNoun}正文。',
-      lockedSectionTemplates: {},
+      hardRequirements:
+        '【硬性要求】\n只输出客户可读的纯文本。先核验再答复；不编造单价，不承诺成交或付款安排。你是{brandName}的{aiTitle}。',
+      lockedSectionTemplates: {
+        fixture_role: '## 核验员职责\n\n你是{brandName}的 {aiTitle}，只负责{scopeNoun}。需要进一步处理时交给{advisorTitle}。\n\n',
+        fixture_verify: '## 方盒核验流程\n\n先调用 fixture_inspect 核验需求，再根据核验结果答复；核验失败时说明尚未完成。\n\n',
+        fixture_limits: '## 核验能力边界\n\n核验结果不代表库存、交付或成交承诺。资料不足时请客户补充，不替客户决定价格与付款。\n',
+      },
       identityAnswer: '{identityLine}',
-      offTopicReply: '请说明{scopeNoun}需求',
-      welcomeText: '欢迎咨询{brandName}',
-      welcomeBackText: '欢迎回来，{brandName}为您服务',
-      webWelcome: '欢迎咨询{brandName}',
-      mockOpening: '请说明{scopeNoun}需求',
+      offTopicReply: '我是{brandName}的{aiTitle}，可以帮助您核验方盒需求。',
+      welcomeText: '欢迎来到{brandName}，我是{aiTitle}。请告诉我方盒需求。',
+      welcomeBackText: '欢迎回来，{brandName}的{aiTitle}继续为您核验方盒需求。',
+      webWelcome: '您好，我是{brandName}的{aiTitle}。请描述需要核验的方盒。',
+      mockOpening: '请告诉我需要核验的方盒名称与单位。',
       quickReplies: [],
-      preamble: '{brandName}',
+      preamble: '# {brandName} · 方盒核验说明\n\n{identityLine}。本说明只使用合成资料，用于验证方盒核验流程。\n\n',
       pages: {},
     },
-    sopSections: [],
-    contractRules: () => [],
-    knownFields: { names: [], sourceFiles: [] },
-    stages: fixture.stages.map((s) => ({ id: s.key as SalesStage })),
+    sopSections: sopSections.map((s) => ({ ...s })),
+    contractRules: () => [
+      { id: 'fixture_no_unverified', kind: 'exclude', text: '未经核验也保证可用', from: '证明包：不得把未核验的需求说成已确认' },
+    ],
+    knownFields: { names: ['inspected'], sourceFiles: ['src/packs/__fixture/runtime.ts'] },
+    stages: fixture.stages.map((s) => ({ id: s.key as SalesStage, ...(s.terminal ? { terminal: true } : {}) })),
     tools: [
+      {
+        def: {
+          type: 'function',
+          function: {
+            name: 'fixture_quote',
+            description: '查询方盒单价',
+            parameters: {
+              type: 'object',
+              properties: { code: { type: 'string' } },
+              required: ['code'],
+              additionalProperties: false,
+            },
+          },
+        },
+        sideEffects: [],
+        cacheable: true,
+        blocksRetry: false,
+        async execute(input) {
+          const parsed = z.object({ code: z.string() }).safeParse(input);
+          if (!parsed.success) return JSON.stringify({ error: '缺少方盒编号' });
+          const item = sources
+            ?.currentCatalog()
+            .items.widget?.map((entry) => WidgetSchema.parse(entry))
+            .find((entry) => entry.id === parsed.data.code);
+          if (!item) return JSON.stringify({ error: '没有该方盒' });
+          const widget = WidgetSchema.parse(item);
+          return JSON.stringify({ code: widget.id, unitPrice: widget.unitPrice, unit: widget.unit });
+        },
+        amounts(result) {
+          const quote = JSON.parse(result) as { unitPrice?: number };
+          return quote.unitPrice === undefined ? [] : [{ fen: yuanToFen(quote.unitPrice), label: '查询单价' }];
+        },
+      },
       {
         def: {
           type: 'function',
           function: { name: 'fixture_inspect', description: '核验服务需求', parameters: { type: 'object', properties: {} } },
         },
-        sideEffects: [],
+        sideEffects: ['session'],
         cacheable: true,
         blocksRetry: false,
-        execute: async () => JSON.stringify({ inspected: true }),
+        async execute(_args, ctx) {
+          writeState(ctx.session, { inspections: (Number(ctx.session.packState?.inspections) || 0) + 1, tier: 'basic' });
+          return JSON.stringify({ inspected: true });
+        },
+      },
+      {
+        def: {
+          type: 'function',
+          function: {
+            name: 'fixture_order',
+            description: '按方盒编号和数量建单，价格由产品库确定',
+            parameters: {
+              type: 'object',
+              properties: {
+                lines: {
+                  type: 'array',
+                  minItems: 1,
+                  items: {
+                    type: 'object',
+                    properties: { kind: { type: 'string' }, code: { type: 'string' }, qty: { type: 'integer' } },
+                    required: ['kind', 'code', 'qty'],
+                    additionalProperties: false,
+                  },
+                },
+              },
+              required: ['lines'],
+              additionalProperties: false,
+            },
+          },
+        },
+        sideEffects: ['session', 'order'],
+        cacheable: false,
+        blocksRetry: true,
+        async execute(input, { session }) {
+          // z.object 丢弃额外字段，执行体再显式投影，金额无论在哪一层都不能流入建单。
+          const parsed = z
+            .object({ lines: z.array(z.object({ kind: z.string(), code: z.string(), qty: z.number() })).min(1) })
+            .safeParse(input);
+          if (!parsed.success) return JSON.stringify({ error: 'lines 必须包含 kind、code 和数量 qty' });
+          const result = await createLineOrder(
+            session,
+            parsed.data.lines.map(({ kind, code, qty }) => ({ kind, code, qty })),
+          );
+          if ('rejected' in result) return JSON.stringify(result);
+          const display = orderDisplay(result.order);
+          return JSON.stringify({
+            orderId: result.order.id,
+            reused: result.reused,
+            lines: result.order.lines,
+            totalFen: result.order.totalFen,
+            display,
+            text: [
+              display.title,
+              ...display.lines.map((line) => `${line.title} ${line.qtyText} ${line.unitPriceText} ${line.amountText}`),
+              `合计${display.totalText}`,
+            ].join('\n'),
+          });
+        },
+        amounts(result) {
+          const order = JSON.parse(result) as { lines?: { unitPriceFen: number; amountFen: number }[]; totalFen?: number };
+          if (!order.lines || order.totalFen === undefined) return [];
+          return [
+            ...order.lines.flatMap((line) => [
+              { fen: line.unitPriceFen, label: '订单单价' },
+              { fen: line.amountFen, label: '订单行金额' },
+            ]),
+            { fen: order.totalFen, label: '订单合计' },
+          ];
+        },
       },
     ],
-    extractProfile: () => ({ notes: ['已核验'] }),
+    // 客户说「颜色：红」「尺寸：大」就记进 attrs；每轮最多抽到其中一部分，引擎按键合并
+    extractProfile(text) {
+      const attrs = Object.fromEntries(
+        profileFields.flatMap(({ key, label }) => {
+          const value = new RegExp(`${label}[:：]\\s*([^\\s，。,.]+)`).exec(text)?.[1];
+          return value ? [[key, value]] : [];
+        }),
+      );
+      return { notes: ['已核验'], ...(Object.keys(attrs).length ? { attrs } : {}) };
+    },
     advanceStage: (session, turn) => (turn.calls.some((c) => c.name === 'fixture_inspect') ? 'objection' : session.stage),
     contextNote: () => ['按测试服务规则核验需求'],
-    replyAnchors: { markdown: 'fixture_guard' },
+    replyAnchors: { markdown: 'fixture_guard', 'takeover_check:post': 'money_provenance' },
     replySteps: [
       {
         id: 'fixture_guard',
@@ -81,8 +338,12 @@ export function createFixtureRuntime(): PackRuntime {
           return { action: 'replace', text };
         },
       },
+      {
+        ...moneyProvenanceStep({ staticAmounts: () => [1000], fallback: '金额尚未核验，请先查询。' }),
+        after: ['stage_advance', 'shape_check'],
+      },
     ],
-    followupSteps: [],
+    followupSteps: [moneyProvenanceFollowupStep({ staticAmounts: () => [1000] })],
     engineHooks: {
       isComplaint: () => false,
       isHandoffIntent: () => false,
@@ -104,8 +365,26 @@ export function createFixtureRuntime(): PackRuntime {
       dejargon: { english: {}, internal: [] },
     },
     thresholds: {},
-    retrievalItems: () => [],
+    retrievalItems: () => {
+      if (!sources) return [];
+      const snapshot = sources.currentCatalog();
+      return (snapshot.items.widget ?? []).map((payload, ord) => {
+        // CatalogItem.payload 暂留旅游兼容类型；快照里的真实数据已经过 widget schema 校验。
+        const item = payload as CatalogItem['payload'];
+        return {
+          kind: 'widget',
+          code: item.id,
+          ord,
+          status: 'active',
+          rev: snapshot.versions[`widget:${item.id}`] ?? 1,
+          payload: item,
+          updatedByName: null,
+          updatedAt: '',
+        };
+      });
+    },
     retrievalCacheFile: 'fixture-vectors.json',
+    evalGoalsDir: 'eval/sim/goals/__fixture',
     retrievalText: (item) => JSON.stringify(item.payload),
     followupTemplates: { idleMinutes: {}, byStage: {}, fallback: '需要帮助随时说', system: '写一句服务跟进' },
     insightPrompts: {

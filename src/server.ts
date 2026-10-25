@@ -26,9 +26,10 @@ import path from 'node:path';
 import { Hono } from 'hono';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { isLineOrder, orderDisplay, orderTotalFen, type AnyOrder, type PublicLineOrder } from './core/order-view.js';
 import { handleMessage, notifyPaid, promptPrefix, sopFileText } from './engine.js';
 import { enterHandoff, loadHotels, loadRoutes, quoteFor, routeForProposal } from './tools.js';
-import { HANDOFF_REASON } from './handoff/record.js';
+import { HANDOFF_REASON, terminalStageKey } from './handoff/record.js';
 import {
   AssignedToOtherError,
   awaitCommit,
@@ -47,7 +48,7 @@ import {
 } from './handoff/takeover.js';
 import {
   flushSession,
-  getOrder,
+  getAnyOrder,
   getSession,
   gracefulExit,
   initSessionStore,
@@ -82,7 +83,8 @@ import { numEnv } from './env.js';
 import { clientKey, lookupLimit, makeLimiter, sameOriginOnly } from './http-guards.js';
 import { profile } from './profile.js';
 import { paymentMode } from './payment/mode.js';
-import type { Assignee, ChannelAdapter, ChatMessage, Order, OrderStatus, PushOpts, Route, Session } from './types.js';
+import type { Assignee, ChannelAdapter, ChatMessage, CustomerProfile, Order, OrderStatus, PushOpts, Route, Session } from './types.js';
+import { SESSION_EXPOSURE } from './types.js';
 import { boot } from './boot.js';
 import { currentPrivacyNotice, escapeHtml, initPrivacy, startPrivacyPoll } from './privacy/privacy.js';
 import { startOtelExport } from './ops/otel.js';
@@ -92,6 +94,7 @@ import {
   configHealth,
   configMode,
   configRuntime,
+  currentCatalog,
   initConfigFromEnv,
   markConfigShuttingDown,
   prefixSummary,
@@ -237,7 +240,11 @@ const legacyWrites: MiddlewareHandler = async (c, next) => (profile().flags.lega
 // 带 ADMIN_PASS 的请求照旧返回原对象；「带凭据」只认 isAdminReq（Basic），不认 console 的登录 cookie
 const ANON_MEMBER_NAME = '顾问';
 type AnonMessage = Omit<ChatMessage, 'authorId'>;
-type AnonSession = Omit<Session, 'assignee' | 'messages'> & { assignee?: Omit<Assignee, 'userId'> | null; messages: AnonMessage[] };
+type AnonSession = Omit<Session, 'assignee' | 'messages' | 'packState' | 'profile'> & {
+  assignee?: Omit<Assignee, 'userId'> | null;
+  messages: AnonMessage[];
+  profile: Omit<CustomerProfile, 'attrs'>;
+};
 type AnonOrder = Omit<Order, 'confirmedBy' | 'paidMarkedBy' | 'cancelReason'>;
 
 /** 按消息逐条投影：去掉操作者 id、作者姓名写「顾问」，交还消息里的姓名同样换成「顾问」（02 spec「后台接口」匿名投影、不变量 44） */
@@ -249,11 +256,36 @@ function anonMessage(m: ChatMessage): AnonMessage {
   return out;
 }
 
+/** 运行时挂在会话上、不在 Session 类型里的键：core/followup 的跟进记账，web/routes 的轮次上限标记（08 之前就随会话外露） */
+const RUNTIME_EXPOSURE = { followup: true, webTurnLimited: true } as const;
+/** profile 的白名单：CustomerProfile 的全部键去掉 attrs（Record<keyof CustomerProfile, boolean> 同样逼着新增键表态） */
+const PROFILE_EXPOSURE = {
+  destinationInterest: true,
+  segment: true,
+  travelers: true,
+  dates: true,
+  budget: true,
+  notes: true,
+  nickname: true,
+  avatar: true,
+  attrs: false,
+} as const satisfies Record<keyof CustomerProfile, boolean>;
+
+/** 键在不在白名单里：只认自有键，原型上的名字（toString、__proto__）不算 */
+const exposedIn = (table: Readonly<Record<string, boolean>>, key: string): boolean => Object.hasOwn(table, key) && table[key] === true;
+
 function anonSession(s: Session): AnonSession {
-  const { assignee, ...rest } = s;
-  const out: AnonSession = { ...rest, messages: s.messages.map(anonMessage) };
-  if (assignee !== undefined) out.assignee = assignee && { name: ANON_MEMBER_NAME, at: assignee.at };
-  return out;
+  // 按会话自己的键序走一遍、只留白名单里的：输出的键序与整份展开拷贝时相同
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(s)) {
+    if (key === 'assignee' || !(exposedIn(SESSION_EXPOSURE, key) || exposedIn(RUNTIME_EXPOSURE, key))) continue;
+    if (key === 'messages') out[key] = s.messages.map(anonMessage);
+    else if (key === 'profile' && value !== null && typeof value === 'object') {
+      out[key] = Object.fromEntries(Object.entries(value).filter(([k]) => exposedIn(PROFILE_EXPOSURE, k)));
+    } else out[key] = value;
+  }
+  if (s.assignee !== undefined) out.assignee = s.assignee && { name: ANON_MEMBER_NAME, at: s.assignee.at };
+  return out as unknown as AnonSession;
 }
 
 function anonOrder(o: Order): AnonOrder {
@@ -292,6 +324,18 @@ const publicOrder = (o: Order): PublicOrder => ({
   confirmed: o.confirmedAt != null,
   supersededBy: o.supersededBy ?? null,
 });
+
+/** 通用单用独立白名单；旧版单保留原投影及键顺序。 */
+const publicAnyOrder = (o: AnyOrder): PublicOrder | PublicLineOrder =>
+  isLineOrder(o)
+    ? {
+        id: o.id,
+        status: o.status,
+        display: orderDisplay(o),
+        ...(o.paidAt === undefined ? {} : { paidAt: o.paidAt }),
+        payable: o.status === 'pending_payment' && (paymentMode() !== 'advisor' || o.confirmedAt != null),
+      }
+    : publicOrder(o);
 
 // 主站入口统一进工作台（05 spec R23），不受部署 profile、配置来源或模拟器开关影响。
 app.get('/', (c) => c.redirect('/console/'));
@@ -720,9 +764,9 @@ app.get('/api/orders', anonReadable, (c) => {
 
 // 单订单读取对支付页开放：订单号即凭据（不可猜的随机 ID，列表接口只给登录者与订单本人，不可枚举）。只给白名单字段（R22）
 app.get('/api/orders/:id', lookupLimit, (c) => {
-  const o = getOrder(c.req.param('id'));
+  const o = getAnyOrder(c.req.param('id'));
   if (!o) return c.json({ error: 'order not found' }, 404);
-  return c.json(publicOrder(o));
+  return c.json(publicAnyOrder(o));
 });
 
 /**
@@ -739,16 +783,17 @@ const payAuth: MiddlewareHandler = async (c, next) => {
 // 演示用模拟支付：真实生产必须替换为微信支付服务端回调验签，此端点仅 demo 闭环用
 app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
   const id = c.req.param('id');
-  const order = getOrder(id);
+  const order = getAnyOrder(id);
   if (!order) return c.json({ error: 'order not found' }, 404);
   // 改单后被新订单替代的旧单（或已取消的）不能再付：客户翻聊天记录点开旧链接，此前照样付款成功，一趟行程收两笔钱
   if (order.status === 'superseded' || order.status === 'cancelled') {
-    return c.json({ error: order.status === 'superseded' ? '这笔订单已被新订单替代' : '订单已取消', order: publicOrder(order) }, 409);
+    return c.json({ error: order.status === 'superseded' ? '这笔订单已被新订单替代' : '订单已取消', order: publicAnyOrder(order) }, 409);
   }
   if (order.status === 'refund_pending' || order.status === 'refunded') {
-    return c.json({ error: order.status === 'refund_pending' ? '订单退款中' : '订单已退款', order: publicOrder(order) }, 409);
+    return c.json({ error: order.status === 'refund_pending' ? '订单退款中' : '订单已退款', order: publicAnyOrder(order) }, 409);
   }
   if (order.status !== 'paid') {
+    if (isLineOrder(order)) terminalStageKey();
     markOrderPaid(id);
     // 共享工作台的操作记一行审计（02 spec「收款流程」）：这条旧路径不要求先经 confirmOrder 确认价格
     // （advisor 模式下也一样，与三个新接口那条规则不同——这条路径从模拟支付时代就有，保持原样）
@@ -758,7 +803,10 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
       action: 'order.mark_paid',
       targetType: 'order',
       targetId: order.id,
-      diff: { shortId: shortIdOf(order.sessionId), totalPrice: order.totalPrice },
+      diff: {
+        shortId: shortIdOf(order.sessionId),
+        ...(isLineOrder(order) ? { totalFen: orderTotalFen(order) } : { totalPrice: order.totalPrice }),
+      },
     };
     queueAudit(order.sessionId, payAuditActor, payAuditEntry);
     // 付款确认同样在提交之后才对客户发（不变量 20）：真超时（仍可能提交）照发；poisoned / 冲突（不会再提交）
@@ -792,8 +840,8 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
     }
   }
   // 响应体同 GET /api/orders/:id 的白名单（plan「Open」第 1 步带出的第二条，按推荐先做）
-  const after = getOrder(id);
-  return c.json({ ok: true, order: after && publicOrder(after) });
+  const after = getAnyOrder(id);
+  return c.json({ ok: true, order: after && publicAnyOrder(after) });
 });
 
 /**
@@ -809,13 +857,28 @@ app.get('/pay/:orderId', async (c) => {
   const binding = currentPack();
   const html = renderBrandPage(await readFile(path.resolve('public/pay.html'), 'utf8'), 'pay', binding.runtime, binding.brand);
   // 同方案页：标题服务端注入，避免微信里先闪一下网址再变标题
-  const o = getOrder(c.req.param('orderId'));
+  const o = getAnyOrder(c.req.param('orderId'));
   if (!o) return c.html(html);
   const esc = (t: string) => t.replace(/[&<>"]/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch] as string);
   // advisor 模式：页面不经 R22 白名单知道收款方式长什么样（里面没有这个字段），只能靠这条路由服务端注入一个标记，
   // 页面 JS 据它决定要不要渲染付款按钮（spec「收款流程」；/pay.html?orderId= 这条静态入口注入不到，在客户端跳到这条路由）。
   // online 模式什么都不加，页面逐字节不变
   const modeTag = paymentMode() === 'advisor' ? '\n<meta name="payment-mode" content="advisor">' : '';
+  if (isLineOrder(o)) {
+    const display = orderDisplay(o);
+    const title = `${display.title} · ${o.status === 'superseded' ? '订单已被替代' : '订单支付'}`;
+    const desc =
+      o.status === 'superseded' ? '这笔订单已被新订单替代，请以最新发给您的支付链接为准' : `${display.summary} · 合计 ${display.totalText}`;
+    return c.html(
+      withHead(
+        html.replaceAll('出行人数', '数量').replaceAll('出发日期', '交付日期'),
+        `<title>${esc(title)}</title>\n` +
+          `<meta name="description" content="${esc(desc)}">\n` +
+          `<meta property="og:title" content="${esc(title)}">\n` +
+          `<meta property="og:description" content="${esc(desc)}">${modeTag}`,
+      ),
+    );
+  }
   // 被替代的旧单：微信里转发出去的卡片标题、摘要也别再写着待支付的金额
   if (o.status === 'superseded') {
     const t = `${o.routeTitle} · 订单已被替代`;
@@ -868,6 +931,7 @@ function isSaneDepartDate(s: string): boolean {
 // 带 ?v= 时按产品库条目的那个版本渲染，不带按版本 1（02「报价快照」）：改价之后已发出的链接报价不变。版本只从内存取，
 // v 不是正整数或大于当前版本时 404，不查库（不变量 35）
 app.get('/api/proposal/:routeId', (c) => {
+  if (!currentPack().runtime.documents?.proposal) return c.notFound();
   const route = routeForProposal(c.req.param('routeId'), c.req.query('v'));
   if (!route?.itinerary?.length) return c.json({ error: 'proposal not available' }, 404);
   const travelers = Math.min(50, Math.max(1, Math.floor(Number(c.req.query('travelers')) || 2)));
@@ -912,6 +976,7 @@ function renderProposalHtml(html: string, route: Route | null, travelers: number
 
 async function serveProposal(c: Context): Promise<Response> {
   const binding = currentPack();
+  if (!binding.runtime.documents?.proposal) return c.notFound();
   const html = renderBrandPage(await readFile(path.resolve('public/proposal.html'), 'utf8'), 'proposal', binding.runtime, binding.brand);
   const routeId = c.req.param('routeId') ?? '';
   // 人数在路径第二段（/proposal/<id>/<人数>[/<日期]），取不到按 2 人
@@ -1060,6 +1125,7 @@ app.use('/*', async (c, next) => {
   const page = /^\/(pay|proposal|chat)\.html$/i.exec(c.req.path)?.[1]?.toLowerCase() as 'pay' | 'proposal' | 'chat' | undefined;
   if (!page || !['GET', 'HEAD'].includes(c.req.method)) return next();
   const binding = currentPack();
+  if (page === 'proposal' && !binding.runtime.documents?.proposal) return c.notFound();
   if (binding.brand === null && !sandboxSessionOf(c)) return next();
   let html = await readFile(path.resolve(`public/${page}.html`), 'utf8');
   if (page === 'chat' && sandboxSessionOf(c)) {
@@ -1157,6 +1223,25 @@ function pushFollowUp(sessionId: string, text: string, opts?: PushOpts): Promise
   return adapterFor(s?.channel ?? 'wecom').push(sessionId, text, opts);
 }
 
+/**
+ * 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见。
+ * 旅游照旧调 loadRoutes() / loadHotels()；非旅游包没有这两个文件，改为装载 currentCatalog()（08 R11）。
+ */
+export function startupPreflight(): void {
+  withTenantScope(hostRuntime(), () => {
+    try {
+      if (currentPack().runtime.id === 'travel') {
+        loadRoutes();
+        loadHotels();
+      } else {
+        currentCatalog();
+      }
+    } catch (e) {
+      console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
+    }
+  });
+}
+
 if (!SELFTEST && sandbox) {
   try {
     await sandbox.start();
@@ -1215,16 +1300,7 @@ if (!SELFTEST && !sandbox) {
         withTenantScope(hostRuntime(), () => logStartup(info.port));
         onListening();
       }),
-    // 数据文件启动预检：boss 手改 routes.json 改坏 JSON 时，问题要在启动日志里就可见
-    preflight: () =>
-      withTenantScope(hostRuntime(), () => {
-        try {
-          loadRoutes();
-          loadHotels();
-        } catch (e) {
-          console.error('[server] ⚠️⚠️ 数据文件损坏，报价/推荐将持续失败：', e instanceof Error ? e.message : e);
-        }
-      }),
+    preflight: startupPreflight,
     // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配
     buildIndex: () =>
       Promise.all(

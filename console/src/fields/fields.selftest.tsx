@@ -64,6 +64,7 @@ import {
 } from '../../../src/shared/pack.js';
 import { HttpError } from '../api.js';
 import { CatalogList, type CatalogListProps, FilterButton, MENU_SEARCH_OVER } from '../catalog/CatalogList.js';
+import acceptance from '../catalog/acceptance.fixture.json';
 import {
   type ActivePick,
   activePicks,
@@ -946,6 +947,18 @@ for (const [, e, items] of SAMPLES) {
     priceForm.includes('ant-input-number') && priceForm.includes('value="42,800"') && priceForm.includes('元/人'),
   );
   check('金额不是数时照原文', view(fieldOf(ROUTE, 'priceFrom'), '42800').includes('>42800<'));
+  const decimalMoney: FieldDef = { key: 'unitPrice', type: 'money', decimals: 2, label: '单价', group: '', unitFrom: 'unit' };
+  check(
+    '两位小数金额：列表与只读保留角分和单位',
+    cell(decimalMoney, 3.65, { unit: '件' }).includes('3.65元/件') && view(decimalMoney, 1330.5).includes('1,330.50元'),
+  );
+  check('两位小数金额：固定单位的列表只写数', cell({ ...decimalMoney, unit: '元/件' }, 3.65).includes('>3.65<'));
+  check(
+    '两位小数金额：表单不截成整数，角分步长',
+    form(decimalMoney, 3.65).includes('value="3.65"') && form(decimalMoney, 3.65).includes('step="0.01"'),
+  );
+  check('两位小数金额：非法值显示为空', view(decimalMoney, 3.655).includes('>—<'));
+  eq('两位小数金额：控件往返保留元值', CODECS.money.write(CODECS.money.read(3.65, decimalMoney), decimalMoney), 3.65);
   // intUnit
   check(
     '带单位整数：「4,700米」',
@@ -1308,6 +1321,40 @@ async function press(el: Element | null | undefined, key: string): Promise<boole
     el.dispatchEvent(new win.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }) as unknown as Event);
   });
   return true;
+}
+
+// R7：输入角分回流到表单，清空仍删键；挂载不写值。
+{
+  const field: FieldDef = { key: 'unitPrice', type: 'money', decimals: 2, label: '单价', group: '' };
+  const writes: unknown[] = [];
+  function DecimalHarness() {
+    const [value, setValue] = useState<unknown>(3.65);
+    const Form = RENDERERS.money.Form;
+    return (
+      <Form
+        field={field}
+        value={value}
+        row={{}}
+        id="decimal-price"
+        labelId="decimal-label"
+        onChange={(next) => {
+          writes.push(next);
+          setValue(next);
+        }}
+      />
+    );
+  }
+  const m = await mount(<DecimalHarness />);
+  try {
+    const input = m.box.querySelector('input');
+    eq('两位小数表单：挂载不写值', writes, []);
+    check('两位小数表单：敲角分', await typeInto(input, '12.50'));
+    eq('两位小数表单：写回元值', writes.at(-1), 12.5);
+    check('两位小数表单：清空', await typeInto(input, ''));
+    eq('两位小数表单：清空删键', writes.at(-1), undefined);
+  } finally {
+    await m.unmount();
+  }
 }
 
 // 7.1 挂载和 effect 都不写值：两个包每个字段、子字段的表单形态（有值、空值各一次），和各分组卡片
@@ -1973,6 +2020,19 @@ const listProps = (over: Partial<CatalogListProps> = {}): CatalogListProps => ({
 const texts = (root: ParentNode, sel: string): string[] => all<HTMLElement>(root, sel).map((e) => (e.textContent ?? '').trim());
 const bodyRows = (root: ParentNode): HTMLTableRowElement[] => all<HTMLTableRowElement>(root, '.list-table tbody tr.ant-table-row');
 const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) => (td.textContent ?? '').trim());
+{
+  // 08 验收 3：真实 GET /pack 配置 + CSV 导入并上架后的真实列表行；后端自测逐字节验证夹具。
+  const pack = acceptance.pack as IndustryPack;
+  const entity = pack.entities.find((item) => item.kind === 'widget')!;
+  const d = await mount(<CatalogList {...listProps({ entity, rows: [acceptance.row], anon: true })} />);
+  try {
+    const rows = bodyRows(d.box);
+    eq('证明包接口夹具：上架列表只有目标条目', rows.length, 1);
+    check('证明包接口夹具：真实列表单元格显示3.65元/件', !!rows[0] && cellsOf(rows[0]).includes('3.65元/件'));
+  } finally {
+    await d.unmount();
+  }
+}
 {
   const d = await mount(<CatalogList {...listProps()} />);
   eq('D 页：页签带数量', texts(d.box, '.list-tabs .ant-tabs-tab'), ['全部21', '已上架20', '草稿1']);
@@ -6850,6 +6910,29 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
       .match(/../g)!
       .map((x) => parseInt(x, 16)),
   );
+
+  {
+    const decimalEntity: EntityType = { ...HOTEL, fields: HOTEL.fields.map((f) => (f.type === 'money' ? { ...f, decimals: 2 } : f)) };
+    const csv = 'id,name,destination,stars,nightlyFrom,roomType,highlights,tags\nh-decimal,合成酒店,某地,四星,3.65,标准间,亮点,合成';
+    const result = checkCsv(decimalEntity, csv);
+    check(
+      '两位小数 CSV：前端预检保留元值',
+      result.kind === 'rows' && result.table.rows[0]!.payload.nightlyFrom === 3.65 && result.table.rows[0]!.issues.length === 0,
+    );
+    for (const value of ['3.655', '0', '-1']) {
+      const bad = checkCsv(decimalEntity, csv.replace('3.65', value));
+      check(
+        `两位小数 CSV：前端拒绝 ${value}`,
+        bad.kind === 'rows' && bad.table.rows[0]!.issues.some((issue) => issue.col === 'nightlyFrom'),
+      );
+    }
+    check(
+      '两位小数 CSV：填写规则说明角分',
+      csvRules(travel, decimalEntity)
+        .find((rule) => rule.key === 'nightlyFrom')!
+        .how.includes('最多两位小数'),
+    );
+  }
 
   // 13.1 列与标签：按行业包推出的列与按共用 schema 推出的相同；不能平铺的必填字段让这一类导入不了
   try {

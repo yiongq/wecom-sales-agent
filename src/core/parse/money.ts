@@ -11,6 +11,11 @@ export interface MoneyParseOptions {
   minimumAmount: number;
   /** 非约数的容差 = 最低一位单位 × 此系数；约数用其区间的中心与半宽。 */
   precisionTolerance: number;
+  /**
+   * 08 R6：为 true 时额外认低单价与两位小数（3.65元、99块、单价3.80、3块6毛5），此时 minimumAmount 由调用方取 0.01 一类的值。
+   * 缺省 false：每个导出函数的识别结果与加这一项之前逐条相同，旅游不传。
+   */
+  decimals?: boolean;
 }
 
 export interface SpokenAmount {
@@ -80,6 +85,14 @@ export function normalizeMoneyText(text: string): string {
 const TIGHT_HINT =
   /(?:(?:人均|每人|单人|每位|一位|总价|总共|一共|共计|合计|总计|总额)(?:起价|价格|售价|报价|团费|费用|价)?|起价|售价|团费)\s*(?:大概|大约|约|只要|只需|才|要|是|在|也就|差不多|起码|至少|不到|最低|最少|仅|只)?\s*$/;
 
+/**
+ * decimals 模式（08 R6）的 TIGHT_HINT：在原有词之外，紧跟「单价 / 报价 / 价格 / 每件 / 每个」的裸数也是钱
+ *（「单价3.80」「报价 12.5」）；价格词后面允许一个冒号（「单价：3.80」「报价: 12.5」），报价清单里最常见的写法，
+ * 认不出就等于编的价放行。其余部分与 TIGHT_HINT 相同；旅游不走这条。
+ */
+const TIGHT_HINT_DEC =
+  /(?:(?:人均|每人|单人|每位|一位|总价|总共|一共|共计|合计|总计|总额)(?:起价|价格|售价|报价|团费|费用|价)?|起价|售价|团费|单价|报价|价格|每件|每个)\s*[:：]?\s*(?:大概|大约|约|只要|只需|才|要|是|在|也就|差不多|起码|至少|不到|最低|最少|仅|只)?\s*$/;
+
 export interface AmountHit {
   /** 原文写的数（约数取下限：「2000多」→ 2000） */
   raw: number;
@@ -95,7 +108,171 @@ function approxSpan(n: number): number {
   return 10 ** (/0*$/.exec(String(n))?.[0].length ?? 0);
 }
 
+// ---------------- decimals 模式（08 R6）：低单价、两位小数、口语「3块6毛5」 ----------------
+//
+// 只在 options.decimals 为 true 时走到这里；缺省时 amountHits / parseSpokenAmounts / parseCnAmounts /
+// parseRangeEndpoints / parseMoney 的老路径一字不动。金额一律以元计，口语的角分先攒成整数分再除 100，避免浮点误差。
+
+/**
+ * decimals 模式的精确金额：¥0.85 / 3.65元 / 99块 / 1,330.50 元，整数部分不限位数（老写法仍认），小数最多两位。
+ * 小数后面不许再跟数字（3.655元不是金额）；「,」后面只认标准千分位，「12,3元」不读成 123。
+ * 前缀 ¥ 与后缀单位是两个分支，按位置先到先得，「¥3.65元」只读一次。
+ */
+const AMOUNT_RE_DEC =
+  /(?:¥|￥)\s*(\d{1,3}(?:,\d{3})+|\d+)(\.\d{1,2})?(?!\d|[.,]\d)|(?<![万千.\d])(?<!\d,)(\d{1,3}(?:,\d{3})+|\d+)(\.\d{1,2})?\s*(多|余|来)?\s*(元|块)/g;
+/** decimals 模式的不带单位数字：1–2 位小数，只在紧跟价格词时才当金额（TIGHT_HINT_DEC） */
+const BARE_NUM_RE_DEC = /(?<![\d,.万千¥￥])(\d{1,3}(?:,\d{3})+|\d+)(\.\d{1,2})?(?!\d|\.\d)/g;
+
+/**
+ * 「块」后面紧跟的汉字如果属于价格说法而不是名词，这个「块」才是钱：块钱 / 块一个 / 块起 / 块左右 / 块的 / 块包邮。
+ * 其余汉字开头（2块样板、50块钢板、3块砖）按量词算，不是金额。用白名单：名词列不全，列漏一个就把正常句子当成价。
+ */
+const BLOCK_PRICE_CONT =
+  /^(?:钱|一|每|半|多|余|来|起|整|左右|上下|出头|以内|以下|以上|之内|内|封顶|不到|的|含|包|就|即可|能|够|到手|给|算|收|报|付|订|加|外|另|减|折|不|共|总|和|及|或|到|至|呢|哦|哈|啦|吧|呀|嘛|啊|是|也|都|还)/;
+const HANZI = /^[\u4e00-\u9fff]/;
+/** 数字后面紧跟的东西是价格说法或根本不是汉字：「块」「口语尾数」都用它判断是不是量词 */
+function priceContinuation(rest: string): boolean {
+  return !HANZI.test(rest) || BLOCK_PRICE_CONT.test(rest);
+}
+
+/**
+ * 「3块6」「3块6毛5」「3块半」「3元5角」里「块 / 元」后面的零头：半（5 毛）、N 毛 [M 分]、裸尾数 N（= N 毛）。
+ * 贴着单位写，不带空格（口语不会在「块」和「6」之间断开）；粘性匹配，从 pos 起读。
+ */
+const FEN_TAIL_RE = /(半)|([0-9一二两三四五六七八九])(毛|角)(?:([0-9一二两三四五六七八九])(?:分(?!钟))?)?|([1-9一二两三四五六七八九])/y;
+
+function tailDigit(ch: string): number {
+  return /\d/.test(ch) ? Number(ch) : CN_NUM[ch];
+}
+
+/**
+ * 读零头，返回要加的分数与结束位置；不是零头返回 null（调用方回到整块：「3块」）。
+ * 「半」和裸尾数只跟「块」（「3元6」不是说法）；尾数后面不许再是数字，也不许紧跟量词、单位或名词：
+ * 「3块6个」「3块6块」「3块5厘米厚」「3块6毛巾」都不是 3.6 元，这时「3块」自己照常读。
+ */
+function readFenTail(text: string, pos: number, unit: string): { cents: number; end: number } | null {
+  FEN_TAIL_RE.lastIndex = pos;
+  const m = FEN_TAIL_RE.exec(text);
+  if (!m) return null;
+  let cents: number;
+  if (m[1] !== undefined) {
+    if (unit !== '块') return null;
+    cents = 50;
+  } else if (m[3] !== undefined) {
+    cents = tailDigit(m[2]) * 10 + (m[4] === undefined ? 0 : tailDigit(m[4]));
+  } else {
+    if (unit !== '块') return null;
+    cents = tailDigit(m[5]) * 10;
+  }
+  const end = pos + m[0].length;
+  const rest = text.slice(end);
+  if (/^\.?\d/.test(rest) || !priceContinuation(rest)) return null;
+  if (m[3] === undefined && (/^\s*[元块毛角分万千百]/.test(rest) || MEASURE_AFTER.test(rest) || CLASSIFIER_AFTER.test(rest))) return null;
+  return { cents, end };
+}
+
+/** 小数后跟约数词（多 / 余 / 来）不按约数算，容差取最末一位的半个单位：12.5多 → 12.5 ± 0.05，12.50多 → 12.5 ± 0.005。frac 带小数点（".5"） */
+function halfLastUnit(frac: string): number {
+  return 5 / 10 ** frac.length;
+}
+
+function amountHitsDecimal(text: string, options: MoneyParseOptions): AmountHit[] {
+  const out: AmountHit[] = [];
+  AMOUNT_RE_DEC.lastIndex = 0;
+  for (let m = AMOUNT_RE_DEC.exec(text); m; m = AMOUNT_RE_DEC.exec(text)) {
+    const prefixed = m[1] !== undefined;
+    const whole = (prefixed ? m[1] : m[3]).replace(/,/g, '');
+    const frac = (prefixed ? m[2] : m[4]) ?? '';
+    const approx = prefixed ? undefined : m[5];
+    const unit = prefixed ? undefined : m[6];
+    let n = Number(whole + frac);
+    let end = m.index + m[0].length;
+    if (unit) {
+      const tail = frac || approx ? null : readFenTail(text, end, unit);
+      if (tail) {
+        n = (Number(whole) * 100 + tail.cents) / 100;
+        end = tail.end;
+        AMOUNT_RE_DEC.lastIndex = end; // 零头已经读掉，不再当成下一个数的开头
+      } else if (unit === '块' && !priceContinuation(text.slice(end))) {
+        continue; // 「2块样板」「50块钢板」：量词
+      }
+    }
+    if (!Number.isFinite(n) || n < options.minimumAmount) continue;
+    let value = n;
+    let tol = 0;
+    if (approx && frac) {
+      tol = halfLastUnit(frac);
+    } else if (approx) {
+      const span = approxSpan(n);
+      value = n + span / 2;
+      tol = span / 2;
+    }
+    out.push({ raw: n, value, tol, at: m.index, end });
+  }
+  // 「单价3.80」「报价 12.5」：不带单位，但紧跟价格词，就是在报价
+  BARE_NUM_RE_DEC.lastIndex = 0;
+  for (let m = BARE_NUM_RE_DEC.exec(text); m; m = BARE_NUM_RE_DEC.exec(text)) {
+    const frac = m[2] ?? '';
+    const n = Number(m[1].replace(/,/g, '') + frac);
+    if (!Number.isFinite(n) || n < options.minimumAmount) continue;
+    const after = text.slice(m.index + m[0].length);
+    if (/^\s*(?:多|余|来)?\s*(?:元|块|万|千|[wW])/.test(after)) continue; // 带单位的由上面和口语金额那边读
+    if (!TIGHT_HINT_DEC.test(text.slice(Math.max(0, m.index - 12), m.index))) continue;
+    const ap = /^\s*(?:多|余|来)/.exec(after);
+    const rest = ap ? after.slice(ap[0].length) : after;
+    if (MEASURE_AFTER.test(rest) || CLASSIFIER_AFTER.test(rest)) continue; // 「报价 3 档」「每个 2 人」
+    let value = n;
+    let tol = 0;
+    if (ap && frac) {
+      tol = halfLastUnit(frac);
+    } else if (ap) {
+      const span = approxSpan(n);
+      value = n + span / 2;
+      tol = span / 2;
+    }
+    out.push({ raw: n, value, tol, at: m.index, end: m.index + m[0].length + (ap?.[0].length ?? 0) });
+  }
+  return out;
+}
+
+/** 汉字数开头的口语金额：十五块钱 / 三块六毛五 / 两块五 / 三块半。阿拉伯数字开头的由 amountHitsDecimal 读。 */
+const CN_COLLOQUIAL_RE =
+  /(?<![一二两三四五六七八九十百千万零〇点\d.])([一二三四五六七八九]?十[一二三四五六七八九]?|[一二两三四五六七八九])(块|元)/g;
+
+function cnUnder100(s: string): number {
+  const ten = s.indexOf('十');
+  if (ten < 0) return CN_NUM[s];
+  return (ten === 0 ? 1 : CN_NUM[s[0]]) * 10 + (s.length > ten + 1 ? CN_NUM[s[ten + 1]] : 0);
+}
+
+/**
+ * 汉字数的口语金额。比阿拉伯数字保守：「三块」「十块」本身常是量词（三块砖、两块布），
+ * 所以必须带零头（三块六、三块六毛五、两块半）或紧跟「钱」（三块钱）才认。值是精确的分，容差 0。
+ */
+function cnColloquialHits(text: string, options: MoneyParseOptions): SpokenAmount[] {
+  const out: SpokenAmount[] = [];
+  CN_COLLOQUIAL_RE.lastIndex = 0;
+  for (let m = CN_COLLOQUIAL_RE.exec(text); m; m = CN_COLLOQUIAL_RE.exec(text)) {
+    const pos = m.index + m[0].length;
+    let cents = cnUnder100(m[1]) * 100;
+    let end = pos;
+    const tail = readFenTail(text, pos, m[2]);
+    if (tail) {
+      cents += tail.cents;
+      end = tail.end;
+      CN_COLLOQUIAL_RE.lastIndex = end;
+    } else if (!(m[2] === '块' && text.startsWith('钱', pos))) {
+      continue;
+    }
+    const value = cents / 100;
+    if (value < options.minimumAmount) continue;
+    out.push({ raw: value, value, tol: 0, at: m.index, end });
+  }
+  return out;
+}
+
 export function amountHits(text: string, options: MoneyParseOptions): AmountHit[] {
+  if (options.decimals) return amountHitsDecimal(text, options);
   const out: AmountHit[] = [];
   AMOUNT_RE.lastIndex = 0;
   for (let m = AMOUNT_RE.exec(text); m; m = AMOUNT_RE.exec(text)) {
@@ -389,6 +566,7 @@ function toRange(n: SpokenNumber, approx: boolean, options: MoneyParseOptions): 
  */
 export function parseSpokenAmounts(text: string, options: MoneyParseOptions): SpokenAmount[] {
   const out: SpokenAmount[] = [];
+  const tightHint = options.decimals ? TIGHT_HINT_DEC : TIGHT_HINT;
   for (const n of scanSpoken(text)) {
     const a = approxAfter(text, n);
     if (!a) continue;
@@ -397,7 +575,7 @@ export function parseSpokenAmounts(text: string, options: MoneyParseOptions): Sp
     } else {
       const head = text.slice(Math.max(0, n.start - 12), n.start);
       if (ALTITUDE_BEFORE.test(head)) continue;
-      if (TIGHT_HINT.test(head)) {
+      if (tightHint.test(head)) {
         if (!MONEY_UNIT_AFTER.test(a.rest) && (MEASURE_AFTER.test(a.rest) || CLASSIFIER_AFTER.test(a.rest))) continue;
       } else {
         if (!CN_FOLLOW_OK.test(a.rest)) continue;
@@ -419,6 +597,11 @@ export function parseSpokenAmounts(text: string, options: MoneyParseOptions): Sp
       end: text.length - a.rest.length,
     });
   }
+  // 08 R6：「三块六毛五」这类汉字数开头的口语金额；两路的数字不会重叠（那边的数必须带千 / 万）
+  if (options.decimals) {
+    out.push(...cnColloquialHits(text, options));
+    out.sort((x, y) => x.at - y.at);
+  }
   return out;
 }
 
@@ -429,12 +612,15 @@ export function parseSpokenAmounts(text: string, options: MoneyParseOptions): Sp
  */
 export function parseCnAmounts(text: string, options: MoneyParseOptions): number[] {
   const out: number[] = [];
+  // decimals 模式不取整到元：口语的角分（三块六毛五）要留到分
+  const round = options.decimals ? (v: number) => Math.round(v * 100) / 100 : (v: number) => Math.round(v);
   for (const n of scanSpoken(text)) {
     const a = approxAfter(text, n);
     if (!a) continue;
     if (!MONEY_UNIT_AFTER.test(a.rest) && MEASURE_AFTER.test(a.rest)) continue;
-    if (n.value >= options.minimumAmount) out.push(Math.round(n.value));
+    if (n.value >= options.minimumAmount) out.push(round(n.value));
   }
+  if (options.decimals) for (const h of cnColloquialHits(text, options)) out.push(round(h.value));
   return out;
 }
 
@@ -450,9 +636,9 @@ const AR_RANGE_RE = /(?<![\d.,])(\d[\d,]*(?:\.\d+)?)\s*(?:到|至|-|~|～|—)\s
  */
 export function parseRangeEndpoints(text: string, options: MoneyParseOptions): number[] {
   const out: number[] = [];
+  const round = options.decimals ? (v: number) => Math.round(v * 100) / 100 : (v: number) => Math.round(v);
   const keep = (v: number, rest: string) => {
-    if (Number.isFinite(v) && v >= options.minimumAmount && (MONEY_UNIT_AFTER.test(rest) || !MEASURE_AFTER.test(rest)))
-      out.push(Math.round(v));
+    if (Number.isFinite(v) && v >= options.minimumAmount && (MONEY_UNIT_AFTER.test(rest) || !MEASURE_AFTER.test(rest))) out.push(round(v));
   };
   for (const m of text.matchAll(CN_RANGE_RE)) {
     if (!m[3] && !m[4]) continue; // 「三四」后面没单位：不是钱数（「三四天」）
@@ -467,6 +653,8 @@ export function parseRangeEndpoints(text: string, options: MoneyParseOptions): n
     const a = Number(m[1].replace(/,/g, '')) * unit;
     const b = Number(m[2].replace(/,/g, '')) * unit;
     if (unit === 1 && (a < options.minimumAmount || b < options.minimumAmount)) continue;
+    // decimals 模式下金额下限小到一分钱，「2026-10-15」「6205-2RS」两头都过得了下限：不带千 / 万时必须带金额单位才算区间
+    if (unit === 1 && options.decimals && !MONEY_UNIT_AFTER.test(rest)) continue;
     keep(a, rest);
     keep(b, rest);
   }
@@ -498,7 +686,9 @@ export function parseMoney(text: string, options: MoneyParseOptions): Money[] {
   return hits.map(({ amount, at, end }) => {
     const body = text.slice(at, end);
     const suffix = CURRENCY_SUFFIX.exec(text.slice(end))?.[1];
-    const explicit = suffix ?? /^(¥|￥)/.exec(body)?.[1] ?? /(元|块)\s*$/.exec(body)?.[1];
+    // 口语「3块6毛5」整段是一个金额，单位在中间；这类 body 以数字 + 块 / 元开头
+    const colloquial = options.decimals ? /^[\d,一二两三四五六七八九十]+(块|元)/.exec(body)?.[1] : undefined;
+    const explicit = suffix ?? /^(¥|￥)/.exec(body)?.[1] ?? /(元|块)\s*$/.exec(body)?.[1] ?? colloquial;
     // 无币种标记时保留倍率单位，不推断币种；数字归一逐字替换，原文位置仍能直接用。
     const unit = explicit ?? body.match(/[万萬千仟wWkK]/g)?.at(-1) ?? '';
     const currency = explicit && /^(?:元|块|人民币|RMB|rmb|¥|￥)$/.test(explicit) ? 'CNY' : null;

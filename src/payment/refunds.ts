@@ -2,6 +2,7 @@
 import { randomBytes } from 'node:crypto';
 import { currentPack, currentPolicy } from '../config/source.js';
 import type { RefundQuote, RefundTerms } from '../core/pack-api.js';
+import { isLineOrder } from '../core/order-view.js';
 import {
   type Actor,
   awaitCommit,
@@ -15,7 +16,7 @@ import {
 } from '../handoff/takeover.js';
 import { shortIdOf } from '../shared/conversation.js';
 import { cleanText } from '../shared/text.js';
-import { getOrder, getSession, queueAudit, saveOrder, saveSession, storeLagging, StoreLaggingError } from '../store.js';
+import { getAnyOrder, getSession, queueAudit, saveOrder, saveSession, storeLagging, StoreLaggingError } from '../store.js';
 import type { ChatMessage, Order } from '../types.js';
 import { paymentMode } from './mode.js';
 import { OrderNotFoundError, OrderStateError } from './orders.js';
@@ -48,10 +49,11 @@ function healthy(order: Order): void {
 
 function orderFor(orderId: string, actor: Actor, approval: boolean): Order {
   if (!handlesConversations(actor.role) || (approval && !supervisesConversations(actor.role))) throw new ForbiddenError();
-  const order = getOrder(orderId);
+  const order = getAnyOrder(orderId);
   if (!order) throw new OrderNotFoundError();
   const session = getSession(order.sessionId);
   if (!supervisesConversations(actor.role) && (!session || !isAssignee(session, actor))) throw new NotHandlingError();
+  if (isLineOrder(order)) throw new OrderStateError(order.status);
   return order;
 }
 
@@ -59,8 +61,9 @@ export function requestRefund(
   quote: RefundQuote,
   terms: RefundTerms,
 ): { order: Order; created: boolean; needsHuman: boolean } | { busy: true } {
-  const order = getOrder(quote.orderId);
+  const order = getAnyOrder(quote.orderId);
   if (!order) throw new OrderNotFoundError();
+  if (isLineOrder(order)) throw new OrderStateError(order.status);
   if (storeLagging(order.sessionId)) return { busy: true };
   if ((order.status === 'refund_pending' || order.status === 'refunded') && order.refund) {
     return { order, created: false, needsHuman: order.refund.approval !== 'auto' || order.refund.settlement !== 'mock' };

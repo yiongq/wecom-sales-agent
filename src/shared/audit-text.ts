@@ -3,7 +3,7 @@
 // 取自行业包；对象名从 diff 和产品库缓存（lookups）拼，查不到用编号。表里没有的动作兜底为「{操作者} 执行了一项操作」，
 // 动作编码只放进技术详情。不依赖 React；diff 是库里的 JSON，形状按写审计的代码读，每一步都防着形状不对。
 import type { AuditEntryView } from './console-api.js';
-import { money } from './format.js';
+import { formatYuan, money } from './format.js';
 import type { EntityType, FieldDef, IndustryPack } from './pack.js';
 import { ACTOR_KIND_LABEL, auditAction, type AuditGroup, RERENDER_CAUSE_LABEL, roleLabel } from './ui-labels.js';
 
@@ -149,8 +149,12 @@ const conv = (diff: Record<string, unknown>): AuditPart[] => {
   const id = str(diff.shortId);
   return id ? [plain('会话'), strong(id)] : [plain('一个会话')];
 };
-/** 订单类动作句尾的金额（diff.totalPrice） */
+/** 订单类动作句尾的金额：通用单 totalFen，旧版旅游单 totalPrice。 */
 const amount = (diff: Record<string, unknown>): Pick<Body, 'tail' | 'summary'> => {
+  if (typeof diff.totalFen === 'number' && Number.isSafeInteger(diff.totalFen) && diff.totalFen >= 0) {
+    const text = formatYuan(diff.totalFen);
+    return { tail: `（${text}）`, summary: text };
+  }
   const n = typeof diff.totalPrice === 'number' && Number.isFinite(diff.totalPrice) ? diff.totalPrice : null;
   return n === null ? {} : { tail: `（${money(n)}）`, summary: money(n) };
 };

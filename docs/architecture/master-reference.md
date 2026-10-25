@@ -358,6 +358,8 @@
 
 ### 阶段 8：按信号再定
 
+- 2026-10-24 owner 定 `ready`，spec 见 [08 · 核心去旅游化：产品种类、通用订单与金额](./08-pack-generalization/spec.md)（`docs/architecture/08-pack-generalization/`）：下面候选「第二个真实行业包」的前半段，只改核心（产品种类、通用订单、金额、SOP 子系统与文件模式、评测与闸都按包），用证明包验证，旅游不变；第二个真实行业包另起 spec（[10](./10-industrial-rfq-pack/spec.md)，与 [09](./09-quote-approval/spec.md) 都还是 draft）。
+- 2026-10-25 implemented：线上 `demo-v9-rc1` 起生效（四个哈希与开工相同），发版 `demo-v9`；验收 13、14 按 owner 确认的偏离通过，见该 spec 末条 `Revisions:` 与 plan「验收记录」。
 - 候选：
   - 第二个真实行业包：模板机制要靠它来验证。
   - 电商售后参考包。

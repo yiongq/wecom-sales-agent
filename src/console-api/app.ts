@@ -32,6 +32,8 @@ import {
 import { listAudit } from '../config/audit.js';
 import {
   activateCatalogItem,
+  assertKind,
+  CatalogKindUnknownError,
   CatalogCodeTakenError,
   CatalogCsvError,
   CatalogLockedFieldError,
@@ -185,7 +187,7 @@ import {
   getOrder,
   getSession,
   isDemoClassId,
-  listOrders,
+  listAnyOrders,
   sessionStoreMode,
   storeHealth,
   StoreLaggingError,
@@ -208,7 +210,6 @@ import {
   isListed,
   listedSessions,
   messageView,
-  needVocabulary,
   orderView,
   tracedInDb,
   waitingFirst,
@@ -435,6 +436,7 @@ function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503
   if (e instanceof SopRevConflictError || e instanceof CatalogRevConflictError) {
     return { status: 409, body: { error: 'rev_conflict', detail: e.message } };
   }
+  if (e instanceof CatalogKindUnknownError) return { status: 422, body: { error: 'kind_unknown', detail: e.message } };
   if (e instanceof CatalogCodeTakenError) return { status: 409, body: { error: 'catalog_code_taken', detail: e.message } };
   if (isUniqueViolation(e)) return { status: 409, body: { error: 'conflict', detail: '并发写入冲突，刷新后重来' } };
   if (e instanceof SopLockedSectionError) return { status: 422, body: { error: 'locked_section', detail: e.message, keys: [e.key] } };
@@ -585,9 +587,14 @@ export const consoleApi = new Hono<ConsoleEnv>()
   // ---------------- 产品库 ----------------
   .get('/catalog/:kind', canRead, zValidator('param', CatalogKindParam, badRequest), async (c) => {
     const { kind } = c.req.valid('param');
+    assertKind(currentTenant().pack.id, kind);
     if (!c.var.user) {
       const snap = currentCatalog();
-      const items: AnonCatalogItem[] = (kind === 'route' ? snap.routes : snap.hotels).map((p) => ({ kind, code: p.id, payload: p }));
+      const items: AnonCatalogItem[] = (snap.items[kind] ?? []).map((p) => ({
+        kind,
+        code: (p as { id: string }).id,
+        payload: p as AnonCatalogItem['payload'],
+      }));
       return c.json({ items }, 200);
     }
     const items: CatalogItem[] = await listCatalog(ctxOf(c), kind);
@@ -595,11 +602,12 @@ export const consoleApi = new Hono<ConsoleEnv>()
   })
   .get('/catalog/:kind/:code', canRead, zValidator('param', CatalogItemParam, badRequest), async (c) => {
     const { kind, code } = c.req.valid('param');
+    assertKind(currentTenant().pack.id, kind);
     if (!c.var.user) {
       const snap = currentCatalog();
-      const p = (kind === 'route' ? snap.routes : snap.hotels).find((x) => x.id === code);
+      const p = (snap.items[kind] ?? []).find((x) => (x as { id: string }).id === code);
       if (!p) return fail(c, 404, { error: 'not_found' });
-      const anon: AnonCatalogItem = { kind, code, payload: p };
+      const anon: AnonCatalogItem = { kind, code, payload: p as AnonCatalogItem['payload'] };
       return c.json(anon, 200);
     }
     const item: CatalogItem | null = await getCatalogItem(ctxOf(c), kind, code);
@@ -668,10 +676,9 @@ export const consoleApi = new Hono<ConsoleEnv>()
           (group !== 'paid_needs_human' || inPaidNeedsHuman(s, pack)),
       )
       .toSorted(sandboxOwnedFirst(order === 'waiting_first' ? waitingFirst(pack) : byRecent));
-    const vocab = needVocabulary();
     const page: ConversationPage = {
       total: all.length,
-      items: all.slice(offset, offset + limit).map((s) => conversationRow(s, vocab, c.var.user!.role === 'viewer')),
+      items: all.slice(offset, offset + limit).map((s) => conversationRow(s, c.var.user!.role === 'viewer')),
     };
     return c.json(page, 200);
   })
@@ -796,6 +803,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
   // 多一个 _draft，所以原样放进 eval/sim/goals/ 过不了校验，开发者要先改写成合成的话（src/console-api/goal-draft.ts）。
   // 只给所有者、管理员；每次下载在同一个事务里写一行审计 trace.export（target 是会话行的 ref），审计写不进去就不给文件
   .get('/conversations/:id/turns/:turnId/goal-draft', canSeeTraces, async (c) => {
+    if (currentPack().runtime.id !== 'travel') return c.notFound();
     // 这是会留审计、给文件的 GET：别的网站把已登录的管理员导航过来（Sec-Fetch-Site: cross-site）不给
     if (isCrossSite(c)) return fail(c, 403, { error: 'cross_site', detail: '跨站请求已拒绝' });
     const s = listedSessionOf(c.req.param('id'));
@@ -906,8 +914,12 @@ export const consoleApi = new Hono<ConsoleEnv>()
     if (!EDITORS.has(c.var.user!.role) && status !== 'pending_payment') {
       return fail(c, 403, { error: 'forbidden', detail: '只有所有者和管理员能看全部订单，其余只能看待付款的' });
     }
-    const all = listOrders().filter((o) => !status || o.status === status);
-    const body: OrderPage = { items: all.slice(0, limit).map(orderView), total: all.length, paymentMode: paymentMode() };
+    const all = listAnyOrders().filter((o) => !status || o.status === status);
+    const body: OrderPage = {
+      items: all.slice(0, limit).map((order) => orderView(order, c.var.user!.role === 'viewer')),
+      total: all.length,
+      paymentMode: paymentMode(),
+    };
     return c.json(body, 200);
   })
   // 本月成交额：服务器时区的自然月里付了款的订单（作废的已不在内存里）；待付款是现在所有 pending_payment 的。

@@ -15,7 +15,10 @@
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 
-/** src/packs/ 下允许公开的行业包。新增公开包要改这里，并在 PR 里说明（ADR-003 决策 4） */
+/**
+ * src/packs/ 与 data/packs/（行业包的参考配置，08 R5）下允许公开的行业包。新增公开包要改这里，并在 PR 里说明（ADR-003 决策 4）。
+ * 两处用同一份白名单：包的代码和它的参考配置要么都公开，要么都不进这个仓库
+ */
 // __fixture 是 04 R16 的测试假包（只在 PACK_FIXTURES=1 时登记），内容公开
 const PUBLIC_PACKS = new Set(['travel', 'ecommerce-aftersales', '__fixture']);
 
@@ -32,7 +35,7 @@ function pathViolation(p: string): boolean {
   if (parts[0] === 'var' || parts[0] === 'tenants') return true;
   if (parts[0] === 'eval' && parts[1] === 'real') return true;
   if (parts[0] === '.claude' && !(parts[1] === 'settings.json' && parts.length === 2) && parts[1] !== 'hooks') return true;
-  if (parts[0] === 'src' && parts[1] === 'packs' && parts.length > 3 && !PUBLIC_PACKS.has(parts[2])) return true;
+  if ((parts[0] === 'src' || parts[0] === 'data') && parts[1] === 'packs' && parts.length > 3 && !PUBLIC_PACKS.has(parts[2])) return true;
   return false;
 }
 

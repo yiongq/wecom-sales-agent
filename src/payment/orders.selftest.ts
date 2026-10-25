@@ -69,7 +69,7 @@ process.on('exit', () => fs.rmSync(VAR_DIR, { recursive: true, force: true }));
 const { handleMessage } = await import('../engine.js');
 const { executeTool, loadRoutes } = await import('../tools.js');
 const { dropUnbackedClaims } = await import('../price-rules.js');
-const { SOP_KNOWN_FIELDS } = await import('../sop/contract.js');
+const { SOP_KNOWN_FIELDS } = await import('../packs/travel/sop.js');
 const { __profileTest } = await import('../profile.js');
 
 let pass = 0;

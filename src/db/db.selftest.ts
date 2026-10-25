@@ -1151,7 +1151,7 @@ async function channelChecks(env: PurgeEnv, label: string): Promise<void> {
     'kb_chunks：同一租户同一（source, ref）只能有一行',
     (await why(chunk('route', 'r-1', goodHash))) === 'kb_chunks_tenant_id_source_ref_uq',
   );
-  check('kb_chunks：source 目前只收线路', (await why(chunk('hotel', 'h-1', goodHash))) === 'kb_chunks_source_check');
+  check('kb_chunks：source 必须符合 kind 格式', (await why(chunk('Bad-Kind', 'bad', goodHash))) === 'kb_chunks_source_check');
   check(
     'kb_chunks：body_hash 必须是 64 位小写十六进制',
     (await why(chunk('route', 'r-2', 'A'.repeat(64)))) === 'kb_chunks_body_hash_check',
@@ -1509,7 +1509,7 @@ check('约束：payload.id 必须等于 code', (await why(insertItem(A, 'route',
 check('约束：payload 没有 id 被拒', (await why(insertItem(A, 'route', 'r-a', 0, { title: 'x' }))) === 'catalog_items_payload_check');
 check('约束：payload 必须是对象', (await why(insertItem(A, 'route', 'r-a', 0, ['r-a']))) === 'catalog_items_payload_check');
 check('约束：code 不收大写', (await why(insertItem(A, 'route', 'R-A', 0, { id: 'R-A' }))) === 'catalog_items_code_check');
-check('约束：kind 只有 route 与 hotel', (await why(insertItem(A, 'visa', 'v-a', 0, { id: 'v-a' }))) === 'catalog_items_kind_check');
+check('约束：kind 按格式校验', (await why(insertItem(A, 'Bad-Kind', 'v-a', 0, { id: 'v-a' }))) === 'catalog_items_kind_check');
 check(
   '约束：status 只有 draft 与 active',
   (await why(
@@ -2447,6 +2447,7 @@ await expectWhy([
     routeId: 'r-guizhou',
     status: 'pending_payment',
     totalPrice: 5200,
+    totalFen: null,
     createdAt: new Date(T0),
     paidAt: null,
     confirmedAt: null,
@@ -3673,8 +3674,12 @@ await t.close();
     'case "$1" in exec|compose|run|inspect|image|container) cat >/dev/null ;; esac',
     // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
     // 只认 rollback-guard.sh 自己的两条渠道查询：backup.sh 的探测里也有 channel_accounts（'public.' || t 的写法），不能被截走
-    'case "$*" in *0015_order_refund_status.sql*|*public.orders*) echo "docker07 $PWD|$*" >> "$FAKE_LOG" ;; *information_schema.columns*"column_name = \'kind\'"*) echo "docker05 $PWD|$*" >> "$FAKE_LOG" ;; *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
+    'case "$*" in *order-view.ts*|*"pack_id <>"*|*"data->>"*|*"kind not in"*|*"source <>"*|*to_regclass*public.kb_chunks*) echo "docker08 $PWD|$*" >> "$FAKE_LOG" ;; *0015_order_refund_status.sql*|*public.orders*) echo "docker07 $PWD|$*" >> "$FAKE_LOG" ;; *information_schema.columns*"column_name = \'kind\'"*) echo "docker05 $PWD|$*" >> "$FAKE_LOG" ;; *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
     'case "$*" in',
+    // 08 的探测与查询单独记账：旧版夹具没有非旅游数据，原有 02–07 断言保持不变。
+    '  *order-view.ts*) exit 1 ;;',
+    '  *to_regclass*public.kb_chunks*) echo t ;;',
+    '  *"pack_id <>"*|*"data->>"*|*"kind not in"*|*"source <>"*) echo f ;;',
     '  *information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo f ;;',
     // 这些旧版用例没有沙箱痕迹：目标镜像早于 05、容器列表为空、上面的 psql 返回没有 kind 列。
     '  *tenancy/runtime.ts*|*0015_order_refund_status.sql*) exit 1 ;;',
@@ -4632,7 +4637,7 @@ await t.close();
     rb > 0 &&
       rb < gp &&
       gp < up &&
-      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[345678*]\) echo "[^\n]*" >&2 ;;\n){7} {2}esac\n {2}exit 1\n\}\n/.test(
+      /guard_rollback "\$\{NAME\}:prev" \|\| \{\n {2}case \$\? in\n(?: {4}[3456789*]\) echo "[^\n]*" >&2 ;;\n){8} {2}esac\n {2}exit 1\n\}\n/.test(
         deploySrc,
       ),
   );
@@ -4642,6 +4647,12 @@ await t.close();
       deploySrc.slice(gp, up),
     ),
   );
+  for (const code of [7, 8, 9]) {
+    check(
+      `deploy.sh：自动回滚 ${code} 分支明确提示服务当前不可用`,
+      new RegExp(`^ {4}${code}\\) echo "[^\\n]*没有自动回滚，服务当前不可用！[^\\n]*" >&2 ;;$`, 'm').test(deploySrc.slice(gp, up)),
+    );
+  }
   check(
     'deploy.sh：两处用的是同一个 guard_rollback，经 ssh 把本地的 rollback-guard.sh 交给服务器上的 bash -s（带上项目名与宿主端口）',
     /guard_rollback\(\) \{ ssh "\$\{SERVER\}" bash -s -- "\$REMOTE_DIR" "\$1" "\$NAME" "\$HOST_PORT" <deploy\/rollback-guard\.sh; \}/.test(

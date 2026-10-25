@@ -9,9 +9,18 @@ import { Link, useNavigate, useParams } from '@tanstack/react-router';
 import { Button, Dropdown, Input, Modal, Switch } from 'antd';
 import { Ellipsis, MessagesSquare } from 'lucide-react';
 import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
-import type { ConversationDetail, MessageView, OrderView, Role, TurnDiffView, TurnStepsView } from '../../../src/shared/console-api.js';
+import type {
+  ConversationQuote,
+  ConversationQuoteCard,
+  ConversationDetail,
+  MessageView,
+  OrderView,
+  Role,
+  TurnDiffView,
+  TurnStepsView,
+} from '../../../src/shared/console-api.js';
 import { conversationState } from '../../../src/shared/conversation.js';
-import { clockTime } from '../../../src/shared/format.js';
+import { clockTime, formatYuan } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import { api, unwrap } from '../api.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
@@ -611,6 +620,55 @@ function ReplyBox({
 
 // ---------------- 右栏 ----------------
 
+/** 08 R4：按接口给的卡片渲染，旅游保留原来的需求与报价正文。 */
+export function ProfileCard({ cd, now }: { cd: Pick<ConversationDetail, 'profileCard' | 'need'>; now: number }) {
+  if (cd.profileCard) {
+    const card = cd.profileCard;
+    return (
+      <div className="wb-card">
+        <h3 className="wb-card-title">客户信息</h3>
+        {card.title ? <p>{cjk(card.title)}</p> : null}
+        <dl className="wb-profile-rows">
+          {card.rows.map((row, i) => (
+            <div key={i}>
+              <dt>{cjk(row.label)}</dt>
+              <dd>{cjk(row.value)}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+    );
+  }
+  return (
+    <div className="wb-card">
+      <h3 className="wb-card-title">需求</h3>
+      <p>{cjk(needLine(cd.need, now))}</p>
+    </div>
+  );
+}
+
+export function QuoteCard({ cd }: { cd: { quoteCard?: ConversationQuoteCard; quote: ConversationQuote | null } }) {
+  if (cd.quoteCard) {
+    const card = cd.quoteCard;
+    return (
+      <div className="wb-card">
+        <h3 className="wb-card-title">最近报价</h3>
+        <p>{cjk(card.title)}</p>
+        {card.amountFen !== null ? <p>{cjk(formatYuan(card.amountFen))}</p> : null}
+        {card.lines.map((line, i) => (
+          <p key={i}>{cjk(line)}</p>
+        ))}
+      </div>
+    );
+  }
+  return (
+    <div className="wb-card">
+      <h3 className="wb-card-title">最近报价</h3>
+      <p>{cd.quote ? cjk(quoteLine(cd.quote)) : '还没有报价'}</p>
+    </div>
+  );
+}
+
 export function OrderRow({
   o,
   canConfirm,
@@ -649,7 +707,29 @@ export function OrderRow({
   const refund = refundLine(o);
   return (
     <div className="wb-order">
-      <p className="wb-order-line">{cjk(orderLine(o))}</p>
+      {'display' in o ? (
+        <div className="wb-order-display">
+          <p className="wb-order-line">{cjk(o.display.title)}</p>
+          <p>{cjk(o.display.summary)}</p>
+          <ul className="wb-order-lines">
+            {o.display.lines.map((line, i) => (
+              <li key={i}>
+                <p className="wb-order-line">{cjk(line.title)}</p>
+                <p>{cjk(`${line.qtyText} · 单价${line.unitPriceText}`)}</p>
+                <p>{cjk(`小计${line.amountText}`)}</p>
+                {Object.entries(line.attrs ?? {}).map(([key, value]) => (
+                  <p className="wb-order-status" key={key}>
+                    {cjk(`${key}：${value}`)}
+                  </p>
+                ))}
+              </li>
+            ))}
+          </ul>
+          <p className="wb-order-total">{cjk(`合计${o.totalText}`)}</p>
+        </div>
+      ) : (
+        <p className="wb-order-line">{cjk(orderLine(o))}</p>
+      )}
       {/* 订单状态不是会话的四态，design-system §5.6 的 Status 没有给它配色；按原则 9（红色只表示出错），
           这里只用文字，不新造一种带色胶囊（不新加令牌、不碰 Status 组件） */}
       <p className="wb-order-status">{ORDER_STATUS_LABEL[o.status]}</p>
@@ -974,14 +1054,8 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
           <TraceTab id={id} turnId={selectedTurnId} />
         ) : (
           <>
-            <div className="wb-card">
-              <h3 className="wb-card-title">需求</h3>
-              <p>{cjk(needLine(detail.need, now))}</p>
-            </div>
-            <div className="wb-card">
-              <h3 className="wb-card-title">最近报价</h3>
-              <p>{detail.quote ? cjk(quoteLine(detail.quote)) : '还没有报价'}</p>
-            </div>
+            <ProfileCard cd={detail} now={now} />
+            <QuoteCard cd={detail} />
             <div className="wb-card">
               <h3 className="wb-card-title">订单与付款</h3>
               {detail.orders.length === 0 ? (

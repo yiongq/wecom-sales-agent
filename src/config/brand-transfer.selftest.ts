@@ -155,8 +155,9 @@ try {
     ],
     { env: { ...process.env, CONFIG_SOURCE: 'db', SOP_PATH: path.join(out, 'sop.md') }, encoding: 'utf8', timeout: 30_000 },
   );
-  check(() => assert.equal(dbBinding.status, 0, dbBinding.stderr));
-  check(() => assert.equal(dbBinding.stdout.trim(), 'null')); // DB 装载前也不碰文件品牌。
+  check(() => assert.notEqual(dbBinding.status, 0));
+  check(() => assert.match(dbBinding.stderr, /ConfigNotReadyError: DB 模式没有绑定行业包/));
+  check(() => assert.equal(dbBinding.stdout, '')); // DB 未绑定时明确拒绝，不碰文件品牌。
   const previousPath = process.env.SOP_PATH;
   try {
     process.env.SOP_PATH = path.join(out, 'sop.md');

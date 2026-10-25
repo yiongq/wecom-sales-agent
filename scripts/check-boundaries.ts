@@ -10,11 +10,18 @@
 // import x = require('x') / require('x') / 类型位置的 import('x')。相对路径解析成仓库内路径，
 // `.js` 对应同名的 `.ts`。字符串规则按原文查，注释也算。
 //
+// 08 R5（不变量 10）再加两条只管 src/ 下非自测代码的规则，都按语法树判断：
+// (1) src/packs/ 与八个门面之外，不 import 任何 src/packs/<名>/**（src/packs/registry.ts 除外）；
+// (2) R1 的九个旅游会话字段，不在 src/packs/travel/、门面与 src/types.ts 之外读写（属性访问、字符串字面量的元素访问、
+//     解构里的同名属性、对象字面量里的同名键，含简写）。语法树按名字判断，同名但不是会话字段的东西不许靠改名绕过，要报出来由 spec 定。
+// 两条规则的允许名单在 scripts/boundary-allowlists.ts，现在都是空数组。
+//
 // 可选参数：要检查的仓库根目录（给自测夹具用），默认当前目录。
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import ts from 'typescript';
+import { PACK_IMPORT_ALLOWLIST, SESSION_FIELD_ALLOWLIST } from './boundary-allowlists.js';
 
 if (process.argv[2]) process.chdir(process.argv[2]);
 
@@ -75,6 +82,20 @@ const FACADES = new Set([
   'src/insight.ts',
 ]);
 const PACK_FIXTURES = 'src/shared/pack-fixtures/';
+const TRAVEL_DIR = 'src/packs/travel/';
+const TYPES_FILE = 'src/types.ts';
+/** 08 R1：旅游独有的九个会话字段（src/types.ts 的 Session 上）。新包的会话状态走 packState，不用这些名字 */
+const SESSION_FIELDS: ReadonlySet<string> = new Set([
+  'lastQuote',
+  'quoteHistory',
+  'budgetGaps',
+  'lastShownRoutes',
+  'seenRouteIds',
+  'missedDestinations',
+  'reminders',
+  'recommendedRoutes',
+  'afterSale',
+]);
 /** OpenTelemetry 导出（02 spec R24、不变量 49）：没设端点时一个 @opentelemetry/* 都不加载，所以它们只在 src/otel/ 里 import */
 const OTEL_DIR = 'src/otel/';
 const OTEL_PKG = /^@opentelemetry\//;
@@ -168,6 +189,14 @@ const IMPORT_RULES: ImportRule[] = [
     desc: `假包 ${PACK_FIXTURES}** 只给自测和 scripts/ 下的检查用：src/ 里的非自测代码不能 import 它`,
     applies: (f) => under(f, 'src/') && !isAnySelftest(f) && !under(f, PACK_FIXTURES),
     bad: (i) => under(i.target, PACK_FIXTURES),
+  },
+  {
+    // 08 R5 规则 (1)：核心、配置层、存储、后台接口等都经绑定包的运行时、注册表或参考配置 data/packs/<id>/ 取包的东西；
+    // 八个门面是 04 R1 留的旧入口，可以 import 旅游包。registry.ts 本身不在 src/packs/<名>/ 里，能被 import
+    desc: `08 R5：src/ 里的非自测代码在 ${PACKS_DIR} 与门面之外不 import 具体的包 ${PACKS_DIR}<名>/**（${PACK_REGISTRY} 除外）`,
+    applies: (f) => under(f, 'src/') && !isAnySelftest(f) && !under(f, PACKS_DIR) && !FACADES.has(f),
+    bad: (i, f) =>
+      under(i.target, PACKS_DIR) && i.target !== PACK_REGISTRY && !PACK_IMPORT_ALLOWLIST.some((a) => a.file === f && a.target === i.target),
   },
   {
     desc: 'src/db/testing.ts 与 src/tenancy/testing.ts 只能被 *.selftest.ts 和 eval/run.ts import',
@@ -347,10 +376,33 @@ function scriptKind(file: string): ts.ScriptKind {
   return ts.ScriptKind.TS;
 }
 
-function importsOf(file: string, text: string): Imp[] {
-  const sf = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, scriptKind(file));
+function parse(file: string, text: string): ts.SourceFile {
+  return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, false, scriptKind(file));
+}
+
+/**
+ * 剥掉不改变值的包装：括号、as、satisfies、<T>x 断言、非空断言 x!，逐层剥到底。
+ * import(('x'))、import('x' as string)、s[('lastQuote')]、{ ['lastQuote' as const]: 1 } 这类写法剥完就是字符串字面量，
+ * 规则 (1)、(2) 判断「是不是字符串字面量」之前都要先剥，否则套一层就漏判
+ */
+function unwrap(node: ts.Node): ts.Node {
+  let cur = node;
+  while (
+    ts.isParenthesizedExpression(cur) ||
+    ts.isAsExpression(cur) ||
+    ts.isSatisfiesExpression(cur) ||
+    ts.isTypeAssertionExpression(cur) ||
+    ts.isNonNullExpression(cur)
+  )
+    cur = cur.expression;
+  return cur;
+}
+
+function importsOf(sf: ts.SourceFile): Imp[] {
+  const file = sf.fileName;
   const found: Imp[] = [];
-  const add = (lit: ts.Node | undefined, typeOnly: boolean, dynamic = false) => {
+  const add = (arg: ts.Node | undefined, typeOnly: boolean, dynamic = false) => {
+    const lit = arg && unwrap(arg);
     if (!lit || !ts.isStringLiteralLike(lit)) return;
     const line = sf.getLineAndCharacterOfPosition(lit.getStart(sf)).line + 1;
     found.push({ line, spec: lit.text, typeOnly, dynamic, ...resolve(file, lit.text) });
@@ -372,6 +424,59 @@ function importsOf(file: string, text: string): Imp[] {
   return found;
 }
 
+/** 一处按名字读写旅游会话字段 */
+interface FieldUse {
+  line: number;
+  field: string;
+  /** 写在报错里：是哪种写法 */
+  how: string;
+}
+
+/** 属性名节点的字面名；写成计算属性但里面（剥掉括号与类型断言后）是字符串字面量（{ ['lastQuote']: 1 }、{ [('lastQuote')]: q }）也认，别的算不出来 */
+function keyText(name: ts.PropertyName | ts.BindingName | undefined): string | null {
+  if (!name) return null;
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name) || ts.isNumericLiteral(name)) return name.text;
+  if (ts.isComputedPropertyName(name)) {
+    const inner = unwrap(name.expression);
+    if (ts.isStringLiteralLike(inner)) return inner.text;
+  }
+  return null;
+}
+
+/**
+ * 08 R5 规则 (2) 的探测：属性访问 x.lastQuote（含 x?.lastQuote）、字符串字面量的元素访问 x['lastQuote']（下标套括号或类型断言也算）、
+ * 解构里的同名属性（{ lastQuote }、{ lastQuote: q }、{ 'lastQuote': q }）、对象字面量里的同名键（lastQuote: 1、简写、方法、取值器）。
+ * 类型位置的成员（interface 的属性签名）不算读写。变量名、函数名撞上字段名也不算，只看「属性」。
+ */
+function sessionFieldUsesOf(sf: ts.SourceFile): FieldUse[] {
+  const found: FieldUse[] = [];
+  const add = (node: ts.Node, field: string | null, how: string) => {
+    if (field === null || !SESSION_FIELDS.has(field)) return;
+    found.push({ line: sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1, field, how });
+  };
+  const visit = (node: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(node)) add(node.name, node.name.text, '属性访问');
+    else if (ts.isElementAccessExpression(node)) {
+      const index = unwrap(node.argumentExpression);
+      if (ts.isStringLiteralLike(index)) add(index, index.text, '元素访问');
+    } else if (ts.isObjectBindingPattern(node)) {
+      // { ...rest } 的 rest 是新变量名，不是属性
+      for (const el of node.elements) if (!el.dotDotDotToken) add(el, keyText(el.propertyName ?? el.name), '解构');
+    } else if (ts.isObjectLiteralExpression(node)) {
+      for (const p of node.properties) if (!ts.isSpreadAssignment(p)) add(p.name, keyText(p.name), '对象字面量的键');
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return found;
+}
+
+/** 08 R5 规则 (2) 管不管这个文件：src/ 下的非自测代码，除了旅游包、八个门面与 src/types.ts */
+const checksSessionFields = (f: string): boolean =>
+  under(f, 'src/') && !isAnySelftest(f) && !under(f, TRAVEL_DIR) && !FACADES.has(f) && f !== TYPES_FILE;
+
+const SESSION_FIELD_DESC = `08 R5（不变量 10）：R1 的九个旅游会话字段不在 ${TRAVEL_DIR}、门面与 ${TYPES_FILE} 之外读写`;
+
 const files = listFiles()
   .filter((p) => !p.split('/').includes('node_modules'))
   .toSorted();
@@ -388,10 +493,17 @@ for (const file of files) {
   if (isCode) {
     codeFiles++;
     const rules = IMPORT_RULES.filter((r) => r.applies(file));
-    const imps = importsOf(file, text);
+    const sf = parse(file, text);
+    const imps = importsOf(sf);
     importCount += imps.length;
     for (const imp of imps) {
       for (const r of rules) if (r.bad(imp, file)) found.push([imp.line, `${r.desc}（'${imp.spec}'）`]);
+    }
+    if (checksSessionFields(file)) {
+      for (const use of sessionFieldUsesOf(sf)) {
+        if (SESSION_FIELD_ALLOWLIST.some((a) => a.file === file && a.field === use.field)) continue;
+        found.push([use.line, `${SESSION_FIELD_DESC}（${use.how} '${use.field}'）`]);
+      }
     }
   }
   for (const r of textRules) {

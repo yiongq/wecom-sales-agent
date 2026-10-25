@@ -4,10 +4,10 @@
 // 无模块级状态：租户的索引、重试与失败记录都在 retrieval.ts 的 TenantLocal 里。
 import { createHash } from 'node:crypto';
 import { withTenant, type Db, type TenantCtx } from '../db/client.js';
-import { KB_DIMENSIONS, readKbSnapshot, writeKbSync, type KbWrite } from '../db/repo/kb.js';
+import { KB_DIMENSIONS, readKbSnapshot, writeKbSync, type KbSource, type KbWrite } from '../db/repo/kb.js';
 
 export interface KbEntry {
-  /** 线路 id（kb_chunks.ref） */
+  /** 条目编号（kb_chunks.ref） */
   ref: string;
   /** retrievalText(item)：嵌入的正文 */
   body: string;
@@ -41,6 +41,7 @@ const usable = (v: unknown): v is readonly number[] =>
 export async function syncKb(o: {
   db: Db;
   tenantId: string;
+  source: KbSource;
   model: string;
   entries: readonly KbEntry[];
   /**
@@ -58,7 +59,7 @@ export async function syncKb(o: {
   const snapshot = await withTenant(o.db, ctx, readKbSnapshot, { isolation: 'repeatable read', readOnly: true });
   if (snapshot.vectors === null) return { kind: 'unavailable' };
 
-  const chunkByRef = new Map(snapshot.chunks.filter((c) => c.source === 'route').map((c) => [c.ref, c]));
+  const chunkByRef = new Map(snapshot.chunks.filter((c) => c.source === o.source).map((c) => [c.ref, c]));
   const vectorByChunk = new Map(snapshot.vectors.filter((v) => v.model === o.model).map((v) => [v.chunkId, v]));
   const wanted = new Set(o.entries.map((e) => e.ref));
 
@@ -93,13 +94,13 @@ export async function syncKb(o: {
     console.warn(`[retrieval] 嵌入向量的维数不是 ${KB_DIMENSIONS}（模型 ${o.model}），这次的向量只放内存、不写库；重启后会重新嵌入`);
   else if (need.length || extra.length) {
     const writes: KbWrite[] = need.map((n) => ({
-      source: 'route',
+      source: o.source,
       ref: n.entry.ref,
       body: n.entry.body,
       bodyHash: n.bodyHash,
       vector: [...fresh.get(n.entry.ref)!],
     }));
-    await withTenant(o.db, ctx, (tx) => writeKbSync(tx, { model: o.model, keep: [...wanted], writes }));
+    await withTenant(o.db, ctx, (tx) => writeKbSync(tx, { source: o.source, model: o.model, keep: [...wanted], writes }));
   }
 
   const items = o.entries.flatMap((e) => {

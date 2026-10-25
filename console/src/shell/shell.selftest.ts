@@ -16,6 +16,7 @@ import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react
 import dynamicIconImports from 'lucide-react/dynamicIconImports.mjs';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
+import acceptance from '../catalog/acceptance.fixture.json';
 import type { ConversationRow, Me, Role } from '../../../src/shared/console-api.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
 import { AUDIT_ACTIONS } from '../../../src/shared/ui-labels.js';
@@ -71,6 +72,15 @@ function check(name: string, ok: boolean, detail = ''): void {
 }
 const eq = (name: string, got: unknown, want: unknown): void =>
   check(name, JSON.stringify(got) === JSON.stringify(want), `得到 ${JSON.stringify(got)}，应为 ${JSON.stringify(want)}`);
+
+// 08 验收 3：同一份真实 /pack 响应夹具也交给列表自测，后端自测校验其字节。
+{
+  const nav = buildNav(acceptance.pack as IndustryPack, { kind: 'anon' }).flatMap((group) => group.items);
+  const widget = nav.filter((item) => item.entity === 'widget');
+  eq('证明包接口配置：导航恰好一个方盒入口、地址正确', widget, [
+    { key: '/catalog/widget', label: '方盒', icon: { entity: 'box' }, entity: 'widget' },
+  ]);
+}
 
 // ---------------- 夹具 ----------------
 

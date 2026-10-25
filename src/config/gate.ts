@@ -13,7 +13,9 @@ import { initializeStandardBudget } from '../tenancy/budget.js';
 import { registerTenantState } from '../tenancy/state.js';
 import type { GateGoalResult, GateRunView, StartGateResult } from '../shared/console-api.js';
 import { joinSop } from '../sop/sections.js';
-import { configRuntime, assertConfigWritable } from './source.js';
+import type { PackRuntime } from '../core/pack-api.js';
+import { configRuntime, assertConfigWritable, runtimeOf, type CatalogSnapshot } from './source.js';
+import { packCatalogFiles } from './transfer.js';
 import { gateDraftSnapshot, SopNotFoundError } from './sop.js';
 import { sha256 } from './hashes.js';
 import { GateError, GateSkippedError } from './gate-errors.js';
@@ -33,7 +35,11 @@ function revision(): string {
     throw new Error('闸需要 APP_REVISION 或 git 代码版本');
   }
 }
-/** 模型配置先解析再投影到通用 LLM_*，DeepSeek 的专用变量也不会额外放进子进程。 */
+/**
+ * 模型配置先解析再投影到通用 LLM_*，DeepSeek 的专用变量也不会额外放进子进程。
+ * 放行名单（LLM_ / ZHIPU_ / EMBED_ / TZ）不随包变：子进程靠配置目录里的 pack.json 认包（08 R11）。
+ * 只有自测经 __gateTest.childEnv 往里加（证明包只在 PACK_FIXTURES=1 时登记，子进程拿不到这个变量），不设时与原来逐字节相同。
+ */
 export function gateEnvironment(tmp: string): NodeJS.ProcessEnv {
   const cfg = llmCfg();
   const cheap = llmCfg(true);
@@ -49,14 +55,16 @@ export function gateEnvironment(tmp: string): NodeJS.ProcessEnv {
     LLM_MAX_INFLIGHT: '1',
     TMPDIR: tmp,
     TSX_DISABLE_CACHE: '1',
+    ...__gateTest.childEnv,
   };
 }
 function mockModel(): boolean {
   const url = new URL(llmCfg().baseUrl);
   return process.env.LLM_MOCK === '1' || ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
 }
-async function targets() {
-  const dir = path.resolve(__gateTest.goalsDir ?? 'eval/sim/goals/quality');
+/** 回归目标取绑定包的 evalGoalsDir（旅游是 eval/sim/goals/quality）；__gateTest.goalsDir 照旧优先。导出供自测钉住旅游的目标集哈希。 */
+export async function gateTargets(pack: Pick<PackRuntime, 'evalGoalsDir'>) {
+  const dir = path.resolve(__gateTest.goalsDir ?? pack.evalGoalsDir);
   const files = (await fs.readdir(dir)).filter((f) => f.endsWith('.json')).toSorted();
   const selected: { id: string; text: string }[] = [];
   for (const f of files) {
@@ -163,22 +171,37 @@ function unreported(model: string, costMilli: number): Summary['usage'] {
   return [{ model, calls: 0, promptTokens: 0, completionTokens: 0, cachedTokens: 0, reasoningTokens: 0, costMilli }];
 }
 
+/**
+ * 一边的导出目录。旅游照旧写 sop.md、routes.json、hotels.json、policy.json、brand.json；其他包写 sop.md、policy.json、brand.json、
+ * pack.json 与包声明的每个 kind 的 catalog/<kind>.json，不写 routes.json / hotels.json（08 R11，子进程靠 pack.json 认包）。
+ */
 async function exportSide(
   dir: string,
   sop: string,
-  catalog: { routes: readonly unknown[]; hotels: readonly unknown[] },
+  catalog: Pick<CatalogSnapshot, 'routes' | 'hotels' | 'items'>,
   policy: unknown,
   brand: unknown,
+  pack: Pick<PackRuntime, 'id' | 'catalog'>,
 ) {
   await fs.mkdir(dir, { recursive: true });
   await fs.writeFile(path.join(dir, 'sop.md'), sop);
+  const travel = pack.id === 'travel';
   for (const [file, value] of [
-    ['routes', catalog.routes],
-    ['hotels', catalog.hotels],
+    ...(travel
+      ? ([
+          ['routes', catalog.routes],
+          ['hotels', catalog.hotels],
+        ] as const)
+      : []),
     ['policy', policy],
     ...(brand ? [['brand', brand]] : []),
   ] as const)
     await fs.writeFile(path.join(dir, `${file}.json`), `${JSON.stringify(value, null, 2)}\n`);
+  if (!travel)
+    for (const { file, text } of packCatalogFiles(pack.id, Object.keys(pack.catalog), (kind) => catalog.items[kind] ?? [])) {
+      await fs.mkdir(path.dirname(path.join(dir, file)), { recursive: true });
+      await fs.writeFile(path.join(dir, file), text);
+    }
 }
 
 async function runSide(
@@ -290,7 +313,8 @@ export async function startGate(ctx: TenantCtx, input: { rev: number }): Promise
   assertConfigWritable();
   const runtime = configRuntime();
   if (runtime.tenantId !== ctx.tenantId) throw new Error('闸租户作用域不符');
-  const goals = await targets();
+  const pack = runtimeOf(runtime.deps);
+  const goals = await gateTargets(pack);
   const budget = positive('SOP_GATE_BUDGET_CNY', 2);
   const daily = positive('SOP_GATE_DAILY_RUNS', 3);
   const timeoutMs = positive('SOP_GATE_TIMEOUT_MS', 1800000);
@@ -307,7 +331,9 @@ export async function startGate(ctx: TenantCtx, input: { rev: number }): Promise
     const active = await tx.query.sopGateRuns.findFirst({ where: (t, { inArray }) => inArray(t.status, ['queued', 'running']) });
     if (active) throw new GateError('gate_active', active.id);
     if (runs.length >= daily) throw new GateError('gate_quota');
-    const catalog = sha256(JSON.stringify([snapshot.catalog.routes, snapshot.catalog.hotels]));
+    // 一个公式管所有包（08 R11）：包声明的各 kind 的数组按声明顺序排列。旅游声明 route、hotel，items.route / items.hotel 与
+    // routes / hotels 是同一批数组，所以结果就是原来的 sha256(JSON.stringify([routes, hotels]))。
+    const catalog = sha256(JSON.stringify(Object.keys(pack.catalog).map((kind) => snapshot.catalog.items[kind] ?? [])));
     const key = (prompt: string, policy: string) => sha256(JSON.stringify([prompt, policy, catalog, goals.hash, code, model, model]));
     const baselineKey = key(snapshot.pub.promptHash!, snapshot.publishedPolicy.policyHash);
     const cached = await baselineFor(tx, baselineKey, mock);
@@ -351,13 +377,21 @@ export async function startGate(ctx: TenantCtx, input: { rev: number }): Promise
         await initializeStandardBudget(owner);
         await withTenant(runtime.db, ctx, (tx) => updateGate(tx, row.id, { status: 'running' }));
         await fs.mkdir(path.join(root, 'tmp'), { recursive: true });
-        await exportSide(path.join(root, 'draft'), joinSop(snapshot.ev.merged), snapshot.catalog, snapshot.policy.policy, snapshot.brand);
+        await exportSide(
+          path.join(root, 'draft'),
+          joinSop(snapshot.ev.merged),
+          snapshot.catalog,
+          snapshot.policy.policy,
+          snapshot.brand,
+          pack,
+        );
         await exportSide(
           path.join(root, 'published'),
           joinSop(snapshot.pub.sections),
           snapshot.catalog,
           snapshot.publishedPolicy.policy,
           snapshot.brand,
+          pack,
         );
         const deadline = Date.now() + timeoutMs;
         const run = async (side: 'draft' | 'published', hashes: { promptHash: string; policyHash: string }) => {
@@ -461,5 +495,8 @@ export async function getGateRun(ctx: TenantCtx, id: string): Promise<GateRunVie
   };
 }
 
-/** 自测只替换合成目标目录，仍跑相同的导出、子进程、报告和事务路径。 */
-export const __gateTest: { goalsDir?: string } = {};
+/**
+ * 自测只替换合成目标目录，仍跑相同的导出、子进程、报告和事务路径。
+ * childEnv：自测往子进程环境里再加的变量（证明包的闸要 PACK_FIXTURES=1）；生产不设，放行名单不动。
+ */
+export const __gateTest: { goalsDir?: string; childEnv?: NodeJS.ProcessEnv } = {};

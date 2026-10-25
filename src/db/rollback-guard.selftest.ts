@@ -102,12 +102,30 @@ case "$*" in
   *"inspect --format {{.Image}}"*) [ "\${FAKE_RUNNING:-4}" = missing ] && exit 1; echo sha256:running ;;
   *"container ls"*) [ "\${FAKE_CONTAINER_DOWN:-0}" = 0 ] || exit 1; [ "\${FAKE_SANDBOX_CONTAINER:-absent}" = absent ] || echo placeholder; exit 0 ;;
   *"sandbox.ts purge --all"*) [ "\${FAKE_PURGE_FAIL:-0}" = 0 ] || { echo "[sandbox] sandbox_tenant_lock_held" >&2; exit 3; }; echo "purge image=\${APP_IMAGE:-missing}" >> "$FAKE_LOG"; touch "$FAKE_PURGED" ;;
-  *pg-backend.ts*|*registry.ts*|*pack-api.ts*|*runtime.ts*|*0015_order_refund_status.sql*)
+  *pg-backend.ts*|*registry.ts*|*pack-api.ts*|*runtime.ts*|*0015_order_refund_status.sql*|*order-view.ts*)
     phase="\${FAKE_TARGET:-3}"
     case "$*" in *sha256:running*) phase="\${FAKE_RUNNING:-4}" ;; esac
     [ "$phase" = error ] && exit 125
-    case "$*" in *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *pack-api.ts*) need=4 ;; *runtime.ts*) need=5 ;; *) need=7 ;; esac
+    case "$*" in *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *pack-api.ts*) need=4 ;; *runtime.ts*) need=5 ;; *order-view.ts*) need=8 ;; *) need=7 ;; esac
     [ "$phase" -ge "$need" ] ;;
+  *to_regclass*public.kb_chunks*)
+    case "\${FAKE_KB_SCHEMA-t}" in down) exit 1 ;; *) echo "\${FAKE_KB_SCHEMA-t}" ;; esac ;;
+  *"pack_id <> 'travel'"*|*"data->>'v' = '2'"*|*"kind not in ('route','hotel')"*|*"source <> 'route'"*)
+    case "$*" in
+      *"pack_id <> 'travel'"*) key=tenants; value="\${FAKE_NONTRAVEL_TENANTS-f}" ;;
+      *"data->>'v' = '2'"*) key=orders; value="\${FAKE_NONTRAVEL_ORDERS-f}" ;;
+      *"kind not in ('route','hotel')"*) key=catalog; value="\${FAKE_NONTRAVEL_CATALOG-f}" ;;
+      *) key=kb; value="\${FAKE_NONTRAVEL_KB-f}" ;;
+    esac
+    case "$*" in
+      *"select count(*)"*)
+        printf '%s' "\${!#}" > "$FAKE_QUERY.nontravel-$key-count"
+        [ "\${FAKE_NONTRAVEL_COUNT-1}" != down ] || exit 1
+        echo "\${FAKE_NONTRAVEL_COUNT-1}" ;;
+      *)
+        printf '%s' "\${!#}" > "$FAKE_QUERY.nontravel-$key"
+        case "$value" in down) exit 1 ;; lock-timeout) echo f; exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "$value" ;; esac ;;
+    esac ;;
   *information_schema.columns*"column_name = 'kind'"*)
     case "\${FAKE_TENANCY_SCHEMA:-f}" in down) exit 1 ;; *) echo "\${FAKE_TENANCY_SCHEMA:-f}" ;; esac ;;
   *"kind = 'standard'"*)
@@ -147,7 +165,7 @@ esac`,
 cat >/dev/null
 echo "curl $*" >> "$FAKE_LOG"
 [ "\${FAKE_HEALTH_FAIL:-}" = 1 ] && [ ! -f "$FAKE_ROLLED_BACK" ] && exit 7
-printf '{"revision":"%s","sandboxes":0,"config":{"catalogVersioned":false}}' "\${FAKE_REVISION:-fixture}"`,
+printf '{"revision":"%s","sandboxes":0,"config":{"catalogVersioned":%s}}' "\${FAKE_REVISION:-fixture}" "\${FAKE_CATALOG_VERSIONED:-false}"`,
   );
   fake(
     'git',
@@ -159,9 +177,10 @@ case "$1" in
     case "$3" in
       *pg-backend.ts) case "$3" in *v01:*) exit 1 ;; esac ;;
       *registry.ts) case "$3" in *v01:*|*v02:*) exit 1 ;; esac ;;
-      *pack-api.ts) case "$3" in *v04:*|*v06:*|*v07:*) exit 0 ;; *) exit 1 ;; esac ;;
-      *runtime.ts) case "$3" in *v06:*|*v07:*) exit 0 ;; *) exit 1 ;; esac ;;
-      *0015_order_refund_status.sql) case "$3" in *v07:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *pack-api.ts) case "$3" in *v04:*|*v06:*|*v07:*|*v08:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *runtime.ts) case "$3" in *v06:*|*v07:*|*v08:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *0015_order_refund_status.sql) case "$3" in *v07:*|*v08:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *order-view.ts) case "$3" in *v08:*) exit 0 ;; *) exit 1 ;; esac ;;
     esac ;;
   archive) tar -cf - package.json Dockerfile deploy src ;;
   *) exit 98 ;;
@@ -276,7 +295,9 @@ exit 0`,
       .split('\n')
       .filter(
         (line) =>
-          line.startsWith('docker ') && line.includes('psql') && !line.includes("column_name = 'kind'") && !line.includes('public.orders'),
+          line.startsWith('docker ') &&
+          line.includes('psql') &&
+          (line.includes("column_name = 'brand'") || line.includes("column_name = 'render_inputs'") || line.includes('coalesce(')),
       ).length === 4 &&
       r.log
         .split('\n')
@@ -284,8 +305,7 @@ exit 0`,
           (line) =>
             line.startsWith('timeout --kill-after=2s 8s docker ') &&
             line.includes('psql') &&
-            !line.includes("column_name = 'kind'") &&
-            !line.includes('public.orders'),
+            (line.includes("column_name = 'brand'") || line.includes("column_name = 'render_inputs'") || line.includes('coalesce(')),
         ).length === 4 &&
       r.log.includes('PGOPTIONS=-c statement_timeout=5000 -c lock_timeout=2000') &&
       r.log.includes('-v ON_ERROR_STOP=1'),
@@ -476,7 +496,11 @@ exit 0`,
       r.out,
     );
     r = deploy('v07', { ...env, FAKE_HEALTH_FAIL: '1' });
-    check(`${status}：自动回滚 8 转 1、不启动 prev`, r.code === 1 && r.out.includes('没有自动回滚') && !fs.existsSync(rolledBack), r.out);
+    check(
+      `${status}：自动回滚 8 转 1、提示服务不可用、不启动 prev`,
+      r.code === 1 && r.out.includes('没有自动回滚，服务当前不可用！') && !fs.existsSync(rolledBack),
+      r.out,
+    );
   }
   for (const env of [
     { FAKE_REFUND_SCHEMA: 'down', FAKE_REFUND: 'f' },
@@ -492,9 +516,246 @@ exit 0`,
   r = guard('pre-07', { FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 'f' });
   check('07：没有退款订单放行', r.code === 0, r.out);
   r = guard('side1:prev', { FAKE_TARGET: '7', FAKE_REFUND_SCHEMA: 'down' });
-  check('07：目标已有迁移标记不查询退款数据', r.code === 0 && !r.log.includes('public.orders'), r.out);
+  check(
+    '07：目标已有迁移标记不查询退款数据',
+    r.code === 0 && !r.log.includes("to_regclass('public.orders')") && !r.log.includes("status in ('refund_pending', 'refunded')"),
+    r.out,
+  );
   r = guard('pre-07', { FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 'hang', FAKE_RUNNING: '7', FAKE_TIMEOUT_MS: '100' });
   check('07：退款查询挂住有时限，退出 8', r.code === 8 && r.elapsed < 4000, r.out);
+
+  // 08 R13：真实脚本的四项风险独立触发；旧版本拒绝码与副作用顺序不变。
+  const nontravelRisks = [
+    ['tenants', 'FAKE_NONTRAVEL_TENANTS', '非旅游租户'],
+    ['orders', 'FAKE_NONTRAVEL_ORDERS', '通用单'],
+    ['catalog', 'FAKE_NONTRAVEL_CATALOG', '非旅游条目'],
+    ['kb', 'FAKE_NONTRAVEL_KB', '非旅游知识块'],
+  ] as const;
+  for (const [, variable, label] of nontravelRisks) {
+    const env = { FAKE_TARGET: '7', FAKE_RUNNING: '8', [variable]: 't' };
+    r = guard('side1:prev', env);
+    check(
+      `08：只有${label}时退出 9，逐项打印计数与处理步骤，不 purge`,
+      r.code === 9 &&
+        r.out.includes(`${label}（`) &&
+        r.out.includes('：1') &&
+        r.out.includes('先停用并清理非旅游租户') &&
+        r.out.includes('四项都为零后再回滚') &&
+        r.out.split('：0').length === 4 &&
+        !fs.existsSync(purged),
+      r.out,
+    );
+    check(
+      `08：${label}镜像目标在四项清零、重跑检查通过后给出恢复命令`,
+      r.out.includes(restore) &&
+        r.out.indexOf('四项都为零、重跑回滚检查退出码 0 后') < r.out.indexOf(restore) &&
+        r.out.includes('curl -fsS http://127.0.0.1:3999/healthz') &&
+        r.out.includes('确认 revision 是 side1:prev 的 APP_REVISION'),
+      r.out,
+    );
+    const pre08 = guard('pre-08', env);
+    check(
+      `08：pre-08 目标只有${label}时退出 9，清理并检查通过后重新部署，无镜像恢复命令`,
+      pre08.code === 9 &&
+        pre08.out.includes('四项都为零、重跑回滚检查通过后，再部署旧 tag') &&
+        !pre08.out.includes('APP_IMAGE=') &&
+        !pre08.out.includes('docker tag'),
+      pre08.out,
+    );
+    const d = deploy('v03', env);
+    check(
+      `08：${label}部署旧 tag，9 转 1、原样透出、rsync 前拒绝`,
+      d.code === 1 &&
+        d.out.includes(pre08.out.trim()) &&
+        d.out.includes('08 之前的版本，非旅游数据回滚检查拒绝部署（服务器上什么都没动）') &&
+        !d.log.includes('rsync '),
+      d.out,
+    );
+    const oldTag = deploy('v07', env);
+    check(
+      `08：07 tag 按文件树判 pre-08，${label}导致 9 转 1、同步前拒绝`,
+      oldTag.code === 1 &&
+        oldTag.out.includes(pre08.out.trim()) &&
+        oldTag.log.includes('pre-08 side1 3999') &&
+        !oldTag.log.includes('rsync '),
+      oldTag.out,
+    );
+    const auto = deploy('v08', { ...env, FAKE_HEALTH_FAIL: '1' });
+    check(
+      `08：${label}自动回滚，9 转 1、原样透出、不启动 prev`,
+      auto.code === 1 &&
+        auto.out.includes(r.out.trim()) &&
+        auto.out.includes('非旅游数据回滚检查拒绝，没有自动回滚，服务当前不可用！按上面的步骤人工处理') &&
+        !fs.existsSync(rolledBack),
+      auto.out,
+    );
+  }
+  for (const target of ['pre-02', 'pre-03', 'pre-04', 'pre-05', 'pre-07', 'pre-08', 'side1:prev']) {
+    r = guard(target, { FAKE_TARGET: '7', FAKE_RUNNING: '8', FAKE_NONTRAVEL_ORDERS: 't' });
+    check(
+      `08：${target} 同样检查通用单、退出 9，仅镜像目标打印恢复命令`,
+      r.code === 9 &&
+        r.out.includes('通用单') &&
+        r.out.includes(restore) === (target === 'side1:prev') &&
+        r.out.includes('APP_IMAGE=') === (target === 'side1:prev') &&
+        r.out.includes('再部署旧 tag') === (target !== 'side1:prev'),
+      r.out,
+    );
+  }
+  const emptyServer = {
+    FAKE_RUNNING: 'missing',
+    FAKE_NONTRAVEL_TENANTS: 'down',
+    FAKE_NONTRAVEL_ORDERS: 'down',
+    FAKE_NONTRAVEL_CATALOG: 'down',
+    FAKE_KB_SCHEMA: 'down',
+  };
+  r = guard('pre-08', emptyServer);
+  check(
+    '08：新服务器四项无法确认，退出 9 并提示先部署新版或确认无数据',
+    r.code === 9 &&
+      nontravelRisks.every(([, , label]) => new RegExp(`${label}（[^\\n]*：无法确认`).test(r.out)) &&
+      r.out.includes('若这是库还没建、四项都无法确认的新服务器，先部署 08 之后的 tag，或确认库里确实没有这四类数据后再处理。') &&
+      !r.out.includes('APP_IMAGE='),
+    r.out,
+  );
+  const emptyDeploy = deploy('v07', emptyServer);
+  check(
+    '08：新服务器部署旧 tag 透出空库提示，9 转 1、同步前拒绝',
+    emptyDeploy.code === 1 && emptyDeploy.out.includes(r.out.trim()) && !emptyDeploy.log.includes('rsync '),
+    emptyDeploy.out,
+  );
+  const oldRisks = {
+    FAKE_TARGET: 'error',
+    FAKE_RUNNING: '8',
+    FAKE_CATALOG_VERSIONED: 'true',
+    FAKE_CHANNEL: 't',
+    FAKE_BRAND: 't',
+    FAKE_TENANCY_SCHEMA: 't',
+    FAKE_OTHER_HOST: 't',
+    FAKE_SANDBOX_ROWS: 't',
+    FAKE_SANDBOX_CONTAINER: 'stopped',
+    FAKE_REFUND_SCHEMA: 't',
+    FAKE_REFUND: 't',
+  };
+  for (const file of ['var/sessions-in-db.json', 'var/channels-in-db.json', '.env.sandbox']) fs.writeFileSync(path.join(srv, file), '{}');
+  try {
+    r = guard('pre-08', oldRisks);
+    check('08：pre-08 四项为零，02–07 的风险与标记均不误拦', r.code === 0, r.out);
+    check(
+      '08：pre-08 不按镜像名探测旧目标、不查询渠道/品牌/沙箱/退款，不 purge',
+      !r.log.includes('docker run ') &&
+        !r.log.includes('channel_accounts') &&
+        !r.log.includes('information_schema.columns') &&
+        !r.log.includes("to_regclass('public.orders')") &&
+        !r.log.includes('sandbox.ts purge --all'),
+      r.log,
+    );
+  } finally {
+    for (const file of ['var/sessions-in-db.json', 'var/channels-in-db.json', '.env.sandbox'])
+      fs.rmSync(path.join(srv, file), { force: true });
+  }
+  r = deploy('v07', { ...oldRisks, FAKE_SANDBOX_CONTAINER: 'absent' });
+  check(
+    '08：07 tag 四项为零放行并完成部署，02–07 风险不误拦',
+    r.code === 0 && r.log.includes('pre-08 side1 3999') && r.log.includes('rsync '),
+    r.out,
+  );
+  r = guard('side1:prev', { FAKE_TARGET: '7', FAKE_RUNNING: '8' });
+  check('08：四项为零放行', r.code === 0, r.out);
+  check(
+    '08：目标镜像探测带时限，四项查询跨租户、只读并带 SQL 超时',
+    r.log.includes('timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh side1:prev -c test -e /app/src/core/order-view.ts') &&
+      r.log
+        .split('\n')
+        .filter((line) => line.startsWith('docker ') && line.includes('psql'))
+        .every(
+          (line) =>
+            line.includes('PGOPTIONS=-c statement_timeout=5000 -c lock_timeout=2000') &&
+            line.includes('db psql -U postgres -d brand_fixture -v ON_ERROR_STOP=1 -Atc select '),
+        ),
+    r.log,
+  );
+  r = guard('side1:prev', { FAKE_TARGET: '8', FAKE_NONTRAVEL_TENANTS: 't', FAKE_KB_SCHEMA: 'down' });
+  check('08：目标已有 order-view.ts 不执行四项查询', r.code === 0 && !r.log.includes('psql'), r.log + r.out);
+  r = guard('side1:prev', { FAKE_TARGET: '7', FAKE_RUNNING: '8', FAKE_KB_SCHEMA: 'f' });
+  check('08：kb_chunks 不存在按零处理，不查询缺失表', r.code === 0 && !r.log.includes('from public.kb_chunks'), r.log + r.out);
+  for (const [, variable, label] of nontravelRisks) {
+    for (const value of ['down', 'malformed', '', 'lock-timeout']) {
+      for (const running of ['8', '7']) {
+        r = guard('pre-07', { FAKE_RUNNING: running, [variable]: value });
+        check(
+          `08：${label}查询 ${value || '空结果'}、运行 ${running}，${running === '7' ? '豁免' : '拒绝 9'}`,
+          r.code === (running === '7' ? 0 : 9) && (running === '7' || r.out.includes('无法确认')),
+          r.out,
+        );
+      }
+    }
+  }
+  for (const running of ['missing', 'error']) {
+    r = guard('pre-07', { FAKE_RUNNING: running, FAKE_NONTRAVEL_TENANTS: 'down' });
+    check(`08：运行镜像 ${running} 无法证明旧版，从严拒绝 9`, r.code === 9, r.out);
+  }
+  for (const schema of ['down', 'malformed', '']) {
+    r = guard('pre-07', { FAKE_RUNNING: '8', FAKE_KB_SCHEMA: schema });
+    check(`08：知识块表探测 ${schema || '空结果'} 从严拒绝 9`, r.code === 9 && r.out.includes('无法确认'), r.out);
+  }
+  r = guard('pre-07', { FAKE_RUNNING: '7', FAKE_NONTRAVEL_TENANTS: 't', FAKE_NONTRAVEL_KB: 'down' });
+  check('08：旧运行镜像仅豁免未知项，不能豁免已确认的非旅游租户', r.code === 9 && r.out.includes('已确认存在'), r.out);
+  r = guard('pre-07', { FAKE_RUNNING: '8', FAKE_NONTRAVEL_ORDERS: 't', FAKE_NONTRAVEL_COUNT: 'down' });
+  check(
+    '08：计数失败仍拒绝已确认的通用单，并打印无法确认',
+    r.code === 9 && r.out.includes('无法确认') && r.out.includes('已确认存在'),
+    r.out,
+  );
+  r = guard('pre-07', { FAKE_RUNNING: '8', FAKE_NONTRAVEL_TENANTS: 'hang', FAKE_TIMEOUT_MS: '100' });
+  check('08：查询挂住有时限，从严退出 9', r.code === 9 && r.elapsed < 4000, r.out);
+  r = guard('side1:prev', { FAKE_TARGET: 'error', FAKE_RUNNING: '8', FAKE_NONTRAVEL_ORDERS: 't' });
+  check('08：目标镜像探测失败按旧版拒绝', r.code === 9, r.out);
+  for (const [expected, target, extra] of [
+    [4, 'pre-02', { FAKE_CATALOG: 't', FAKE_HEALTH_FAIL: '1' }],
+    [5, 'pre-03', { FAKE_CHANNEL: 't' }],
+    [6, 'pre-04', { FAKE_BRAND: 't' }],
+    [8, 'pre-07', { FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 't' }],
+  ] as const) {
+    r = guard(target, { ...extra, FAKE_NONTRAVEL_TENANTS: 't' });
+    check(`08：旧风险优先，仍退出 ${expected}`, r.code === expected && !fs.existsSync(purged), r.out);
+  }
+  r = guard('pre-05', { FAKE_NONTRAVEL_TENANTS: 't', FAKE_TENANCY_SCHEMA: 't', FAKE_SANDBOX_ROWS: 't' });
+  check('08：非旅游风险在沙箱 purge 前拒绝，不删除数据', r.code === 9 && !r.log.includes('sandbox.ts purge --all'), r.log + r.out);
+  {
+    const pg = new PGlite();
+    try {
+      await pg.exec(`create table tenants(id text, pack_id text);
+        create table orders(tenant_id text, data jsonb);
+        create table catalog_items(tenant_id text, kind text);
+        create table kb_chunks(tenant_id text, source text);
+        insert into tenants values ('host', 'travel'), ('other', 'travel');
+        insert into orders values ('other', '{"v":1}'), ('host', '{}');
+        insert into catalog_items values ('host', 'route'), ('other', 'hotel');
+        insert into kb_chunks values ('other', 'route');`);
+      const inserts = [
+        "insert into tenants values ('fixture', '__fixture')",
+        "insert into orders values ('other', '{\"v\":2}'), ('other', '{\"v\":\"2\"}')",
+        "insert into catalog_items values ('other', 'widget')",
+        "insert into kb_chunks values ('other', 'widget')",
+      ];
+      for (const [i, [key, variable, label]] of nontravelRisks.entries()) {
+        guard('pre-07', { [variable]: 't' });
+        const sql = fs.readFileSync(`${queryFile}.nontravel-${key}`, 'utf8');
+        const countSql = fs.readFileSync(`${queryFile}.nontravel-${key}-count`, 'utf8');
+        const exists = async () => (await pg.query<{ exists: boolean }>(sql)).rows[0]?.exists;
+        check(`08 SQL：旅游数据不触发${label}`, (await exists()) === false);
+        await pg.exec(inserts[i]!);
+        check(`08 SQL：其他租户的${label}也被检查`, (await exists()) === true);
+        check(
+          `08 SQL：${label}计数来自同一谓词`,
+          Number((await pg.query<{ count: number }>(countSql)).rows[0]?.count) === (i === 1 ? 2 : 1),
+        );
+      }
+    } finally {
+      await pg.close();
+    }
+  }
 
   const sandboxEnv = { FAKE_TARGET: '4', FAKE_RUNNING: '5', FAKE_TENANCY_SCHEMA: 't' };
   for (const state of ['running', 'stopped', 'env-only']) {
@@ -525,6 +786,12 @@ exit 0`,
     );
     fs.rmSync(path.join(srv, '.env.sandbox'), { force: true });
   }
+  r = deploy('v08', { ...sandboxEnv, FAKE_OTHER_HOST: 't', FAKE_HEALTH_FAIL: '1' });
+  check(
+    '05：自动回滚 7 转 1、提示服务不可用、不启动 prev',
+    r.code === 1 && r.out.includes('多租户或沙箱风险，没有自动回滚，服务当前不可用！') && !fs.existsSync(rolledBack),
+    r.out,
+  );
   r = guard('pre-05', { ...sandboxEnv, FAKE_SANDBOX_ROWS: 't' });
   check(
     '05-13② 当前镜像 purge --all 后重新问库才放行',
@@ -737,7 +1004,7 @@ exit 0`,
   } finally {
     await pg.close();
   }
-  console.log(`PASS rollback brand/sandbox：${checks} 项（stdin、SQL、部署与自动回滚）`);
+  console.log(`PASS rollback brand/sandbox/nontravel：${checks} 项（stdin、SQL、部署与自动回滚）`);
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

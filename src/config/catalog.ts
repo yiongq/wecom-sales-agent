@@ -11,6 +11,7 @@ import { writeAudit } from '../db/repo/audit.js';
 import { insertCatalogVersion, maxCatalogVersion } from '../db/repo/catalog-versions.js';
 import {
   activateItem,
+  countCatalogItems,
   insertDraftItem,
   maxOrd,
   readCatalogItem,
@@ -20,11 +21,13 @@ import {
   type CatalogRow,
 } from '../db/repo/catalog.js';
 import { findTenantBySlug } from '../db/repo/tenants.js';
-import { ALWAYS_LOCKED, applyCatalogPatch, CATALOG_SCHEMAS, lockedFieldChanges, type CatalogKind } from '../shared/catalog.js';
+import { ALWAYS_LOCKED, applyCatalogPatch, lockedFieldChanges, type CatalogKind } from '../shared/catalog.js';
+import type { CatalogKindSpec } from '../core/pack-api.js';
+import { runtimeById } from '../packs/registry.js';
 import type { Hotel, Route } from '../shared/catalog-types.js';
 import type { CatalogItem } from '../shared/console-api.js';
 import { CatalogCsvError, type CsvLabels, prepareCatalogCsv } from '../shared/catalog-csv.js';
-import { applyCatalogRow, assertConfigWritable, configRuntime, reloadFromDb } from './source.js';
+import { applyCatalogRow, assertConfigWritable, configRuntime, currentTenant, packSources, reloadFromDb } from './source.js';
 
 export type { CatalogKind } from '../shared/catalog.js';
 
@@ -35,6 +38,21 @@ export interface CatalogPatch {
   rev: number;
   set: Record<string, unknown>;
   unset?: string[];
+}
+
+/** 08 R2：统一校验租户包的 kind；离线导入与修正也可在绑定运行时之前调用。 */
+export class CatalogKindUnknownError extends Error {
+  constructor(
+    readonly packId: string,
+    readonly kind: string,
+  ) {
+    super(`kind_unknown：行业包 ${packId} 没有产品种类 ${kind}`);
+  }
+}
+export function assertKind(packId: string, kind: string): CatalogKindSpec {
+  const runtime = runtimeById(packId, packSources());
+  if (!runtime || !Object.hasOwn(runtime.catalog, kind)) throw new CatalogKindUnknownError(packId, kind);
+  return runtime.catalog[kind]!;
 }
 
 /** → 422，逐条列出哪里不合格 */
@@ -71,8 +89,8 @@ const toItem = (r: CatalogRow): CatalogItem => ({
 const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v);
 
 /** 整条过 schema；不合格抛 CatalogValidationError。只做校验，返回值不用（写库的是原对象） */
-function validate(kind: CatalogKind, payload: unknown): void {
-  const r = CATALOG_SCHEMAS[kind].safeParse(payload);
+function validate(spec: CatalogKindSpec, payload: unknown): void {
+  const r = spec.schema.safeParse(payload);
   if (!r.success) throw new CatalogValidationError(r.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })));
 }
 
@@ -141,20 +159,20 @@ async function write(ctx: TenantCtx, fn: (tx: Tx) => Promise<CatalogRow>): Promi
 
 async function checkSandboxCatalogSize(tx: Tx, add: number): Promise<void> {
   if (scopedRuntime()?.kind !== 'sandbox') return;
-  const routes = await readCatalogOfKind(tx, 'route');
-  const hotels = await readCatalogOfKind(tx, 'hotel');
-  assertSandboxWriteCapacity('catalogItems', routes.length + hotels.length, add);
+  assertSandboxWriteCapacity('catalogItems', await countCatalogItems(tx), add);
 }
 
 // ---------------- 读 ----------------
 
 /** 按 ord 排序，含 draft；v0 条目只有几十条，不分页 */
 export async function listCatalog(ctx: TenantCtx, kind: CatalogKind): Promise<CatalogItem[]> {
+  assertKind(currentTenant().pack.id, kind);
   const rt = runtimeFor(ctx);
   return withTenant(rt.db, ctx, async (tx) => (await readCatalogOfKind(tx, kind)).map(toItem), { readOnly: true });
 }
 
 export async function getCatalogItem(ctx: TenantCtx, kind: CatalogKind, code: string): Promise<CatalogItem | null> {
+  assertKind(currentTenant().pack.id, kind);
   const rt = runtimeFor(ctx);
   const row = await withTenant(rt.db, ctx, (tx) => readCatalogItem(tx, kind, code), { readOnly: true });
   return row ? toItem(row) : null;
@@ -164,8 +182,9 @@ export async function getCatalogItem(ctx: TenantCtx, kind: CatalogKind, code: st
 
 /** 新条目为 draft，ord 取该 kind 的最大 ord 加 1 */
 export async function createCatalogItem(ctx: TenantCtx, kind: CatalogKind, payload: unknown): Promise<CatalogItem> {
+  const spec = assertKind(currentTenant().pack.id, kind);
   if (!isPlainObject(payload)) throw new CatalogValidationError([{ path: '', message: '条目必须是对象' }]);
-  validate(kind, payload);
+  validate(spec, payload);
   return write(ctx, async (tx) => {
     if (await readCatalogItem(tx, kind, String(payload.id))) throw new CatalogCodeTakenError('这个 code 已经有了');
     await checkSandboxCatalogSize(tx, 1);
@@ -176,6 +195,7 @@ export async function createCatalogItem(ctx: TenantCtx, kind: CatalogKind, paylo
 }
 
 export async function updateCatalogItem(ctx: TenantCtx, kind: CatalogKind, code: string, patch: CatalogPatch): Promise<CatalogItem> {
+  const spec = assertKind(currentTenant().pack.id, kind);
   if (!isPlainObject(patch.set) || (patch.unset !== undefined && !Array.isArray(patch.unset))) {
     throw new CatalogValidationError([{ path: '', message: '补丁要有 set 对象，unset 是字段名数组' }]);
   }
@@ -189,10 +209,10 @@ export async function updateCatalogItem(ctx: TenantCtx, kind: CatalogKind, code:
     } catch (e) {
       throw new CatalogValidationError([{ path: '', message: e instanceof Error ? e.message : String(e) }]);
     }
-    // 锁定字段（active 按 LOCKED_WHEN_ACTIVE，任何状态都按 ALWAYS_LOCKED）有变化就拒；unset 锁定字段也算变化
-    const locked = lockedFieldChanges(kind, cur.status, cur.payload, next);
+    // 锁定字段（active 按包的 lockedWhenActive，任何状态都按 ALWAYS_LOCKED）有变化就拒；unset 锁定字段也算变化
+    const locked = lockedFieldChanges(kind, cur.status, cur.payload, next, spec.lockedWhenActive);
     if (locked.length) throw new CatalogLockedFieldError(locked);
-    validate(kind, next);
+    validate(spec, next);
     const version = await nextVersion(tx, cur, next, 'console', ctx.actor.name);
     const row = await updateItemPayload(tx, kind, code, cur.rev, next, by(ctx), version);
     if (!row) throw new CatalogRevConflictError('条目已被别人改过，刷新后重来');
@@ -204,6 +224,7 @@ export async function updateCatalogItem(ctx: TenantCtx, kind: CatalogKind, code:
 
 /** draft → active，上架前整条再过一遍 schema。已经是 active 的原样返回，不写库、不动快照 */
 export async function activateCatalogItem(ctx: TenantCtx, kind: CatalogKind, code: string, input: { rev: number }): Promise<CatalogItem> {
+  const spec = assertKind(currentTenant().pack.id, kind);
   const existing = await getCatalogItem(ctx, kind, code);
   if (!existing) throw new CatalogNotFoundError(`没有 ${kind} ${code}`);
   if (existing.status === 'active' && existing.rev === input.rev) return existing;
@@ -211,7 +232,7 @@ export async function activateCatalogItem(ctx: TenantCtx, kind: CatalogKind, cod
     const cur = await readCatalogItemForUpdate(tx, kind, code);
     if (!cur) throw new CatalogNotFoundError(`没有 ${kind} ${code}`);
     if (cur.rev !== input.rev || cur.status !== 'draft') throw new CatalogRevConflictError('条目已被别人改过，刷新后重来');
-    validate(kind, cur.payload);
+    validate(spec, cur.payload);
     const row = await activateItem(tx, kind, code, cur.rev, by(ctx));
     if (!row) throw new CatalogRevConflictError('条目已被别人改过，刷新后重来');
     await writeAudit(tx, { action: 'catalog.activate', targetType: kind, targetId: code, diff: { status: ['draft', 'active'] } });
@@ -230,7 +251,8 @@ export async function activateCatalogItem(ctx: TenantCtx, kind: CatalogKind, cod
  * draft 不进快照。labels 是表头可以用的中文标签（后台 UX spec「CSV 导入」），由调用方从租户的行业包取
  */
 export async function importCatalogCsv(ctx: TenantCtx, kind: CatalogKind, csv: string, labels?: CsvLabels): Promise<CatalogItem[]> {
-  const payloads = prepareCatalogCsv(kind, csv, labels);
+  const spec = assertKind(currentTenant().pack.id, kind);
+  const payloads = prepareCatalogCsv(kind, csv, labels, spec.schema, currentTenant().pack.id);
   assertSandboxWriteCapacity('importRows', 0, payloads.length);
   assertConfigWritable();
   const rt = runtimeFor(ctx);
@@ -278,17 +300,18 @@ export async function fixLockedFields(input: {
   if (!isPlainObject(input.set)) throw new CatalogValidationError([{ path: 'set', message: '--set 必须是 JSON 对象' }]);
   const tenant = await findTenantBySlug(input.db, input.tenantSlug);
   if (!tenant) throw new CatalogNotFoundError(`没有 slug 为「${input.tenantSlug}」的租户`);
+  const spec = assertKind(tenant.packId, input.kind);
   const ctx: TenantCtx = { tenantId: tenant.id, actor: { kind: 'platform', userId: null, name: 'catalog-fix', ip: null } };
   const row = await withTenant(input.db, ctx, async (tx) => {
     await lockTenantConfig(tx);
     const cur = await readCatalogItemForUpdate(tx, input.kind, input.code);
     if (!cur) throw new CatalogNotFoundError(`没有 ${input.kind} ${input.code}`);
     const next = applyCatalogPatch(cur.payload, { set: input.set });
-    const idChanged = lockedFieldChanges(input.kind, 'draft', cur.payload, next).filter((f) =>
+    const idChanged = lockedFieldChanges(input.kind, 'draft', cur.payload, next, spec.lockedWhenActive).filter((f) =>
       (ALWAYS_LOCKED as readonly string[]).includes(f),
     );
     if (idChanged.length) throw new CatalogLockedFieldError(idChanged);
-    validate(input.kind, next);
+    validate(spec, next);
     const version = await nextVersion(tx, cur, next, 'fix', 'catalog-fix');
     const updated = await updateItemPayload(tx, input.kind, input.code, cur.rev, next, { userId: null, name: 'catalog-fix' }, version);
     if (!updated) throw new CatalogRevConflictError('条目在修正期间被改过');

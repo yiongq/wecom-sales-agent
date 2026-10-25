@@ -2,25 +2,27 @@
 // 读接口只读内存（identity map、发送账本）；例外只有 spec 写明的 trace 类读法（护栏改写的句数、更早的消息、步骤摘要与改写对照），
 // 它们只在 db 存储的真实会话上查库，文件存储与 demo 类会话不查（返回 null、空或 503，见 app.ts）。
 // 不把 store 里的活对象原样返回：每个字段都投影一遍，只读成员（viewer）看到的正文与客户原话打码（mask.ts）
-import { currentCatalog, currentTenant, currentPack, currentPolicy } from '../config/source.js';
+import { currentTenant, currentPack, currentPolicy } from '../config/source.js';
 import type { AuthedUser } from '../auth/session.js';
 import { type Actor, assigneeOf, consentDeclined, handlesConversations, isAssignee, supervisesConversations } from '../handoff/takeover.js';
 import { paymentMode } from '../payment/mode.js';
 import { deliveryOf, sendWindow } from '../quota/ledger.js';
-import { SALES_SEGMENTS } from '../shared/catalog-types.js';
 import type {
   ConversationCounts,
   ConversationDetail,
+  ConversationNeed,
+  ConversationProfileCard,
+  ConversationQuoteCard,
   ConversationRow,
   MessageView,
   OrderView,
   SandboxConversationOwner,
 } from '../shared/console-api.js';
-import { conversationState, needParts, needSummary, paidNeedsHuman, type NeedVocabulary } from '../shared/conversation.js';
+import { conversationState, paidNeedsHuman } from '../shared/conversation.js';
 import type { IndustryPack } from '../shared/pack.js';
-import { cleanText } from '../shared/text.js';
-import { getOrder, getSession, isDemoClassId, listSessions, seqOf, sessionStoreMode, turnIdOf, windowStartOf } from '../store.js';
-import type { ChatMessage, MessageAuthor, Order, Session } from '../types.js';
+import { getAnyOrder, getSession, isDemoClassId, listSessions, seqOf, sessionStoreMode, turnIdOf, windowStartOf } from '../store.js';
+import type { ChatMessage, MessageAuthor, Session } from '../types.js';
+import { isLineOrder, orderDisplay, orderTotalFen, type AnyOrder } from '../core/order-view.js';
 import { scopedRuntime } from '../tenancy/runtime.js';
 import { sandboxWechatIndex } from '../tenancy/sandbox/outbound.js';
 import { maskNumbers } from './mask.js';
@@ -66,13 +68,13 @@ export const sandboxOwnedFirst =
   };
 
 /**
- * needSummary 的词表：目的地取产品库 active 条目的 destination；客群取旅游包的五个客群值，短标签暂时就是客群值本身
- * （「贵州银发4人」）。spec 举例的「带爸妈」这类短标签要进行业包的词汇表，用到的字不在 UI 优先片里，要重切字体，留给画列表的第 19 步
+ * 08 R4：会话标题（行的 needSummary）、画像卡与报价卡都由绑定包的钩子给（profileView、quoteCard）。
+ * 包只给规范化的取值；核心只管 viewer 打码和形状：旅游沿用 need / quote，其余包走 profileCard / quoteCard
  */
-export const needVocabulary = (): NeedVocabulary => ({
-  destinations: [...new Set(currentCatalog().routes.map((r) => r.destination))],
-  segments: Object.fromEntries(SALES_SEGMENTS.map((k) => [k, k])),
-});
+const maskFor =
+  (viewer: boolean) =>
+  (t: string): string =>
+    viewer ? maskNumbers(t) : t;
 
 const iso = (ms: number): string => new Date(ms).toISOString();
 
@@ -90,12 +92,20 @@ function lastCustomerAt(s: Session): string | null {
  * 不对客、不进任何正文，只给 A2「需要你处理」按「金额高的在前」排序用
  */
 function conversationAmount(s: Session): number | null {
-  const pending = s.orderIds.map((id) => getOrder(id)).find((o): o is Order => !!o && o.status === 'pending_payment');
-  return pending ? pending.totalPrice : (s.lastQuote?.total ?? null);
+  const pending = s.orderIds.map((id) => getAnyOrder(id)).find((o): o is AnyOrder => !!o && o.status === 'pending_payment');
+  if (pending) return orderTotalFen(pending) / 100;
+  const fen = currentPack().runtime.quoteCard?.(s)?.amountFen;
+  return fen == null ? null : fen / 100;
 }
 
+/** 会话标题后半段，取不到为 null；viewer 打码（标题只用规范化的取值，打码对它是空操作，给别的包兜底） */
+const titleOf = (s: Session, viewer: boolean): string | null => {
+  const title = currentPack().runtime.profileView(s.profile).title;
+  return title ? maskFor(viewer)(title) : null;
+};
+
 /** 列表的一行：只投影这几个字段，不把 store 里的活对象原样返回，不带消息正文和客户画像。viewer 的转人工原因也要打码（不变量 47） */
-export const conversationRow = (s: Session, vocab: NeedVocabulary, viewer: boolean): ConversationRow => ({
+export const conversationRow = (s: Session, viewer: boolean): ConversationRow => ({
   id: s.id,
   ...(sandboxConversationOwner(s) ? { sandboxOwner: sandboxConversationOwner(s)! } : {}),
   channel: s.channel,
@@ -103,7 +113,7 @@ export const conversationRow = (s: Session, vocab: NeedVocabulary, viewer: boole
   handedOver: s.handedOver,
   messageCount: s.messages.length,
   updatedAt: iso(s.updatedAt),
-  needSummary: needSummary(s.profile, vocab),
+  needSummary: titleOf(s, viewer),
   assignee: s.assignee ? { userId: s.assignee.userId, name: s.assignee.name } : null,
   handoff: s.handoff
     ? { kind: s.handoff.kind, at: iso(s.handoff.at), reason: viewer ? maskNumbers(s.handoff.reason) : s.handoff.reason }
@@ -205,18 +215,33 @@ export const windowTurnIds = (s: Session): string[] =>
  * 订单所属会话的最小投影（A2「待付款」行用）：会话被清除（第 16 步之后才会出现）时为 null。不带短码——
  * console 一侧 conversationLabel(row, pack) 已经会从 id 现算 shortIdOf，这里重复发一遍只是多一个字段
  */
-function orderConversation(o: Order): OrderView['conversation'] {
+function orderConversation(o: AnyOrder, viewer: boolean): OrderView['conversation'] {
   const s = getSession(o.sessionId);
   if (!s) return null;
   return {
     id: s.id,
     ...(sandboxConversationOwner(s) ? { sandboxOwner: sandboxConversationOwner(s)! } : {}),
     channel: s.channel,
-    needSummary: needSummary(s.profile, needVocabulary()),
+    needSummary: titleOf(s, viewer),
   };
 }
 
-export function orderView(o: Order): OrderView {
+export function orderView(o: AnyOrder, viewer = false): OrderView {
+  if (isLineOrder(o)) {
+    const display = orderDisplay(o);
+    return {
+      id: o.id,
+      display,
+      totalFen: display.totalFen,
+      totalText: display.totalText,
+      status: o.status,
+      createdAt: iso(o.createdAt),
+      paidAt: o.paidAt != null ? iso(o.paidAt) : null,
+      confirmed: o.confirmedAt != null ? { at: iso(o.confirmedAt), by: o.confirmedBy?.name ?? '' } : null,
+      handoffBeforePaid: o.handoffBeforePaid ?? null,
+      conversation: orderConversation(o, viewer),
+    };
+  }
   return {
     id: o.id,
     routeTitle: o.routeTitle,
@@ -244,20 +269,31 @@ export function orderView(o: Order): OrderView {
           },
         }
       : {}),
-    conversation: orderConversation(o),
+    conversation: orderConversation(o, viewer),
   };
 }
 
-/** 出发日期只认规范的 YYYY-MM-DD（引擎记画像时就是这个写法） */
-const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+/**
+ * J 页「客户与交接」的画像：包的 profileView 填了 need（旅游沿用的形状）就下发 need，预算原话摘要对 viewer 打码；
+ * 没填的包下发 profileCard，need 的五项全是 null
+ */
+function profileOf(s: Session, viewer: boolean): { need: ConversationNeed; profileCard?: ConversationProfileCard } {
+  const mask = maskFor(viewer);
+  const view = currentPack().runtime.profileView(s.profile);
+  if (view.need) return { need: { ...view.need, budget: view.need.budget === null ? null : mask(view.need.budget) } };
+  return {
+    need: { destination: null, segment: null, travelers: null, dates: null, budget: null },
+    profileCard: { title: mask(view.title), rows: view.rows.map((r) => ({ label: r.label, value: mask(r.value) })) },
+  };
+}
 
-/** J 页「客户与交接」的需求要素：与 needSummary 同源的三段，加规范写法的出行日期与预算原话的摘要（≤20 字） */
-function needOf(s: Session, vocab: NeedVocabulary, viewer: boolean): ConversationDetail['need'] {
-  const p = needParts(s.profile, vocab);
-  const dates = typeof s.profile.dates === 'string' && ISO_DATE.test(s.profile.dates) ? s.profile.dates : null;
-  const budgetRaw = typeof s.profile.budget === 'string' ? cleanText(s.profile.budget.trim(), 20) : '';
-  const budget = budgetRaw ? (viewer ? maskNumbers(budgetRaw) : budgetRaw) : null;
-  return { ...p, dates, budget };
+/** 同上，报价：包的 quoteCard 填了 quote（旅游沿用的形状）就下发 quote，其余包下发 quoteCard，quote 为 null；没有报价都是 null */
+function quoteOf(s: Session, viewer: boolean): { quote: ConversationDetail['quote']; quoteCard?: ConversationQuoteCard } {
+  const card = currentPack().runtime.quoteCard?.(s) ?? null;
+  if (!card) return { quote: null };
+  if (card.quote) return { quote: card.quote };
+  const mask = maskFor(viewer);
+  return { quote: null, quoteCard: { title: mask(card.title), amountFen: card.amountFen, lines: card.lines.map(mask) } };
 }
 
 /** GET /conversations/:id 的主体（guarded 由调用方在 db 存储下一次读好这一屏的） */
@@ -274,16 +310,16 @@ export function conversationDetail(
   const messages = windowMessages(s).map(({ m, seq }) =>
     messageView(m, seq, turnIdOf(m) ?? null, s.channel === 'wecom' && m.role === 'agent' ? deliveryOf(s.id, m) : null, opts),
   );
-  const vocab = needVocabulary();
   const actor = actorOf(user, null);
   const handles = handlesConversations(actor.role);
   const supervises = supervisesConversations(actor.role);
   const cur = assigneeOf(s);
   const mine = isAssignee(s, actor);
   const declined = consentDeclined(s);
-  const q = s.lastQuote;
+  const profile = profileOf(s, viewer);
+  const quote = quoteOf(s, viewer);
   return {
-    row: conversationRow(s, vocab, viewer),
+    row: conversationRow(s, viewer),
     messages,
     hasEarlier: withTurns && windowStartOf(s) > 1,
     handoffCard: s.handoff
@@ -297,20 +333,13 @@ export function conversationDetail(
           assigneeName: cur?.name ?? null,
         }
       : null,
-    need: needOf(s, vocab, viewer),
-    quote: q
-      ? {
-          routeId: q.routeId,
-          routeTitle: q.routeTitle,
-          travelers: q.travelers,
-          perPerson: q.perPerson ?? null,
-          total: q.total ?? null,
-          departDate: q.departDate ?? null,
-        }
-      : null,
+    need: profile.need,
+    quote: quote.quote,
+    ...(profile.profileCard ? { profileCard: profile.profileCard } : {}),
+    ...(quote.quoteCard ? { quoteCard: quote.quoteCard } : {}),
     orders: s.orderIds.flatMap((id) => {
-      const o = getOrder(id);
-      return o ? [orderView(o)] : [];
+      const o = getAnyOrder(id);
+      return o ? [orderView(o, viewer)] : [];
     }),
     sendWindow: s.channel === 'wecom' ? sendWindow(s.id, now) : null,
     paymentMode: paymentMode(),

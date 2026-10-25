@@ -6,7 +6,7 @@ import { SALES_SEGMENTS, type Hotel, type Route } from './catalog-types.js';
 import { storableText, UNSTORABLE_TEXT } from './console-api.js';
 import { monthsReadable } from './season.js';
 
-export type CatalogKind = 'route' | 'hotel';
+export type CatalogKind = string;
 
 /** 与库里 catalog_items.code 的 CHECK 相同：条目的 id 就是 code。行业包的上架前检查（pack.ts 的 checkItem）按它查 `$code` */
 export const CATALOG_CODE = /^[a-z0-9][a-z0-9-]{0,63}$/;
@@ -77,7 +77,7 @@ export const ALWAYS_LOCKED = ['id'] as const;
  * active 条目不可改的字段（理由见 01 spec「各字段为什么锁」）。'tags:国内' 指 tags 里「国内」这一项的有无。
  * 02 有了条目版本（报价快照）之后，计价与条款的五个字段去掉了，见 REPRICE_FIELDS；识别字段照旧锁定（02 spec R14、非目标）
  */
-export const LOCKED_WHEN_ACTIVE = {
+export const LOCKED_WHEN_ACTIVE: Readonly<Record<CatalogKind, readonly string[]>> = {
   route: ['id', 'title', 'destination', 'days', 'segments', 'aliases', 'maxAltitude', 'overseas', 'tags:国内'],
   hotel: ['id', 'name', 'destination'],
 } as const;
@@ -87,7 +87,7 @@ export const LOCKED_WHEN_ACTIVE = {
  * 只影响之后的报价和方案书；已发出的方案书按发出时的版本渲染，订单下单时就冻结了金额。旅游包给这几个字段标了 reprices
  * （后台保存条据那个标记换说明，经 /pack 下发），packs.selftest 核对两边一致
  */
-export const REPRICE_FIELDS = {
+export const REPRICE_FIELDS: Readonly<Record<CatalogKind, readonly string[]>> = {
   route: ['priceFrom', 'bestSeason', 'inclusions', 'exclusions'],
   hotel: ['nightlyFrom'],
 } as const;
@@ -110,10 +110,16 @@ export function sameValue(a: unknown, b: unknown): boolean {
 }
 
 /** prev → next 改动了哪些锁定字段（按锁定表的顺序点名）；draft 条目只锁 id */
-export function lockedFieldChanges(kind: CatalogKind, status: 'draft' | 'active', prev: object, next: object): string[] {
+export function lockedFieldChanges(
+  kind: CatalogKind,
+  status: 'draft' | 'active',
+  prev: object,
+  next: object,
+  activeFields: readonly string[] = LOCKED_WHEN_ACTIVE[kind],
+): string[] {
   const p = prev as Record<string, unknown>;
   const n = next as Record<string, unknown>;
-  const fields: readonly string[] = status === 'active' ? LOCKED_WHEN_ACTIVE[kind] : ALWAYS_LOCKED;
+  const fields: readonly string[] = status === 'active' ? activeFields : ALWAYS_LOCKED;
   return fields.filter((f) => {
     const [field, member] = f.split(':') as [string, string | undefined];
     if (member === undefined) return !sameValue(p[field], n[field]);

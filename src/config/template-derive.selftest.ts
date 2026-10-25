@@ -2,7 +2,7 @@
 //   一、锁定节模板 = 镜像 data/sop.md 的 7 个锁定节 + 声明的替换表（6 行「微信」说法）：逐节 sha256 等于开工时手抄那份，
 //       表外的节与镜像逐字节相同，模板里没有「微信」「云途」；表里任一条命中 0 次或多次、指向非锁定节、镜像缺锁定节，都抛错（包装载时抛错 = 启动失败）。
 //   二、旧版硬性要求 = 模板模式的硬性要求按 demo 品牌渲染 + 两条替换：sha256 等于开工时的值，渲染与结果只差那两行。
-//   三、企微欢迎语：适配器里的 WELCOME_TEXT / WELCOME_BACK_TEXT 就是包的旧版文字，适配器源码里没有第二份；LEGACY_WELCOME_TEXTS 原样。
+//   三、企微欢迎语：适配器 __test 上的 WELCOME_TEXT / WELCOME_BACK_TEXT 现取绑定包的旧版文字（08 R5：适配器不 import 包），适配器源码里没有第二份；LEGACY_WELCOME_TEXTS 原样。
 // 批 S（07 第 19 步）改镜像里 handoff、capabilities 两个锁定节时，同步更新下面这两节的 sha256（替换表对不上会在装载时先报错）。
 import '../selftest-env.js';
 import assert from 'node:assert/strict';
@@ -10,7 +10,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { sha256 } from './hashes.js';
 import { renderBrandTemplate } from '../core/brand.js';
-import { splitSop, TRAVEL_SOP_SECTIONS } from '../sop/sections.js';
+import { splitSop } from '../sop/sections.js';
+import { TRAVEL_SOP_SECTIONS } from '../packs/travel/sop.js';
 import { demoBrand } from '../packs/travel/demo-brand.js';
 import { applyReplacements } from '../packs/travel/replacements.js';
 import { deriveLockedSectionTemplates, LOCKED_SECTION_REPLACEMENTS, readMirrorSop } from '../packs/travel/locked-templates.js';
@@ -38,7 +39,7 @@ const runtime = config.currentPack().runtime;
 
 const mirror = readMirrorSop();
 assert.equal(mirror, fs.readFileSync(path.join(root, 'data', 'sop.md'), 'utf8'));
-const mirrorByKey = new Map(splitSop(mirror).map((s) => [s.key, s.text]));
+const mirrorByKey = new Map(splitSop(mirror, runtime.sopSections).map((s) => [s.key, s.text]));
 const lockedKeys = TRAVEL_SOP_SECTIONS.filter((s) => s.locked).map((s) => s.key);
 const lines = (s: string): string[] => s.split('\n');
 const countOf = (text: string, part: string): number => text.split(part).length - 1;
@@ -185,7 +186,9 @@ const countOf = (text: string, part: string): number => text.split(part).length 
     // 「想去哪玩…」在改版前的第一段识别串里还有一处；其余两句现行文字只允许出现在注释以外的零处
     assert.equal(n, needle.startsWith('想去哪玩') ? 1 : 0, `wecom.ts 里不应再手抄现行欢迎语：${needle}`);
   }
-  assert.match(source, /from '\.\.\/packs\/travel\/legacy\.js'/);
+  // 08 R5：适配器不 import 包；两段现行文字在用到时按绑定包的 runtime.legacy 现取
+  assert.doesNotMatch(source, /from '\.\.\/packs\//);
+  assert.match(source, /currentPack\(\)\.runtime\.legacy/);
 }
 
 console.log(

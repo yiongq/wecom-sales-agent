@@ -3,6 +3,8 @@
 - **状态**：采纳（owner 2026-09-27，随后台 UX spec 翻 ready 一并确认）
 - **日期**：2026-09-27
 - **取代**：[ADR-002](adr-002-console-vite-react.md) 决策 1 里「产品库表单由行业包的 zod schema 转成 JSON Schema 自动生成」这一条。ADR-002 的其余决策不变。
+- **Superseded in part by**：[08 · 核心去旅游化：产品种类、通用订单与金额](../architecture/08-pack-generalization/spec.md) — 决策 4 的「服务端照旧用 `RouteSchema` / `HotelSchema` 校验写入」（第 21 行）：改为用包的 `CatalogKindSpec.schema` 校验，旅游仍是这两个（08 R2）。
+- **Amended by**：[08 · 核心去旅游化：产品种类、通用订单与金额](../architecture/08-pack-generalization/spec.md) — 决策 2 的 `money` 加可选配置 `decimals: 0 | 2`，缺省 0（第 19 行，08 R7）。
 - **背景**：01 按 ADR-002 用 `z.toJSONSchema` 把 `RouteSchema` / `HotelSchema` 转成 JSON Schema，再由 rjsf 在抽屉里生成表单。审查和走查指出几个问题：
   - 字段标签是英文键，必填项一排红星，锁定字段用禁用样式显示，读起来像「坏了」。
   - JSON Schema 表达不了界面需要的信息：中文标签与帮助、单位、锁定分组和锁定原因、列表列与筛选、上架前检查的建议项、月份区间和逐日行程这类专门的编辑方式。

@@ -39,6 +39,7 @@ import { insertGuardEvents, insertTurnTraces, type GuardEventRow, type TurnTrace
 import { addUsage, type UsageDelta } from '../db/repo/usage.js';
 import { shortIdOf } from '../shared/conversation.js';
 import type { ChatMessage, Order, Session } from '../types.js';
+import type { AnyOrder } from '../core/order-view.js';
 import { SessionStoreStartupError, StoreConflictError, StoreLaggingError, type StoreBackend, type StoreHealth } from './backend.js';
 import { deliverCommitted, deliverHandoffUnsaved, type DomainEventInput as DomainEvent } from './events.js';
 import {
@@ -314,7 +315,7 @@ export interface PgBackendDeps {
   tenantId: string;
   varDir: string;
   sessions: Map<string, Session>;
-  orders: Map<string, Order>;
+  orders: Map<string, AnyOrder>;
   /** 落库撞上另一写者：store.ts 接到 gracefulExit(1) */
   onConflict(detail: string): void;
   /** 租户锁还在本进程手里。被别的进程拿走（held_by_other）时 drain 不写库，直接 spill */
@@ -557,7 +558,7 @@ export class UsageWriteError extends Error {
 
 interface Preloaded {
   sessions: Session[];
-  orders: Order[];
+  orders: AnyOrder[];
   seqs: Map<string, ConversationSeqs>;
   /** 会话行的 ref（不含客户标识的引用） */
   refs: Map<string, string>;
@@ -701,7 +702,7 @@ async function writeSideRows(tx: Tx, sessionId: string, side: SpillSideRows): Pr
   return applied;
 }
 
-const spillOrderRow = (o: SpillOrder): OrderRowShape => orderToRow(o.order as unknown as Order, o.voided ?? undefined);
+const spillOrderRow = (o: SpillOrder): OrderRowShape => orderToRow(o.order as unknown as AnyOrder, o.voided ?? undefined);
 
 /**
  * 一批渠道行按会话一次落库里的位置写（03 R21）：出站 pending 与 cancelled、入站状态变化在事务本身，库里账号的出站结果在存档点里
@@ -1110,7 +1111,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     }
     return e;
   }
-  function adopt(e: Entry, o: Order): void {
+  function adopt(e: Entry, o: AnyOrder): void {
     if (o.sessionId !== e.id || voidedIds.has(o.id)) return;
     e.orderIds.add(o.id);
     adopted.add(o.id);
@@ -1264,7 +1265,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       const o = voidedIds.has(id) ? undefined : d.orders.get(id);
       if (o) orders.push(orderToRow(o));
     }
-    for (const v of e.voids.values()) orders.push(orderToRow(v.order as unknown as Order, { at: v.at, reason: v.reason }));
+    for (const v of e.voids.values()) orders.push(orderToRow(v.order as unknown as AnyOrder, { at: v.at, reason: v.reason }));
     const snap: Snap = {
       flushId: randomUUID(),
       gen: e.gen,
@@ -1518,7 +1519,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     const s = e.session;
     const inf = e.inflight;
     const orders = new Map<string, SpillOrder>();
-    const live = (o: Order): SpillOrder => ({ order: normalizeForStore(o) as unknown as Record<string, unknown>, voided: null });
+    const live = (o: AnyOrder): SpillOrder => ({ order: normalizeForStore(o) as unknown as Record<string, unknown>, voided: null });
     for (const r of inf?.orders ?? []) {
       const now = r.voidedAt || voidedIds.has(r.id) ? undefined : d.orders.get(r.id);
       orders.set(

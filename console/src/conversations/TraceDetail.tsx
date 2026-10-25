@@ -107,7 +107,7 @@ export function TraceTab({ id, turnId }: { id: string; turnId: string | null }) 
         {t.replyShape && <p>{cjk(shapeSentence(t.replyShape))}</p>}
         {t.handoffKind !== null && <p>{cjk(`转人工原因：${HANDOFF_NOTICE_TEXT[t.handoffKind]}`)}</p>}
       </section>
-      <SaveAsCase id={id} turnId={turnId} />
+      {pack?.id === 'travel' ? <SaveAsCase id={id} turnId={turnId} /> : null}
       <TechDetails
         rows={[
           ['SOP版本', String(t.sopVersion ?? '—')],
