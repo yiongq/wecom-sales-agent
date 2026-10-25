@@ -24,7 +24,7 @@
     },
     {
       "kind": "reply_excludes",
-      "pattern": "最低价|绝对|比.{0,6}(?:便宜|差)",
+      "pattern": "最低价|绝对|(?<![可对])比(?!性).{0,6}(?:便宜|差)",
       "scope": "all",
       "negationAware": true
     },
