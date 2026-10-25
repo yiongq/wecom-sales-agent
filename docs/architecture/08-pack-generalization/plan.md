@@ -160,13 +160,13 @@
   - 做：照「上线清单」：备份并复制到异地；`dev` 上打本地 rc tag 上线；核 `/healthz` 的 `revision` 与四个哈希等于 0.1 的开工值；企微与网页各一句一回；新开沙箱 G01 走一遍。
   - 验：记进「验收记录」（验收 1 的上线部分）。
   - 依赖：22。
-- [ ] 24. 对照验收标准 1–14 逐条核（协调者）
+- [x] 24. 对照验收标准 1–14 逐条核（协调者）——2026-10-25，见「验收记录 · 第 24 步」
   - 做：每条写通过、部分通过或未过，以及证据。
   - 依赖：23。
-- [ ] 25. 清理（协调者）
+- [x] 25. 清理（协调者）——2026-10-25，见「实施记录 · 第 25 步」
   - 做：本机残留的容器、worktree、分支、临时目录与探针；部署说明核对退出码 9。
   - 依赖：24。
-- [ ] 26. 更新 Status 并发版（协调者，owner 确认与当次授权）
+- [x] 26. 更新 Status 并发版（协调者，owner 确认与当次授权）——owner 2026-10-25 确认，发版 `demo-v9`
   - 做：owner 确认后翻 `implemented`；照 07 发 `demo-v8` 的做法开 release PR 进 `main`、打下一个 `demo-v*` tag，记进实施记录。
   - 依赖：25。
 
@@ -700,6 +700,11 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 - 第 17–19 步（来自第 13 步）：`resolveConfigDir` 对包目录只查 `sop.md`、`pack.json` 与 `catalog/`，逐 kind 的严检与闸、runner 的文案留给第 18 步（清单 7.12–7.14、7.18、7.22、7.23）；`catalog/*.json` 坏数据报 `catalog_startup`、`pack.json` 写坏报 `pack_unknown`，不加新原因；7.17、7.20 留给第 17 步，7.2「DB 模式抛错」与 7.6 `resetConfig` 留给第 19 步。
 - 第 16 步：`fillPayCard` 只在 `public/chat.html`（:529），锁定的 `server.selftest.ts:279-313` 用正则抠出函数头到「两格缩进的 `}`」为止、只给它 `fetch` 与 `cnDate`：函数头原样，新分支内联、不引用函数外的新标识符，函数体里不能出现恰好两格缩进的 `}` 行。`public/pay.html` 的渲染在 `load()`，锁定钉子是 `server.selftest.ts:513-514` 的正则（E10、E11）。另外，第 0.5 步的夹具钉的是 `/pay/<id>` 的完整 HTML：第 16 步给 `pay.html` 加 `display` 分支，会让夹具里 `pay/*` 的 12 条变红，这是 R12 要求的改动。第 16 步的 PR 里用 `UPDATE_LEGACY_BYTES=1` 重生成一次，diff 只许是新加的分支、逐行审，夹具里其余 48 条必须一字不变（spec 第六条 `Revisions:` 二）。
 
+### 第 25–26 步 · 清理与发版（2026-10-25）
+
+- 清理：本次的 worktree（`perf-base`、各步实现与评审用的、演练与截图用的）都已删；已合入的本地分支已删；演练与截图用的容器、卷、镜像、临时 tag 都已删，与开始前比对一致；协调者 worktree 里的 `.claude/runs/` 是 git 忽略的任务说明，保留。`demo-v9-rc1` 照惯例留在本地不推。部署说明里的退出码 9 已在 #310 核对补齐。
+- 发版：spec 翻 `implemented`（owner 2026-10-25 确认），master-reference 阶段 8 记一行；照 07 的做法从 `dev` 开 `release/demo-v9` 进 `main`，合并后在 `main` 上打 annotated tag `demo-v9` 并推送。线上仍是 `demo-v9-rc1`（与 `demo-v9` 的代码相同，只差文档与 #315 的测试），换不换由 owner 当次决定。#314（回归集三处谓词误报）发版之后合。
+
 ### 第 18–21 步（2026-10-24，#306、#307、#309、#310）
 
 - 第 18 步（#306，Claude 子 agent，返工一轮）：`PackRuntime.evalGoalsDir`；闸、`export-config`、`import-config`、模拟评测的 `--config-dir` 按包。闸的缓存键照 spec 第五条 `Revisions:` 五按声明顺序、一个公式管所有包（协调者起初的说明写成「排序」，改回 spec）；旅游的目标集哈希、产品库哈希、两个缓存键与导出文件的 sha256 在基点上先算出、钉进 `gate-per-pack.selftest.ts`。证明包只在 `PACK_FIXTURES=1` 时登记，闸的子进程拿不到这个变量：生产放行名单不改（R11），只给自测加 `__gateTest.childEnv`（协调者定）。`import-config` 对非旅游租户缺省读 `data/packs/<包>/`（清单 7.23）；服务端文件模式缺 kind 文件仍按空数组、由 `catalogStartupCheck` 兜底。钉住的两个缓存键被 gitleaks 当成 `generic-api-key`，按约定加行内 `gitleaks:allow` 与 `.gitleaksignore` 指纹。合并前 CI 红在 `catalog-snapshot.selftest.ts`：它按源码文字匹配旧的 `[routes, hotels]` 那一行，返工改公式后没重跑；协调者改成匹配新公式（旅游的值仍由 `gate-per-pack` 钉住）。
@@ -780,6 +785,27 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 - 5 个未过的目标逐个看过，没有一个落在 08 改过的路径上：`qa-paid-refund` 第 2 轮客户问「几天到账」，模型调了 `handoff_to_human`（开工那次没调）；`qa-competitor-compare` 的 `reply_excludes` 正则 `比.{0,6}差` 命中了「价格才有可比性——差 30%」（谓词误报）；`qa-paid-chat` 是 shape 超限（措辞波动）；`qa-policy-ask-refund-rules` 的条款引用后面跟的是「；」，正则只认句末标点与空白（措辞波动）；`qa-policy-claims-insurance` 的「费用包含里没有列保险」被「声称含保险」的正则命中（谓词误报）。提示词、工具、模型与开工相同，v2 mock 857 条旅游 case 逐字节不变。
 - 对照（owner 授权）：同一时段并行跑开工代码（`ba5e1e7`）与 `dev`（`4089c52` 的代码），只跑这 5 个目标、各 k=3、各 `--budget 0.45`。逐目标通过数两边完全相同：`qa-paid-refund` 2/3、`qa-competitor-compare` 3/3、`qa-paid-chat` 2/3、`qa-policy-ask-refund-rules` 2/3、`qa-policy-claims-insurance` 1/3，合计都是 10/15；未过的谓词也相同（shape、条款引用的 `reply_matches`、含保险的 `reply_excludes` 各一样多，`qa-paid-refund` 两边各一次 `reply_excludes`）。费用 ¥0.272 + ¥0.294。
 - **结论：不是 08 带来的退化。** 这 5 个目标在 `glm-5.3-flashx` 上本来就只有六成多的通过率，开工那次 20/20 是碰巧；15/20 低于门槛 18 是目标与谓词的波动。验收 14 按「与开工代码同条件对照无差异」判通过，记为偏离（门槛按单次 k=1 写，没考虑这几个目标的波动）。**owner 2026-10-24 确认通过。** 谓词误报（`比.{0,6}差` 命中「可比性——差」、含保险的正则命中「包含里没有列保险」、条款引用后只认句末标点）在 #314 修（含 12 条自测、变异核过；目标集哈希与两个缓存键随之重新钉住），**08 发版之后再合**，免得验收 9「旅游闸的目标集哈希与缓存键与开工时相同」这条记录在 08 收尾前就过时。
+
+### 第 24 步 · 验收 1–14 逐条结论（2026-10-25，协调者）
+
+证据逐小项核过（第 22 步，Codex 只读；缺的直接断言补在 #315），线上部分见第 23 步。
+
+| 验收                 | 结论                   | 证据要点                                                                                                                                                                                            |
+| -------------------- | ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 旅游不变           | 通过                   | `PREFIX sha256` 全程不变；锁定 8 个文件没改；第 0.5 步出口字节 60 条（`pay/*` 12 条按计划只多一段 `display` 分支）；v2 旅游 857 条与 `v2-07-step6.json` 相同；线上 `demo-v9-rc1` 四个哈希与开工相同 |
+| 2 依赖方向           | 通过                   | `check-boundaries` 两条语法树规则，允许名单为空，198 条自测（变异核过）；`data/packs/` 公开边界                                                                                                     |
+| 3 产品种类           | 通过                   | `catalog-kind`、`catalog-snapshot`、`catalog-money`、`sop-per-pack` 自测；console 列表「3.65元/件」与导航（#315）                                                                                   |
+| 4 通用订单           | 通过                   | `line-order`、`order-readers`、`pack-cards`、`customer-pages`（恰两行，#315）自测；q08 v2 case；页面截图核对                                                                                        |
+| 5 金额解析           | 通过                   | `money-decimals` 表驱动自测；锁定的 `price-guard.selftest.ts` 与 v2 不变                                                                                                                            |
+| 6 金额出处           | 通过                   | `money-provenance`、`money-ledger`（`guard_events` 落库恰一行，#315）自测；旅游 `guard_verdicts` 38 轮不变                                                                                          |
+| 7 会话与画像         | 通过                   | `pack-session` 自测与 08 前的旅游基准逐字节相同；viewer 打码                                                                                                                                        |
+| 8 SOP 按包           | 通过                   | `sop-per-pack` 自测：首次发布、改节再发布、契约按包、`brand_required`                                                                                                                               |
+| 9 文件模式与评测、闸 | 通过                   | `file-pack`、`fixture`、`gate-per-pack`、`transfer-per-pack` 自测；旅游闸目标集哈希与缓存键钉住                                                                                                     |
+| 10 回滚检查          | 通过                   | 本机真实 docker 演练五种情况（验收记录 · 验收 10）；`rollback-guard`、`db` 自测                                                                                                                     |
+| 11 知识库            | 通过                   | `retrieval-kb` 自测（widget 入库与语义召回、旅游知识块指纹不变）、`pack-catalog` 自测（两个可检索 kind 被拒）；迁移 0019                                                                            |
+| 12 不回落与方案书    | 通过                   | `registry-binding` 自测（不绑包一轮抛错、不调模型、不建会话）；`order-readers` 自测（证明包的方案书两类路由 404）                                                                                   |
+| 13 性能              | 偏离通过（owner 确认） | 同一组 857 条旅游 case 不比开工慢；全部 861 条多出的是证明包 case 在评测器里的装配，不计                                                                                                            |
+| 14 真实模型冒烟      | 偏离通过（owner 确认） | 15/20 低于门槛 18；开工代码与 `dev` 同条件 k=3 对照逐目标相同（各 10/15）                                                                                                                           |
 
 ### 第 23 步 · 上线（2026-10-24，协调者，owner 当次授权）
 
@@ -870,3 +896,8 @@ v2 mock 回归：857/857 条通过、快照比对 0 处差异（默认基线 `v2
 
 - 线上是 `demo-v9-rc1`（`dev` `57f6b28`，本地 tag 没推），上线清单逐项过了，见「验收记录 · 第 23 步」。
 - 下一步：第 24 步逐条写验收 1–14 的结论（证据已在第 22 步核过，补上线部分）；第 25 步清理（`perf-base` worktree、本地临时分支、`demo-v9-rc1` 之外的临时 tag）；第 26 步要 owner 确认翻 `implemented`、当次授权发版到 `main` 并打 `demo-v9`。#314（回归集谓词误报）在发版之后合。
+
+### 交接（2026-10-25，08 完成）
+
+- 08 `implemented`，发版 `demo-v9`。线上 `demo-v9-rc1`。
+- 发版后：合 #314；之后的路线见 master-reference 阶段 8 的候选（09、10 仍是 `draft`）。
