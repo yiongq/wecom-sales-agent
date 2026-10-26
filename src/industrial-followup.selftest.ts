@@ -50,7 +50,9 @@ const { handleMessage } = await import('./engine.js');
 const followup = await import('./followup.js');
 const quota = await import('./quota/ledger.js');
 const realNow = Date.now;
-let now = Date.parse('2026-10-26T04:00:00Z');
+// 跟进沿用进程本地钟点（生产镜像显式 TZ=Asia/Shanghai）；UTC CI 也选非静默时段。
+// 替换 Date.now 不会影响 new Date()，扫描器还须显式传入同一测试时钟。
+let now = new Date(2026, 9, 26, 12, 0, 0).getTime();
 Date.now = () => now;
 const part = {
   id: 'part-a',
@@ -179,12 +181,21 @@ try {
   store.saveSession(empty, false);
   const before = ledgerSnapshot(empty),
     p0 = pushes.length;
-  assert.equal(await followup.runFollowUpScan(push), 0);
+  assert.equal(followup.inQuietHours(new Date(now)), false, '测试时钟必须在本地非静默时段');
+  const quiet = new Date(now);
+  quiet.setHours(23, 0, 0, 0);
+  const beforeQuiet = generated;
+  assert.equal(await followup.runFollowUpScan(push, quiet), 0);
+  assert.equal(generated, beforeQuiet, '静默时段不生成跟进');
+  assert.equal(pushes.length, p0);
+  assert.deepEqual(ledgerSnapshot(empty), before);
+  assert.equal(await followup.runFollowUpScan(push, new Date(now)), 0);
+  assert.ok(generated > beforeQuiet, '删空用例必须经过真实生成和护栏，不能因静默时段提前跳过');
   assert.equal(pushes.length, p0);
   assert.deepEqual(ledgerSnapshot(empty), before);
   completion = `报价单：${url}`;
   store.saveSession(valid, false);
-  assert.equal(await followup.runFollowUpScan(push), 1);
+  assert.equal(await followup.runFollowUpScan(push, new Date(now)), 1);
   assert.deepEqual(pushes.at(-1), { id: valid.id, text: completion });
   assert.equal(valid.followup!.count, 1);
   assert.deepEqual(valid.followup!.stages, ['closing']);
@@ -200,7 +211,7 @@ try {
     assert.equal(followup.shouldFollowUp(s, now), true);
     store.saveSession(s, false);
     completion = '';
-    assert.equal(await followup.runFollowUpScan(push), 1);
+    assert.equal(await followup.runFollowUpScan(push, new Date(now)), 1);
     assert.equal(pushes.at(-1)!.text, runtime.followupTemplates.byStage[stage]);
   }
   const nearlyClosed = silent('quote', 47);
@@ -221,7 +232,7 @@ try {
     assert.equal(await followup.followUpText(s), '报价单：', '旅游仍按旧法抹订单号并保留旧残句字节');
     completion = `https://shop.example.test/quote/${order.id}`;
     assert.equal(await followup.followUpText(s), travel.followupTemplates.byStage.quote);
-    assert.equal(await followup.runFollowUpScan(push), 1);
+    assert.equal(await followup.runFollowUpScan(push, new Date(now)), 1);
     assert.equal(pushes.at(-1)!.text, travel.followupTemplates.byStage.quote);
     assert.equal(s.followup!.count, 1);
   } finally {

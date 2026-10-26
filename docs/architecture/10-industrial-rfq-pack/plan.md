@@ -653,6 +653,28 @@ DB 模式：22 个请求的前缀哈希核对，0 个与 /healthz 不符
 - 下一步：**F 批（第 12–14 步）**，新增工业 v2 cases及模拟目标，再造约40条合成产品与CSV。v2不扩审批种子；模拟目标的嵌套approval沿用现有FIXTURE_CLOCK。保留865条旧快照逐字节一致，沿用PACK_FIXTURES门控，不发明开关；09继续与10联合验收、一次上线，不提前翻implemented。
 - 工业运行时可直接装载本包参考SOP / policy / brand，测试与评测的产品夹具仍须各自提供；不要把本批小夹具当演示租户数据。无待确认问题，无后台服务 / 浏览器 / 容器遗留，费用零。
 
+### D+E 批 CI 时区修复（基于 11e834a）
+
+- 根因是工业跟进自测没有完整注入时钟：替换 Date.now 不影响 new Date()，四处 runFollowUpScan(push) 的静默判断仍读真实运行钟点；固定 04:00Z 在 UTC 又落入静默时段，数据库任务会顺延。修前 TZ=UTC 重现原第187行预期1、实际0；同轮逐个跑 item-rules 及五套工业自测，只有 industrial-followup 失败。
+- 产品依据：02 spec「任务表与跟进」沿用22:00–9:00免打扰；core/followup 的 inQuietHours / deferQuiet 和原 jobs 自测按本地时间判断。生产 Dockerfile 安装 tzdata 并显式 ENV TZ=Asia/Shanghai，compose 未覆盖时区；本次未访问生产，不把镜像配置核对称为线上实测。按现有部署约定，这是测试隔离缺陷，本次不改产品、旅游行为或时区契约。
+- 修复仅在 industrial-followup.selftest：固定日期取进程本地12:00，四处扫描显式传 new Date(now)，使扫描免打扰判断与会话 / 数据库任务使用同一测试时间。补断言：23:00不生成、不发送、不记账；中午删空必须经过真实生成和护栏，防止因静默提前退出而假通过。
+- 同类静态排查：industrial-quotes / industrial-replies 的固定UTC值用于时间戳、有效期与候选排序，不依赖跟进静默钟点；工业报价卡用东八区偏移加UTC取值。catalog / domain / item-rules 没有本地日期依赖。没有为通过测试强制覆盖进程TZ。
+- 验证日志在 gitignored 的 var/10-tz：format:check、lint、typecheck、check-fonts 均退出0；字体730个界面汉字全部覆盖，913码位 / 191968 B，未修改字体产物。完整测试与真实PG仍按本批约定留CI，不调用外部服务或真实模型。
+- 修后逐个以 TZ=UTC、TZ=Asia/Shanghai 运行下列8套，16次均退出0（results.json）；jobs在每个时区均109项断言通过，工业跟进两种存储路径及旅游模板 / 计数对照均通过。
+
+| 自测                                | UTC | Asia/Shanghai |
+| ----------------------------------- | --- | ------------- |
+| src/item-rules.selftest.ts          | ✔   | ✔             |
+| src/industrial-catalog.selftest.ts  | ✔   | ✔             |
+| src/industrial-domain.selftest.ts   | ✔   | ✔             |
+| src/industrial-followup.selftest.ts | ✔   | ✔             |
+| src/industrial-quotes.selftest.ts   | ✔   | ✔             |
+| src/industrial-replies.selftest.ts  | ✔   | ✔             |
+| src/followup-guards.selftest.ts     | ✔   | ✔             |
+| src/jobs/jobs.selftest.ts           | ✔   | ✔             |
+
+- 当前仅测试与本plan的未提交diff；不提交、不push、不开PR。下一步仍为F批第12–14步，无需确认新决定。
+
 ### 交接（2026-10-26，F 批第 12–14 步）
 
 - 第 12–14 步已实现并勾选；新增用例、审批模拟种子、目标、演示 JSON / CSV 与两套自测，当前仅工作区 diff，不提交、不 push、不开 PR；spec 保持 ready。
