@@ -19,6 +19,8 @@ export const trimNote = (n: number): string => `另外 ${n} 行已算好，需�
 const nonAssertion = /[?？]|如果|假如|若是|的话|是否|有没有|能不能|可以吗|以.{0,8}确认为准|不能|不可|不保证|不承诺|不是|没有|无现货/;
 const inventoryClaim = /现货|有货|库存(?:充足|有?\s*\d+)|今天.{0,3}发|明天.{0,3}发|\d+\s*天|保证交期|交期\s*(?:约|预计)?\s*\d+\s*天/;
 const substituteClaim = /可以替代|可替代|通用|一样的|能互换/;
+const internalRule =
+  /代码与工具决定|本轮已发布政策|询价太长时只列前\d+行|(?:find_parts|quote_items|create_quote_sheet)\s*[（(]|【硬性要求】/;
 const pricePromise = /全网最低|保证不涨价|还能再便宜/;
 // 数字单位、材料 / 防护等级、螺纹是规格，不是待校验的型号。
 const specToken =
@@ -89,11 +91,18 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
       ),
     ];
   };
+  // 型号标题常独占一行；延续最近显式主语，新型号（包括未知型号）必须覆盖它。
+  let subject: string[] = [];
   return sentenceUnits(ctx.text)
     .map(({ start, end }) => {
-      let subject: string[] = [];
+      const unit = ctx.text.slice(start, end);
+      // 按完整句删内部指令，避免逗号分句后留下“不得自行计算”等指令残片。
+      if (internalRule.test(unit)) {
+        subject = [];
+        return '';
+      }
       const replacements = new Set<string>();
-      return (ctx.text.slice(start, end).match(/[^，,；;]+[，,；;]?/g) ?? [])
+      return (unit.replace(/[（(](?:内部)?编号\s*[a-z0-9-]+[）)]/gi, '').match(/[^，,；;]+[，,；;]?/g) ?? [])
         .flatMap((unit) => unit.split(/(?=但是|但(?!是)|不过|然而)/))
         .map((sentence) => {
           const explicit = mentionedModels(sentence);
@@ -118,24 +127,25 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
           if (unknown) return '';
           let text = sentence;
           const assertions = !nonAssertion.test(sentence);
-          if (assertions && inventoryClaim.test(sentence)) {
+          const inventory = sentence.replace(/报价(?:单)?有效期(?:为|是|[:：])?\s*\d+\s*天/g, '');
+          if (assertions && inventoryClaim.test(inventory)) {
             const supported =
               subject.length > 0 &&
               subject.every((model) => {
                 const fact = facts.find((entry) => normalizePartNo(entry.partNo) === model);
                 if (!fact) return false;
-                if (/库存(?:有?\s*\d+)|保证交期|今天.{0,3}发|明天.{0,3}发|\d+\s*天到/.test(sentence)) return false;
+                if (/库存(?:有?\s*\d+)|保证交期|今天.{0,3}发|明天.{0,3}发|\d+\s*天到/.test(inventory)) return false;
                 const delivery = fact.delivery ?? '';
                 const stock = fact.stock ?? (delivery === '现货' ? '现货' : delivery.startsWith('现货') ? '部分现货' : '无现货');
-                if (/有货|库存充足|全(?:部|都)?现货/.test(sentence) && stock !== '现货') return false;
-                if (/现货/.test(sentence)) {
-                  const amount = /现货\s*(\d+)/.exec(sentence)?.[1];
+                if (/有货|库存充足|全(?:部|都)?现货/.test(inventory) && stock !== '现货') return false;
+                if (/现货/.test(inventory)) {
+                  const amount = /现货\s*(\d+)/.exec(inventory)?.[1];
                   if (amount && amount !== /现货\s*(\d+)/.exec(delivery)?.[1]) return false;
-                  if (/部分现货|其余|剩余|余量/.test(sentence)) {
+                  if (/部分现货|其余|剩余|余量/.test(inventory)) {
                     if (stock !== '部分现货') return false;
                   } else if (!amount && stock !== '现货') return false;
                 }
-                const days = [...sentence.matchAll(/(?:交期\s*)?(\d+)\s*天(?:发)?/g)].map((match) => Number(match[1]));
+                const days = [...inventory.matchAll(/(?:交期\s*)?(\d+)\s*天(?:发)?/g)].map((match) => Number(match[1]));
                 return days.every(
                   (day) => day === fact.leadDays || new RegExp(`(?<![0-9])${day}天`).test((fact.delivery ?? '').replace(/\s/g, '')),
                 );

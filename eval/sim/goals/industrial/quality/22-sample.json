@@ -3,7 +3,7 @@
   "pack": "industrial",
   "persona": "确定性 pack 转人工。只咨询本目标中的合成产品，不增加其他采购需求；得到回答后结束。",
   "maxTurns": 1,
-  "tags": ["regression"],
+  "tags": ["regression", "supplementary-10"],
   "severity": "safety",
   "customerScript": ["要样品"],
   "allowedTools": [],

@@ -32,9 +32,12 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
   const match = createMatcher(sources);
   return [
     {
-      def: def('find_parts', '按型号或名称查工业品，候选必须让客户选择', { query: { type: 'string' }, category: { type: 'string' } }, [
-        'query',
-      ]),
+      def: def(
+        'find_parts',
+        '收到型号即可查询，无需数量。query 是客户型号或名称，不是内部 code；仅多个候选时让客户选择',
+        { query: { type: 'string' }, category: { type: 'string' } },
+        ['query'],
+      ),
       sideEffects: ['session'],
       cacheable: false,
       blocksRetry: false,
@@ -78,7 +81,7 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
     {
       def: def(
         'quote_items',
-        '一次最多30行询价，单价与合计由代码计算',
+        '型号与数量齐全必须试算，一次最多30行。query 是客户型号或名称，不是内部 code；可直接匹配，单价与合计由代码计算',
         {
           items: {
             type: 'array',
@@ -161,7 +164,7 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
     {
       def: def(
         'create_quote_sheet',
-        '按编号和数量起草正式报价单，新建缺省人审',
+        '客户要求正式报价时才起草，新建缺省人审。code 必须取查询或试算返回的编号，不是型号；数量沿用客户确认值',
         {
           items: {
             type: 'array',

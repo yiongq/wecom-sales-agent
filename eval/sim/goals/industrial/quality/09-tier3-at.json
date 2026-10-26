@@ -2,11 +2,11 @@
   "id": "industrial-tier3-at",
   "pack": "industrial",
   "persona": "阶梯价边界与库存。只咨询本目标中的合成产品，不增加其他采购需求；得到回答后结束。",
-  "maxTurns": 1,
-  "tags": ["regression"],
+  "maxTurns": 2,
+  "tags": ["regression", "acceptance-10"],
   "severity": "quality",
-  "customerScript": ["6205-2RS 100件"],
-  "allowedTools": ["quote_items"],
+  "customerScript": ["6205-2RS 100件", "型号就是6205-2RS，数量100件，请试算单价与金额并说明库存交期，暂不出正式报价单。"],
+  "allowedTools": ["find_parts", "quote_items"],
   "forbidden": [],
   "predicates": [
     {
@@ -23,25 +23,40 @@
       "expected": false
     },
     {
-      "kind": "reply_matches",
-      "pattern": "单价8(?:\\.00)?元",
-      "scope": "last"
-    },
-    {
-      "kind": "reply_matches",
-      "pattern": "金额800(?:\\.00)?元",
-      "scope": "last"
-    },
-    {
-      "kind": "reply_matches",
-      "pattern": "其余约\\s*7\\s*天",
-      "scope": "last"
-    },
-    {
       "kind": "shape",
       "richMax": 12,
       "plainMax": 12,
       "minShare": 1
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "6205-2RS",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "(?<![\\d.])100\\s*件",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "单价\\s*[:：为是]?\\s*8(?:\\.0{1,2})?\\s*元",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "(?:金额|小计|合计|总(?:额|价|计)|共)\\s*[:：为是]?\\s*800(?:\\.0{1,2})?\\s*元",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "现货\\s*30\\s*件",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "(?:其余|剩余|余量)[^。\\n]*约\\s*7\\s*天",
+      "scope": "last"
     }
   ]
 }

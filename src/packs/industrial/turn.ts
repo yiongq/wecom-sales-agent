@@ -51,7 +51,11 @@ export function preModel(ctx: TurnContext): DeterministicReply | null {
 export function contextNote(ctx: TurnContext): string[] {
   const candidate = latestQuoteCandidate(ctx.session, Date.now());
   if (candidate?.kind === 'quote') {
-    if (candidate.state === 'expired') return ['报价单已过期，需要重新调 quote_items 试算'];
+    if (candidate.state === 'expired')
+      return [
+        '报价单已过期，需要重新调 quote_items 试算；沿用下列型号和数量，不确认旧单、不发旧链接',
+        `过期报价行：${JSON.stringify(candidate.order.lines.map((line) => ({ query: line.title, code: line.code, qty: line.qty })))}`,
+      ];
     return [candidate.state === 'pending' ? '最新的报价单还在顾问审核' : '最新的是已批准且有效的报价单'];
   }
   return candidate ? ['最新的是本次试算，需要重新确认本次试算，不能确认上一份报价单'] : [];

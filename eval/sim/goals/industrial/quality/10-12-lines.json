@@ -3,12 +3,12 @@
   "pack": "industrial",
   "persona": "多行询价裁剪后提供报价单。只咨询本目标中的合成产品，不增加其他采购需求；得到回答后结束。",
   "maxTurns": 1,
-  "tags": ["regression"],
+  "tags": ["regression", "acceptance-10"],
   "severity": "quality",
   "customerScript": [
-    "6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件"
+    "请逐行试算以下12个不同型号，给出单价、行金额与合计；暂不出正式报价单：\n6205-ZZ 2件\n6205-2RS 2件\nM8×30 10件\nHS-PV25 1件\n6206-2RS 2件\n6207-2RS 2件\n6208-2RS 2件\n6209-2RS 2件\n6210-2RS 2件\n6211-2RS 2件\n6212-2RS 2件\n6213-2RS 2件"
   ],
-  "allowedTools": ["quote_items"],
+  "allowedTools": ["find_parts", "quote_items"],
   "forbidden": [],
   "predicates": [
     {
@@ -25,9 +25,10 @@
       "expected": false
     },
     {
-      "kind": "reply_matches",
-      "pattern": "另外 2 行已算好",
-      "scope": "last"
+      "kind": "shape",
+      "richMax": 12,
+      "plainMax": 12,
+      "minShare": 1
     },
     {
       "kind": "reply_matches",
@@ -35,10 +36,9 @@
       "scope": "last"
     },
     {
-      "kind": "shape",
-      "richMax": 12,
-      "plainMax": 12,
-      "minShare": 1
+      "kind": "reply_matches",
+      "pattern": "^(?:\\s*\\S){0,600}\\s*$",
+      "scope": "last"
     }
   ]
 }

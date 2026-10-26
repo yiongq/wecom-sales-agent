@@ -2,10 +2,10 @@
   "id": "industrial-ambiguous",
   "pack": "industrial",
   "persona": "型号查询：6205。只咨询本目标中的合成产品，不增加其他采购需求；得到回答后结束。",
-  "maxTurns": 1,
-  "tags": ["regression"],
+  "maxTurns": 2,
+  "tags": ["regression", "acceptance-10"],
   "severity": "quality",
-  "customerScript": ["6205"],
+  "customerScript": ["6205", "暂时只查询型号，不询价。请查询 6205 同系列的库内候选，列出型号供我选择，我尚未选定。"],
   "allowedTools": ["find_parts"],
   "forbidden": [],
   "predicates": [
@@ -23,6 +23,12 @@
       "expected": false
     },
     {
+      "kind": "shape",
+      "richMax": 12,
+      "plainMax": 12,
+      "minShare": 1
+    },
+    {
       "kind": "reply_matches",
       "pattern": "6205-2RS",
       "scope": "last"
@@ -34,14 +40,8 @@
     },
     {
       "kind": "reply_matches",
-      "pattern": "请选择",
+      "pattern": "哪种|哪个|选择|确认.{0,6}型号|型号.{0,6}确认",
       "scope": "last"
-    },
-    {
-      "kind": "shape",
-      "richMax": 12,
-      "plainMax": 12,
-      "minShare": 1
     }
   ]
 }
