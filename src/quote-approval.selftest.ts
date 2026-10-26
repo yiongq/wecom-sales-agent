@@ -1,4 +1,5 @@
-// 09 C：PGlite 中验证审批建单、工具保密、复用/取代、上海自然日、旧六入口。
+// 09 C：数据库存储中验证审批建单、工具保密、复用/取代、上海自然日、旧六入口。
+// openTestDb 当前使用 PGlite；设置 PG_TEST_URL 不会将本文件切换为真实 Postgres。
 import './selftest-env.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -316,17 +317,22 @@ try {
   console.log('QUOTE ENTRIES PASS: 两种付款模式 × 七状态，旧三公开入口均 404，确认/收款错误码，取消七状态、过期通知与幂等');
 
   // 审批 JSON 经现有订单队列持久化，预载后仍能复用，且不重新自动审批。
-  await store.drainStore(5000);
+  // drain 超时只返回未提交的会话，不会抛错；CI 负载下留足时间，并在关闭后端前确认全部提交。
+  const { undrained } = await store.drainStore(30_000);
+  assert.deepEqual(undrained, [], '重建存储前必须排空全部写队列');
   rt.store.pgBackend!.close();
   rt.store.pgBackend = null;
   rt.store.sessions.clear();
   rt.store.orders.clear();
   await store.initSessionStore(fx.deps);
   const loaded = store.getAnyOrder(pendingOnly.id) as LineOrder;
+  assert.ok(loaded, '重新预载后必须存在原待审报价单');
   assert.deepEqual(loaded.approval, pendingOnly.approval);
-  assert.equal((store.getAnyOrder(renewed.id) as LineOrder).approval!.auto, true);
+  const loadedApproved = store.getAnyOrder(renewed.id) as LineOrder;
+  assert.ok(loadedApproved, '重新预载后必须存在原自动批准报价单');
+  assert.equal(loadedApproved.approval!.auto, true);
   assert.strictEqual(await make(300, store.getSession(s.id)!), loaded);
-  console.log('QUOTE RECOVERY PASS: PGlite 审批历史持久化与预载后复用');
+  console.log('QUOTE RECOVERY PASS: 数据库存储审批历史持久化与预载后复用');
 } finally {
   Date.now = realNow;
   __profileTest.reset();
