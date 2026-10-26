@@ -17,6 +17,7 @@ import { createTravelPriceRules } from './price-rules.js';
 import { createTravelTurnHooks } from './turn.js';
 import { createTravelReplyHelpers } from './reply-helpers.js';
 import { advanceStage, createTravelProfileExtractor } from './progress.js';
+import { travelSiteLinks } from './site-links.js';
 import { travelReplySteps } from './reply-steps.js';
 import { travelFollowupSteps } from './followup-steps.js';
 import { dejargonVocab } from './dejargon-vocab.js';
@@ -94,6 +95,7 @@ export function createTravelRuntime(sources: PackSources) {
   const runtime: PackRuntime<TravelRuntimeTypes> = {
     id: 'travel',
     documents: { proposal: true },
+    siteLinks: travelSiteLinks(catalog),
     catalog: {
       route: {
         // 旧版 Route/Hotel 接口没有索引签名；schema 本身仍是同一个对象。

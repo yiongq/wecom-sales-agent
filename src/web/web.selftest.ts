@@ -427,7 +427,7 @@ const { openTestDb, installPgSessionStore, createRealPgFixture, testConfigDeps }
   () => import('../db/testing.js'),
 );
 const { importConfig } = await withoutTenantScope(() => import('../config/transfer.js'));
-const { initConfig, closeConfig, __configTest } = await withoutTenantScope(() => import('../config/source.js'));
+const { currentPack, initConfig, closeConfig, __configTest } = await withoutTenantScope(() => import('../config/source.js'));
 const { openDb } = await withoutTenantScope(() => import('../db/client.js'));
 const { installAccounts } = await withoutTenantScope(() => import('../channels/accounts.js'));
 const { partsOf } = await withoutTenantScope(() => import('../core/pack-api.js'));
@@ -1226,6 +1226,8 @@ const { randomUUID } = await withoutTenantScope(() => import('node:crypto'));
 const webHtml = fs.readFileSync('public/web.html', 'utf8');
 const webJs = fs.readFileSync('public/web.js', 'utf8');
 const webCss = fs.readFileSync('public/web.css', 'utf8');
+// 上段关闭配置并清除了绑定；按新的按包登记契约为独立投影断言重新绑定文件包。
+currentPack();
 const clickable = (text: string, base = ''): string[] => partsOf(text, base).map((p) => p.url);
 assert.deepEqual(partsOf('订单 /pay/order_1，方案 /proposal/route-1/2/2026-12-10?v=3', ''), [
   { kind: 'link', linkKind: 'order', url: '/pay/order_1' },

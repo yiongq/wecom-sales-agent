@@ -655,6 +655,7 @@ export interface ProfileExtractionSources {
 }
 
 export { partsOf } from './message-parts.js';
+export { linkWhitelistStep } from './guards/link-whitelist.js';
 
 /**
  * 第 18 步收口实际工具、主回复与跟进 context；第 20 步补齐客户出口品牌模板。
@@ -746,9 +747,19 @@ export interface QuoteCard {
   quote?: ConversationQuote;
 }
 
+export interface SiteLinkDef {
+  linkKind: string;
+  pattern: RegExp;
+  card?(path: string, session: Session): { title: string; desc: string } | null;
+  partTitle?(path: string, session: Session): string | null;
+  allowed(session: Session, path: string): boolean;
+  resources?: readonly { pattern: RegExp; methods: readonly ('GET' | 'HEAD' | 'POST')[] }[];
+}
+
 export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   id: string;
   documents?: { proposal?: boolean };
+  siteLinks?: readonly SiteLinkDef[];
   policy?: PackPolicy;
   defaultBrand: BrandProfile;
   legacy: T['LegacyTexts'];
@@ -894,7 +905,7 @@ export interface BrandTexts {
   quickReplies: readonly import('../shared/quick-reply-defaults.js').QuickReplyDefault[];
 }
 
-export type BrandPage = 'pay' | 'proposal' | 'chat' | 'web';
+export type BrandPage = string;
 export interface BrandPageSlot {
   /** 页面中的完整原文片段；一次匹配，避免品牌值再次成为替换目标。 */
   legacy: string;

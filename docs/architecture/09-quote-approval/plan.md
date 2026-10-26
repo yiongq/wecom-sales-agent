@@ -22,9 +22,9 @@
 ## 步骤
 
 - [x] 0. 做：核对 08 接口、链接写死处、转人工消费方与库约束、六个订单入口，在实际开工提交采集旅游字节与 v2 基准；验：核对记录可逐项复查；固定时钟下的前缀、四类输出、卡片、部件与 v2 结果有具名基准，锁定套件全绿（验收 1）；依赖：开工条件 1–3。
-- [ ] 1. 做：实现 `PackRuntime.siteLinks`、核心登记与沙箱 `resources` 合并，旅游登记 `proposal`（R10）；验：旅游沙箱白名单逐项等价、按租户隔离，卡片与部件字节保持基准；报价路径先用证明包夹具验证登记（验收 1、9）；依赖：0。
-- [ ] 2. 做：仅给 `public/web.js` 加通用 `part.title` 分支，`chat.html`、`admin.html` 守原输出（R10）；验：有标题与无标题部件均正确，旅游字节及 `stripLink` 锁定断言不变（验收 1、9）；依赖：1。
-- [ ] 3. 做：实现 `linkWhitelistStep` 并在证明包使用（R10）；验：删未登记或不允许的链接及孤立引导语；旅游不使用该步骤，字节不变（验收 9）；依赖：1、2。
+- [x] 1. 做：实现 `PackRuntime.siteLinks`、核心登记与沙箱 `resources` 合并，旅游登记 `proposal`（R10）；验：旅游沙箱白名单逐项等价、按租户隔离，卡片与部件字节保持基准；报价路径先用证明包夹具验证登记（验收 1、9）；依赖：0。
+- [x] 2. 做：仅给 `public/web.js` 加通用 `part.title` 分支，`chat.html`、`admin.html` 守原输出（R10）；验：有标题与无标题部件均正确，旅游字节及 `stripLink` 锁定断言不变（验收 1、9）；依赖：1。
+- [x] 3. 做：实现 `linkWhitelistStep` 并在证明包使用（R10）；验：删未登记或不允许的链接及孤立引导语；旅游不使用该步骤，字节不变（验收 9）；依赖：1、2。
 - [ ] 4. 做：实现 `QuoteApproval`、建单 `approval` 选项、自动批准与工具结果形态（R1、R2）；验：待审工具结果无订单号 / 合计 / 链接，试算有出处；自动批准按建单快照判定（验收 3、4）；依赖：3。
 - [ ] 5. 做：实现复用、取代、过期与 `quoteState`（R6）；验：待审与已批准复用及取代关系正确，自然日边界与过期总览正确（验收 6）；依赖：4。
 - [ ] 6. 做：收紧六个订单入口与正式金额来源（R1、R4）；验：六入口逐项符合 R4，online / advisor 都验；旅游公开输出不变（验收 1–3）；依赖：5。
@@ -245,6 +245,73 @@ LINK BYTES SELFTEST PASS: 317 条字节基准，517 项断言
 
 协调者补验（2026-10-26，本机，出 Claude 沙箱）：`docker run --rm pgvector/pgvector:pg17 postgres --version` 退出 0，输出 `postgres (PostgreSQL) 17.11`；跑完没有残留容器。
 
+### B 批 · 第 1–3 步
+
+- 第 1 步：新增 `src/core/site-links.ts`，核心登记 `site` / `order`，`PackRuntime.siteLinks` / `SiteLinkDef.resources` 声明包文档与接口方法。旅游在 `src/packs/travel/site-links.ts` 登记 `proposal`，卡片的 `routeForProposal` 仍调用旅游 catalog；证明包登记 `quote` 与仅 GET 的数据资源，本批不实现报价数据或页面。
+- 写死处逐项迁移：`message-parts.ts` 的链接识别和 linkKind、`shape.ts` 的相对链接保护、`dejargon.ts` 的路径掩码、`insight.ts` 的草稿删链；`wecom.ts` 的分段保护、单卡识别、卡片文字与相对链接绝对化；`server.ts` 的文档静态页选择、`BrandPage` 的字符串类型；`sandbox/outbound.ts` 的改写和最终白名单、`sandbox/process.ts` 的页面包装、令牌入口与 cookie 资源鉴权。全部只合并核心与所选租户包，不取全局包并集。
+- 第 2 步：`MessagePart.linkKind` 改为字符串，增加可选 `title`；消息回复、历史和 SSE 推送传递所属会话给 `partTitle`。只有 `web.js` 增加 `part.title ?? 原标题`，`chat.html`、`admin.html` 与两处 `stripLink` 未修改；核心和旅游均不提供 `partTitle`。
+- 第 3 步：核心 `linkWhitelistStep()` 删除未登记、站外、伪协议或 `allowed=false` 的链接，只删除因删链而悬空的引导句。证明包将它排在 `money_provenance` 后、后置接管检查前；旅游继续自己的原 `link_whitelist`（`after: order_net`），没有换用核心工厂。
+- 本批定的细节：登记模块在调用时读现有租户运行时的包绑定与订单内存，避免经 `pack-api` 装配时反向加载配置/存储形成循环；静态核心登记冻结，不新增租户状态。卡片保留旧的单链接识别口径，核心订单卡仍由旧 `card` 读者渲染（顾问已有订单卡不新增会话限制）；新包文档卡检查当前会话的 `allowed`，核心白名单步骤对订单也执行 `allowed`。网页部件仍只是最终文本投影，不新增订单查询或存在性限制。
+- 本批定的细节：证明包 `quote.allowed` 暂时恒为 false，审批能力未实现前默认拒绝外发；自测用合成放行函数验证正向卡片消费，不提前新增审批字段。文档查询串沿用 `?v=数字`；资源只匹配原始 pathname，接口方法不补 HEAD。无协议的相对路径从 ASCII 路径首字符识别，避免误删金额单位 `/件`。文档静态文件按登记路径首段选择；尚无页面文件时返回 404。
+- 沙箱按链接令牌 / cookie 解析出运行时后再匹配登记；HTML 收尾从请求的 `publicHostRuntime` 取包，不能在 ALS 退出后回落宿主。保留精确路径、同源、令牌、限频检查；隐私页不新增页面包装。
+- 新增 `src/site-links.selftest.ts`：逐项核对旅游六行资源清单、旅游不认 quote、核心订单 allowed 的会话与取代限制、证明包登记与有/无标题部件、实际 `web.js` 标题分支、核心白名单删链及保留实质信息、真实沙箱中间件的 cookie 隔离与 GET/HEAD/POST 等方法边界，以及证明包 HTML 响应的 CSP 包装。沙箱数据用哨兵路由证明资源通路，实际报价页与数据仍留后续步骤。
+- `web.selftest.ts` 只补独立投影测试前的文件包重新绑定（其前段主动 closeConfig 清除了绑定），原有期望值不改。`eval/cases-v2/q08-fixture.json` 仅给五处精确裁决列表追加新步骤的 pass，模型文字、工具定义、快照与基线未改。新自测只追加到 `package.json` 的 test 末尾，并在 `scripts/ci-weights.json` 登记；分片器自测通过。
+- 最终门禁：`pnpm -s format:check`、`pnpm -s lint`、`pnpm -s typecheck`、`pnpm -s test:locked` 全部退出 0。lint 的既有敏感内容黑名单因缺少 `SENSITIVE_PATTERNS` / `.sensitive-patterns` 跳过，依赖边界、迁移、console 和租户状态检查均通过；额外扫描相对 `origin/dev` 的新增行，绝对路径与长假企微 id 均为 0。
+- 旅游字节：`LINK BYTES SELFTEST PASS: 317 条字节基准，517 项断言`；`LEGACY BYTES SELFTEST PASS: 140 项断言全通（60 条出口字节与夹具逐字节相同；旅游会话 state json 无 packState、moneyLedger）`。两份夹具均没有 diff；链接夹具 sha256 仍为 `4688c34e5ee02df443f6986ed110af066e5a7fd513a1ee6ea6c33dd8f943f14e`。
+- 锁定八文件、`eval/baselines/`、`public/chat.html`、`public/admin.html` 和 spec 的 diff 均为空。`JSON.stringify(toolDefs)` 由锁定套件的请求前缀字节断言与相同 tools 哈希核对，不改工具定义。
+
+```text
+PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd
+CONFIG_SOURCE=file LLM_MOCK=1 tsx eval/run.ts
+v2 回归评测：861/861 用例通过 · 跳过 0 条 realOnly · 8565 项断言
+v2 快照比对：861 条 case · 0 处差异
+CONFIG_SOURCE=file CONFIG_TEST_DB=pglite LLM_MOCK=1 tsx eval/run.ts
+v2 回归评测：861/861 用例通过 · 跳过 0 条 realOnly · 8565 项断言
+v2 快照比对：861 条 case · 0 处差异
+```
+
+- 已按改动文件名和导出能力检索关联自测，逐个以 tsx 执行。下表是最终结果，失败后修复并重跑的网页、沙箱 HTTP / 发送 / 微信全程也已通过；另有上面的锁定套件与两套字节自测。`ci-shard.ts --check 4`：187 units、25 strict suites，CHECK PASS。PGlite 分支全过；相关套件的真实 PG 分支按既有条件跳过，本批不运行真实 PG、真实模型或外部服务。完整 `pnpm test` 按批次任务要求留 CI。
+
+| 自测                                             | 结果     |
+| ------------------------------------------------ | -------- |
+| `src/site-links.selftest.ts`                     | ✔ 退出 0 |
+| `src/web/web.selftest.ts`                        | ✔ 退出 0 |
+| `src/adapters/wecom-02.selftest.ts`              | ✔ 退出 0 |
+| `src/adapters/wecom-03.selftest.ts`              | ✔ 退出 0 |
+| `src/adapters/wecom-outbound-host.selftest.ts`   | ✔ 退出 0 |
+| `src/tenancy/sandbox/outbound.selftest.ts`       | ✔ 退出 0 |
+| `src/tenancy/sandbox/wecom-outbound.selftest.ts` | ✔ 退出 0 |
+| `src/tenancy/sandbox/http.selftest.ts`           | ✔ 退出 0 |
+| `src/tenancy/sandbox/pages.selftest.ts`          | ✔ 退出 0 |
+| `src/tenancy/sandbox/wechat-e2e.selftest.ts`     | ✔ 退出 0 |
+| `src/tenancy/public-routes.selftest.ts`          | ✔ 退出 0 |
+| `src/core/guards/shape.selftest.ts`              | ✔ 退出 0 |
+| `src/config/pack-runtime.selftest.ts`            | ✔ 退出 0 |
+| `src/config/reply-pipeline.selftest.ts`          | ✔ 退出 0 |
+| `src/config/brand.selftest.ts`                   | ✔ 退出 0 |
+| `src/config/brand-publish.selftest.ts`           | ✔ 退出 0 |
+| `src/config/brand-transfer.selftest.ts`          | ✔ 退出 0 |
+| `src/config/template-derive.selftest.ts`         | ✔ 退出 0 |
+| `src/config/consistency.selftest.ts`             | ✔ 退出 0 |
+| `src/packs/packs.selftest.ts`                    | ✔ 退出 0 |
+| `src/followup-guards.selftest.ts`                | ✔ 退出 0 |
+| `src/packs/travel/shape-words.selftest.ts`       | ✔ 退出 0 |
+| `src/packs/travel/turn.selftest.ts`              | ✔ 退出 0 |
+| `src/packs/travel/progress.selftest.ts`          | ✔ 退出 0 |
+| `src/packs/travel/tools/tools.selftest.ts`       | ✔ 退出 0 |
+| `src/core/guards/execute.selftest.ts`            | ✔ 退出 0 |
+| `src/core/guards/validate.selftest.ts`           | ✔ 退出 0 |
+| `src/core/consistency.selftest.ts`               | ✔ 退出 0 |
+| `src/core/guards/money-provenance.selftest.ts`   | ✔ 退出 0 |
+| `src/pack-session.selftest.ts`                   | ✔ 退出 0 |
+| `src/order-readers.selftest.ts`                  | ✔ 退出 0 |
+| `src/config/registry-binding.selftest.ts`        | ✔ 退出 0 |
+| `src/ops/board.selftest.ts`                      | ✔ 退出 0 |
+| `src/trace/trace.selftest.ts`                    | ✔ 退出 0 |
+| `scripts/ci-shard.selftest.ts`                   | ✔ 退出 0 |
+| `scripts/check-tenant-state.selftest.ts`         | ✔ 退出 0 |
+| `scripts/check-boundaries.selftest.ts`           | ✔ 退出 0 |
+
 ## 验收记录
 
 ## Open
@@ -286,3 +353,9 @@ LINK BYTES SELFTEST PASS: 317 条字节基准，517 项断言
 - 当前状态：五个交付文件的未提交 diff（新自测、夹具、package.json、CI 耗时登记、此 plan）；没有功能实现半成品，不提交、不 push、不开 PR，spec 保持 ready。测试副本已清理，未启动外部服务、真实模型或容器。
 - 阻塞：无。Docker 检查由协调者在本机补验通过，第 0 步已勾选。
 - 下一步：第 1 步，改链接登记时逐项保持本次卡片 / 部件 / 沙箱资源基准。不要重生成夹具来迁就差异。
+
+### 交接（2026-10-26，B 批）
+
+- 第 1–3 步实现与本批验收测试已完成，门禁、两种 v2 及旅游字节基准均通过；改动留工作区，不提交、不推送、不开 PR。spec 与字节夹具、锁定文件未修改。
+- 无功能半成品与阻塞；未启动容器、浏览器或外部服务，测试进程均已退出，临时测试脚本和日志在交接前删除。
+- 下一步为第 4 步：实现审批数据与建单选项后，将证明包 `quote.allowed` 的默认拒绝换成 R10 的已批准且有效判定；报价页与接口仍按后续步骤推进。

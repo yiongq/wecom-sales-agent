@@ -1,3 +1,4 @@
+import { getSession } from '../store.js';
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
 // 正式网页渠道：凭据只在 HTTP 层，适配器只认推导出的会话 id。
@@ -82,13 +83,13 @@ export const webAdapter: ChannelAdapter & { readonly caps: Readonly<ChannelCaps>
       ? {
           type: 'menu',
           text,
-          parts: partsOf(text),
+          parts: partsOf(text, undefined, getSession(sessionId)),
           buttons: [
             { id: consentMenuButtonId(opts!.category!, 'granted'), label: '同意' },
             { id: consentMenuButtonId(opts!.category!, 'declined'), label: '不同意' },
           ],
         }
-      : { type: 'push', text: body, parts: partsOf(body) };
+      : { type: 'push', text: body, parts: partsOf(body, undefined, getSession(sessionId)) };
     let delivered = false;
     for (const client of set ?? []) {
       try {

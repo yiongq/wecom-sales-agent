@@ -1,3 +1,5 @@
+import { siteLinks, matchesPath } from '../../core/site-links.js';
+import type { PackRuntime } from '../../core/pack-api.js';
 // R11/R21/R22：发送边界与公开页共用进程内解析；绑定提交后才发布。
 import { scopedRuntime, runtimeOf, type TenantRuntime } from '../runtime.js';
 import { normalizeHost } from '../hosts.js';
@@ -275,9 +277,7 @@ class SandboxWechatIndex {
             return raw;
           }
           const page = url.pathname.slice(`/wx/${token}`.length);
-          // 逐项写死三种公开页；精确 origin、当前令牌、路径及序列化结果均须相同。
-          const allowed =
-            page === '/privacy' || /^\/pay\/[A-Za-z0-9_-]+$/.test(page) || /^\/proposal\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(page);
+          const allowed = wxPage(page);
           if (!allowed || core !== `${base}${url.pathname}${url.search}${url.hash}`) return raw;
           // 只去掉获准的 origin；query/hash 里夹带的 Host 仍然必须检查。
           return raw.slice(base.length);
@@ -383,13 +383,16 @@ class SandboxWechatIndex {
   }
 }
 
-/** 只有 R21 的三个公开页及它们的接口；不允许编码路径分隔符、点段或重定向目标。 */
-export function wxPage(path: string): boolean {
-  return path === '/privacy' || /^\/pay\/[A-Za-z0-9_-]+$/.test(path) || /^\/proposal\/[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-]+)*$/.test(path);
+/** 路径不解码、不归一；页面与资源只取所属租户的包登记。 */
+export function wxPage(path: string, runtime?: PackRuntime): boolean {
+  return siteLinks(runtime).some((def) => matchesPath(def.pattern, path));
 }
-export function wxResource(path: string, method: string): boolean {
-  if (method === 'GET' || method === 'HEAD') return wxPage(path) || /^\/api\/(?:orders|proposal)\/[A-Za-z0-9_-]+$/.test(path);
-  return method === 'POST' && /^\/api\/orders\/[A-Za-z0-9_-]+\/pay$/.test(path);
+export function wxResource(path: string, method: string, runtime?: PackRuntime): boolean {
+  return siteLinks(runtime).some(
+    (def) =>
+      ((method === 'GET' || method === 'HEAD') && matchesPath(def.pattern, path)) ||
+      def.resources?.some((resource) => resource.methods.some((m) => m === method) && matchesPath(resource.pattern, path)),
+  );
 }
 export const sandboxWechatIndex = new SandboxWechatIndex();
 registerTenantState({

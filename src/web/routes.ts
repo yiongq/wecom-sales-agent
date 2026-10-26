@@ -106,8 +106,8 @@ function reserveNew(account: ChannelAccount, ip: string): boolean {
   return true;
 }
 
-function webReply(text: string): { text: string; parts: MessagePart[] } {
-  return { text, parts: partsOf(text) };
+function webReply(text: string, session?: Session): { text: string; parts: MessagePart[] } {
+  return { text, parts: partsOf(text, undefined, session) };
 }
 
 function limitedReply(s: WebSession, text: string, msgid: string | undefined, recorded: boolean): ReturnType<typeof webReply> {
@@ -193,7 +193,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
     // 不越过下一条客户消息，避免把另一个轮次的回复误配给崩溃留下的消息。
     for (const m of s.messages.slice(at + 1)) {
       if (m.role === 'customer') break;
-      if (m.role === 'agent' && (!m.author || m.author === 'ai')) return c.json({ reply: webReply(m.content) });
+      if (m.role === 'agent' && (!m.author || m.author === 'ai')) return c.json({ reply: webReply(m.content, s) });
     }
     if (s.handedOver && !s.webTurnLimited) return c.json({ reply: null });
   } else if (body.cid && recentMsgids(s.id).has(body.cid)) return c.json({ reply: null });
@@ -225,7 +225,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
       ...(body.cid ? { msgid: body.cid } : {}),
       ...(at >= 0 ? { alreadyRecorded: true } : {}),
     });
-    return c.json({ reply: s.handedOver || !reply.text ? null : webReply(reply.text) });
+    return c.json({ reply: s.handedOver || !reply.text ? null : webReply(reply.text, s) });
   } catch (e) {
     if (e instanceof TenantScopeMissing) throw e;
     // 不序列化异常（上游异常可能含输入），客户端重试同 cid 可从已记录状态恢复。
@@ -244,7 +244,7 @@ webRoutes.get('/api/web/:key/history', lookupLimit, (c) => {
   const messages: WebMessage[] = (s?.messages ?? []).flatMap((m) => {
     if (m.role === 'system') return [];
     const text = m.author === 'human' ? withAdvisorPrefix(m.content) : m.content;
-    return [{ role: m.role, ...webReply(text), at: m.at }];
+    return [{ role: m.role, ...webReply(text, s), at: m.at }];
   });
   return c.json({ messages });
 });

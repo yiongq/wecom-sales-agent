@@ -5,6 +5,7 @@ import {
   orderDisplay,
   yuanToFen,
   moneyProvenanceStep,
+  linkWhitelistStep,
   moneyProvenanceFollowupStep,
   UNSTORABLE_TEXT,
   type CatalogItem,
@@ -121,6 +122,17 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
   };
   return {
     id: fixture.id,
+    siteLinks: [
+      {
+        linkKind: 'quote',
+        pattern: /^\/quote\/ord_[0-9a-f]{24}$/,
+        resources: [{ pattern: /^\/api\/quotes\/ord_[0-9a-f]{24}$/, methods: ['GET'] }],
+        card: () => ({ title: '报价单', desc: '查看报价明细' }),
+        partTitle: () => '报价单',
+        // 本批只登记；审批数据尚未接入，默认拒绝外发。
+        allowed: () => false,
+      },
+    ],
     money: { minimumAmount: 0.01, precisionTolerance: 0.5, decimals: true },
     sessionState: { schema: StateSchema, resetKeys: ['inspections'] },
     profileFields,
@@ -326,8 +338,9 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
     },
     advanceStage: (session, turn) => (turn.calls.some((c) => c.name === 'fixture_inspect') ? 'objection' : session.stage),
     contextNote: () => ['按测试服务规则核验需求'],
-    replyAnchors: { markdown: 'fixture_guard', 'takeover_check:post': 'money_provenance' },
+    replyAnchors: { markdown: 'fixture_guard', 'takeover_check:post': 'link_whitelist' },
     replySteps: [
+      { ...linkWhitelistStep(), after: ['money_provenance'] },
       {
         id: 'fixture_guard',
         after: ['stage_advance'],
