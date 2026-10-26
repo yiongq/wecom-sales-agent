@@ -22,7 +22,7 @@
 
 ## 步骤
 
-- [ ] 0. 做：复核下方 08、09 接口对照，列出旅游 `HandoffVocab` 104 个键的处理表，采集实际开工提交的旅游基准，在预发环境跑 R16 开通前检查；验：接口可复查、词表逐键有归类、前缀 / 四类输出 / 卡片 / 部件 / v2 有具名基准，Host 检查有记录（验收 1、6、10）；依赖：开工条件 1–3，涉及预发外部环境须有对应操作授权。本轮只完成文档接口核对，不代替其余三项。
+- [x] 0. 做：复核下方 08、09 接口对照，列出旅游 `HandoffVocab` 104 个键的处理表，采集实际开工提交的旅游基准，在预发环境跑 R16 开通前检查；验：接口可复查、词表逐键有归类、前缀 / 四类输出 / 卡片 / 部件 / v2 有具名基准，Host 检查有记录（验收 1、6、10）；依赖：开工条件 1–3，涉及预发外部环境须有对应操作授权。本批已完成接口、104 键表与开工基准；预发 R16 检查待授权，移至上线前复验，只挡上线、不挡实现（见本批实施记录）。
 - [ ] 1. 做：核心加声明式 `itemRules`，让 `checkItem` 与 schema 读取同一声明，接 `crossItemCheck` 调用时机（R2）；验：五种规则的正反例两侧一致，草稿与上架 / 编辑 active 的边界符合验收 2，既有 active → draft 禁令不变且不增加下架触发点；依赖：0。
 - [ ] 1.1 做：包骨架（新建 `src/packs/industrial/runtime.ts`，用作 R17 镜像标记）、登记、白名单、`part` 字段与 schema、条目规则、跨条目检查、CSV（R1、R2）；验：合成条目导入为草稿，编号 / 重复型号 / 替代型号 / 两位小数 / 改价版本符合验收 2；依赖：1，ADR-005 已随 ready 合入。
 - [ ] 2. 做：型号归一与匹配顺序（R3）；验：验收 3 的精确、别名、歧义排序、无命中、知识库召回逐项通过，语义路径另记含 embedding 的端到端时延 / 样本量 / 环境；依赖：1.1。
@@ -107,6 +107,209 @@
 - `priceLine` 拒绝改为已有能力；金额来源明确沿用 09 的收紧；夹具 amendment 改为准确的原契约归属，policy 数据与 PackPolicy 接口区分、07 / 05 依赖补条款号；`itemRules` 四改五、`$code` 从类型改回键，均不改变原有规则与编号语义。
 - R16「企微客服账号可选」对齐 owner 已定的本期仅网页；不重新选择渠道或用量。本次不能核实真实部署的「每天 500 次」取值，开放问题 6 保留历史决定，开通时由 owner 按当时旅游 demo 配置复核。
 - 计划保持 0–20 与 1.1 的原编号 / 顺序 / 未勾选状态，补做 / 验 / 依赖及联合收尾；消除第 15 步依赖「其余全部步骤」的循环，以及第 11 步可与其前置实现整步并行的误导。
+
+### 第 0 步 · 开工核对与基准（2026-10-26）
+
+#### 开工提交与范围
+
+- 本批开工提交 `c34b4e3`；`git log -5` 已读。工作区开工时干净，08 / 09 产品代码等于 `4ff0d93`；`git diff --stat 4ff0d93 HEAD -- . ':(exclude)docs'` 实际输出为空、退出 0，证明此后只有文档改动。
+- 本批只维护本 plan：第 0 步、此实施记录、末尾交接。spec 保持 ready，不改产品代码、锁定八文件、夹具或基线，不新增测试框架或夹具。
+- **预发 R16 开通前检查：待授权。** 按本批任务将三项 Host 检查移至上线前（第 16 步）：宿主 public_host 与 PUBLIC_BASE_URL 一致、旅游公开路由仍命中旅游租户、新租户 Host 只命中自己。只挡上线、不挡后续实现；本批未访问预发或其他外部环境。
+
+#### 当前 HEAD 接口抽查（20 处）
+
+逐项打开定义与调用方复核上方 08 / 09 对照，以下行号按 `c34b4e3`。全部与既有对照一致；「待扩展」仍由 10 后续步骤实现，不改旧记录。
+
+| #   | 核对项与定位                                                                                         | 当前结论 / 10 的落点                                                                                                        |
+| --- | ---------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `src/core/pack-api.ts:711-719`                                                                       | CatalogKindSpec 含 schema、titleKey、锁定、版本计价字段、moneyFields、retrieval；无 crossItemCheck，留第 1.1 步。           |
+| 2   | `src/shared/pack.ts:98-120、492`                                                                     | EntityType 无 itemRules，checkItem 仍按 fields 校验；五种声明式规则留第 1 步。                                              |
+| 3   | `src/shared/pack.ts:14-30`；`src/packs/__fixture/runtime.ts:48`                                      | `$code` 是系统字段键，类型仍 text，payload 存 id；工业不能新增 FieldType。                                                  |
+| 4   | `src/core/order-view.ts:27-54`                                                                       | LineOrder v2、非空 lines、整数分 totalFen 与可选 QuoteApproval 已有，无须新订单形状。                                       |
+| 5   | `src/core/order-view.ts:108-114、174`                                                                | createLineOrder 异步收 kind / code / qty，opts.approval 优先于包缺省；返回 order / reused 或 rejected。                     |
+| 6   | `src/core/order-view.ts:128-173`                                                                     | 四种核心拒绝加 priceLine.reject/detail 已有；混合拒绝整单不写，工业五种投影留第 4 步。                                      |
+| 7   | `src/core/order-view.ts:174-215`                                                                     | 复用先于 autoApprovable，只对新单自动批准；approved 优先复用，pending 新单才排审批通知。                                    |
+| 8   | `src/core/pack-api.ts:767-771`；`src/packs/__fixture/runtime.ts:435-447`                             | quotes 的 approval / validDays / autoApprovable 已有，证明包按版本读库存；工业三条件自己实现。                              |
+| 9   | `src/core/order-view.ts:84-105`                                                                      | quoteState 统一终态与有效期；quoteValidUntil 读当前租户 policy，按上海自然日到最后一毫秒。                                  |
+| 10  | `src/core/pack-api.ts:755-763`；`src/packs/__fixture/runtime.ts:130-138`                             | SiteLinkDef 已有 card / partTitle / allowed / resources；证明包 quote 数据接口只登记 GET。                                  |
+| 11  | `src/core/site-links.ts:8-16、27-54`                                                                 | 订单读取走当前租户内存；quoteLinkAllowed 还检查 session 和 approved，核心 / 包登记分开。                                    |
+| 12  | `src/core/pack-api.ts:773-790`；`src/payment/orders.ts:98-105`                                       | onQuoteDecided 在工作台动作写入中推进阶段，AI 自动批准仍经 advanceStage；followupGate 是可选钩子。                          |
+| 13  | `src/core/followup.ts:114-119、139-165`；`src/jobs/followup.ts:284`                                  | 两路径已有 followupGate；生成器仍删 ord_、护栏删空仍换模板，完整链接与删空跳过留第 7 步。                                   |
+| 14  | `src/core/pack-api.ts:257-263`；`src/core/engine/index.ts:311-346`                                   | fixedId / handoff / notify / statePatch 已有；副作用须有登记固定句，patch 过 schema，只写 packState，pack 原因限 1–120 字。 |
+| 15  | `src/core/consistency.ts:31-33`；`src/core/engine/index.ts:318-326`；`src/payment/orders.ts:197-209` | pattern 全文匹配；首次确认用 acceptedAt 持久去重并排任务，不用包内 confirmedQuoteAt 替代。                                  |
+| 16  | `src/core/pack-api.ts:855-857`；`src/core/order-view.ts:238-246`；`src/server.ts:865-876`            | 驳回 / 撤回文字钩子和 PublicQuote.notes 类型已有；quotes.notes 与服务端受限调用未有，留第 5 步。                            |
+| 17  | `src/core/tools/registry.ts:24-33`；`src/core/guards/money-provenance.ts:26-36`                      | amounts 校验整数分、账本最多 200 项；订单金额只认无审批或已批准，待审不作为正式金额来源。                                   |
+| 18  | `eval/sim/goals.ts:18-23、101-126`；`eval/sim/runtime.ts:325-335`；`src/core/pack-api.ts:536-546`    | handoffKind / richTools 已有；通用模拟种子尚无 approval 且显式 approval:false，10 只在第 13 步扩模拟器。                    |
+| 19  | `src/core/pack-api.ts:691-708`；`src/tenancy/hosts.ts:30-45、65-71`                                  | policy 是包声明的数据；多 standard 要完整 Host，宿主检查 base，单 standard 仍有原兼容行为；未访问线上。                     |
+| 20  | `deploy/rollback-guard.sh:260-332`；`deploy.sh:164-167`                                              | 既有 pre-09 查全库 approval，pre-08 独立检查；尚无 pre-10，工业 runtime 标记与拒绝逻辑留第 15 步。                          |
+
+#### HandoffVocab 逐键处理表（R10，供第 8 步使用）
+
+依据：接口 `src/core/pack-api.ts:332-437`、旅游值 `src/packs/travel/handoff-vocab.ts:708-813`、消费者 `src/handoff/trigger-rules.ts`。下表按旅游导出顺序逐键列出，依据列给出旅游定义起行；共 **104 键：通用照搬 80 键、旅游专有置为不匹配 4 键、工业改写 20 键**，无新增、重复或漏项。词表不会产生新的 kind；R11 的非标 / 来图 / 账期 / 样品 / 超长与确认报价由 preModel / contextNote 处理，`kind: 'pack'` 只来自确定性回复。
+
+取舍：混合了通用与旅游措辞的键归「工业改写」，只去旅游分支、替换工业业务对象，保留通用解析与隐私边界；纯旅游正则置为 `/(?!)/`。医疗和受伤沿用核心已有类型与限制，不扩工业事故识别。通用辅助正则含旅游场景也可能用到的字，不等于旅游专有触发。表中正例是相应词表的命中 / 排除语义，不保证单个辅助键独自触发转人工。
+
+第 8 步须将每条「反例」做成旧旅游键可命中、工业键不命中的断言，并联验高反 / 行程变更不产生旅游转人工；每条「正例」覆盖改写键及其消费者语义，含排除的例子应断言不误触发。当前仅登记样例，尚未新增或执行工业测试。要人工、投诉、退款、注入的通用规则还分别在 engineHooks / 安全网等入口（`src/packs/travel/runtime.ts:179-183`、`src/packs/travel/turn.ts:444-454`、`src/packs/travel/reply-helpers.ts:73、1354`），并非这 104 键中的额外隐藏键；后续照搬其通用语义，不复制旅游话术或增加词表成员。
+
+| 键                    | 分类               | 旅游语义                                           | 工业包处理                                                                                                              | 第 8 步样例                                          | 旅游定义依据           |
+| --------------------- | ------------------ | -------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------- | ---------------------- |
+| `TRAD`                | 通用照搬           | 常用繁体字转简体                                   | 完整照搬归一映射，不把字符映射当行业触发词                                                                              | —                                                    | `handoff-vocab.ts:5`   |
+| `TRAD_RE`             | 通用照搬           | 定位繁体字以调用映射                               | 按同一 TRAD 建表达式                                                                                                    | —                                                    | `handoff-vocab.ts:169` |
+| `COND`                | 通用照搬           | 假设小句及后续小句排除                             | 保留如果、万一等条件语义                                                                                                | —                                                    | `handoff-vocab.ts:172` |
+| `HEARSAY`             | 通用照搬           | 听说、网上、他人转述                               | 保留转述排除                                                                                                            | —                                                    | `handoff-vocab.ts:175` |
+| `PAST`                | 通用照搬           | 以前、昨天等既往经历                               | 保留过去时排除                                                                                                          | —                                                    | `handoff-vocab.ts:179` |
+| `PAST_CUT`            | 通用照搬           | 现在、今天、但是打断过去时                         | 保留当前事件边界                                                                                                        | —                                                    | `handoff-vocab.ts:183` |
+| `HEARSAY_CUT`         | 通用照搬           | 结果、这次打断转述                                 | 保留转述边界                                                                                                            | —                                                    | `handoff-vocab.ts:186` |
+| `NOW_LEAD`            | 通用照搬           | 小句开头的此刻标记                                 | 保留当前陈述识别                                                                                                        | —                                                    | `handoff-vocab.ts:189` |
+| `ASKING_TAIL`         | 通用照搬           | 吗、呢、了没等问句尾                               | 保留敏感信息及撤回同意的问句识别                                                                                        | —                                                    | `handoff-vocab.ts:192` |
+| `ASKING_WORDS`        | 通用照搬           | 疑问词、正反问                                     | 保留通用问法                                                                                                            | —                                                    | `handoff-vocab.ts:194` |
+| `NOT_A_QUESTION`      | 通用照搬           | 说了多少遍、动不动等非问句                         | 保留反问与陈述排除                                                                                                      | —                                                    | `handoff-vocab.ts:198` |
+| `NEG_BEFORE`          | 通用照搬           | 关键词之前的否定字                                 | 保留否定排除                                                                                                            | —                                                    | `handoff-vocab.ts:201` |
+| `E_ALTITUDE_MARKER`   | 旅游专有置为不匹配 | 高原、高反及地名的类型优先标记                     | 用永不匹配正则，不把医疗词归为 altitude                                                                                 | 反例：我们在拉萨，海拔4000米                         | `handoff-vocab.ts:245` |
+| `E_ALTITUDE_OVERLAP`  | 旅游专有置为不匹配 | 与 medical 重合时优先判高反                        | 用永不匹配正则，通用医疗仍由 medical 规则处理                                                                           | 反例：我们在高原一直吐，喘不上气                     | `handoff-vocab.ts:249` |
+| `EMERGENCY_RULES`     | 工业改写           | 高反、受伤、急病、证件丢失、旅途受困的有序规则数组 | 仅保留通用 injury / medical 规则及其原有限定；移除 altitude / documents / stranded 旅游救援规则，不加工业事故新类型或词 | 正例：我现在手割伤了，一直流血；我现在喘不上气       | `handoff-vocab.ts:252` |
+| `CARELESS`            | 通用照搬           | 不小心不是否定                                     | 保留意外陈述识别                                                                                                        | —                                                    | `handoff-vocab.ts:310` |
+| `E_HYPO`              | 通用照搬           | 假设、将来尚未发生                                 | 保留未发生事件排除                                                                                                      | —                                                    | `handoff-vocab.ts:314` |
+| `E_PRETRIP`           | 旅游专有置为不匹配 | 出发前、报名、节假日、适不适合参团                 | 用永不匹配正则，移除出行前排除分支                                                                                      | 反例：出发前下周报名这个团                           | `handoff-vocab.ts:318` |
+| `E_NEAR`              | 工业改写           | 差点、已好转、找到证件或回到酒店等已解决事件       | 保留差点、好转、痊愈等通用排除；去掉回酒店、集合点、证件补办等旅游分支                                                  | 正例：我刚才手割伤了，现在已经不疼了（排除紧急）     | `handoff-vocab.ts:323` |
+| `E_HABIT`             | 通用照搬           | 体质、病史、每次等惯常状态                         | 保留非即时事件排除                                                                                                      | —                                                    | `handoff-vocab.ts:334` |
+| `E_PRICE`             | 工业改写           | 骨折价、贵到吐血等价格语境                         | 保留金额、价格、费用、账单排除，去掉团费                                                                                | 正例：你们轴承价格贵到吐血（不判医疗）               | `handoff-vocab.ts:337` |
+| `E_JOKE`              | 通用照搬           | 玩笑词与表情                                       | 保留紧急判断中的玩笑排除                                                                                                | —                                                    | `handoff-vocab.ts:341` |
+| `E_POLICY`            | 工业改写           | 退团、退款、保险、改期的政策问法                   | 保留退款、赔偿、报销等通用政策排除，去掉退团及旅游保险 / 改期措辞，不代替退款执行                                       | 正例：我受伤了能退款吗（政策问法，不判紧急）         | `handoff-vocab.ts:344` |
+| `E_HEARSAY`           | 工业改写           | 家人、朋友或导游领队转述                           | 保留通用转述对象，去掉导游、领队等旅游角色                                                                              | 正例：同事说我手割伤了（转述排除）                   | `handoff-vocab.ts:347` |
+| `E_NEG_BEFORE`        | 通用照搬           | 紧贴紧急词之前的否定                               | 保留没有、不、未等排除                                                                                                  | —                                                    | `handoff-vocab.ts:355` |
+| `E_UNSURE`            | 通用照搬           | 可能、好像、担心等不确定                           | 保留精确优先，拿不准不判                                                                                                | —                                                    | `handoff-vocab.ts:358` |
+| `E_EXAGGERATE`        | 通用照搬           | 贵到、笑到、快要等夸张                             | 保留夸张排除                                                                                                            | —                                                    | `handoff-vocab.ts:362` |
+| `E_AFTER_SKIP`        | 通用照搬           | 受伤过、受伤以后等经历或时间                       | 保留非当前事件排除                                                                                                      | —                                                    | `handoff-vocab.ts:366` |
+| `E_ATTACHED`          | 通用照搬           | 关键词后已发生的了、啦、咯                         | 保留当前事实识别及问句排除                                                                                              | —                                                    | `handoff-vocab.ts:369` |
+| `E_HAPPENED_BEFORE`   | 通用照搬           | 发生了、遇到了等前缀                               | 保留已发生识别                                                                                                          | —                                                    | `handoff-vocab.ts:373` |
+| `E_FEVER`             | 通用照搬           | 39度等体温读数                                     | 保留通用医疗限定，不把工业规格独立当医疗事件                                                                            | —                                                    | `handoff-vocab.ts:376` |
+| `E_NOW`               | 通用照搬           | 现在、正在、一直吐等即时标记                       | 保留正在发生限定                                                                                                        | —                                                    | `handoff-vocab.ts:379` |
+| `E_ONGOING`           | 工业改写           | 持续症状及下不了山等旅途受困                       | 保留持续医疗、受伤后果，去掉下山、返程等旅游受困分支                                                                    | 正例：我现在高烧不退                                 | `handoff-vocab.ts:382` |
+| `E_FALL_HURT`         | 通用照搬           | 摔倒之后起不来、骨折等后果                         | 保留摔倒须有后果的限定                                                                                                  | —                                                    | `handoff-vocab.ts:386` |
+| `E_FALL_THING`        | 通用照搬           | 摔的是手机、箱子等物件                             | 保留物件与人受伤的区别                                                                                                  | —                                                    | `handoff-vocab.ts:390` |
+| `E_VEHICLE_STUCK`     | 工业改写           | 车船坏后回不去、下不了山                           | 去掉下山旅游措辞，保留通用走不了等后果词；本期无 vehicle 规则，不单独触发                                               | 正例：车开不动，走不了（辅助词命中，不新增救援规则） | `handoff-vocab.ts:393` |
+| `E_WOUND`             | 通用照搬           | 伤在哪儿或怎么伤的                                 | 保留流血必须有部位或原因的限定                                                                                          | —                                                    | `handoff-vocab.ts:396` |
+| `E_FINE_AFTER`        | 通用照搬           | 后续小句说没事、小伤                               | 保留已无危险排除                                                                                                        | —                                                    | `handoff-vocab.ts:399` |
+| `E_TRAPPED_AT`        | 工业改写           | 被困在山上、半山腰、路上                           | 去掉半山腰等旅游专门分支，保留通用地点后缀；本期无 trapped 规则，不单独触发                                             | 正例：在电梯里（辅助地点命中）                       | `handoff-vocab.ts:403` |
+| `E_TRAPPED_ABSTRACT`  | 通用照搬           | 被困在问题、工作、会议等抽象语境                   | 保留抽象语境排除；无 trapped 规则时不触发                                                                               | —                                                    | `handoff-vocab.ts:406` |
+| `E_NOT_STUCK`         | 通用照搬           | 开心、舍不得等并非真的被困                         | 保留非受困语境排除；无 stranded 规则时不触发                                                                            | —                                                    | `handoff-vocab.ts:409` |
+| `E_ELSEWHERE`         | 工业改写           | 天灾发生在那边、目的地                             | 去掉目的地，保留那边、那里、当地；本期无 disaster 规则，不单独触发                                                      | 正例：那边着火了（辅助异地排除）                     | `handoff-vocab.ts:412` |
+| `E_RESCUE_LEAD`       | 通用照搬           | 帮我、快、请等求救前缀                             | 保留叫救护车等通用求救限定                                                                                              | —                                                    | `handoff-vocab.ts:415` |
+| `E_HELP`              | 工业改写           | 怎么办、医院、补办、使馆、联系导游、下山           | 保留通用求助与医疗问法，去掉使馆、导游、领队、下山等旅行救援措辞                                                        | 正例：我现在喘不上气，怎么办                         | `handoff-vocab.ts:419` |
+| `E_IDENTITY`          | 通用照搬           | 问真人、机器人或 AI 身份                           | 保留问身份不掩盖紧急陈述                                                                                                | —                                                    | `handoff-vocab.ts:422` |
+| `E_GREETING`          | 通用照搬           | 你好、在吗等招呼                                   | 保留招呼不掩盖紧急陈述                                                                                                  | —                                                    | `handoff-vocab.ts:424` |
+| `E_UNKNOWN`           | 通用照搬           | 不知道、不确定等自述                               | 保留拿不准的语境识别                                                                                                    | —                                                    | `handoff-vocab.ts:427` |
+| `E_ASKING`            | 工业改写           | 一般问句及能去、参加、报名、出发等旅游问法         | 保留通用疑问、数量、能不能等，去掉参加 / 报名 / 出发旅游短语；型号数量问法仍算问句                                      | 正例：6205-2RS要多少件                               | `handoff-vocab.ts:430` |
+| `E_EVERY`             | 通用照搬           | 吃什么吐什么等任指重复                             | 保留任指与真问句的区别                                                                                                  | —                                                    | `handoff-vocab.ts:434` |
+| `E_ARRANGE`           | 工业改写           | 改退行程、酒店、航班等安排问法                     | 换成产品询价的报价、订单、改价、运费、发票、发货等业务问法；仍只是求助问句的排除条件                                    | 正例：帮我看看订单能不能改（业务问题）               | `handoff-vocab.ts:437` |
+| `COMPANION_PHRASE`    | 工业改写           | 同行朋友、同团客人等明确同行表达                   | 保留跟我一起的朋友 / 同事等通用关系，去掉团里、同团、游客、驴友等旅行关系，不新增工厂角色推断                           | 正例：跟我一起来的同事现在手割伤了                   | `handoff-vocab.ts:441` |
+| `COMPANION_MARK`      | 通用照搬           | 同行短语替换后的内部占位符                         | 保留同一占位字符，仅在解析内部使用                                                                                      | —                                                    | `handoff-vocab.ts:452` |
+| `PARTY_MENTION`       | 工业改写           | 自己、家人、全团、一车人                           | 保留自己、我们、家人与占位符，去掉全团、一车人                                                                          | 正例：我们现在喘不上气                               | `handoff-vocab.ts:455` |
+| `OTHER_MENTION`       | 工业改写           | 陌生人及别团游客、导游等非客户主体                 | 保留同事、朋友、他人等通用主体，去掉别团 / 游客 / 导游 / 领队旅游角色；明确一起的同事仍先由 COMPANION_PHRASE 处理       | 正例：同事现在发高烧了（无同行标记，不能当客户本人） | `handoff-vocab.ts:462` |
+| `NOT_SUBJECT_LEAD`    | 通用照搬           | 和、被、把、给之后的人不是主语                     | 保留主宾关系排除                                                                                                        | —                                                    | `handoff-vocab.ts:470` |
+| `FAMILY_LEAD`         | 通用照搬           | 紧急词以家人称谓开头                               | 保留本人家人与旁观者的边界                                                                                              | —                                                    | `handoff-vocab.ts:473` |
+| `THIRD_PARTY`         | 通用照搬           | 撤回同意时的第三方转述对象                         | 保留别人说删除资料不代表本人行权                                                                                        | —                                                    | `handoff-vocab.ts:476` |
+| `ASK_TAIL`            | 通用照搬           | 交互失败判定用的高把握吗、么结尾                   | 保留疑问尾，不因重复回答增加失败次数                                                                                    | —                                                    | `handoff-vocab.ts:508` |
+| `EMBEDDED`            | 通用照搬           | 知道、确认、考虑等内嵌疑问                         | 保留陈述与真问句的区别                                                                                                  | —                                                    | `handoff-vocab.ts:511` |
+| `DEPENDS_LEAD`        | 通用照搬           | 就看、得看等条件开头                               | 保留条件陈述排除                                                                                                        | —                                                    | `handoff-vocab.ts:515` |
+| `ASK_WORDS`           | 通用照搬           | 疑问词、量词与正反问                               | 保留原量词和问法；件、套等工业数量问法本来已支持                                                                        | —                                                    | `handoff-vocab.ts:522` |
+| `EVERY_AFTER`         | 通用照搬           | 疑问词后接都、也、就的任指                         | 保留任指排除                                                                                                            | —                                                    | `handoff-vocab.ts:534` |
+| `EVERY_ANOTA_AFTER`   | 通用照搬           | 正反问后接都行、都可以                             | 保留非问句排除                                                                                                          | —                                                    | `handoff-vocab.ts:536` |
+| `NOT_ASKING_REST`     | 通用照搬           | 随便、无论及玩住待几天等不定数陈述                 | 保留通用非问句排除；其中动词只是排除项，不会触发旅游转人工                                                              | —                                                    | `handoff-vocab.ts:539` |
+| `US`                  | 工业改写           | 客服、顾问、回复与这家酒店等对象例外               | 保留你们、客服、顾问、贵司、回复等当前服务对象，去掉酒店 / 景区旅游例外，不扩大到型号词                                 | 正例：你们客服太差了                                 | `handoff-vocab.ts:562` |
+| `OWNED_BY_US`         | 通用照搬           | 你们安排的、你们提供的归属前缀                     | 保留服务归属判断                                                                                                        | —                                                    | `handoff-vocab.ts:566` |
+| `OWNED_KIND`          | 工业改写           | 导游、司机、领队、酒店等我方服务对象               | 替换成工业产品、报价、报价单、订单等已有业务对象，供情绪归属判断；不当作新转人工种类                                    | 正例：你们的报价太离谱了                             | `handoff-vocab.ts:569` |
+| `SELF`                | 通用照搬           | 我、我们、自己等自称                               | 保留自嘲与对我方抱怨的区别                                                                                              | —                                                    | `handoff-vocab.ts:572` |
+| `OTHERS`              | 工业改写           | 家人、别家及酒店、景区、导游等外部对象             | 保留通用他人 / 别家 / 快递 / 天气，移除旅游角色；与 OWNED_KIND 对齐产品、报价、订单等对象以维持归属优先级               | 正例：别人的报价太离谱了（不是冲着我们）             | `handoff-vocab.ts:575` |
+| `OBJECT_LEAD`         | 通用照搬           | 让、给、对、把之后的是宾语                         | 保留情绪对象边界                                                                                                        | —                                                    | `handoff-vocab.ts:579` |
+| `OTHER_AGENCY`        | 工业改写           | 别家旅行社及点名旅游平台                           | 保留别家、其他公司 / 平台等第三方排除，去掉旅行社及点名旅游平台，不新增真实厂商品牌                                     | 正例：别家公司报价太离谱了（他方排除）               | `handoff-vocab.ts:582` |
+| `JOKE`                | 通用照搬           | 情绪判断中的玩笑词和表情                           | 保留玩笑不计情绪阈值                                                                                                    | —                                                    | `handoff-vocab.ts:586` |
+| `DOUBT_WORD`          | 通用照搬           | 骗、坑、靠谱等售前疑虑                             | 保留疑问与辱骂的区别                                                                                                    | —                                                    | `handoff-vocab.ts:589` |
+| `STRONG_DIRECTED`     | 通用照搬           | 明确冲着人的强辱骂                                 | 保留强负面情绪判断                                                                                                      | —                                                    | `handoff-vocab.ts:592` |
+| `INSULT`              | 通用照搬           | 辱骂词                                             | 保留原强情绪词及限定                                                                                                    | —                                                    | `handoff-vocab.ts:596` |
+| `STUPID`              | 通用照搬           | 冲着我方的蠢、笨、傻                               | 保留主语限定                                                                                                            | —                                                    | `handoff-vocab.ts:600` |
+| `INSULT_TARGET_AFTER` | 工业改写           | 辱骂后接客服、AI、旅行社等对象                     | 保留客服、顾问、公司、平台、回复等，去掉旅行社                                                                          | 正例：垃圾客服                                       | `handoff-vocab.ts:604` |
+| `INSULT_OBJECT`       | 通用照搬           | 垃圾袋、白痴问题等物件本义                         | 保留非辱骂排除                                                                                                          | —                                                    | `handoff-vocab.ts:608` |
+| `BARE_FILLER`         | 通用照搬           | 单独辱骂周围的语气填充词                           | 保留原去填充算法输入                                                                                                    | —                                                    | `handoff-vocab.ts:611` |
+| `BARE_INSULT`         | 通用照搬           | 单独成句的辱骂                                     | 保留强情绪判断                                                                                                          | —                                                    | `handoff-vocab.ts:613` |
+| `BROKEN`              | 通用照搬           | 破客服、破系统等明确对象                           | 保留强情绪判断                                                                                                          | —                                                    | `handoff-vocab.ts:617` |
+| `INTENSIFIER`         | 通用照搬           | 他妈的等程度脏话                                   | 保留须冲着我们的限定                                                                                                    | —                                                    | `handoff-vocab.ts:620` |
+| `WEAK`                | 通用照搬           | 失望、慢、乱收费等弱抱怨                           | 保留原弱情绪词及否定 / 对象限定                                                                                         | —                                                    | `handoff-vocab.ts:623` |
+| `SLOW_PACE`           | 旅游专有置为不匹配 | 行程节奏慢、休闲、慢游等褒义例外                   | 用永不匹配正则，不给工业回复慢套用行程节奏例外                                                                          | 反例：行程节奏这么慢，老人喜欢慢游                   | `handoff-vocab.ts:627` |
+| `WEAK_US_BEFORE`      | 通用照搬           | 你们没听懂等前置对象的抱怨                         | 保留只认我方对象的限定                                                                                                  | —                                                    | `handoff-vocab.ts:630` |
+| `WEAK_RHETORICAL`     | 通用照搬           | 答非所问、还要说几遍等本次对话抱怨                 | 保留交互抱怨与反问                                                                                                      | —                                                    | `handoff-vocab.ts:633` |
+| `REPEAT_SAID`         | 通用照搬           | 说了多少遍类抱怨前缀                               | 保留家人 / 他人语境排除                                                                                                 | —                                                    | `handoff-vocab.ts:637` |
+| `PEOPLE`              | 通用照搬           | 家人、同事、老板等第三方人物                       | 保留抱怨是否冲着我们的判断                                                                                              | —                                                    | `handoff-vocab.ts:639` |
+| `WEAK_DIRECTED`       | 通用照搬           | 别敷衍我、坑我等禁止式抱怨                         | 保留弱情绪判断                                                                                                          | —                                                    | `handoff-vocab.ts:643` |
+| `POSITIVE_BEFORE`     | 通用照搬           | 便宜得离谱、美到无语等褒义前缀                     | 保留褒义排除，不把词本身当旅游触发                                                                                      | —                                                    | `handoff-vocab.ts:646` |
+| `WORRY_BEFORE`        | 通用照搬           | 怕、担心、避免等售前疑虑                           | 保留疑虑排除                                                                                                            | —                                                    | `handoff-vocab.ts:650` |
+| `SEG_ASKING`          | 通用照搬           | 分段问句与打消疑虑问法                             | 保留问句排除                                                                                                            | —                                                    | `handoff-vocab.ts:653` |
+| `COMPLAINT_TAG`       | 通用照搬           | 太坑了吧、别敷衍我好吗等投诉语气                   | 保留问句式抱怨                                                                                                          | —                                                    | `handoff-vocab.ts:655` |
+| `ONLY_US`             | 通用照搬           | 下一段只有你们、客服等对象                         | 保留跨小句情绪对象判断                                                                                                  | —                                                    | `handoff-vocab.ts:658` |
+| `HEALTH`              | 通用照搬           | 病史、孕期、行动不便等健康隐私                     | 保留敏感信息识别，工业客户主动提及时仍受保护                                                                            | —                                                    | `handoff-vocab.ts:664` |
+| `PERSON`              | 通用照搬           | 敏感健康句中的本人、家人与长辈                     | 保留敏感类别判断的具体人限定                                                                                            | —                                                    | `handoff-vocab.ts:668` |
+| `CHILD_AGE_AFTER`     | 通用照搬           | 孩子在前、年龄在后                                 | 保留未满14周岁信息识别                                                                                                  | —                                                    | `handoff-vocab.ts:674` |
+| `CHILD_AGE_BEFORE`    | 通用照搬           | 年龄在前、孩子在后                                 | 保留未满14周岁信息识别                                                                                                  | —                                                    | `handoff-vocab.ts:676` |
+| `SCHOOL`              | 通用照搬           | 幼儿园、小学、初一等未成年人线索                   | 保留未成年人隐私保护                                                                                                    | —                                                    | `handoff-vocab.ts:679` |
+| `CHILD_RE`            | 通用照搬           | 孩子、宝宝等儿童称谓                               | 保留跨小句年龄归属                                                                                                      | —                                                    | `handoff-vocab.ts:681` |
+| `WITHDRAW`            | 通用照搬           | 撤回同意、删除本人资料等请求数组                   | 完整照搬行权规则，不把删除产品 / 订单当删除个人信息                                                                     | —                                                    | `handoff-vocab.ts:691` |
+| `POLITE_ASK`          | 通用照搬           | 可以帮我删除等礼貌请求                             | 保留问句式本人行权                                                                                                      | —                                                    | `handoff-vocab.ts:701` |
+| `POLICY_ASK`          | 通用照搬           | 会不会、怎么删除等咨询问法                         | 保留政策咨询与行权的区别                                                                                                | —                                                    | `handoff-vocab.ts:703` |
+| `NOT_WANTED`          | 通用照搬           | 不用删除、不想撤回等否定请求                       | 保留不执行的边界                                                                                                        | —                                                    | `handoff-vocab.ts:706` |
+
+#### 开工基准与本机验证
+
+环境：Node 22.22.0、pnpm 10.30.2；所有测试有外层 alarm 或 subprocess timeout（静态门禁 180 秒、字节与 09 各套 300 秒、锁定与两种 v2 各 600 秒）。只使用本机 mock / PGlite 与封闭发送桩；未设置 PG_TEST_URL，未创建容器、浏览器或外部服务连接，未调用真实模型，费用为零。日志位于 gitignored 的 `var/10-a/logs/`，不提交。
+
+- `pnpm -s test:locked`：退出 0，七套锁定自测全部通过；下面的 tools 摘要即原 `JSON.stringify(toolDefs)` 的字节哈希，未修改工具定义。
+
+```text
+PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd
+```
+
+锁定八文件实际 SHA-256（本机 `shasum -a 256`，与 sha256sum 算法相同）：
+
+```text
+66e9cd26464e5d71bdf945ac22d9a09b9ed354be05d31766ccf345af88369730  src/engine.selftest.ts
+166c124e28cec35a9b8b0e306bbda653e653ee5795fd186388185812e32a3941  src/dejargon.selftest.ts
+351fd745fcb65ed6f87605fe3deb4a60841598e983b44a6d91c9493571ff9cb8  src/engine-holiday.selftest.ts
+d3f11083704b51fc13bc6be93933a094c2e0abd0310da6f87021e3df4a8d92a1  src/price-guard.selftest.ts
+4a577bb23225aa54881c783ffe7bd41b1e115179a2f8b62044af21b70b07dc04  src/llm.selftest.ts
+090741c5b244dc74160647aaf9e0e7d3a45c6c534d20e008d8af96920c7b3365  src/server.selftest.ts
+d37341de95e87956b643dfd6ef5aee28011e39a7ce5391148e0157f9800c7882  src/adapters/wecom.selftest.ts
+aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.json
+```
+
+按改动文件及本步基准的文件名检索相关测试引用后，实际逐套运行以下已有自测（`pnpm exec tsx <文件>`；两套 bytes 加 `PARITY_CLOCK_MS=1790913600000` 和 `--import ./src/store/parity-clock.ts`）。只读旧夹具，不运行 UPDATE / snapshot-write：
+
+| 套件                                   | 退出码与结论                                                                                                                                                                                |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/payment/legacy-bytes.selftest.ts` | 0；60 条出口与夹具逐字节相同，140 项断言；四类输出（支付页 HTML、公开订单 JSON、企微付款卡片、工作台订单卡 JSON）保留。                                                                     |
+| `src/core/link-bytes.selftest.ts`      | 0；317 条字节基准，517 项断言；卡片、网页部件、沙箱资源白名单沿用 09 夹具。                                                                                                                 |
+| `src/quote-approval.selftest.ts`       | 0；QUOTE DATA / ENTRIES / RECOVERY PASS：金额隔离、复用、自动批准、两槽、自然日、六入口及持久恢复。                                                                                         |
+| `src/quote-actions.selftest.ts`        | 0；MATRIX / CONCURRENCY / PERMISSIONS / HTTP/AUDIT / DELIVERY / NOTIFY / ATOMIC / PROCESS RESTART 全 PASS；真实 PG 分支因无 PG_TEST_URL 明示 SKIP，交 CI 一次性库，不冒称本机真实 PG 通过。 |
+| `src/quote-page.selftest.ts`           | 0；七状态响应、各状态重置 404、历史保留 / 重载、品牌与加载 / 空 / 错 / 重试通过。                                                                                                           |
+| `src/quote-replies.selftest.ts`        | 0；固定句全文、schema、pack 转人工、去重、动作钩子与待审跳过跟进通过。                                                                                                                      |
+| `src/site-links.selftest.ts`           | 0；登记、按租户隔离、可选标题、删链及引导语、沙箱 cookie 与显式方法通过。                                                                                                                   |
+
+v2 默认基线实查 `eval/v2/snapshot.ts:156` 为 `eval/baselines/v2-09-step14.json`，未传覆盖项或关闭比对，两种配置都保留既有 865 条（857 条旅游、8 条证明包）。使用 `pnpm exec tsx` 调本地已安装版本，等价于任务的 `npx tsx`，不下载依赖：
+
+```text
+CONFIG_SOURCE=file LLM_MOCK=1 pnpm exec tsx eval/run.ts
+v2 回归评测：865/865 用例通过 · 跳过 0 条 realOnly · 8587 项断言
+v2 快照比对：865 条 case · 0 处差异
+
+CONFIG_SOURCE=file CONFIG_TEST_DB=pglite LLM_MOCK=1 pnpm exec tsx eval/run.ts
+v2 回归评测：865/865 用例通过 · 跳过 0 条 realOnly · 8587 项断言
+v2 快照比对：865 条 case · 0 处差异
+DB 模式：22 个请求的前缀哈希核对，0 个与 /healthz 不符
+```
+
+- `pnpm -s lint`、`pnpm -s typecheck` 均退出 0；lint 的内容黑名单因无 SENSITIVE_PATTERNS / .sensitive-patterns 按既有逻辑跳过，其余边界、迁移、console、租户状态清单检查通过。补查新增行无本机绝对路径、无过长假企微 ID。
+- `pnpm -s format:check`：退出 0，832 个文件通过；`git diff --check`：退出 0。以脚本将表中 104 键与 HandoffVocab 接口逐键同序比较，键集、顺序、唯一性与分类计数全部一致；4 条旅游反例均已对旧旅游正则实测命中，工业侧断言留第 8 步。
+- 锁定八文件、`eval/baselines/`、两份 bytes 夹具相对 HEAD 与 origin/dev 的 diff 均为空；`git diff --stat` 只有本 plan。未新增夹具；10 的新链接种类在后续步骤继续对照这份基准。
+- 按本批共同约定，完整 `pnpm test` 留 CI，本机不跑；预发 R16 待当次授权，移到上线前。此记录只完成第 0 步本机基准，不替代 09 / 10 联合上线与全量验收。
 
 ## 验收记录
 
@@ -195,3 +398,11 @@
 - 验证：`pnpm format:check`、`pnpm lint`、`git diff --check` 均通过（退出码 0）；lint 未配置敏感词表，内容黑名单按脚本提示跳过。八份被引用的旧文档原文逐字节不变，仅加头部行；22 个步骤逐字节不变，相对链接有效，新增行无本机绝对路径或超长假企微 ID。
 - 附加门禁：`pnpm typecheck` 通过；`pnpm test` 在 1,200 秒上限以 142 退出，停在严格租户模式的渠道套件，完整测试链未完成，已完成子测试未见断言失败。未配置 `PG_TEST_URL`，真实 PG 分支按套件规则跳过；没有启动容器，已确认本轮测试进程组不再存在。
 - 下一步：A 批，从第 0 步起；先复核开工条件并完成旅游基准、104 键分类与经授权的预发检查。09 第 15–18 步仍与 10 联合验收、一次上线，不提前翻 implemented。
+
+### 交接（2026-10-26，A 批第 0 步完成）
+
+- 已完成：20 处当前接口抽查、104 键处理表（80 通用照搬 / 4 旅游专有不匹配 / 20 工业改写，含逐键语义、处理方法、源码依据与第 8 步样例）、实际开工前缀及八文件 SHA-256、两套 bytes / 09 自测 / 两种 v2 的基准采集，第 0 步已勾选。
+- 验证：format:check / lint / typecheck / test:locked 均退出 0；7 套具名基准自测均退出 0；两种 v2 各 865/865、8587 项断言、0 处快照差异，PREFIX 两哈希符合共同约定。词表 104 键与接口同序且无重复遗漏，4 条不匹配键的旧旅游样例均实测可命中；git diff --check、锁定八文件 / 基线 / 两份夹具零 diff、新增行公共边界补查均通过。内容敏感词表未配置与真实 PG 分支跳过已在实施记录明示；完整 pnpm test 按本批要求留 CI。
+- 当前状态：只有本 plan 的干净、可审阅文档 diff，无代码半成品；spec 仍 ready，第 1 步及以后未动。未提交、未 push、未开 PR；未访问服务器、密钥、真实模型或外部服务，未新增夹具、容器、浏览器；本批启动的测试命令均已退出，无遗留后台任务。
+- 待授权：第 0 步原文的预发 R16 三项 Host 开通前检查移到第 16 步上线前复验，只挡上线、不挡实现；不要把本机 Host 源码核对当作预发实测。
+- 下一步：**B 批（第 1、1.1 步）**，先做声明式 itemRules 与 schema / checkItem 同源规则，再做工业包骨架、登记、part 字段、跨条目检查与 CSV。第 8 步按本表落工业词表及正反例；后续每批保持旅游 / 09 基准逐字节不变，不能为新链接重写旧夹具或基线。09 的收尾继续与 10 联合验收、一次上线，不提前翻 implemented。
