@@ -23,7 +23,8 @@ export type OutboundStatus = (typeof OUTBOUND_STATUSES)[number];
 /** R15：网页出口的最终文本链接投影；经 core/pack-api 向行业包公开。 */
 export interface MessagePart {
   kind: 'link';
-  linkKind: 'order' | 'proposal' | 'site';
+  linkKind: string;
+  title?: string;
   url: string;
 }
 

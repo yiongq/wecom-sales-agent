@@ -13,7 +13,7 @@ import {
   TenantScopeMissing,
   type TenantRuntime,
 } from '../tenancy/runtime.js';
-import { isLineOrder, orderDisplay } from '../core/order-view.js';
+import { cardLinks, coreSiteLinks, registeredTextLinks } from '../core/site-links.js';
 import { currentPack } from '../config/source.js';
 import { brandTexts } from '../core/brand.js';
 // 企业微信「微信客服」（kf）适配器：回调驱动 + 兜底轮询。
@@ -93,17 +93,7 @@ import {
 import { cleanText } from '../shared/text.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
 import { convLabel, logQuote, withConversationLog, withLogContext } from '../log.js';
-import {
-  getOrCreateSession,
-  getAnyOrder,
-  getSession,
-  onShutdown,
-  queueInboxState,
-  recentMsgids,
-  saveSession,
-  writeInboxStateNow,
-} from '../store.js';
-import { routeForProposal } from '../tools.js';
+import { getOrCreateSession, getSession, onShutdown, queueInboxState, recentMsgids, saveSession, writeInboxStateNow } from '../store.js';
 import { endTurn, startTurn, withTurnScope } from '../trace/recorder.js';
 import { DEFAULT_WECOM_PREFIX, ENV_ACCOUNT_ID, ENV_ACCOUNT_KEY, isEnabled, type ChannelAccount } from '../channels/accounts.js';
 import { AccountInbox, InboxRowGone, noteInboxAbandoned, type InboxRow } from '../channels/inbox.js';
@@ -583,7 +573,7 @@ function splitForWecom(text: string, size: (value: string) => number = (value) =
     const nl = rest.lastIndexOf('\n', cut);
     if (nl > cut / 2) cut = nl;
     // 切点若落在某条 URL 内部，前移到该 URL 起点，让整条 URL 进下一段
-    for (const m of rest.matchAll(/https?:\/\/\S+|\/(?:proposal|pay)\/\S+/g)) {
+    for (const m of [...rest.matchAll(/https?:\/\/\S+/g), ...registeredTextLinks(rest)]) {
       const start = m.index ?? 0;
       const end = start + m[0].length;
       if (cut > start && cut < end) {
@@ -653,58 +643,16 @@ async function uploadThumb(rt: SendRuntime, cfg: WecomConfig, target?: string): 
   return task;
 }
 
-/** 正文里出现的所有站内链接（方案书/支付）。方案书链接可能带版本后缀 ?v=（02「报价快照」），算在同一条里 */
-const ALL_LINKS_RE = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*(?:\?v=\d+)?/g;
-
-/** 卡片上的出发日期写成正文里的样子（「10月12日」），跨年才带年份。
- *  此前直接拼 YYYY-MM-DD：正文刚说完「10月12日出发」，紧跟着的卡片却是「2026-10-12 出发」，像系统单据 */
-function cnDate(iso: string, now = new Date()): string {
-  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(iso);
-  if (!m) return iso;
-  const md = `${Number(m[2])}月${Number(m[3])}日`;
-  return Number(m[1]) === now.getFullYear() ? md : `${m[1]}年${md}`;
-}
-
-/** 从回复正文里认出方案书/支付链接，并取出用于卡片的标题与摘要。
- *  正文里出现多条链接时返回 null——卡片一次只能带一条 URL，硬做卡片会让第二条链接
- *  （尤其是支付链接）在剥离正文时被一起吞掉，客户永远拿不到付款入口。 */
-function extractCard(text: string, baseUrl: string): { title: string; desc: string; url: string; raw: string } | null {
-  if ((text.match(ALL_LINKS_RE) ?? []).length !== 1) return null;
-  const prop = text.match(/(?:https?:\/\/[^\s]*)?\/proposal\/([A-Za-z0-9_-]+)\/(\d+)(?:\/([\d-]+))?(?:\?v=(\d+))?/);
-  if (prop) {
-    if (!currentPack().runtime.documents?.proposal) return null;
-    // 卡片上的线路取链接指的那个版本（不带 v 是版本 1），与点开的方案书同一份；版本不存在就不做卡片，原样发纯文本
-    const route = routeForProposal(prop[1]!, prop[4]);
-    if (!route) return null;
-    const travelers = Number(prop[2]);
-    return {
-      title: `${route.title} · 行程方案书`,
-      desc: `${route.days} 天 · ${travelers} 位出行 · ${route.hotelLevel}｜含逐日行程与费用说明`,
-      url: `${baseUrl}/proposal/${route.id}/${travelers}${prop[3] ? '/' + prop[3] : ''}${prop[4] ? `?v=${prop[4]}` : ''}`,
-      raw: prop[0],
-    };
-  }
-  const pay = text.match(/(?:https?:\/\/[^\s]*)?\/pay\/([A-Za-z0-9_-]+)/);
-  if (pay) {
-    const o = getAnyOrder(pay[1]);
-    if (!o) return null;
-    if (isLineOrder(o)) {
-      const display = orderDisplay(o);
-      return {
-        title: `${display.title} · 待支付`,
-        desc: `${display.summary} · 合计 ${display.totalText}`,
-        url: `${baseUrl}/pay/${o.id}`,
-        raw: pay[0],
-      };
-    }
-    return {
-      title: `${o.routeTitle} · 待支付`,
-      desc: `${o.travelers} 位出行 · ${o.departDate ? cnDate(o.departDate) + '出发' : '日期待定'} · 合计 ¥${o.totalPrice.toLocaleString('zh-CN')}`,
-      url: `${baseUrl}/pay/${o.id}`,
-      raw: pay[0],
-    };
-  }
-  return null;
+/** 种类与卡片内容按当前租户登记；旧测试可省略会话，生产出口显式传入。 */
+function extractCard(text: string, baseUrl: string, session?: Session): { title: string; desc: string; url: string; raw: string } | null {
+  const links = cardLinks(text, currentPack().runtime);
+  if (links.length !== 1) return null;
+  const { raw, path, def } = links[0]!;
+  // 核心订单卡沿用旧消费行为（顾问可发已有订单）；新包文档还须满足当前会话的 allowed。
+  // 新包的 linkWhitelistStep 对核心订单同样执行 allowed，不改旅游自己的修补路径。
+  if (!coreSiteLinks.includes(def) && arguments.length >= 3 && (!session || !def.allowed(session, path))) return null;
+  const card = def.card!(path, session!);
+  return card ? { ...card, url: `${baseUrl}${path}`, raw } : null;
 }
 
 function recordRuntimeSend(rt: SendRuntime, sessionId: string, kind: OutboundKind, message: ChatMessage | null): SendHandle {
@@ -877,7 +825,7 @@ async function sendRich(rt: SendRuntime, cfg: WecomConfig, uid: string, body: st
   // 人工回复（kind='human'）的客户侧正文前加「【顾问】」（不变量 18）：加在拆完卡片之后，只加在客户读到的正文上——
   // 加在整条前面的话，只贴了一条链接时会单独发一条只有「【顾问】」的消息、多占一条额度，「方案书：<链接>」的标签也认不出来
   const advisor = ctx.kind === 'human' ? withAdvisorPrefix : (t: string): string => t;
-  const card = cfg.publicBaseUrl ? extractCard(body, cfg.publicBaseUrl) : null;
+  const card = cfg.publicBaseUrl ? extractCard(body, cfg.publicBaseUrl, getSession(rt.prefix + uid)) : null;
   if (!card) return sendText(rt, cfg, uid, advisor(body), ctx);
   // 先把缩略图备好再动正文。stripLink 会把「方案书在这儿」改成「见下方卡片」，
   // 此前先发了改过的正文才去传缩略图，缩略图一失败（接口报错、之后 60 秒冷却期内每一张都算），
@@ -1120,9 +1068,10 @@ function payloadsFor(
   body: string,
   kind: OutboundKind,
   withCard: boolean,
+  session?: Session,
 ): { payloads: OutboundPayload[]; card: { title: string; url: string } | null } {
   const advisor = kind === 'human' ? withAdvisorPrefix : (t: string): string => t;
-  const card = withCard && cfg.publicBaseUrl ? extractCard(body, cfg.publicBaseUrl) : null;
+  const card = withCard && cfg.publicBaseUrl ? extractCard(body, cfg.publicBaseUrl, session) : null;
   if (!card) return { payloads: textPayloads(advisor(body)), card: null };
   const prose = stripLink(body, card.raw);
   // 只有卡片、没有正文的人工回复：前缀加在卡片标题上（客户仍看得出是顾问发的，也不多发一条）
@@ -1442,9 +1391,10 @@ function payloadsOf(
   body: string,
   opts: PushOpts | undefined,
   withCard: boolean,
+  session?: Session,
 ): { payloads: OutboundPayload[]; card: { title: string; url: string } | null } {
   if (opts?.kind === 'menu' && opts.category) return { payloads: [menuPayload(body, opts.category)], card: null };
-  return payloadsFor(cfg, body, opts?.kind ?? 'notice', withCard);
+  return payloadsFor(cfg, body, opts?.kind ?? 'notice', withCard, session);
 }
 
 /**
@@ -1453,7 +1403,7 @@ function payloadsOf(
  */
 function prepareDb(rt: WecomRuntime, cfg: WecomConfig, sessionId: string, text: string, opts: PushOpts): PreparedPush {
   const handle: PreparedPush = { sessionId, kind: opts.kind };
-  const { payloads, card } = payloadsOf(cfg, formatForWecom(cfg, text), opts, Date.now() >= rt.thumbFailUntil);
+  const { payloads, card } = payloadsOf(cfg, formatForWecom(cfg, text), opts, Date.now() >= rt.thumbFailUntil, getSession(sessionId));
   try {
     preparedGroups.set(handle, planGroup(rt, cfg, sessionId, opts.kind, opts.message ?? null, payloads, card, takeoverGen(sessionId)));
   } catch (e) {
@@ -1467,9 +1417,9 @@ function prepareDb(rt: WecomRuntime, cfg: WecomConfig, sessionId: string, text: 
 async function pushDb(rt: WecomRuntime, cfg: WecomConfig, sessionId: string, text: string, opts: PushOpts | undefined): Promise<boolean> {
   const kind = opts?.kind ?? 'notice';
   const body = formatForWecom(cfg, text);
-  const wantsCard = kind !== 'menu' && !!cfg.publicBaseUrl && extractCard(body, cfg.publicBaseUrl) !== null;
+  const wantsCard = kind !== 'menu' && !!cfg.publicBaseUrl && extractCard(body, cfg.publicBaseUrl, getSession(sessionId)) !== null;
   const thumb = wantsCard ? await uploadThumb(rt, cfg).catch(() => null) : null;
-  const { payloads, card } = payloadsOf(cfg, body, opts, thumb !== null);
+  const { payloads, card } = payloadsOf(cfg, body, opts, thumb !== null, getSession(sessionId));
   let g: OutGroup;
   try {
     g = planGroup(rt, cfg, sessionId, kind, opts?.message ?? null, payloads, card, takeoverGen(sessionId));
@@ -1550,15 +1500,18 @@ async function enrichCustomerProfile(rt: WecomRuntime, cfg: WecomConfig, externa
 
 /** 相对支付链接拼上公网前缀，企微里才是可点的完整 URL */
 function absolutizePayLinks(cfg: WecomConfig, text: string): string {
+  const links = registeredTextLinks(text);
   if (!cfg.publicBaseUrl) {
-    if (text.includes('/pay/') || text.includes('/proposal/')) {
-      console.error('[wecom] ⚠️ 回复含支付链接但 PUBLIC_BASE_URL 未配置，客户将收到不可点击的相对路径！');
-    }
+    if (links.length) console.error('[wecom] ⚠️ 回复含支付链接但 PUBLIC_BASE_URL 未配置，客户将收到不可点击的相对路径！');
     return text;
   }
-  return text
-    .replace(/(^|[^a-zA-Z0-9/])(\/pay\/[A-Za-z0-9_-]+)/g, `$1${cfg.publicBaseUrl}$2`)
-    .replace(/(^|[^a-zA-Z0-9/])(\/proposal\/[A-Za-z0-9_\-/]+)/g, `$1${cfg.publicBaseUrl}$2`);
+  let result = text;
+  for (const m of links.toReversed()) {
+    const at = m.index!;
+    if (at > 0 && /[a-zA-Z0-9/]/.test(text[at - 1]!)) continue;
+    result = result.slice(0, at) + cfg.publicBaseUrl + result.slice(at);
+  }
+  return result;
 }
 
 /**
@@ -1912,9 +1865,9 @@ async function replyDb(
   inboxId: string,
 ): Promise<'deferred' | void> {
   const body = formatForWecom(cfg, reply.text);
-  const wantsCard = !!cfg.publicBaseUrl && extractCard(body, cfg.publicBaseUrl) !== null;
+  const wantsCard = !!cfg.publicBaseUrl && extractCard(body, cfg.publicBaseUrl, getSession(sessionId)) !== null;
   const thumb = wantsCard ? await uploadThumb(rt, cfg).catch(() => null) : null;
-  const { payloads, card } = payloadsFor(cfg, body, 'ai', thumb !== null);
+  const { payloads, card } = payloadsFor(cfg, body, 'ai', thumb !== null, getSession(sessionId));
   let g: OutGroup;
   try {
     g = planGroup(rt, cfg, sessionId, 'ai', reply.message, payloads, card, gen, inboxId);

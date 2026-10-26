@@ -58,7 +58,7 @@ function startWebChat() {
       card.href = part.url;
       card.target = '_blank';
       card.rel = 'noopener noreferrer';
-      card.append(node('strong', '', titles[part.linkKind]), node('span', '', part.url));
+      card.append(node('strong', '', part.title ?? titles[part.linkKind]), node('span', '', part.url));
       wrap.append(card);
     }
   }

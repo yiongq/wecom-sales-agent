@@ -1,3 +1,4 @@
+import { isSiteHtml } from './core/site-links.js';
 // HTTP 服务：静态页面 + 模拟器 API + 管理后台 API + 企微回调。
 // 注意路由注册顺序：API 在前，serveStatic 兜底在后。
 // 管理 API 走 Basic 鉴权，读写分层见 adminAuth；admin.html 页面本身免密（未登录只看得到演示数据，prod 下什么都看不到）。
@@ -1122,12 +1123,21 @@ const SIMULATOR_PAGE_RE = /\/chat\.html$/i;
 app.use('/*', async (c, next) => (profile().flags.visitor_simulator || !SIMULATOR_PAGE_RE.test(c.req.path) ? next() : c.notFound()));
 // 原始文件保持旧版字节；含品牌的静态入口也经过同一已发布快照。
 app.use('/*', async (c, next) => {
-  const page = /^\/(pay|proposal|chat)\.html$/i.exec(c.req.path)?.[1]?.toLowerCase() as 'pay' | 'proposal' | 'chat' | undefined;
-  if (!page || !['GET', 'HEAD'].includes(c.req.method)) return next();
+  if (!['GET', 'HEAD'].includes(c.req.method)) return next();
   const binding = currentPack();
-  if (page === 'proposal' && !binding.runtime.documents?.proposal) return c.notFound();
+  const page =
+    isSiteHtml(c.req.path, binding.runtime) || /^\/chat\.html$/i.test(c.req.path) ? c.req.path.slice(1, -5).toLowerCase() : undefined;
+  if (!page) {
+    // 固定界面直接走静态服务；文档 HTML 必须由本租户登记。
+    if (/^\/[^/]+\.html$/i.test(c.req.path) && !/^\/(?:admin|try|web)\.html$/i.test(c.req.path)) return c.notFound();
+    return next();
+  }
   if (binding.brand === null && !sandboxSessionOf(c)) return next();
-  let html = await readFile(path.resolve(`public/${page}.html`), 'utf8');
+  let html = await readFile(path.resolve(`public/${page}.html`), 'utf8').catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (html === null) return c.notFound();
   if (page === 'chat' && sandboxSessionOf(c)) {
     // 体验页的历史、查询参数与 localStorage 都按本沙箱隔离；宿主文件原样输出。
     html = html
