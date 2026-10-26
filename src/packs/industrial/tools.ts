@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { beforeTool } from './turn.js';
 import {
   cleanText,
   createLineOrder,
@@ -182,7 +183,10 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
       sideEffects: ['session', 'order', 'notify'],
       cacheable: false,
       blocksRetry: true,
-      async execute(input, { session, cancel }) {
+      async execute(input, ctx) {
+        const { session, cancel } = ctx;
+        const allowed = beforeTool('create_quote_sheet', input, ctx, sources);
+        if ('reject' in allowed) return JSON.stringify({ error: allowed.reject });
         const args = z.object({ items: z.array(z.object({ code: z.string(), qty: z.number() })).max(30) }).parse(input);
         cancel?.throwIfAborted();
         const result = await createLineOrder(

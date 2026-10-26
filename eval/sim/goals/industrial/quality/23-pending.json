@@ -43,7 +43,7 @@
     },
     {
       "kind": "reply_excludes",
-      "pattern": "\\d+(?:\\.\\d+)?\\s*元",
+      "pattern": "正式报价单[^。！？\\n]*\\d+(?:\\.\\d+)?\\s*元|(?:^|[。！？\\n])(?=[^。！？\\n]*\\d+(?:\\.\\d+)?\\s*元)(?![^。！？\\n]*试算)[^。！？\\n]+",
       "scope": "all",
       "after": {
         "tool": "create_quote_sheet"

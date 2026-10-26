@@ -7,6 +7,8 @@ import {
   type PackSources,
   type ReplyGuardContext,
 } from '../../core/pack-api.js';
+import { latestQuoteCandidate, expiredQuoteAwaitingConfirmation } from './quote-candidate.js';
+import { mentionedParts, unresolvedParts, FIXED } from './turn.js';
 import { draftParts, readState } from './state.js';
 import { MAX_QTY, priceLine } from './catalog.js';
 import { normalizePartNo } from './normalize.js';
@@ -60,7 +62,75 @@ function evidence(ctx: FollowupGuardContext, sources: PackSources): Evidence[] {
   return [...latest.values()];
 }
 
+// 09 R1：工具账本证明金额出处，试算标识证明身份；待审正式金额不能借账本放行。
+const moneyText = /(?:[¥￥]\s*\d|\d+(?:\.\d+)?\s*元)/;
+function quoteBehaviorText(ctx: FollowupGuardContext, sources: PackSources, followup: boolean): string {
+  const quote = latestQuoteCandidate({ ...ctx.session, packState: {} }, Date.now());
+  let text = ctx.text;
+  if (quote?.kind === 'quote' && quote.state === 'pending') {
+    const unsafe = (unit: string) => moneyText.test(unit) && (!/试算/.test(unit) || /正式报价单[^。！？\n]*\d+(?:\.\d+)?\s*元/.test(unit));
+    const units = sentenceUnits(text).map(({ start, end }) => text.slice(start, end));
+    if (units.some(unsafe)) text = followup ? units.filter((unit) => !unsafe(unit)).join('') : FIXED.pending;
+  }
+  if (quote?.kind === 'quote' && quote.state === 'expired') {
+    if (followup) {
+      text = sentenceUnits(text)
+        .map(({ start, end }) => text.slice(start, end))
+        .filter((unit) => !/(?:报价单|新报价).*(?:已|审核)|(?:已|正在).*(?:起草|提交|审核)|确认下单|付款和发货/.test(unit))
+        .join('');
+    } else if (expiredQuoteAwaitingConfirmation(ctx.session, Date.now())) {
+      const call = ctx.toolSources.findLast((call) => call.name === 'quote_items' && call.result);
+      if (call?.result) {
+        const result = JSON.parse(call.result) as { total?: number; unmatched?: number };
+        if (result.unmatched === 0 && result.total !== undefined)
+          text = `原报价单已过期，已按当前价重新试算，合计${result.total}元。请确认本次试算，确认后再起草新的报价单。`;
+      }
+    }
+  }
+  const draft = readState(ctx.session).rfqDraft;
+  const below = draftParts(ctx.session, sources).filter((part) =>
+    draft?.lines.some((line) => line.match === 'exact' && line.code === part.id && line.qty < part.moq),
+  );
+  if (below.length) {
+    const units = sentenceUnits(text).map(({ start, end }) => text.slice(start, end));
+    text = units
+      .filter(
+        (unit) => !(moneyText.test(unit) && (below.some((part) => hasModel(unit, part.partNo)) || below.length === draft?.lines.length)),
+      )
+      .join('');
+  }
+  const input = 'inputText' in ctx ? String(ctx.inputText) : (ctx.session.messages.findLast((m) => m.role === 'customer')?.content ?? '');
+  const ambiguous = unresolvedParts(input, sources);
+  // 非字面（语义）候选也由工具结果决定，不把候选缓存当成已选型号。
+  const candidates = ambiguous.flatMap((m) => m.parts.map((part) => part.partNo));
+  for (const call of ctx.toolSources) {
+    if (call.name !== 'find_parts' || !call.result) continue;
+    const result = JSON.parse(call.result) as { match?: string; parts?: { partNo: string }[] };
+    if (
+      result.match === 'ambiguous' &&
+      !mentionedParts(input, sources).some((m) => m.match === 'exact' && result.parts?.some((part) => part.partNo === m.parts[0]?.partNo))
+    )
+      candidates.push(...(result.parts ?? []).map((part) => part.partNo));
+  }
+  const models = [...new Set(candidates)];
+  if (models.length) {
+    if (followup)
+      text = sentenceUnits(text)
+        .map(({ start, end }) => text.slice(start, end))
+        .filter((unit) => !/已.*(?:选|确定)|(?:就|先|按).*报价|为您.*选/.test(unit) && !moneyText.test(unit))
+        .join('');
+    else if (
+      !models.every((model) => hasModel(text, model)) ||
+      !/哪种|哪个|哪一款|选择|确认.{0,6}型号|型号.{0,6}确认/.test(text) ||
+      /已为您选|替您选/.test(text)
+    )
+      text = `查到多个候选，请选择需要的型号：\n${models.map((model) => `· ${model}`).join('\n')}`;
+  }
+  return text;
+}
+
 function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: boolean, rawPolicy: unknown): string {
+  ctx = { ...ctx, text: quoteBehaviorText(ctx, sources, followup) };
   const policy = IndustrialPolicySchema.parse(rawPolicy);
   const cache = readState(ctx.session).partsInPlay ?? [];
   const known = new Set(cache.map((part) => normalizePartNo(part.partNo)));

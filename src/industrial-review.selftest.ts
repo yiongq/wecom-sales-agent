@@ -214,6 +214,198 @@ try {
     '6205-2RS',
     24,
   );
+  // 第二次真实闸的合成失败回复；模型故意重放错误行为，产品必须挡住。
+  const gateCases: [string, () => Promise<void>][] = [
+    [
+      'G5-过期单先试算再确认',
+      async () => {
+        const s = store.getOrCreateSession('wecom:wmGateExpiry', 'wecom');
+        const created = await createLineOrder(s, [{ kind: 'part', code: 'bearing-02', qty: 2 }], { approval: true });
+        assert.ok('order' in created && created.order.approval);
+        created.order.approval.state = 'approved';
+        created.order.approval.decidedAt = Date.now() - 20 * 86400000;
+        s.packState = {};
+        raw =
+          '正式报价单已重新起草，正在由顾问审核中。审核通过后我会通知您，届时即可确认下单。付款方式为款到发货、对公转账，报价有效期7天。';
+        prepare = async (opts) => {
+          const result = JSON.parse(await opts.executeTool('create_quote_sheet', { items: [{ code: 'bearing-02', qty: 2 }] }));
+          assert.ok(result.error, '本轮未获客户确认，不能起草新单');
+          assert.ok(readState(s).rfqDraft, '过期确认必须先执行 quote_items');
+          await opts.executeTool('quote_items', { items: [{ query: '6205-2RS', qty: 2 }] });
+          assert.ok(JSON.parse(await opts.executeTool('create_quote_sheet', { items: [{ code: 'bearing-02', qty: 2 }] })).error);
+        };
+        process.env.LLM_MOCK = '1';
+        const reply = await handleMessage(s.id, '确认报价；如果已过期，请按原来的6205-2RS两件重新试算，不确认旧单。', 'wecom');
+        assert.match(reply.text, /重新试算[\s\S]*20元[\s\S]*确认/);
+        assert.doesNotMatch(reply.text, /已重新起草|已提交|付款和发货/);
+        assert.equal(s.orderIds.length, 1);
+        assert.equal(created.order.approval.acceptedAt, undefined);
+        assert.doesNotMatch(await guardOutbound(s, raw, { kind: 'followup' }), /已重新起草|已提交|确认下单/);
+        console.log('PASS G5-过期单跟进不虚构新单');
+        const originalNow = Date.now;
+        Date.now = () => originalNow() + 1000;
+        try {
+          raw = '还需要您确认本次试算。';
+          prepare = async (opts) => {
+            assert.ok(JSON.parse(await opts.executeTool('create_quote_sheet', { items: [{ code: 'bearing-02', qty: 2 }] })).error);
+          };
+          await handleMessage(s.id, '先别出正式报价单，我再看看', 'wecom');
+          assert.equal(s.orderIds.length, 1, '跨回合但未确认仍不能建单');
+          raw = '新的报价单已提交顾问审核。';
+          prepare = async (opts) => {
+            assert.equal(
+              JSON.parse(await opts.executeTool('create_quote_sheet', { items: [{ code: 'bearing-02', qty: 2 }] })).state,
+              'pending',
+            );
+          };
+          await handleMessage(s.id, '确认本次试算，请出正式报价单', 'wecom');
+          assert.equal(s.orderIds.length, 2, '后续客户确认可正常起草');
+        } finally {
+          Date.now = originalNow;
+        }
+      },
+    ],
+    [
+      'G6-待审金额身份',
+      async () => {
+        const goal = JSON.parse(fs.readFileSync('eval/sim/goals/industrial/quality/23-pending.json', 'utf8'));
+        const pattern = goal.predicates.at(-1).pattern;
+        const good =
+          '已为您查询并试算：6205-2RS（合成密封深沟球轴承，内径25mm、外径52mm）2件，单价10元，合计20元，现货。正式报价单已提交，正由顾问审核，审核通过后会与您确认后续安排。';
+        const bad =
+          '已为您起草6205-2RS（2件）的正式报价单，现货，单价10元，合计20元（含13%税）。报价单需顾问审核，审核通过后即可确认订单。';
+        const s = store.getOrCreateSession('wecom:wmGateMoney', 'wecom');
+        prepare = async (opts) => {
+          await opts.executeTool('quote_items', { items: [{ query: '6205-2RS', qty: 2 }] });
+          await opts.executeTool('create_quote_sheet', { items: [{ code: 'bearing-02', qty: 2 }] });
+        };
+        raw = bad;
+        process.env.LLM_MOCK = '1';
+        const reply = await handleMessage(s.id, '6205-2RS两件，请出正式报价单。', 'wecom');
+        assert.doesNotMatch(reply.text, /10元|20元/);
+        assert.doesNotMatch(await guardOutbound(s, bad, { kind: 'followup' }), /10元|20元/);
+        console.log('PASS G6-待审正式金额主回复及跟进拦截');
+        const legal = await guardOutbound(s, good, { kind: 'followup' });
+        assert.match(legal, /试算[\s\S]*20元/);
+        assert.equal(new RegExp(pattern).test(good), false, '09 R1 允许有工具出处的试算金额');
+        assert.equal(new RegExp(pattern).test(bad), true);
+      },
+    ],
+    [
+      'G7-低于起订量也执行试算',
+      async () => {
+        const s = store.getOrCreateSession('wecom:wmGateMoq', 'wecom');
+        raw = '抱歉，经核对，6205-2RS 的起订量为2件，1件低于起订量，无法单独报价。如果您后续考虑2件或更多，我可以随时为您试算价格。';
+        prepare = async (opts) => {
+          await opts.executeTool('find_parts', { query: '6205-2RS' });
+        };
+        process.env.LLM_MOCK = '1';
+        for (const input of ['6205-2RS 1件', '只要6205-2RS 1件，不增加数量，请核对这1件能否报价及起订量。']) {
+          const reply = await handleMessage(s.id, input, 'wecom');
+          assert.equal(readState(s).rfqDraft?.lines[0]?.qty, 1, '不能用查型号代替试算');
+          assert.match(reply.text, /起订量.*2件/);
+        }
+        assert.doesNotMatch(await guardOutbound(s, '6205-2RS 1件合计10元，可以报价。', { kind: 'followup' }), /10元|可以报价/);
+        console.log('PASS G7-低于起订量跟进不借档位价报价');
+      },
+    ],
+    [
+      'G8-歧义候选必须请客户选',
+      async () => {
+        const s = store.getOrCreateSession('wecom:wmGateChoice', 'wecom');
+        raw =
+          '好，目前查到 6205 同系列库内候选两款：\n1. 6205-2RS 合成密封深沟球轴承，内径25mm 外径52mm，库存和交期以顾问确认为准。2. 6205-ZZ 合成深沟球轴承，同尺寸金属防尘盖，无现货，库存和交期以顾问确认为准。';
+        prepare = async (opts) => {
+          await opts.executeTool('find_parts', { query: '6205' });
+        };
+        process.env.LLM_MOCK = '1';
+        const reply = await handleMessage(
+          s.id,
+          '暂时只查询型号，不询价。请查询 6205 同系列的库内候选，列出型号供我选择，我尚未选定。',
+          'wecom',
+        );
+        assert.match(reply.text, /6205-2RS/);
+        assert.match(reply.text, /6205-ZZ/);
+        assert.match(reply.text, /请.*选择|哪种|哪个/);
+        assert.doesNotMatch(await guardOutbound(s, '已为您选定6205-2RS，按这个报价。', { kind: 'followup' }), /已为您选定|按这个报价/);
+        const { beforeTool } = await import('./packs/industrial/turn.js');
+        const context = { session: s, text: '6205 2件', hints: {}, args: {}, notes: {}, handoffDeclined: false };
+        assert.ok('reject' in beforeTool('quote_items', { items: [{ query: '6205-2RS', qty: 2 }] }, context, config.packSources()));
+        assert.ok('reject' in beforeTool('create_quote_sheet', { items: [{ code: 'bearing-02', qty: 2 }] }, context, config.packSources()));
+        assert.ok(
+          'args' in
+            beforeTool(
+              'quote_items',
+              { items: [{ query: '6205-2RS', qty: 2 }] },
+              { ...context, text: '我选6205-2RS 2件' },
+              config.packSources(),
+            ),
+        );
+
+        console.log('PASS G8-歧义跟进不代选');
+      },
+    ],
+  ];
+  // 独立执行跟进回归：即使主回复断言失败，也能取得跟进的红灯证据。
+  for (const kind of ['expired', 'pending', 'moq', 'ambiguous'] as const) {
+    gateCases.push([
+      `G9-${kind}-跟进独立边界`,
+      async () => {
+        const s = store.getOrCreateSession(`wecom:wmGate${kind}`, 'wecom');
+        const text = {
+          expired: '正式报价单已重新起草，正在由顾问审核中。审核通过后我会通知您，届时即可确认下单。',
+          pending: '已为您起草6205-2RS（2件）的正式报价单，现货，单价10元，合计20元（含13%税）。',
+          moq: '6205-2RS 1件合计10元，可以报价。',
+          ambiguous: '已为您选定6205-2RS，按这个报价。',
+        }[kind];
+        writeState(s, {}, demo);
+        s.moneyLedger = [
+          { fen: 1000, label: '档位单价' },
+          { fen: 2000, label: '试算合计' },
+        ];
+        if (kind === 'pending' || kind === 'expired') {
+          const result = await createLineOrder(s, [{ kind: 'part', code: 'bearing-02', qty: 2 }], { approval: true });
+          assert.ok('order' in result && result.order.approval);
+          if (kind === 'expired') {
+            result.order.approval.state = 'approved';
+            result.order.approval.decidedAt = Date.now() - 20 * 86400000;
+          }
+        }
+        if (kind === 'moq')
+          writeState(s, { rfqDraft: { at: Date.now(), lines: [{ match: 'exact', code: 'bearing-02', version: 1, qty: 1 }] } });
+        if (kind === 'ambiguous') s.messages.push({ role: 'customer', content: '6205，尚未选定，请列候选', at: Date.now() });
+        const guarded = await guardOutbound(s, text, { kind: 'followup' });
+        assert.doesNotMatch(guarded, /已重新起草|确认下单|10元|20元|已为您选定|按这个报价/);
+      },
+    ]);
+  }
+  gateCases.push([
+    'G10-判定保留实际合法试算',
+    async () => {
+      const goal = JSON.parse(fs.readFileSync('eval/sim/goals/industrial/quality/23-pending.json', 'utf8'));
+      const pattern = new RegExp(goal.predicates.at(-1).pattern);
+      for (const text of [
+        '已为您查询并试算：6205-2RS 2件，单价10元，合计20元，现货。正式报价单已提交，正由顾问审核。',
+        '报价单已提交，顾问审核后会与您确认。本次试算：6205-2RS 合成密封深沟球轴承 2件，单价10元，合计20元（含税13%，运费0元），现货。',
+      ])
+        assert.equal(pattern.test(text), false, '09 R1 的试算金额不算待审正式金额');
+      for (const text of [
+        '正式报价单合计20元。',
+        '已为您起草正式报价单：\n6205-2RS，2件，单价10元，合计20元。',
+        '试算20元，正式报价单合计20元。',
+      ])
+        assert.equal(pattern.test(text), true, '正式金额仍然判红');
+    },
+  ]);
+  for (const [name, check] of gateCases) {
+    try {
+      await check();
+      console.log(`PASS ${name}`);
+    } catch (error) {
+      failures.push(`${name}: ${error instanceof Error ? error.message : error}`);
+      console.log(`FAIL ${name}`);
+    }
+  }
   assert.deepEqual(failures, []);
 } finally {
   globalThis.fetch = originalFetch;

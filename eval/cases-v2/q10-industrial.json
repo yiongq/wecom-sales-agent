@@ -94,16 +94,6 @@
         },
         "script": [
           {
-            "toolCalls": [
-              {
-                "name": "find_parts",
-                "args": {
-                  "query": "6205"
-                }
-              }
-            ]
-          },
-          {
             "content": "候选{{call:find_parts.parts.0.partNo}}、{{call:find_parts.parts.1.partNo}}，请选择具体型号。"
           }
         ]
@@ -657,21 +647,6 @@
           }
         },
         "script": [
-          {
-            "toolCalls": [
-              {
-                "name": "quote_items",
-                "args": {
-                  "items": [
-                    {
-                      "query": "6205-2RS",
-                      "qty": 1
-                    }
-                  ]
-                }
-              }
-            ]
-          },
           {
             "content": "未达起订量{{call:quote_items.lines.0.moq}}件。"
           }
