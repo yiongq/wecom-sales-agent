@@ -300,6 +300,8 @@ try {
   const accounts = await import('./auth/accounts.js');
   const { csrfFor } = await import('./auth/session.js');
   const cookies = new Map<string, string>();
+  // 全程共用一条 PGlite 连接：切角色前先排空写队列，否则 CI 慢时前面会话的写入会以 agent_platform 执行（42501）。
+  assert.deepEqual((await store.drainStore(30_000)).undrained, [], '切换角色前必须排空写队列');
   for (const role of ['agent', 'viewer'] as const) {
     await t.pg.exec('SET ROLE agent_platform');
     const made = await accounts.createUser(t.db, {
