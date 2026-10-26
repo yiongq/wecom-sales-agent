@@ -21,6 +21,7 @@ const kinds: Record<HandoffKind, true> = {
   claimed: true,
   consent: true,
   agent: true,
+  pack: true,
 };
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'seed-demo-selftest-'));

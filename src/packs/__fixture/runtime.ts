@@ -1,6 +1,8 @@
 // 08 R14：只在 PACK_FIXTURES=1 时注册的证明包，保留 04 R16 的工具、阶段与护栏。
 import {
   deepFreeze,
+  getAnyOrder,
+  type ShapePolicy,
   createLineOrder,
   quoteLinkAllowed,
   orderDisplay,
@@ -107,11 +109,13 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
     tags: z.array(widgetText),
     tiers: z.array(z.strictObject({ minQty: z.number().int().positive(), unitPrice })).optional(),
     moq: z.number().int().positive().optional(),
+    inStock: z.boolean().optional(),
   });
   // 08 R4：状态槽两个键——inspections 计核验次数（重置清掉），tier 记客户的核验档位（重置保留）
   const StateSchema = z.strictObject({
     inspections: z.number().int().min(0).optional(),
     tier: z.string().min(1).max(20).optional(),
+    quoteAccepted: z.boolean().optional(),
   });
   const profileFields = [
     { key: 'color', label: '颜色' },
@@ -134,7 +138,7 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
       },
     ],
     money: { minimumAmount: 0.01, precisionTolerance: 0.5, decimals: true },
-    sessionState: { schema: StateSchema, resetKeys: ['inspections'] },
+    sessionState: { schema: StateSchema, resetKeys: ['inspections', 'quoteAccepted'] },
     profileFields,
     // 只发业务字段；attrs 只发声明过的键（核心还会再筛一次）
     profileForPrompt(profile) {
@@ -205,7 +209,9 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
       mockOpening: '请告诉我需要核验的方盒名称与单位。',
       quickReplies: [],
       preamble: '# {brandName} · 方盒核验说明\n\n{identityLine}。本说明只使用合成资料，用于验证方盒核验流程。\n\n',
-      pages: {},
+      pages: {
+        quote: [{ legacy: '方盒核验社', template: '{brandName}', context: 'html-text' }],
+      },
     },
     sopSections: sopSections.map((s) => ({ ...s })),
     contractRules: () => [
@@ -426,7 +432,62 @@ export function createFixtureQuoteRuntime(sources: PackSources): PackRuntime {
   const original = runtime.tools.find((tool) => tool.def.function.name === 'fixture_order')!;
   return {
     ...runtime,
-    quotes: { approval: true, validDays: () => 2, autoApprovable: (order) => order.totalFen <= 1000 },
+    quotes: {
+      approval: true,
+      validDays: () => 2,
+      autoApprovable: (order) =>
+        order.totalFen <= 10000 &&
+        order.lines.every((line) => {
+          const item = ((line.version === undefined ? null : sources.catalogItemAt(line.kind, line.code, line.version)) ??
+            sources.currentCatalog().items[line.kind]?.find((item) => (item as Record<string, unknown>).id === line.code)) as Record<
+            string,
+            unknown
+          > | null;
+          return item?.inStock === true;
+        }),
+    },
+    preModel({ text, session }) {
+      if (text.includes('非标'))
+        return { text: '非标需求由顾问继续确认。', fixedId: 'fixture.nonstandard', handoff: { reason: '非标方盒需要人工核验' } };
+      if (text === '确认报价') {
+        const order = session.orderIds
+          .map(getAnyOrder)
+          .filter((order) => order !== undefined)
+          .find((order) => 'v' in order && order.sessionId === session.id && quoteLinkAllowed(session, `/quote/${order.id}`));
+        if (order)
+          return {
+            text: '已记下您的报价确认，顾问会安排后续事项。',
+            fixedId: 'fixture.accepted',
+            statePatch: { quoteAccepted: true },
+            notify: { reason: 'quote_accepted', orderId: order.id },
+          };
+      }
+      return null;
+    },
+    fixedReplies: [
+      ['fixture.nonstandard', '非标需求由顾问继续确认。'],
+      ['fixture.accepted', '已记下您的报价确认，顾问会安排后续事项。'],
+      ['fixture.pending', '报价单已提交，等顾问审核。'],
+      ['fixture.rejected', '报价单需要调整，顾问会继续为您确认。'],
+      ['fixture.withdrawn', '报价单已撤回，请联系顾问确认。'],
+    ].map(([id, text]) => ({
+      id: id!,
+      source: 'src/packs/__fixture/runtime.ts',
+      kind: 'plain' as const,
+      producedBy: { outside: '包的确定性回复或报价通知' },
+      samples: () => [{ mode: 'template' as const, text: text! }],
+    })),
+    onQuoteDecided: (_session, _order, event) => (event === 'approved' ? 'closing' : null),
+    followupGate: (session, stage) =>
+      stage !== 'quote' ||
+      !session.orderIds
+        .map(getAnyOrder)
+        .filter((order) => order !== undefined)
+        .some(
+          (order) =>
+            'v' in order && order.sessionId === session.id && order.approval?.state === 'pending' && order.status === 'pending_payment',
+        ),
+    followupTemplates: { ...runtime.followupTemplates, idleMinutes: { quote: 1, closing: 1 } },
     engineHooks: {
       ...runtime.engineHooks,
       quoteWithdrawnText: () => '报价单已撤回，请联系顾问确认。',
@@ -455,6 +516,34 @@ export function createFixtureQuoteRuntime(sources: PackSources): PackRuntime {
             amounts: () => [],
           },
     ),
+  };
+}
+
+/** 注册的证明装配保留 08 的 fixture_order；09 专用工具独立命名，旧 case 不换语义。 */
+export function createFixtureProofRuntime(sources: PackSources): PackRuntime {
+  const base = createFixtureRuntime(sources);
+  const quote = createFixtureQuoteRuntime(sources);
+  const orderTool = quote.tools.find((tool) => tool.def.function.name === 'fixture_order')!;
+  return {
+    ...quote,
+    thresholds: {
+      shape: {
+        richMaxLines: 6,
+        plainMaxLines: 3,
+        maxChars: 1000,
+        richTools: ['fixture_quote_order', 'fixture_quote'],
+        asksPrice: () => false,
+        isClosingTurn: () => false,
+        isRouteTitleLine: () => false,
+        isClosingLine: () => false,
+        proposalSent: () => false,
+        droppable: () => null,
+      } satisfies ShapePolicy,
+    },
+    tools: [
+      ...base.tools,
+      { ...orderTool, def: { ...orderTool.def, function: { ...orderTool.def.function, name: 'fixture_quote_order' } } },
+    ],
   };
 }
 

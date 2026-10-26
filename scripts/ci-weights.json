@@ -129,5 +129,7 @@
   "src/core/tools/registry.selftest.ts": 1,
   "src/shared/typography.selftest.ts": 1,
   "hang.cjs": 1,
-  "fail.cjs": 1
+  "fail.cjs": 1,
+  "src/quote-page.selftest.ts": 3,
+  "src/quote-replies.selftest.ts": 3
 }

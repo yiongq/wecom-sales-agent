@@ -16,6 +16,7 @@ export type HandoffKind =
   | 'promise' // 模型许诺改行程（CUSTOM_PROMISE），删句后转人工
   | 'claimed' // 回复里说了转接、引擎补转
   | 'consent' // 客户不同意或撤回同意处理敏感信息（R23）
+  | 'pack' // 行业包的确定性规则触发
   | 'agent'; // 顾问在后台接手，或旧工作台点了转人工
 
 /** 转人工类型的全集（键就是 HandoffKind，少写一个编译不过）：从库里读回的 handoffLog 要先过 isHandoffKind，才进统计 */
@@ -31,6 +32,7 @@ const HANDOFF_KIND_SET = {
   claimed: true,
   consent: true,
   agent: true,
+  pack: true,
 } as const satisfies Record<HandoffKind, true>;
 export const isHandoffKind = (k: string): k is HandoffKind => Object.hasOwn(HANDOFF_KIND_SET, k);
 

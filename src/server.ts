@@ -27,7 +27,15 @@ import path from 'node:path';
 import { Hono } from 'hono';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { isLineOrder, orderDisplay, orderTotalFen, type AnyOrder, type PublicLineOrder } from './core/order-view.js';
+import {
+  isLineOrder,
+  orderDisplay,
+  orderTotalFen,
+  quoteState,
+  quoteValidUntil,
+  type AnyOrder,
+  type PublicLineOrder,
+} from './core/order-view.js';
 import { handleMessage, notifyPaid, promptPrefix, sopFileText } from './engine.js';
 import { enterHandoff, loadHotels, loadRoutes, quoteFor, routeForProposal } from './tools.js';
 import { HANDOFF_REASON, terminalStageKey } from './handoff/record.js';
@@ -852,6 +860,32 @@ app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
 function withHead(html: string, head: string): string {
   return html.replace(/<title>[\s\S]*?<\/title>/, () => head);
 }
+
+// 报价页只属于声明报价能力的租户；订单号为凭据，重置后沿用存储的不可读集合。
+function publicQuote(id: string): import('./core/order-view.js').PublicQuote | null {
+  const { runtime, brand } = currentPack();
+  const order = getAnyOrder(id);
+  if (!runtime.quotes || !order || !isLineOrder(order) || !order.approval) return null;
+  const state = quoteState(order, Date.now());
+  return {
+    id: order.id,
+    state,
+    brandName: (brand ?? runtime.defaultBrand).brandName,
+    ...(state === 'approved' || state === 'paid' ? { display: orderDisplay(order) } : {}),
+    ...(state === 'approved' ? { validUntil: quoteValidUntil(order) } : {}),
+  };
+}
+app.get('/api/quotes/:orderId', lookupLimit, (c) => {
+  const quote = publicQuote(c.req.param('orderId'));
+  return quote ? c.json(quote) : c.json({ error: 'quote not found' }, 404);
+});
+app.get('/quote/:orderId', lookupLimit, async (c) => {
+  const quote = publicQuote(c.req.param('orderId'));
+  if (!currentPack().runtime.quotes) return c.notFound();
+  const binding = currentPack();
+  const html = renderBrandPage(await readFile(path.resolve('public/quote.html'), 'utf8'), 'quote', binding.runtime, binding.brand);
+  return c.html(html, quote ? 200 : 404);
+});
 
 // 支付页：/pay/:orderId 直接回 pay.html，页面 JS 从路径取 orderId
 app.get('/pay/:orderId', async (c) => {

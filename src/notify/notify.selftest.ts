@@ -90,7 +90,7 @@ async function parentMain(): Promise<never> {
   const texts = Object.values(HANDOFF_NOTICE_TEXT);
   check(
     '类型的中文：每一类都有，不用禁用的状态词',
-    texts.length === 16 && texts.every((t) => t && !forbidden.some((w) => t.includes(w))),
+    texts.length === 17 && texts.every((t) => t && !forbidden.some((w) => t.includes(w))),
     json(HANDOFF_NOTICE_TEXT),
   );
 

@@ -325,7 +325,7 @@ export async function engineRuntime(
           for (const o of seed.orders ?? []) {
             if ('lines' in o) {
               // 08 R11：通用单的种子只给条目和数量，经包的 priceLine 建；状态建好后再改成种子要的
-              const result = await createLineOrder(session, o.lines);
+              const result = await createLineOrder(session, o.lines, { approval: false });
               if ('rejected' in result) throw new Error(`种子订单被包拒绝：${JSON.stringify(result.rejected)}`);
               if (o.status === 'paid') store.markOrderPaid(result.order.id);
               else if (o.status !== 'pending_payment') {

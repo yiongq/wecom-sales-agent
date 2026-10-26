@@ -95,6 +95,15 @@ function quoteFor(orderId: string, actor: Actor): LineOrder & { approval: NonNul
   return order as LineOrder & { approval: NonNullable<LineOrder['approval']> };
 }
 
+/** 工作台动作的同步写入段：与订单快照同事务，不额外发送。 */
+function quoteDecided(order: LineOrder, event: 'approved' | 'rejected' | 'withdrawn' | 'superseded'): void {
+  const session = getSession(order.sessionId);
+  if (!session) return;
+  const stage = currentPack().runtime.onQuoteDecided?.(session, order, event);
+  if (stage != null) session.stage = stage;
+  saveSession(session, false);
+}
+
 async function quoteCommitted(order: LineOrder): Promise<void> {
   if (!(await awaitCommit(order.sessionId)).persisted) throw new StoreLaggingError(order.sessionId);
 }
@@ -125,9 +134,11 @@ export async function approveQuote(orderId: string, actor: Actor): Promise<LineO
   order.confirmedAt = now;
   order.confirmedBy = who(actor);
   for (const old of listAnyOrders()) {
-    if (old.id !== order.id && old.sessionId === order.sessionId && isLineOrder(old) && old.approval?.state === 'approved')
-      supersedeOrder(old.id, order.id);
+    if (old.id !== order.id && old.sessionId === order.sessionId && isLineOrder(old) && old.approval?.state === 'approved') {
+      if (supersedeOrder(old.id, order.id)) quoteDecided(old, 'superseded');
+    }
   }
+  quoteDecided(order, 'approved');
   audit(order, actor, { action: 'quote.approve', diff: { totalFen: orderTotalFen(order) } });
   saveOrder(order);
   await quoteCommitted(order);
@@ -175,6 +186,7 @@ export async function rejectQuote(orderId: string, actor: Actor, reason: string)
       saveSession(session, false);
     }
   }
+  quoteDecided(order, 'rejected');
   saveOrder(order);
   await quoteCommitted(order);
   if (getAnyOrder(order.id) === order && getSession(order.sessionId)?.orderIds.includes(order.id))
@@ -229,6 +241,7 @@ export function cancelOrder(orderId: string, actor: Actor, reason: string): AnyO
     o.approval = { ...o.approval, state: 'withdrawn', decidedAt: Date.now(), decidedBy: who(actor), reason: cleanText(reason.trim(), 120) };
     o.status = 'cancelled';
     o.cancelReason = o.approval.reason;
+    quoteDecided(o, 'withdrawn');
     audit(o, actor, { action: 'quote.withdraw', diff: { reason: o.approval.reason } });
     saveOrder(o);
     return o;

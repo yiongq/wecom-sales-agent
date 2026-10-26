@@ -137,6 +137,7 @@ export const HANDOFF_NOTICE_TEXT: Readonly<Record<HandoffNoticeKind, string>> = 
   claimed: 'AI 答应了转接顾问',
   consent: '客户不同意处理敏感信息，或要求撤回、删除',
   agent: '工作台转给了顾问',
+  pack: '行业规则需要顾问处理',
   order_unconfirmed: '有订单等你确认价格',
   quote_pending: '有报价单等你审核',
   quote_accepted: '客户确认了报价单，等你安排付款发货',

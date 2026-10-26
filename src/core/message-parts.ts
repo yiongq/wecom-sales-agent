@@ -14,3 +14,17 @@ export function partsOf(text: string, base = publicBase(), session?: Session): M
   }
   return parts;
 }
+
+/** R14 / 不变量2：在外发记录上留当时的报价状态，历史链接不会被后来撤回误判。 */
+export function recordQuoteStates(message: { content: string }, session: Session): void {
+  const states: Record<string, 'approved'> = {};
+  for (const { raw } of linkCandidates(message.content)) {
+    const path = ownLinkPath(raw, publicBase());
+    const def = path === null ? undefined : linkDef(path);
+    if (def?.linkKind === 'quote' && def.allowed(session, path!)) {
+      const id = /^\/quote\/(ord_[0-9a-f]{24})$/.exec(path!)?.[1];
+      if (id) states[id] = 'approved';
+    }
+  }
+  if (Object.keys(states).length) Object.assign(message, { quoteStates: states });
+}

@@ -256,6 +256,10 @@ export interface PrefetchResult {
 /** 核心继续负责身份补句、清理、消息追加、保存与结束 trace。 */
 export interface DeterministicReply {
   text: string;
+  fixedId?: string;
+  handoff?: { reason: string };
+  notify?: { reason: 'quote_accepted'; orderId: string };
+  statePatch?: Record<string, unknown>;
 }
 
 export interface TurnToolContext extends ToolContext {
@@ -656,7 +660,7 @@ export interface ProfileExtractionSources {
 
 export { partsOf } from './message-parts.js';
 export { linkWhitelistStep } from './guards/link-whitelist.js';
-export { quoteLinkAllowed } from './site-links.js';
+export { getAnyOrder, quoteLinkAllowed } from './site-links.js';
 
 /**
  * 第 18 步收口实际工具、主回复与跟进 context；第 20 步补齐客户出口品牌模板。
@@ -766,6 +770,8 @@ export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
     autoApprovable?(order: LineOrder, session: Session): boolean;
   };
   siteLinks?: readonly SiteLinkDef[];
+  onQuoteDecided?(session: Session, order: LineOrder, event: 'approved' | 'rejected' | 'withdrawn' | 'superseded'): SalesStage | null;
+  followupGate?(session: Session, stage: SalesStage): boolean;
   policy?: PackPolicy;
   defaultBrand: BrandProfile;
   legacy: T['LegacyTexts'];

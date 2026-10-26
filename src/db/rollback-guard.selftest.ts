@@ -102,11 +102,11 @@ case "$*" in
   *"inspect --format {{.Image}}"*) [ "\${FAKE_RUNNING:-4}" = missing ] && exit 1; echo sha256:running ;;
   *"container ls"*) [ "\${FAKE_CONTAINER_DOWN:-0}" = 0 ] || exit 1; [ "\${FAKE_SANDBOX_CONTAINER:-absent}" = absent ] || echo placeholder; exit 0 ;;
   *"sandbox.ts purge --all"*) [ "\${FAKE_PURGE_FAIL:-0}" = 0 ] || { echo "[sandbox] sandbox_tenant_lock_held" >&2; exit 3; }; echo "purge image=\${APP_IMAGE:-missing}" >> "$FAKE_LOG"; touch "$FAKE_PURGED" ;;
-  *pg-backend.ts*|*registry.ts*|*pack-api.ts*|*runtime.ts*|*0015_order_refund_status.sql*|*order-view.ts*)
+  *pg-backend.ts*|*registry.ts*|*pack-api.ts*|*runtime.ts*|*0015_order_refund_status.sql*|*order-view.ts*|*site-links.ts*)
     phase="\${FAKE_TARGET:-3}"
     case "$*" in *sha256:running*) phase="\${FAKE_RUNNING:-4}" ;; esac
     [ "$phase" = error ] && exit 125
-    case "$*" in *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *pack-api.ts*) need=4 ;; *runtime.ts*) need=5 ;; *order-view.ts*) need=8 ;; *) need=7 ;; esac
+    case "$*" in *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *pack-api.ts*) need=4 ;; *runtime.ts*) need=5 ;; *order-view.ts*) need=8 ;; *site-links.ts*) need=9 ;; *) need=7 ;; esac
     [ "$phase" -ge "$need" ] ;;
   *to_regclass*public.kb_chunks*)
     case "\${FAKE_KB_SCHEMA-t}" in down) exit 1 ;; *) echo "\${FAKE_KB_SCHEMA-t}" ;; esac ;;
@@ -146,6 +146,9 @@ case "$*" in
   *"from public.sop_versions where"*)
     printf '%s' "\${!#}" > "$FAKE_QUERY.published"
     echo "\${FAKE_PUBLISHED_BRAND-\${FAKE_BRAND-f}}" ;;
+  *"data->'approval' IS NOT NULL"*)
+    printf '%s' "\${!#}" > "$FAKE_QUERY.quote"
+    case "\${FAKE_QUOTE:-f}" in down) exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "\${FAKE_QUOTE:-f}" ;; esac ;;
   *to_regclass*public.orders*)
     case "\${FAKE_REFUND_SCHEMA:-f}" in down) exit 1 ;; *) echo "\${FAKE_REFUND_SCHEMA:-f}" ;; esac ;;
   *"from public.orders where status in"*)
@@ -165,7 +168,7 @@ esac`,
 cat >/dev/null
 echo "curl $*" >> "$FAKE_LOG"
 [ "\${FAKE_HEALTH_FAIL:-}" = 1 ] && [ ! -f "$FAKE_ROLLED_BACK" ] && exit 7
-printf '{"revision":"%s","sandboxes":0,"config":{"catalogVersioned":%s}}' "\${FAKE_REVISION:-fixture}" "\${FAKE_CATALOG_VERSIONED:-false}"`,
+printf '{"revision":"%s","role":"host","sandboxes":0,"config":{"catalogVersioned":%s}}' "\${FAKE_REVISION:-fixture}" "\${FAKE_CATALOG_VERSIONED:-false}"`,
   );
   fake(
     'git',
@@ -177,11 +180,12 @@ case "$1" in
     case "$3" in
       *pg-backend.ts) case "$3" in *v01:*) exit 1 ;; esac ;;
       *registry.ts) case "$3" in *v01:*|*v02:*) exit 1 ;; esac ;;
-      *pack-api.ts) case "$3" in *v04:*|*v06:*|*v07:*|*v08:*) exit 0 ;; *) exit 1 ;; esac ;;
-      *runtime.ts) case "$3" in *v06:*|*v07:*|*v08:*) exit 0 ;; *) exit 1 ;; esac ;;
-      *0015_order_refund_status.sql) case "$3" in *v07:*|*v08:*) exit 0 ;; *) exit 1 ;; esac ;;
-      *order-view.ts) case "$3" in *v08:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *pack-api.ts) case "$3" in *v04:*|*v06:*|*v07:*|*v08:*|*v09:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *runtime.ts) case "$3" in *v06:*|*v07:*|*v08:*|*v09:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *0015_order_refund_status.sql) case "$3" in *v07:*|*v08:*|*v09:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *order-view.ts) case "$3" in *v08:*|*v09:*) exit 0 ;; *) exit 1 ;; esac ;;
     esac ;;
+  ls-tree) case "$*" in *v09*) echo src/core/site-links.ts ;; esac ;;
   archive) tar -cf - package.json Dockerfile deploy src ;;
   *) exit 98 ;;
 esac`,
@@ -516,11 +520,7 @@ exit 0`,
   r = guard('pre-07', { FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 'f' });
   check('07：没有退款订单放行', r.code === 0, r.out);
   r = guard('side1:prev', { FAKE_TARGET: '7', FAKE_REFUND_SCHEMA: 'down' });
-  check(
-    '07：目标已有迁移标记不查询退款数据',
-    r.code === 0 && !r.log.includes("to_regclass('public.orders')") && !r.log.includes("status in ('refund_pending', 'refunded')"),
-    r.out,
-  );
+  check('07：目标已有迁移标记不查询退款数据', r.code === 0 && !r.log.includes("status in ('refund_pending', 'refunded')"), r.out);
   r = guard('pre-07', { FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 'hang', FAKE_RUNNING: '7', FAKE_TIMEOUT_MS: '100' });
   check('07：退款查询挂住有时限，退出 8', r.code === 8 && r.elapsed < 4000, r.out);
 
@@ -567,7 +567,7 @@ exit 0`,
       `08：${label}部署旧 tag，9 转 1、原样透出、rsync 前拒绝`,
       d.code === 1 &&
         d.out.includes(pre08.out.trim()) &&
-        d.out.includes('08 之前的版本，非旅游数据回滚检查拒绝部署（服务器上什么都没动）') &&
+        d.out.includes('旧版本，非旅游数据或报价单回滚检查拒绝部署（服务器上什么都没动）') &&
         !d.log.includes('rsync '),
       d.out,
     );
@@ -585,7 +585,7 @@ exit 0`,
       `08：${label}自动回滚，9 转 1、原样透出、不启动 prev`,
       auto.code === 1 &&
         auto.out.includes(r.out.trim()) &&
-        auto.out.includes('非旅游数据回滚检查拒绝，没有自动回滚，服务当前不可用！按上面的步骤人工处理') &&
+        auto.out.includes('非旅游数据或报价单回滚检查拒绝，没有自动回滚，服务当前不可用！按上面的步骤人工处理') &&
         !fs.existsSync(rolledBack),
       auto.out,
     );
@@ -646,7 +646,7 @@ exit 0`,
       !r.log.includes('docker run ') &&
         !r.log.includes('channel_accounts') &&
         !r.log.includes('information_schema.columns') &&
-        !r.log.includes("to_regclass('public.orders')") &&
+        !r.log.includes("status in ('refund_pending', 'refunded')") &&
         !r.log.includes('sandbox.ts purge --all'),
       r.log,
     );
@@ -676,7 +676,11 @@ exit 0`,
     r.log,
   );
   r = guard('side1:prev', { FAKE_TARGET: '8', FAKE_NONTRAVEL_TENANTS: 't', FAKE_KB_SCHEMA: 'down' });
-  check('08：目标已有 order-view.ts 不执行四项查询', r.code === 0 && !r.log.includes('psql'), r.log + r.out);
+  check(
+    '08：目标已有 order-view.ts 不执行四项查询',
+    r.code === 0 && !r.log.includes("data->>'v' = '2'") && !r.log.includes("pack_id <> 'travel'"),
+    r.log + r.out,
+  );
   r = guard('side1:prev', { FAKE_TARGET: '7', FAKE_RUNNING: '8', FAKE_KB_SCHEMA: 'f' });
   check('08：kb_chunks 不存在按零处理，不查询缺失表', r.code === 0 && !r.log.includes('from public.kb_chunks'), r.log + r.out);
   for (const [, variable, label] of nontravelRisks) {
@@ -723,6 +727,58 @@ exit 0`,
   r = guard('pre-05', { FAKE_NONTRAVEL_TENANTS: 't', FAKE_TENANCY_SCHEMA: 't', FAKE_SANDBOX_ROWS: 't' });
   check('08：非旅游风险在沙箱 purge 前拒绝，不删除数据', r.code === 9 && !r.log.includes('sandbox.ts purge --all'), r.log + r.out);
   {
+    // 09：真实脚本的 SQL 在进程内 PG 上逐状态执行；手动和自动都过同一 guard。
+    const quoteEnv = { FAKE_REFUND_SCHEMA: 't', FAKE_QUOTE: 't', FAKE_RUNNING: '9' };
+    for (const target of ['pre-09', 'side1:prev']) {
+      r = guard(target, { ...quoteEnv, FAKE_TARGET: '8' });
+      check('09：带报价拒绝9并明确两条出路', r.code === 9 && r.out.includes('前滚修复，或者回滚到另一个含 09 的 tag'), r.out);
+    }
+    r = deploy('v08', quoteEnv);
+    check('09：手动部署08在rsync之前拒绝', r.code === 1 && r.log.includes('pre-09 side1 3999') && !r.log.includes('rsync '), r.log + r.out);
+    r = deploy('v09', { ...quoteEnv, FAKE_TARGET: '8', FAKE_HEALTH_FAIL: '1' });
+    check(
+      '09：健康失败自动退08也被拒绝',
+      r.code === 1 && r.out.includes('没有自动回滚') && r.out.includes('前滚修复') && !fs.existsSync(rolledBack),
+      r.out,
+    );
+    r = guard('pre-09', { ...quoteEnv, FAKE_QUOTE: 'f' });
+    check('09：无报价放行', r.code === 0, r.out);
+    r = guard('side1:prev', { ...quoteEnv, FAKE_TARGET: '9' });
+    check('09：目标有site-links标记不查报价', r.code === 0 && !r.log.includes("data->'approval'"), r.out);
+    for (const state of ['down', 'unexpected', 'hang']) {
+      r = guard('pre-09', { ...quoteEnv, FAKE_QUOTE: state, FAKE_TIMEOUT_MS: '100' });
+      check('09：查询故障从严拒绝且有时限', r.code === 9 && r.elapsed < 5000, r.out);
+    }
+    {
+      const pg = new PGlite();
+      try {
+        await pg.exec('create table orders(status text, data jsonb, void_reason text)');
+        const sql = fs.readFileSync(`${queryFile}.quote`, 'utf8');
+        for (const [status, approval, voidReason, decidedAt] of [
+          ['pending_payment', 'pending', null],
+          ['pending_payment', 'approved', null, Date.now()],
+          ['pending_payment', 'approved', null, 0], // 过期的批准仍留在历史里
+          ['paid', 'approved', null],
+          ['cancelled', 'rejected', null],
+          ['cancelled', 'withdrawn', null],
+          ['superseded', 'approved', null],
+          ['pending_payment', 'approved', 'reset'],
+        ]) {
+          await pg.query('insert into orders values ($1,$2,$3)', [
+            status,
+            JSON.stringify({ approval: { state: approval, ...(decidedAt === undefined ? {} : { decidedAt }) } }),
+            voidReason,
+          ]);
+          check('09：所有审批状态和重置历史均拒绝', Object.values((await pg.query<Record<string, boolean>>(sql)).rows[0]!)[0] === true);
+          await pg.exec('delete from orders');
+        }
+        await pg.exec(`insert into orders values ('paid','{}',null)`);
+        check('09：SQL无审批放行', Object.values((await pg.query<Record<string, boolean>>(sql)).rows[0]!)[0] === false);
+      } finally {
+        await pg.close();
+      }
+    }
+
     const pg = new PGlite();
     try {
       await pg.exec(`create table tenants(id text, pack_id text);

@@ -1,3 +1,5 @@
+import { recordQuoteStates } from '../core/message-parts.js';
+import { currentPack } from '../config/source.js';
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
 // db 存储下的跟进（docs/architecture/02-conversations-workbench/spec.md「任务表与跟进」，R17、不变量 38）：
@@ -217,6 +219,7 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
   // 消息对象先建好交给发送账本（送达才写进会话，写进去的是同一个对象，账本行据它取 seq）。判过额度就在同一段同步代码里占一个名额：
   // 下面要等记账落库才推送，这段时间里顾问的人工回复看得到它（不变量 34）；推送的第一个分段接过这一行，推送结束后没用上的撤掉
   const message: ChatMessage = { role: 'agent', content: text, at: Date.now(), author: 'followup' };
+  recordQuoteStates(message, fresh);
   const release = holdSend(sid, 'followup', message);
   try {
     return await sendAfterLedger({ job, ctx, fresh, sid, text, message, release, clock, push: push });
@@ -276,6 +279,11 @@ async function sendAfterLedger(a: {
     console.error(`[followup] 跟进 ${short(sid)} 推送前发现已被接手，不推送`);
     releasePrepared(prepared, 'taken_over');
     queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'taken_over' })]);
+    return { status: 'handled' };
+  }
+  if (currentPack().runtime.followupGate?.(fresh, fresh.stage) === false) {
+    releasePrepared(prepared, 'aborted');
+    queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'changed' })]);
     return { status: 'handled' };
   }
   let ok: boolean;

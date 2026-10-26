@@ -1,6 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { isHandoffKind, type HandoffKind } from '../../src/shared/conversation-types.js';
 
 const count = z.number().int().nonnegative();
 const regex = z.string().refine((s) => {
@@ -14,7 +15,13 @@ const regex = z.string().refine((s) => {
 export const predicateSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('order'), count, fields: z.record(z.string(), z.unknown()).optional() }).strict(),
   z.object({ kind: z.literal('no_order_before'), turnMatches: regex }).strict(),
-  z.object({ kind: z.literal('handoff'), expected: z.boolean() }).strict(),
+  z
+    .object({
+      kind: z.literal('handoff'),
+      expected: z.boolean(),
+      handoffKind: z.custom<HandoffKind>((value) => typeof value === 'string' && isHandoffKind(value), '无效转人工类型').optional(),
+    })
+    .strict(),
   z
     .object({ kind: z.literal('tool_called'), name: z.string().min(1), min: count.optional(), max: count.optional() })
     .strict()

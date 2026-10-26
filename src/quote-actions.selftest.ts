@@ -102,8 +102,8 @@ try {
   await store.initSessionStore(fx.deps);
   const ctx = { tenantId: tenant.id, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
   for (const item of [
-    { id: 'w-a', title: '合成方盒甲', unitPrice: 3.65, unit: '件', tags: ['合成'] },
-    { id: 'w-b', title: '合成方盒乙', unitPrice: 12, unit: '件', tags: ['合成'] },
+    { id: 'w-a', title: '合成方盒甲', unitPrice: 3.65, unit: '件', tags: ['合成'], inStock: true },
+    { id: 'w-b', title: '合成方盒乙', unitPrice: 12, unit: '件', tags: ['合成'], inStock: true },
   ]) {
     const row = await createCatalogItem(ctx, 'widget', item);
     await activateCatalogItem(ctx, 'widget', row.code, { rev: row.rev });

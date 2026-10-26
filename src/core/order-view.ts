@@ -86,17 +86,22 @@ export function quoteState(o: LineOrder, now: number): 'pending' | 'approved' | 
   if (!o.approval || o.status === 'cancelled' || o.approval.state === 'rejected' || o.approval.state === 'withdrawn') return 'invalid';
   if (o.approval.state !== 'approved') return 'pending';
   if (o.status === 'paid') return 'paid';
+  return now <= quoteValidUntil(o) ? 'approved' : 'expired';
+}
+
+/** 与状态判定共用上海自然日截止点，页面不自行推算。 */
+export function quoteValidUntil(o: LineOrder): number {
   const runtime = currentRuntime();
   const pack = runtime.pack?.runtime;
   const quotes = pack?.quotes;
-  if (!quotes || o.approval.decidedAt == null) return 'invalid';
+  if (!quotes || o.approval?.decidedAt == null) throw new Error('报价单尚未批准');
   const policy = runtime.config.loaded ? runtime.config.loaded.sop.policy : readFilePolicy(pack?.policy).policy;
   const days = quotes.validDays(policy);
   if (!Number.isSafeInteger(days) || days < 0) throw new Error('报价有效天数无效');
   const day = 86_400_000;
   const offset = 8 * 3_600_000;
   const end = (Math.floor((o.approval.decidedAt + offset) / day) + days + 1) * day - offset;
-  return now < end ? 'approved' : 'expired';
+  return end - 1;
 }
 
 /** 08 R3：只读条目与数量，先完整计价再修改存储；同步段内完成复用/作废，不留并发建单窗口。 */
@@ -228,4 +233,14 @@ export function orderDisplay(o: LineOrder): OrderDisplay {
     totalFen: o.totalFen,
     totalText: formatYuan(o.totalFen),
   };
+}
+
+/** R9：公开报价响应不包含审批原因、客户身份或内部状态。 */
+export interface PublicQuote {
+  id: string;
+  state: 'pending' | 'approved' | 'expired' | 'paid' | 'invalid' | 'superseded';
+  brandName: string;
+  display?: OrderDisplay;
+  validUntil?: number;
+  notes?: string[];
 }

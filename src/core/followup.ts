@@ -1,3 +1,4 @@
+import { recordQuoteStates } from './message-parts.js';
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
 import {
@@ -112,6 +113,7 @@ export type SessionWithFollowup = Session & { followup?: FollowupMeta };
  */
 export function followupStage(s: SessionWithFollowup): { stage: SalesStage; idleMs: number } | null {
   if (!followupEnabled()) return null;
+  if (currentPack().runtime.followupGate?.(s, s.stage) === false) return null;
   if (s.handedOver) return null; // 人工在跟，别插嘴
   if (s.channel !== 'wecom') return null; // 只追真实客户，不骚扰网页访客
   if (isDemoClassId(s.id)) return null; // 种子演示数据与网页访客，发不出去也不该发
@@ -265,6 +267,7 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
       flushStoreNow();
       // 消息对象先建好交给发送账本（送达才写进会话，写进去的是同一个对象）
       const message: ChatMessage = { role: 'agent', content: text, at: Date.now(), author: 'followup' };
+      recordQuoteStates(message, fresh);
       let ok: boolean;
       try {
         ok = await push(s.id, text, { kind: 'followup', message });

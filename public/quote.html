@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>报价单 · 方盒核验社</title>
+<meta property="og:title" content="报价单 · 方盒核验社">
+<meta property="og:description" content="查看报价单状态与明细">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; color: #191919; background: #ededed; font: 16px/1.6 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; }
+  main { max-width: 560px; margin: 48px auto; padding: 24px; }
+  header { margin-bottom: 24px; }
+  .brand, .sub { color: #666; font-size: 14px; }
+  h1 { margin: 6px 0; font-size: 28px; }
+  h2 { margin: 0 0 12px; font-size: 18px; }
+  section { background: #fff; border-radius: 12px; padding: 24px; margin: 16px 0; overflow-wrap: anywhere; }
+  #details:empty, #notes:empty { display: none; }
+  .line { padding: 14px 0; border-bottom: 1px solid #eee; }
+  .total { margin-top: 20px; font-size: 22px; font-weight: 600; color: #087f49; }
+  button { border: 0; border-radius: 8px; background: #087f49; color: white; padding: 10px 24px; font: inherit; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: wait; }
+  [hidden] { display: none !important; }
+  @media (max-width: 600px) { main { margin: 16px auto; padding: 16px; } }
+</style>
+</head>
+<body>
+<main>
+  <header><div id="brand" class="brand">方盒核验社</div><h1>报价单</h1><div class="sub">付款与交付安排请联系顾问确认</div></header>
+  <section aria-live="polite"><h2 id="status">加载中…</h2><div id="valid" class="sub"></div><button id="retry" type="button" hidden>重试</button></section>
+  <section id="details"></section>
+  <section id="notes" class="sub"></section>
+</main>
+<script>
+  const el = (id) => document.getElementById(id);
+  const orderId = location.pathname.startsWith('/quote/') ? location.pathname.split('/')[2] : new URLSearchParams(location.search).get('orderId');
+  const labels = { pending: '报价单待审核', approved: '报价单已批准', expired: '报价单已过期', paid: '已收款', invalid: '报价单已失效', superseded: '报价单已被取代' };
+  let request = 0;
+  async function loadQuote() {
+    const version = ++request;
+    el('status').textContent = '加载中…';
+    el('valid').textContent = '';
+    el('details').replaceChildren();
+    el('notes').replaceChildren();
+    el('retry').hidden = true;
+    el('retry').disabled = true;
+    try {
+      if (!/^ord_[0-9a-f]{24}$/.test(orderId || '')) { el('status').textContent = '报价单不存在'; return; }
+      const response = await fetch('/api/quotes/' + encodeURIComponent(orderId));
+      if (version !== request) return;
+      if (response.status === 404) { el('status').textContent = '报价单不存在'; return; }
+      if (!response.ok) throw new Error('load');
+      const quote = await response.json();
+      if (version !== request) return;
+      if (!labels[quote.state]) throw new Error('state');
+      el('status').textContent = labels[quote.state];
+      el('brand').textContent = quote.brandName;
+      if (quote.state === 'approved' && quote.validUntil) el('valid').textContent = '有效期至 ' + new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', dateStyle: 'long' }).format(quote.validUntil);
+      if ((quote.state === 'approved' || quote.state === 'paid') && quote.display) {
+        for (const line of quote.display.lines) {
+          const row = document.createElement('div'); row.className = 'line';
+          const title = document.createElement('div'); title.textContent = line.title;
+          const detail = document.createElement('div'); detail.className = 'sub'; detail.textContent = [line.qtyText, line.unitPriceText, line.amountText].join(' · ');
+          row.append(title, detail); el('details').append(row);
+        }
+        const total = document.createElement('div'); total.className = 'total'; total.textContent = '合计 ' + quote.display.totalText; el('details').append(total);
+      }
+      for (const note of quote.notes || []) { const row = document.createElement('div'); row.textContent = note; el('notes').append(row); }
+    } catch {
+      if (version !== request) return;
+      el('details').replaceChildren(); el('notes').replaceChildren(); el('valid').textContent = '';
+      el('status').textContent = '加载失败，请重试'; el('retry').hidden = false;
+    } finally { if (version === request) el('retry').disabled = false; }
+  }
+  el('retry').addEventListener('click', loadQuote);
+  loadQuote();
+</script>
+</body>
+</html>

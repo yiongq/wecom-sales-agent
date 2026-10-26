@@ -5,7 +5,7 @@ import type { AnyOrder } from './order-view.js';
 import { isLineOrder, orderDisplay, quoteState } from './order-view.js';
 
 // 与存储门面的同步访问器相同，读取当前租户内存权威；不在 pack-api 装配期反向加载存储/配置。
-function getAnyOrder(id: string): AnyOrder | undefined {
+export function getAnyOrder(id: string): AnyOrder | undefined {
   return currentRuntime().store.orders.get(id);
 }
 

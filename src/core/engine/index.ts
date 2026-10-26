@@ -6,6 +6,7 @@ import { brandTexts } from '../brand.js';
 import './sources.js';
 // 通用对话引擎：并发、历史、入站、模型与出口；行业能力由组合根绑定。
 import fs from 'node:fs';
+import { recordQuoteStates } from '../message-parts.js';
 import type { AgentReply, ChatMessage, PreparedPush, Session } from '../../types.js';
 import { isLineOrder, orderDisplay, type AnyOrder } from '../order-view.js';
 import { mergeProfile, profileForModel, resetPackState } from '../pack-profile.js';
@@ -40,6 +41,7 @@ import { promptHashes } from '../../config/hashes.js';
 import { emergencyReason, HANDOFF_REASON, isTerminalStage, enterHandoff, terminalStageKey } from '../../handoff/record.js';
 import { TAKEN_OVER_NOTE, takeoverGen, prepareChannel, pushToChannel, awaitCommit } from '../../handoff/takeover.js';
 import { requestRefund } from '../../payment/refunds.js';
+import { recordQuoteAccepted } from '../../payment/orders.js';
 import { createHandoffTriggers, type SensitiveCategory } from '../../handoff/trigger-rules.js';
 import {
   awaitingConsent,
@@ -308,11 +310,42 @@ async function handleMessageInner(
   };
   const deterministic = runtime.preModel?.(turnContext);
   if (deterministic) {
+    // 身份补句之前核对包原文；先完整校验，再写入任何副作用。
+    const effects = deterministic.handoff || deterministic.notify || deterministic.statePatch;
+    const fixed = runtime.fixedReplies?.find((item) => item.id === deterministic.fixedId);
+    if (effects || deterministic.fixedId !== undefined) {
+      const samples = fixed ? await fixed.samples() : [];
+      const pattern = fixed?.pattern;
+      const match = pattern ? new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, '')).exec(deterministic.text) : null;
+      const matches = pattern
+        ? match?.index === 0 && match[0].length === deterministic.text.length
+        : samples.some((sample) => sample.text === deterministic.text);
+      if (!fixed || !matches) {
+        const error = new Error('确定性回复固定句未登记或文本不匹配');
+        if (profile().name !== 'prod') throw error;
+        console.error('[engine] 确定性回复固定句未登记或文本不匹配');
+      }
+    }
+    if (state.takenOver()) return state.unsentTakenOver();
+    if (deterministic.handoff && (!deterministic.handoff.reason.trim() || [...deterministic.handoff.reason].length > 120))
+      throw new Error('行业转人工原因必须为 1–120 字');
+    if (deterministic.statePatch) {
+      if (!runtime.sessionState) throw new Error('行业包未声明状态 schema');
+      session.packState = runtime.sessionState.schema.parse({ ...session.packState, ...deterministic.statePatch }) as Record<
+        string,
+        unknown
+      >;
+    }
     const reply = cleanText(answerIdentity(state.text, deterministic.text));
     const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+    recordQuoteStates(msg, session);
     session.messages.push(msg);
     saveSession(session);
-    return done('deterministic', { text: reply, stage: session.stage }, msg);
+    if (deterministic.handoff)
+      enterHandoff(session, { kind: 'pack', reason: deterministic.handoff.reason, at: Date.now(), quote: cleanText(state.text, 200) });
+    if (deterministic.notify) recordQuoteAccepted(session, deterministic.notify.orderId);
+    if (effects) saveSession(session);
+    return done('deterministic', { text: reply, stage: session.stage, ...(session.handedOver ? { handoff: true } : {}) }, msg);
   }
   const ordersBefore = session.orderIds.length;
   const stageAtStart = session.stage;
@@ -326,6 +359,7 @@ async function handleMessageInner(
       console.warn(`[engine] 模型供应商的内容审核拦下了这一轮，已回固定话术（会话 ${convLabel(sessionId)}）`);
       const reply = cleanText(brandTexts(runtime, state.binding.brand).offTopicReply);
       const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+      recordQuoteStates(msg, session);
       session.messages.push(msg);
       saveSession(session);
       return done('deterministic', { text: reply, stage: session.stage }, msg);
@@ -459,6 +493,7 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
     session.updatedAt = Date.now();
     const reply = runtime.legacy.resetReply;
     const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+    recordQuoteStates(msg, session);
     session.messages.push(msg);
     saveSession(session);
     return done('reset', { text: reply, stage: session.stage }, msg);
@@ -514,6 +549,7 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
       // 同一句在问身份时先承认是 AI（00 不变量 16）
       const reply = cleanText(answerIdentity(text, EMERGENCY_REPLY));
       const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+      recordQuoteStates(msg, session);
       session.messages.push(msg);
       saveSession(session);
       return done('handoff', { text: reply, stage: session.stage, handoff: true }, msg);
@@ -534,6 +570,7 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
       ...(departNote ? { departNote } : {}),
     });
     const msg: ChatMessage = { role: 'agent', content: CONSENT_WITHDRAWN_REPLY, at: Date.now() };
+    recordQuoteStates(msg, session);
     session.messages.push(msg);
     saveSession(session);
     return done('handoff', { text: CONSENT_WITHDRAWN_REPLY, stage: session.stage, handoff: true }, msg);
@@ -555,6 +592,7 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
   if (isReset) {
     const reply = runtime.legacy.resetDisabledReply;
     const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+    recordQuoteStates(msg, session);
     session.messages.push(msg);
     saveSession(session);
     return done('deterministic', { text: reply, stage: session.stage }, msg);
@@ -607,6 +645,7 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
       }
       reply = cleanText(answerIdentity(text, reply));
       const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+      recordQuoteStates(msg, session);
       session.messages.push(msg);
       saveSession(session);
       return done(
@@ -635,6 +674,7 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
     });
     const reply = cleanText(answerIdentity(text, handoffReply(session, text, kind, handoffOpts(text))));
     const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+    recordQuoteStates(msg, session);
     session.messages.push(msg);
     saveSession(session);
     return done('handoff', { text: reply, stage: session.stage, handoff: true }, msg);
@@ -654,6 +694,7 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
     delete session.negativeHits;
     const reply = cleanText(answerIdentity(text, handoffReply(session, text, 'complaint', handoffOpts(text))));
     const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+    recordQuoteStates(msg, session);
     session.messages.push(msg);
     saveSession(session);
     return done('handoff', { text: reply, stage: session.stage, handoff: true }, msg);
@@ -879,6 +920,7 @@ async function finishTurn(
     recordSignals: noteSignals,
     appendMessage(message) {
       if (state.opts.stillCurrent && !state.opts.stillCurrent()) return;
+      recordQuoteStates(message, session);
       session.messages.push(message);
       if (message.role === 'agent') replyMsg = message;
     },

@@ -21,6 +21,7 @@
 #   <目标> 是 pre-02：部署旧 tag，调用方已经按 tag 的文件树判定它是 02 之前的（镜像还没建）
 #   <目标> 是 pre-03：部署旧 tag，调用方已判定它是 02 之后、03 之前的
 #   <目标> 是 pre-04：部署旧 tag，调用方已判定它是 03 之后、04 之前的
+#   <目标> 是 pre-09：部署旧 tag，调用方已判定它是 08 之后、09 之前的，只查报价风险
 #   <目标> 是 pre-08：部署旧 tag，调用方已判定它是 07 之后、08 之前的，只查 08 的风险
 # 打印的命令带上项目名与宿主端口（旁路实例的手工命令也要带，见 deploy/compose.yml 开头）。
 # 退出码：0 照常回滚；3 拒绝，只有会话在库里（先回到文件存储的步骤打在 stderr）；4 拒绝，有条目版本大于 1 或看不出来
@@ -57,6 +58,7 @@ pre02_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/s
 pre03_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/channels/registry.ts' </dev/null; }
 pre04_image() { docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/core/pack-api.ts' </dev/null; }
 pre07_image() { timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/drizzle/0015_order_refund_status.sql' </dev/null; }
+pre09_image() { timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/core/site-links.ts' </dev/null; }
 pre08_image() { timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/core/order-view.ts' </dev/null; }
 pre05_image() { timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh "$1" -c 'test -e /app/src/tenancy/runtime.ts' </dev/null; }
 # 所有探测与风险查询共用时限：锁等至多 2 秒、SQL 至多 5 秒；连接或 docker 卡住也在 8 秒后终止，2 秒后强杀。
@@ -141,7 +143,7 @@ esac
 is_pre02=0
 case "$target" in
   pre-02) is_pre02=1 ;;
-  pre-03 | pre-04 | pre-05 | pre-07 | pre-08) ;;
+  pre-03 | pre-04 | pre-05 | pre-07 | pre-08 | pre-09) ;;
   *)
     if [ ${#risks[@]} -gt 0 ]; then
       pre02_image "$target" >/dev/null 2>&1
@@ -159,7 +161,7 @@ if [ "$is_pre02" = 0 ]; then
   session_risk_count=0
 fi
 is_pre03=1
-if [ "$target" = pre-04 ] || [ "$target" = pre-05 ] || [ "$target" = pre-07 ] || [ "$target" = pre-08 ]; then
+if [ "$target" = pre-04 ] || [ "$target" = pre-05 ] || [ "$target" = pre-07 ] || [ "$target" = pre-08 ] || [ "$target" = pre-09 ]; then
   is_pre03=0
 elif [ "$is_pre02" = 0 ] && [ "$target" != pre-03 ]; then
   pre03_image "$target" >/dev/null 2>&1
@@ -189,7 +191,7 @@ if [ "$is_pre03" = 1 ]; then
 fi
 [ -n "$channel_risk" ] && risks+=("$channel_risk")
 is_pre04=1
-if [ "$target" = pre-05 ] || [ "$target" = pre-07 ] || [ "$target" = pre-08 ]; then
+if [ "$target" = pre-05 ] || [ "$target" = pre-07 ] || [ "$target" = pre-08 ] || [ "$target" = pre-09 ]; then
   is_pre04=0
 elif [ "$is_pre03" = 0 ] && [ "$target" != pre-04 ]; then
   pre04_image "$target" >/dev/null 2>&1
@@ -221,14 +223,14 @@ fi
 is_pre05=1
 case "$target" in
   pre-02 | pre-03 | pre-04 | pre-05) ;;
-  pre-07 | pre-08) is_pre05=0 ;;
+  pre-07 | pre-08 | pre-09) is_pre05=0 ;;
   *) pre05_image "$target" >/dev/null 2>&1; [ $? = 0 ] && is_pre05=0 ;;
 esac
 # 07 R20：先只读检查退款状态，避免拒绝前执行沙箱 purge。
 is_pre07=1
 case "$target" in
   pre-02 | pre-03 | pre-04 | pre-05 | pre-07) ;;
-  pre-08) is_pre07=0 ;;
+  pre-08 | pre-09) is_pre07=0 ;;
   *) pre07_image "$target" >/dev/null 2>&1; [ $? = 0 ] && is_pre07=0 ;;
 esac
 if [ "$is_pre07" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
@@ -254,10 +256,38 @@ if [ "$is_pre07" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
     exit 8
   fi
 fi
+# 09 R15：不按状态或作废标记过滤；保留历史的报价单也使旧镜像无法安全读取。
+is_pre09=1
+case "$target" in
+  pre-02 | pre-03 | pre-04 | pre-05 | pre-06 | pre-07 | pre-08 | pre-09) ;;
+  *) if pre09_image "$target" >/dev/null 2>&1; then is_pre09=0; fi ;;
+esac
+if [ "$is_pre09" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
+  quote=unknown
+  has=$(db_query "select to_regclass('public.orders') is not null") || has=unknown
+  case "$has" in
+    f) quote=f ;;
+    t) quote=$(db_query "select exists(select 1 from public.orders where data->'approval' IS NOT NULL)") || quote=unknown ;;
+  esac
+  case "$quote" in
+    f) ;;
+    t) ;;
+    *)
+      running=$(docker inspect --format '{{.Image}}' "$project" </dev/null 2>/dev/null)
+      if [ -n "$running" ] && [ "$(pre09_image "$running" >/dev/null 2>&1; echo $?)" = 1 ]; then quote=f; fi ;;
+  esac
+  if [ "$quote" != f ]; then
+    echo "拒绝回滚：目标是 09 之前的镜像，库里有带 approval 的订单或查询结果无法确认。" >&2
+    echo "前滚修复，或者回滚到另一个含 09 的 tag" >&2
+    [ "$quote" = t ] || echo "先确认 db 与报价查询结果，再重跑检查。" >&2
+    exit 9
+  fi
+fi
 # 08 R13：四项独立只读检查，不能在拒绝前执行沙箱 purge；保留 02–07 的旧风险优先级。
 is_pre08=1
 case "$target" in
   pre-02 | pre-03 | pre-04 | pre-05 | pre-06 | pre-07 | pre-08) ;;
+  pre-09) is_pre08=0 ;;
   *) if pre08_image "$target" >/dev/null 2>&1; then is_pre08=0; fi ;;
 esac
 if [ "$is_pre08" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
@@ -303,7 +333,7 @@ if [ "$is_pre08" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
     [ "$nontravel_unknown" = 0 ] || echo "库问不到或查询结果无法确认时从严拒绝；先确认 db 与四项查询结果，再重跑检查。" >&2
     [ "$nontravel_unknown" = 0 ] || echo "若这是库还没建、四项都无法确认的新服务器，先部署 08 之后的 tag，或确认库里确实没有这四类数据后再处理。" >&2
     case "$target" in
-      pre-02 | pre-03 | pre-04 | pre-05 | pre-06 | pre-07 | pre-08)
+      pre-02 | pre-03 | pre-04 | pre-05 | pre-06 | pre-07 | pre-08 | pre-09)
         echo "四项都为零、重跑回滚检查通过后，再部署旧 tag。" >&2 ;;
       *)
         echo "四项都为零、重跑回滚检查退出码 0 后，直接起目标镜像并重打 :current（不跑迁移）：" >&2
