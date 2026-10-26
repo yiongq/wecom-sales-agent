@@ -21,7 +21,7 @@
 
 ## 步骤
 
-- [ ] 0. 做：核对 08 接口、链接写死处、转人工消费方与库约束、六个订单入口，在实际开工提交采集旅游字节与 v2 基准；验：核对记录可逐项复查；固定时钟下的前缀、四类输出、卡片、部件与 v2 结果有具名基准，锁定套件全绿（验收 1）；依赖：开工条件 1–3。
+- [x] 0. 做：核对 08 接口、链接写死处、转人工消费方与库约束、六个订单入口，在实际开工提交采集旅游字节与 v2 基准；验：核对记录可逐项复查；固定时钟下的前缀、四类输出、卡片、部件与 v2 结果有具名基准，锁定套件全绿（验收 1）；依赖：开工条件 1–3。
 - [ ] 1. 做：实现 `PackRuntime.siteLinks`、核心登记与沙箱 `resources` 合并，旅游登记 `proposal`（R10）；验：旅游沙箱白名单逐项等价、按租户隔离，卡片与部件字节保持基准；报价路径先用证明包夹具验证登记（验收 1、9）；依赖：0。
 - [ ] 2. 做：仅给 `public/web.js` 加通用 `part.title` 分支，`chat.html`、`admin.html` 守原输出（R10）；验：有标题与无标题部件均正确，旅游字节及 `stripLink` 锁定断言不变（验收 1、9）；依赖：1。
 - [ ] 3. 做：实现 `linkWhitelistStep` 并在证明包使用（R10）；验：删未登记或不允许的链接及孤立引导语；旅游不使用该步骤，字节不变（验收 9）；依赖：1、2。
@@ -160,6 +160,91 @@ Amended by: [09 · 报价审批、报价单页与站内链接（核心）](../09
 - 沙箱资源登记选 `SiteLinkDef.resources`：现有白名单只有页面的 GET / HEAD、订单和方案书接口的 GET / HEAD、模拟支付的 POST（`src/tenancy/sandbox/outbound.ts:387-392`），可完整表达为路径模式与方法列表。`process.ts` 已能从链接令牌取得租户运行时（`src/tenancy/sandbox/process.ts:315-355`），改为解析租户后匹配其登记；R10、接口、登记清单与验收 9 已补齐，旅游逐项保持原白名单。05 R21 的固定白名单归属已加到 spec 的部分取代头部；05 正文保持不变，反向引用留 docs PR 时补。
 - 状态表：重置统一引用 02 spec 第 282 行，DB 保留审批历史但订单退出可读集合；拆开已驳回与已撤回，仅把已驳回时的批准错误码改成 `already_decided`；已批准且过期的单撤回仍推送。验收 4、5、7 同步覆盖。没有实现代码或执行这些验收。
 
+### 第 0 步 · 开工基准（2026-10-26）
+
+- 开工提交：#323 合入后的 `dev`（基准在其内容 `2e9e169` 上采集，产品代码与 `e2e724f` 相同）。`git diff --stat e2e724f HEAD -- . ':(exclude)docs'` 输出为空、退出 0：#314 之后到本次开工只改文档。未重写上方开工核对表，未修改产品代码、spec、旧夹具或 v2 基线。
+- 第 0 步已勾选：范围 1–4 的基准与核对完成；范围 5 的 Docker 检查在 Codex 沙箱里跑不了，协调者在本机补验通过（见下）。开工条件 1–3 全部满足。
+
+本轮在当前 HEAD 实际复核的定位（源码与 e2e724f 相同）：
+
+| 核对项                      | 定位                                                                                                                                                                        | 结论                                                                                                                                                                                                       |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 08 通用订单类型、建单与导出 | `src/core/order-view.ts:5-75`；`src/core/pack-api.ts:33、951`                                                                                                               | 类型与异步返回联合均与上表一致；尚无 approval 参数。                                                                                                                                                       |
+| 待付通用单复用 / 取代       | `src/core/order-view.ts:135-146`                                                                                                                                            | 仍按 kind、code、qty、unitPriceFen 排序比较，未复用时取代全部旧待付单。                                                                                                                                    |
+| 包运行时成员                | `src/core/pack-api.ts:749-811`                                                                                                                                              | preModel、sessionState、priceLine 已有；09 的四个新成员尚无。                                                                                                                                              |
+| 确定性回复与引擎钩子        | `src/core/pack-api.ts:257-259、832-865`                                                                                                                                     | 回复只有 text；paidLineText 已有，两个报价钩子尚无。                                                                                                                                                       |
+| 金额来源                    | `src/core/guards/money-provenance.ts:26-36`；`src/core/tools/registry.ts:24-32`                                                                                             | 通用单单价、行金额、总额与 moneyLedger 都进入集合。                                                                                                                                                        |
+| 消息部件与 shape            | `src/shared/channel-types.ts:24-28`；`src/core/pack-api.ts:531-542`；`src/core/guards/shape.ts:190-192`；`eval/sim/judge.ts:32-39`                                          | linkKind 仍三值、无 title；出口读包 richTools，评测仍固定五种工具。                                                                                                                                        |
+| 固定句                      | `src/core/consistency.ts:31-45`                                                                                                                                             | samples() 不变，尚无 pattern。                                                                                                                                                                             |
+| 链接识别与卡片              | `src/core/message-parts.ts:10、29`；`src/adapters/wecom.ts:657、673-705、889-893、1125-1134`                                                                                | order / proposal / site 仍写死；env 与 DB 都跳过空正文，方案卡仍经 routeForProposal。                                                                                                                      |
+| 其他写死处                  | `src/core/guards/dejargon.ts:8`；`src/core/guards/shape.ts:27`；`src/core/insight.ts:184-187`；`public/chat.html:411-430`；`public/web.js:54`；`public/admin.html:954、981` | 原清单对应文件与开工前源码一致；text.ts 的版本保护仍不算登记表。                                                                                                                                           |
+| 公开订单 GET                | `src/server.ts:329-338、766-770`                                                                                                                                            | 经 getAnyOrder / publicAnyOrder 返回公开投影。                                                                                                                                                             |
+| 支付页 GET                  | `src/server.ts:856-876`                                                                                                                                                     | 通用单经 orderDisplay。                                                                                                                                                                                    |
+| 模拟支付 POST               | `src/server.ts:784-797`                                                                                                                                                     | 经 getAnyOrder / markOrderPaid，没有报价审批判断。                                                                                                                                                         |
+| console 确认价格            | `src/console-api/app.ts:940-945`；`src/payment/orders.ts:64-74`                                                                                                             | confirmOrder 只处理既有价格确认。                                                                                                                                                                          |
+| console 确认收款            | `src/console-api/app.ts:946-951`；`src/payment/orders.ts:95-117`                                                                                                            | markPaidByAdvisor，保留既有权限和收款方式判断。                                                                                                                                                            |
+| console 取消                | `src/console-api/app.ts:967-972`；`src/payment/orders.ts:77-85`                                                                                                             | cancelOrder，未加审批动作。                                                                                                                                                                                |
+| 转人工值集与消费方          | `src/shared/conversation-types.ts:8-35`；`src/handoff/reasons.ts:8-20`；`src/shared/conversation.ts:125`；`src/jobs/notify.ts:29、46`；`src/notify/handoff.ts:51-57`        | 仍 11 类、无 pack；固定原因是 Partial Record；执行体白名单仍四个提醒原因。另以 rg 复核上表所列 types、events、console-api、goal-draft、board、traces 及 console 展示消费方，仍复用共享类型、值集或标签表。 |
+| 数据库约束                  | `drizzle/0002_conversations.sql:36、78-86`；`src/db/schema.ts:323、534-550`                                                                                                 | handoff_kind 为无枚举 CHECK 的 text；任务 payload 为 JSON，CHECK 只限制任务 kind，新增原因无需迁移。                                                                                                       |
+
+新增基准与取舍：
+
+- `src/core/link-bytes.selftest.ts` + `link-bytes.fixture.json`：放 core 是因为同时覆盖渠道卡片、网页部件和沙箱资源的消费契约，不属于支付专属出口。沿用 `UPDATE_LINK_BYTES=1` 的一次生成惯例；常规运行只读夹具，具名键集及 JSON 字符串逐字节相同，不归一输出。
+- 时钟为 `PARITY_CLOCK_MS=1790913600000`，与 legacy-bytes 相同。固定合成订单、路线和方案版本；只在发送段固定 randomBytes，让完整 send_msg 的随机 msgid 可重复，退出发送段即恢复随机源。全部 fetch 由封闭 mock 接住，未登记端点直接报错。
+- 12 组文本含订单、方案书、privacy、订单与方案同条、?v=1、无链接、两种纯卡片、相对链接、不存在版本和站外链接；env / DB 各记录卡片抽取、MessagePart[]、AI 与 human 的完整最终发送载荷（含标题、摘要、URL、缩略图、接收方、账号和 msgid），共 96 条。env 从公开 push 进入 sendRich；DB 用 PGlite 真实账号装载，从公开 push 进入 pushDb / payloadsFor，未增加测试导出。
+- 沙箱 17 条具名路径 × 6 种方法（GET / HEAD / POST / PUT / DELETE / OPTIONS），另存 17 条 wxPage 判定，共 221 条。既比较 outbound.ts 的 wxResource，也用真实 process.ts 中间件、有效链接 cookie 和哨兵路由比较 HTTP 状态 / Location，覆盖三类公开页、订单 / 方案接口、模拟支付 POST 及越界路径和方法。
+- package.json 仅在 test 末尾追加新命令；CI 清单直接从 test 导出，在 `scripts/ci-weights.json` 登记 10 秒估值。`ci-shard.ts --check 4`：186 units、25 strict suites，打印的新单元包含 link-bytes。分片器自测 49 条断言通过。
+
+基准证据：
+
+```text
+PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd
+LEGACY BYTES SELFTEST PASS: 140 项断言全通（60 条出口字节与夹具逐字节相同；旅游会话 state json 无 packState、moneyLedger）
+LINK BYTES SELFTEST PASS: 317 条字节基准，517 项断言
+link-bytes.fixture.json sha256=4688c34e5ee02df443f6986ed110af066e5a7fd513a1ee6ea6c33dd8f943f14e
+```
+
+锁定八文件 sha256（本轮 diff 为空）：
+
+```text
+66e9cd26464e5d71bdf945ac22d9a09b9ed354be05d31766ccf345af88369730  src/engine.selftest.ts
+166c124e28cec35a9b8b0e306bbda653e653ee5795fd186388185812e32a3941  src/dejargon.selftest.ts
+351fd745fcb65ed6f87605fe3deb4a60841598e983b44a6d91c9493571ff9cb8  src/engine-holiday.selftest.ts
+d3f11083704b51fc13bc6be93933a094c2e0abd0310da6f87021e3df4a8d92a1  src/price-guard.selftest.ts
+4a577bb23225aa54881c783ffe7bd41b1e115179a2f8b62044af21b70b07dc04  src/llm.selftest.ts
+090741c5b244dc74160647aaf9e0e7d3a45c6c534d20e008d8af96920c7b3365  src/server.selftest.ts
+d37341de95e87956b643dfd6ef5aee28011e39a7ce5391148e0157f9800c7882  src/adapters/wecom.selftest.ts
+aa8f00693fa63182361d4a03e2020ad1743000d7e15167bca8c0451f49b7ea91  eval/cases.json
+```
+
+v2 默认基线 `eval/baselines/v2-08-step17.json`，两次均未更新基线：
+
+```text
+CONFIG_SOURCE=file LLM_MOCK=1 tsx eval/run.ts
+v2 回归评测：861/861 用例通过 · 跳过 0 条 realOnly · 8565 项断言
+v2 快照比对：861 条 case · 0 处差异
+v1 mock：19/19 用例通过，跳过 32 条需真实模型的用例，43 项断言
+CONFIG_SOURCE=file CONFIG_TEST_DB=pglite LLM_MOCK=1 tsx eval/run.ts
+v2 回归评测：861/861 用例通过 · 跳过 0 条 realOnly · 8565 项断言
+v2 快照比对：861 条 case · 0 处差异
+v1 mock：19/19 用例通过，跳过 32 条需真实模型的用例，43 项断言；19 个会话入库核对，0 处与内存不符
+```
+
+变异在隔离副本执行，工作树产品文件始终不改；仅把 message-parts 的 site 分支临时改为 proposal，结果：
+
+```text
+变异运行退出码：1
+AssertionError [ERR_ASSERTION]: 字节：env/parts/site
+还原运行退出码：0
+LINK BYTES SELFTEST PASS: 317 条字节基准，517 项断言
+```
+
+副本及其临时目录已删除。相关自测按新文件名、夹具名与 ci-shard / ci-weights 搜索，直接受影响的是新字节自测和分片器自测，均通过；另跑 legacy-bytes、锁定套件与两种 v2 回归。format:check、lint、typecheck 均通过；按本步任务要求，完整 pnpm test 留 CI。lint 的内容黑名单因缺少 SENSITIVE_PATTERNS / .sensitive-patterns 按既有行为跳过，其余子检查通过；补以 diff 的绝对路径、假企微长 id 与锁定文件检查，均无新增命中。
+
+容器检查仅试一次（60 秒上限）：`docker run --rm pgvector/pgvector:pg17 postgres --version` 退出 1，输出 `failed to connect to the docker API at unix:///var/run/docker.sock`、`connect: no such file or directory`。CLI 同时提示默认配置不可读；没有访问配置内容，也未创建容器。协调者需在可用 Docker 环境复核，成功后再决定勾选第 0 步。
+
+协调者补验（2026-10-26，本机，出 Claude 沙箱）：`docker run --rm pgvector/pgvector:pg17 postgres --version` 退出 0，输出 `postgres (PostgreSQL) 17.11`；跑完没有残留容器。
+
 ## 验收记录
 
 ## Open
@@ -194,3 +279,10 @@ Amended by: [09 · 报价审批、报价单页与站内链接（核心）](../09
 - 当前状态：本轮只改了八份文档；没有实现代码，未触碰服务器或密钥。步骤 0–18 的勾选状态不变，验收记录仍留给实际验收。
 - 阻塞：无未定设计问题；开工时核对本机实现环境。
 - 下一步：第 0 步，在实际开工提交上采集旅游字节基准与 v2 基准，复核已有接口和消费方，再按依赖推进实现。
+
+### 交接（2026-10-26，第 0 步基准）
+
+- 已完成：只改文档的核实、17 项接口 / 消费方 / 六入口 / 库约束复核、317 条新字节基准、60 条旧出口基准、锁定套件与文件 / PGlite 两种 v2 回归；完整哈希和变异证据见「第 0 步 · 开工基准」。产品代码和八个锁定文件未改。
+- 当前状态：五个交付文件的未提交 diff（新自测、夹具、package.json、CI 耗时登记、此 plan）；没有功能实现半成品，不提交、不 push、不开 PR，spec 保持 ready。测试副本已清理，未启动外部服务、真实模型或容器。
+- 阻塞：无。Docker 检查由协调者在本机补验通过，第 0 步已勾选。
+- 下一步：第 1 步，改链接登记时逐项保持本次卡片 / 部件 / 沙箱资源基准。不要重生成夹具来迁就差异。
