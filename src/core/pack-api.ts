@@ -847,6 +847,7 @@ export function boundPack(): PackBinding | null {
 
 /** 第 18 步：模型前安全网、重置与支付通知的行业能力，按旧调用位置注入。 */
 export interface EnginePackHooks {
+  quoteRejectedText?(order: LineOrder): string;
   quoteWithdrawnText?(order: LineOrder): string;
   afterSales?(input: AfterSalesInput): AfterSalesStep | null;
   isComplaint(text: string): boolean;

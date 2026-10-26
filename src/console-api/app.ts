@@ -120,6 +120,9 @@ import { paymentMode } from '../payment/mode.js';
 import { approveRefund, rejectRefund, settleRefund } from '../payment/refunds.js';
 import {
   cancelOrderAndNotify,
+  approveQuote,
+  rejectQuote,
+  withdrawQuote,
   confirmOrder,
   markPaidByAdvisor,
   OrderNotFoundError,
@@ -134,6 +137,8 @@ import {
   AuditQuery,
   CancelOrderBody,
   RejectRefundBody,
+  RejectQuoteBody,
+  WithdrawQuoteBody,
   CatalogItemParam,
   CatalogKindParam,
   ConvQuery,
@@ -924,7 +929,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
     }
     const all = listAnyOrders().filter((o) => !status || o.status === status);
     const body: OrderPage = {
-      items: all.slice(0, limit).map((order) => orderView(order, c.var.user!.role === 'viewer')),
+      items: all.slice(0, limit).map((order) => orderView(order, c.var.user!.role === 'viewer', clock())),
       total: all.length,
       paymentMode: paymentMode(),
     };
@@ -956,6 +961,18 @@ export const consoleApi = new Hono<ConsoleEnv>()
     if (!persisted) throw new StoreLaggingError(order.sessionId);
     const body: OrderView = orderView(order);
     return c.json(body, 200);
+  })
+  .post('/orders/:id/quote/approve', canHandle, async (c) => {
+    const order = await approveQuote(c.req.param('id'), actorOf(c.var.user!, dbIp(c)));
+    return c.json(orderView(order), 200);
+  })
+  .post('/orders/:id/quote/reject', canHandle, zValidator('json', RejectQuoteBody, badRequest), async (c) => {
+    const order = await rejectQuote(c.req.param('id'), actorOf(c.var.user!, dbIp(c)), c.req.valid('json').reason);
+    return c.json(orderView(order), 200);
+  })
+  .post('/orders/:id/quote/withdraw', canHandle, zValidator('json', WithdrawQuoteBody, badRequest), async (c) => {
+    const order = await withdrawQuote(c.req.param('id'), actorOf(c.var.user!, dbIp(c)), c.req.valid('json').reason);
+    return c.json(orderView(order), 200);
   })
   .post('/orders/:id/refund/approve', canApproveRefund, async (c) => {
     const { order, persisted } = await approveRefund(c.req.param('id'), actorOf(c.var.user!, dbIp(c)));

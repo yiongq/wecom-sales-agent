@@ -382,6 +382,9 @@ interface MockServer {
   replyNext?: { status: number; body: unknown };
   takeoverNext?: { status: number; body: unknown };
   releaseNext?: { status: number; body: unknown };
+  quoteNext?: { status: number; body: unknown };
+  detailError?: number;
+  quoteSeen?: string[];
   seenClientIds: string[];
   /** 记进账本里的消息（reply 成功时追加，供下一次 GET /conversations/:id 返回） */
   extraMessages: MessageView[];
@@ -403,9 +406,17 @@ function respond(method: string, url: URL, bodyText: string): Response {
     };
     return json(200, c);
   }
+  const quoteMatch = /^\/orders\/([^/]+)\/quote\/(approve|reject|withdraw)$/.exec(p);
+  if (quoteMatch && method === 'POST') {
+    (server.quoteSeen ??= []).push(quoteMatch[2]!);
+    const next = server.quoteNext;
+    if (next) return json(next.status, next.body);
+    return json(200, server.cur?.orders[0]);
+  }
   const idMatch = /^\/conversations\/([^/]+)(\/.*)?$/.exec(p);
   if (idMatch && method === 'GET' && !idMatch[2]) {
     if (!server.cur) return json(404, { error: 'conversation_not_found', detail: '这个会话已经不在了' });
+    if (server.detailError) return json(server.detailError, { error: 'internal' });
     const d = server.cur;
     return json(200, { ...d, messages: [...d.messages, ...server.extraMessages] });
   }
@@ -1599,6 +1610,137 @@ for (const remaining of [3, 0]) {
     m.texts('.wb-system').some((t) => t.includes('这个微信已不再连着这次体验')),
   );
   await m.unmount();
+}
+
+// 09 D：报价按钮、发送提示、409 刷新、403 禁用、加载/空/错误态。
+{
+  const order: import('../../../src/shared/console-api.js').LineOrderView = {
+    id: 'ord_quote_ui',
+    status: 'pending_payment',
+    createdAt: new Date(NOW).toISOString(),
+    paidAt: null,
+    confirmed: null,
+    handoffBeforePaid: null,
+    conversation: { id: 'wecom:cust_F01', channel: 'wecom', needSummary: null },
+    display: { title: '合成报价', summary: '1项', totalFen: 133000, totalText: '1,330元', lines: [] },
+    totalFen: 133000,
+    totalText: '1,330元',
+    approval: { state: 'pending' },
+    quoteState: 'pending',
+  };
+  const can = { ...detail().can, approveQuote: true, rejectQuote: true, withdrawQuote: true };
+  server = {
+    cur: detail({
+      orders: [order],
+      quote: null,
+      can,
+      sendWindow: { remaining: 0, closesAt: NOW - 1, lastCustomerAt: NOW - 48 * 3600000, used: 5 },
+    }),
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  const m = await mount(member('agent'));
+  const btn = (label: string) => m.$('.wb-order button').find((e) => e.textContent === label);
+  check(
+    '报价：待审高亮，只展示审批动作',
+    !!m.$('.wb-order.is-quote-pending').length && !!btn('批准报价单') && !!btn('驳回报价单') && !btn('确认价格') && !btn('取消订单'),
+  );
+  check(
+    '报价：关闭窗口先提示，仍可审批',
+    m.box.textContent!.includes('客户48小时内没发过消息，报价单发不出去') && !(btn('批准报价单') as HTMLButtonElement)?.disabled,
+  );
+  await m.click(btn('驳回报价单'));
+  check(
+    '报价：驳回原因必填、最多120字',
+    m.$('.ant-modal textarea')[0]?.getAttribute('maxlength') === '120' &&
+      (m.$('.ant-modal-footer button').at(-1) as HTMLButtonElement)?.disabled,
+  );
+  await m.type(m.$('.ant-modal textarea')[0] as HTMLTextAreaElement, '内部调整');
+  await m.click(m.$('.ant-modal-footer button').at(-1));
+  eq('报价：驳回接口动作正确', server.quoteSeen, ['reject']);
+
+  // 403 的动作保留不可操作状态。
+  server.quoteNext = { status: 403, body: { error: 'forbidden' } };
+  await m.click(btn('批准报价单'));
+  await m.click(m.$('.ant-modal-footer button').at(-1));
+  check(
+    '报价：403 后审批按钮禁用',
+    (btn('批准报价单') as HTMLButtonElement)?.disabled && m.box.textContent!.includes('你的角色无法执行这项操作'),
+  );
+  await m.unmount();
+
+  server = {
+    cur: detail({ orders: [structuredClone(order)], quote: null, can }),
+    seenClientIds: [],
+    extraMessages: [],
+    quoteNext: { status: 409, body: { error: 'superseded' } },
+  };
+  const conflict = await mount(member('agent'));
+  await conflict.click(conflict.$('.wb-order button').find((e) => e.textContent === '批准报价单'));
+  server.cur!.orders[0] = { ...order, status: 'superseded', quoteState: 'superseded' };
+  await conflict.click(conflict.$('.ant-modal-footer button').at(-1));
+  check(
+    '报价：409 后刷新为被取代，撤下审批按钮',
+    conflict.box.textContent!.includes('报价单已被取代') && !conflict.$('.wb-order button').length,
+  );
+  await conflict.unmount();
+
+  server = { cur: detail({ orders: [structuredClone(order)], quote: null, can }), seenClientIds: [], extraMessages: [] };
+  const states = await mount(member('agent'));
+  const real = globalThis.fetch;
+  let resolve!: (value: Response) => void;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('F01') && (init?.method ?? 'GET') === 'GET')
+      return new Promise<Response>((r) => {
+        resolve = r;
+      });
+    return real(input, init);
+  };
+  try {
+    await act(async () => {
+      void states.qc.invalidateQueries({ queryKey: ['conversations'] });
+      await new Promise((r) => setTimeout(r, 20));
+    });
+    check('报价：重载期间隐藏旧金额、禁用动作', !states.box.textContent!.includes('1,330元') && !states.$('.wb-order button').length);
+    globalThis.fetch = real;
+    await act(async () => {
+      resolve(json(500, { error: 'internal' }));
+    });
+    await settle(states.qc);
+    check(
+      '报价：取数出错不展示旧金额，可重试',
+      !states.box.textContent!.includes('1,330元') && states.$('button').some((e) => e.textContent?.replace(/\s/g, '').includes('重试')),
+    );
+    await states.click(states.$('button').find((e) => e.textContent?.replace(/\s/g, '').includes('重试')));
+    check('报价：重试恢复金额与动作', states.box.textContent!.includes('1,330元') && !!states.$('.wb-order button').length);
+    server.cur!.orders = [];
+    await act(async () => {
+      await states.qc.invalidateQueries({ queryKey: ['conversations'] });
+    });
+    await settle(states.qc);
+    check('报价：没有记录显示空态', states.box.textContent!.includes('还没有订单') && !states.$('.wb-order').length);
+  } finally {
+    globalThis.fetch = real;
+    await states.unmount();
+  }
+  for (const state of ['pending', 'approved', 'expired', 'invalid', 'superseded', 'paid'] as const) {
+    server = {
+      cur: detail({
+        orders: [{ ...order, approval: { state: 'approved' }, quoteState: state }],
+        quote: null,
+        can: { ...can, approveQuote: false, rejectQuote: false, withdrawQuote: false },
+      }),
+      seenClientIds: [],
+      extraMessages: [],
+    };
+    const each = await mount(member('viewer'));
+    check(
+      `报价：${state} 不展示批准/驳回`,
+      !each.$('.wb-order button').some((e) => ['批准报价单', '驳回报价单'].includes(e.textContent ?? '')),
+    );
+    await each.unmount();
+  }
 }
 
 Date.now = realNow;

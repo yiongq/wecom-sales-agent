@@ -2,6 +2,7 @@
 import type { Order, OrderStatus, Session } from '../types.js';
 import { formatYuan } from '../shared/format.js';
 import { currentRuntime } from '../tenancy/runtime.js';
+import { quoteNotifyOps } from '../jobs/notify.js';
 import { readFilePolicy } from '../config/file-policy.js';
 
 export interface LinePick {
@@ -203,6 +204,7 @@ export async function createLineOrder(
     if (!approval || old.approval?.state === 'pending' || quoteState(old, now) === 'expired' || order.approval?.state === 'approved')
       store.supersedeOrder(old.id, order.id);
   }
+  if (order.approval?.state === 'pending') store.queueJobs(session.id, quoteNotifyOps(session.id, order.id, 'quote_pending', now));
   session.orderIds.push(order.id);
   store.saveSession(session);
   return { order, reused: false };

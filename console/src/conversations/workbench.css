@@ -675,3 +675,8 @@
   margin: 0;
   overflow-wrap: anywhere;
 }
+
+.wb-order.is-quote-pending {
+  border-inline-start: 2px solid var(--warning);
+  padding-inline-start: 12px;
+}

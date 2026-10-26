@@ -427,7 +427,11 @@ export function createFixtureQuoteRuntime(sources: PackSources): PackRuntime {
   return {
     ...runtime,
     quotes: { approval: true, validDays: () => 2, autoApprovable: (order) => order.totalFen <= 1000 },
-    engineHooks: { ...runtime.engineHooks, quoteWithdrawnText: () => '报价单已撤回，请联系顾问确认。' },
+    engineHooks: {
+      ...runtime.engineHooks,
+      quoteWithdrawnText: () => '报价单已撤回，请联系顾问确认。',
+      quoteRejectedText: () => '报价单需要调整，顾问会继续为您确认。',
+    },
     tools: runtime.tools.map((tool) =>
       tool !== original
         ? tool

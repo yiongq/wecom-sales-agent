@@ -1,4 +1,5 @@
 {
+  "src/quote-actions.selftest.ts": 20,
   "src/quote-approval.selftest.ts": 10,
   "src/site-links.selftest.ts": 1,
   "src/core/link-bytes.selftest.ts": 10,
