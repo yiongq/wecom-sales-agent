@@ -9,7 +9,7 @@ const POINTER =
   /^(?:(?:请|您|可以|可|直接|再|先|点击|点|打开|查看|浏览|访问|这里|这儿|此处|以下|下方|这个|链接|入口|详情|明细|报价单|订单|支付|付款|见|在|是|的|吧|哦|呀|呢|看一下|看看|查阅|通过)|[\s，,。.!！?？：:；;、→👉（）()【】[\]「」“”])+$/u;
 
 // 旅游的旧步骤也叫 link_whitelist；按核心工厂的执行函数识别接入，不能只看同名 id。
-function runWhitelist(ctx: FollowupGuardContext): StepVerdict {
+function runWhitelist(ctx: Pick<FollowupGuardContext, 'text' | 'session' | 'recordGuard'>): StepVerdict {
   let text = ctx.text;
   let changed = false;
   // 从后往前删，保留偏移；不归一 URL，穿越/编码/站外均不能借登记放行。
@@ -45,4 +45,14 @@ export function linkWhitelistStep(): GuardStep<ReplyGuardContext> {
 }
 export function linkWhitelistFollowupStep(): GuardStep<FollowupGuardContext> {
   return whitelist<FollowupGuardContext>();
+}
+
+/** 每次发送前按活状态复查实际链接；旅游未接核心白名单，原文直接返回。 */
+export function recheckFollowupLinks(
+  ctx: Pick<FollowupGuardContext, 'text' | 'session' | 'recordGuard'>,
+  steps: readonly GuardStep<ReplyGuardContext>[],
+): string {
+  if (!usesLinkWhitelist(steps)) return ctx.text;
+  const verdict = runWhitelist(ctx);
+  return 'text' in verdict ? verdict.text : ctx.text;
 }

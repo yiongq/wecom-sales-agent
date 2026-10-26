@@ -1,3 +1,4 @@
+import { noteGuard } from '../trace/recorder.js';
 import { recordQuoteStates } from './message-parts.js';
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
@@ -23,7 +24,7 @@ import {
 // 调度两种存储不同（02 spec R17）：文件存储是这里的扫描器（锁定的 llm.selftest F1 测它）；db 存储由任务表驱动（src/jobs/followup.ts），
 // 那里排程、到点重判都调这里的 shouldFollowUp，话术同样经 followUpText
 import { flushStoreNow, getSession, isDemoClassId, listSessions, onShutdown, saveSession, sessionStoreMode } from '../store.js';
-import { usesLinkWhitelist } from './guards/link-whitelist.js';
+import { recheckFollowupLinks, usesLinkWhitelist } from './guards/link-whitelist.js';
 import { completeText } from './llm/client.js';
 import { pinCatalogForTurn, currentPack } from '../config/source.js';
 import { guardOutbound } from './engine/index.js';
@@ -242,7 +243,7 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
     if (own.stopping) break;
     if (!shouldFollowUp(s, Date.now())) continue;
     try {
-      const text = await composeUnlessStopping(s);
+      let text = await composeUnlessStopping(s);
       if (text === null || own.stopping) {
         console.log(`[followup] 停机中，放弃尚未发出的跟进 ${convLabel(s.id)}（下次启动再追）`);
         break;
@@ -255,6 +256,8 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
         console.log(`[followup] ${convLabel(s.id)} 在生成话术期间已有新动静，本轮跳过`);
         continue;
       }
+      text = recheckFollowupLinks({ session: fresh, text, recordGuard: noteGuard }, currentPack().runtime.replySteps);
+      if (!text.trim()) continue;
       // 先记账、同步落盘，再推送（at-most-once，见上面「停机」）。
       // touch=false：不刷新 updatedAt。它代表「客户最后活跃时间」，跟进不该把沉默时长
       // 清零，否则后台「N 小时未回应」失真，介入队列也会漏掉真正该救的客户

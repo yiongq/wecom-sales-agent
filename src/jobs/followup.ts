@@ -1,3 +1,5 @@
+import { noteGuard } from '../trace/recorder.js';
+import { recheckFollowupLinks } from '../core/guards/link-whitelist.js';
 import { recordQuoteStates } from '../core/message-parts.js';
 import { currentPack } from '../config/source.js';
 import { scopedState } from '../tenancy/scoped-state.js';
@@ -242,11 +244,13 @@ async function sendAfterLedger(a: {
   push: PushFn;
 }): Promise<JobOutcome> {
   const own = state();
-  const { job, ctx, fresh, sid, text, message, release, clock } = a;
+  const { job, ctx, fresh, sid, message, release, clock } = a;
+  let text = a.text;
   // 这次发送开始时的接手代次（审查第 6 条，concurrency[2]）：记账、等提交要经一次 await，这段时间里会话可能被接手；
   // 推送前再比一次，变了就不推——不然刚接手、客户紧接着就收到一条 AI 跟进，违背不变量 28
   const gen0 = takeoverGen(sid);
   // 记账并把任务改成 sending，同一段同步代码里排进同一次落库；提交之后才推送（最多发一次）
+  const originalMeta = fresh.followup ? { ...fresh.followup } : undefined;
   const meta = (fresh.followup ??= {});
   const stage = fresh.stage;
   const before = { count: meta.count, stages: meta.stages, lastAt: meta.lastAt };
@@ -256,7 +260,7 @@ async function sendAfterLedger(a: {
   meta.pendingAt = Date.now();
   saveWith(fresh, [statusOp(job, 'sending', 'running', { report: true })]);
   // 03：库里的企微账号把这条跟进的分段 pending 排进同一次落库（记账、sending 与 pending 一起提交），推送时交回去
-  const prepared = prepareChannel(sid, text, { kind: 'followup', message });
+  let prepared = prepareChannel(sid, text, { kind: 'followup', message });
   ctx.markSending();
   own.known.set(sid, null);
   try {
@@ -275,17 +279,42 @@ async function sendAfterLedger(a: {
     releasePrepared(prepared, 'aborted');
     return { status: 'handled' };
   }
-  if (takeoverGen(sid) !== gen0 || fresh.handedOver) {
-    // 记账、等提交期间被接手（或已转人工）：不推送，账不退（已提交，多记一次是安全的一侧）、不重排，任务记 abandoned
-    console.error(`[followup] 跟进 ${short(sid)} 推送前发现已被接手，不推送`);
-    releasePrepared(prepared, 'taken_over');
-    queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'taken_over' })]);
-    return { status: 'handled' };
-  }
-  if (currentPack().runtime.followupGate?.(fresh, fresh.stage) === false) {
+  for (;;) {
+    if (takeoverGen(sid) !== gen0 || fresh.handedOver) {
+      // 记账、等提交期间被接手（或已转人工）：不推送，账不退（已提交，多记一次是安全的一侧）、不重排，任务记 abandoned
+      console.error(`[followup] 跟进 ${short(sid)} 推送前发现已被接手，不推送`);
+      releasePrepared(prepared, 'taken_over');
+      queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'taken_over' })]);
+      return { status: 'handled' };
+    }
+    if (currentPack().runtime.followupGate?.(fresh, fresh.stage) === false) {
+      releasePrepared(prepared, 'aborted');
+      queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'changed' })]);
+      return { status: 'handled' };
+    }
+    const checked = recheckFollowupLinks({ session: fresh, text, recordGuard: noteGuard }, currentPack().runtime.replySteps);
+    if (checked === text) break;
     releasePrepared(prepared, 'aborted');
-    queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'changed' })]);
-    return { status: 'handled' };
+    if (!checked.trim()) {
+      // 发送尚未发生；删空恢复本次元数据，取消准备记录与额度预占，不重排。
+      if (originalMeta) fresh.followup = originalMeta;
+      else delete fresh.followup;
+      saveWith(fresh, [statusOp(job, 'abandoned', 'sending', { lastError: 'guard_empty' })]);
+      return { status: 'handled' };
+    }
+    text = checked;
+    message.content = text;
+    Reflect.deleteProperty(message, 'quoteStates');
+    recordQuoteStates(message, fresh);
+    prepared = prepareChannel(sid, text, { kind: 'followup', message });
+    try {
+      await flushSession(sid, { timeoutMs: LEDGER_TIMEOUT_MS });
+    } catch {
+      releasePrepared(prepared, 'aborted');
+      queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'ledger_not_committed' })]);
+      return { status: 'handled' };
+    }
+    // 准备新正文也经过 await；每轮只删链接，直至发送前没有新的失效链接。
   }
   let ok: boolean;
   try {

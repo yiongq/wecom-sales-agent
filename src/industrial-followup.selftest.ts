@@ -74,7 +74,9 @@ fs.writeFileSync(path.join(dir, 'policy.json'), JSON.stringify({ ...defaultIndus
 const runtime = createIndustrialRuntime(config.packSources());
 bindPack(runtime, runtime.defaultBrand);
 const pushes: { id: string; text: string }[] = [];
-const push = async (id: string, text: string) => {
+const pushOptions: (import('./types.js').PushOpts | undefined)[] = [];
+const push = async (id: string, text: string, opts?: import('./types.js').PushOpts) => {
+  pushOptions.push(opts);
   pushes.push({ id, text });
   return true;
 };
@@ -331,6 +333,118 @@ try {
     (await sql<{ status: string }>("select status from jobs where kind='followup' and payload->>'sessionId'=$1", [dbValid.id]))[0]!.status,
     'done',
   );
+  // R3：真实任务等待落库时撤回 / 自动批准新单取代；只桩发送边界。
+  const { setPrepareTransport } = await import('./handoff/takeover.js');
+  const { withdrawQuote } = await import('./payment/orders.js');
+  const raceFailures: string[] = [];
+  for (const change of ['withdraw', 'supersede'] as const) {
+    for (const rest of ['', '有问题随时问我。']) {
+      const s = silent('closing');
+      const old = await approved(s);
+      store.saveSession(s, false);
+      await store.flushSession(s.id);
+      const beforeRace = ledgerSnapshot(s);
+      const n = pushes.length;
+      completion = `报价单：https://shop.example.test/quote/${old.id}。${rest}`;
+      const handles = new Map<import('./types.js').PreparedPush, { text: string; cancelled: boolean }>();
+      let prepared!: () => void;
+      const preparing = new Promise<void>((resolve) => {
+        prepared = resolve;
+      });
+      let unblock!: () => void;
+      const blocked = new Promise<void>((resolve) => {
+        unblock = resolve;
+      });
+      setPrepareTransport({
+        prepare(id, text, opts) {
+          const handle = { sessionId: id, kind: opts.kind };
+          handles.set(handle, { text, cancelled: false });
+          if (handles.size === 1) {
+            fx.faults.gate = blocked;
+            prepared();
+          }
+          return handle;
+        },
+        release(handle) {
+          handles.get(handle)!.cancelled = true;
+        },
+      });
+      const running = runner.runJobsOnce(now);
+      let changing: Promise<unknown> | undefined;
+      try {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([
+            preparing,
+            new Promise<never>((_, reject) => {
+              timer = setTimeout(() => reject(new Error('跟进未进入等待落库')), 2000);
+            }),
+          ]);
+        } finally {
+          clearTimeout(timer);
+        }
+        assert.equal(pushes.length, n, '必须在发送前暂停');
+        if (change === 'withdraw') changing = withdrawQuote(old.id, { userId: null, name: '合成顾问', role: 'supervisor' });
+        else {
+          const newer = await createLineOrder(s, [{ kind: 'part', code: part.id, qty: 3 }]);
+          assert.ok('order' in newer);
+          assert.equal(newer.order.approval?.state, 'approved');
+          assert.equal(old.supersededBy, newer.order.id);
+        }
+      } finally {
+        fx.faults.gate = null;
+        unblock();
+      }
+      await running;
+      await changing;
+      await store.flushSession(s.id);
+      setPrepareTransport({ prepare: () => null, release: () => {} });
+      try {
+        const delivered = pushes.slice(n).filter((p) => p.id === s.id);
+        assert.deepEqual(
+          delivered.map((p) => p.text),
+          rest ? [rest] : [],
+          `${change}: 不能外发失效链接`,
+        );
+        assert.equal([...handles.values()][0]!.cancelled, true, '旧准备记录取消');
+        const persisted = await sql<{ meta: unknown }>("select state->'followup' as meta from conversations where id=$1", [s.id]);
+        assert.deepEqual(persisted[0]!.meta ?? {}, ledgerSnapshot(s).meta, '修正的跟进元数据落库');
+        const settled = await sql<{ status: string; last_error: string | null }>(
+          "select status,last_error from jobs where kind='followup' and payload->>'sessionId'=$1 and payload->>'stage'='closing'",
+          [s.id],
+        );
+        assert.deepEqual(settled, [{ status: rest ? 'done' : 'abandoned', last_error: rest ? null : 'guard_empty' }]);
+        if (rest) {
+          const sent = pushOptions[pushes.findIndex((p, i) => i >= n && p.id === s.id)];
+          assert.ok(sent?.prepared);
+          assert.deepEqual(handles.get(sent.prepared), { text: rest, cancelled: false }, '发送接过重新准备的正文');
+          assert.equal(sent.message?.content, rest);
+          assert.equal(s.messages.filter((m) => m.author === 'followup').at(-1)?.content, rest);
+          assert.equal(
+            Reflect.get(s.messages.filter((m) => m.author === 'followup').at(-1) ?? {}, 'quoteStates'),
+            undefined,
+            '消息不能留旧报价快照',
+          );
+          assert.equal(s.followup?.count, 1);
+        } else {
+          assert.deepEqual(ledgerSnapshot(s).meta, beforeRace.meta, '删空退回本次记账');
+          assert.deepEqual(ledgerSnapshot(s).window, beforeRace.window, '删空释放预占');
+          assert.deepEqual(
+            s.messages.filter((m) => m.author === 'followup'),
+            [],
+            '不留跟进消息，撤回通知独立保留',
+          );
+        }
+        console.log(`PASS R3-${change}-${rest ? '保留正文' : '删空'}`);
+      } catch (error) {
+        raceFailures.push(`${change}/${rest}: ${String(error)}`);
+        console.log(`FAIL R3-${change}-${rest ? '保留正文' : '删空'}`);
+      }
+      s.followupOptOut = { at: now, quote: '测试结束' };
+      store.saveSession(s, false);
+      await store.flushSession(s.id);
+    }
+  }
   const pending = silent('quote');
   const built = await approved(pending);
   built.approval!.state = 'pending';
@@ -439,6 +553,7 @@ try {
   console.log('工业真实引擎：护栏事件、固定句/patch、5类pack转人工、首次确认通知去重通过');
   followupJobs.stop();
   await runner.__jobsTest.stop();
+  assert.deepEqual(raceFailures, []);
 } finally {
   assert.deepEqual((await store.drainStore(5000)).undrained, []);
   Date.now = realNow;
