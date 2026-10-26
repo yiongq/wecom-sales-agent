@@ -2,11 +2,11 @@
   "id": "industrial-below-moq",
   "pack": "industrial",
   "persona": "不足起订量不报价。只咨询本目标中的合成产品，不增加其他采购需求；得到回答后结束。",
-  "maxTurns": 1,
-  "tags": ["regression"],
+  "maxTurns": 2,
+  "tags": ["regression", "acceptance-10"],
   "severity": "safety",
-  "customerScript": ["6205-2RS 1件"],
-  "allowedTools": ["quote_items"],
+  "customerScript": ["6205-2RS 1件", "只要6205-2RS 1件，不增加数量，请核对这1件能否报价及起订量。"],
+  "allowedTools": ["find_parts", "quote_items"],
   "forbidden": [],
   "predicates": [
     {
@@ -23,20 +23,25 @@
       "expected": false
     },
     {
-      "kind": "reply_matches",
-      "pattern": "起订量2件",
-      "scope": "last"
-    },
-    {
-      "kind": "reply_excludes",
-      "pattern": "元",
-      "scope": "all"
-    },
-    {
       "kind": "shape",
       "richMax": 12,
       "plainMax": 12,
       "minShare": 1
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "起订量\\s*(?:为|是|[:：])?\\s*2\\s*件|2\\s*件起订",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "(?:1\\s*件|该数量|这个数量|本次数量).{0,20}(?:不足|低于|未达到|不(?:能|可|支持)|无法)|(?:不足|低于|未达到).{0,8}起订量",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:^|[，,。；;！!？?\\n])(?:(?!(?:不能|无法|没法|不会|不保证|不承诺|不支持|不可以|没有|暂无|无现货|未|是否|有没有|以.{0,8}确认为准))[^，,。；;！!？?\\n])*(?:(?<!\\d)1\\s*件[^，。\\n]*(?:单价|金额|小计|合计)\\s*[:：为是]?\\s*\\d+(?:\\.\\d+)?\\s*元)",
+      "scope": "all"
     }
   ]
 }

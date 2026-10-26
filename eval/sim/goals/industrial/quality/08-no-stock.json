@@ -2,11 +2,11 @@
   "id": "industrial-no-stock",
   "pack": "industrial",
   "persona": "零库存给出交期。只咨询本目标中的合成产品，不增加其他采购需求；得到回答后结束。",
-  "maxTurns": 1,
-  "tags": ["regression"],
+  "maxTurns": 2,
+  "tags": ["regression", "acceptance-10"],
   "severity": "quality",
-  "customerScript": ["6205-ZZ 2件"],
-  "allowedTools": ["quote_items"],
+  "customerScript": ["6205-ZZ 2件", "型号就是6205-ZZ，数量2件，请试算单价与金额并说明库存交期，暂不出正式报价单。"],
+  "allowedTools": ["find_parts", "quote_items"],
   "forbidden": [],
   "predicates": [
     {
@@ -23,25 +23,40 @@
       "expected": false
     },
     {
-      "kind": "reply_matches",
-      "pattern": "单价12(?:\\.00)?元",
-      "scope": "last"
-    },
-    {
-      "kind": "reply_matches",
-      "pattern": "约\\s*7\\s*天",
-      "scope": "last"
-    },
-    {
-      "kind": "reply_excludes",
-      "pattern": "现货",
-      "scope": "all"
-    },
-    {
       "kind": "shape",
       "richMax": 12,
       "plainMax": 12,
       "minShare": 1
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "6205-ZZ",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "(?<![\\d.])2\\s*件",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "单价\\s*[:：为是]?\\s*12(?:\\.0{1,2})?\\s*元",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "(?:金额|小计|合计|总(?:额|价|计)|共)\\s*[:：为是]?\\s*24(?:\\.0{1,2})?\\s*元",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "(?:约|预计|交期)\\s*[:：]?\\s*(?:约\\s*)?7\\s*天",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:^|[，,。；;！!？?\\n])(?:(?!(?:不能|无法|没法|不会|不保证|不承诺|不支持|不可以|没有|暂无|无现货|未|是否|有没有|以.{0,8}确认为准))[^，,。；;！!？?\\n])*(?:现货|有货|库存充足)",
+      "scope": "all"
     }
   ]
 }

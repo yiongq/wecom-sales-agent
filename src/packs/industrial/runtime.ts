@@ -8,7 +8,7 @@ import {
 import { handoffVocab } from './handoff-vocab.js';
 import { industrialReplyGuard, industrialFollowupGuard, rfqTrimStep, rfqTrimFollowupStep } from './guards.js';
 import { IndustrialPolicySchema, quoteNotes } from './policy.js';
-import { preModel, contextNote } from './turn.js';
+import { preModel, contextNote, prefetch, beforeTool } from './turn.js';
 import { sopSections, templates, contractRules, hardRequirements } from './sop.js';
 import { fixedReplies, consistencyRules } from './fixed-replies.js';
 import { followupTemplates, followupGate, insightPrompts, mock } from './auxiliary.js';
@@ -85,6 +85,8 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     onQuoteDecided: (_session, _order, event) =>
       event === 'approved' ? 'closing' : event === 'rejected' || event === 'withdrawn' ? 'quote' : null,
     preModel,
+    prefetch: (ctx) => prefetch(ctx, sources),
+    beforeTool: (name, args, ctx) => beforeTool(name, args, ctx, sources),
     contextNote(ctx) {
       const state = readState(ctx.session);
       const policy = IndustrialPolicySchema.parse(ctx.policy ?? sources.currentPolicy().policy);

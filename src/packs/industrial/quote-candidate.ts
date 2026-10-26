@@ -25,3 +25,14 @@ export function latestQuoteCandidate(session: Session, now: number): QuoteCandid
     })[0] ?? null
   );
 }
+
+/** 过期续算必须跨过一次对客报价和新的客户回合，不能在同一轮试算后建单。 */
+export function expiredQuoteAwaitingConfirmation(session: Session, now: number): boolean {
+  const quote = latestQuoteCandidate({ ...session, packState: {} }, now);
+  if (quote?.kind !== 'quote' || quote.state !== 'expired') return false;
+  const draft = readState(session).rfqDraft;
+  if (!draft || draft.at < quote.at) return true;
+  const customer = session.messages.findLastIndex((message) => message.role === 'customer');
+  if (customer < 0 || session.messages[customer]!.at <= draft.at) return true;
+  return !session.messages.slice(0, customer).some((message) => message.role === 'agent' && message.at >= draft.at);
+}
