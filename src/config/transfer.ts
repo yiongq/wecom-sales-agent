@@ -16,7 +16,7 @@ import { decodeSopFile, editableChars, joinSop, mergeWithImage, splitSop, type S
 import { runtimeById } from '../packs/registry.js';
 import { assertKind } from './catalog.js';
 import { PACK_FILE, readPackFile } from './pack-file.js';
-import { assertBrandForPack, ConfigStartupError, packSources } from './source.js';
+import { assertBrandForPack, assertCatalogCrossItems, ConfigStartupError, packSources } from './source.js';
 import { contractInputs, imageSopFile, tenantImage, tenantRenderer, switchPreamble } from './brand.js';
 import { promptHashes, publishedBrand, policySnapshot, publishedPolicy, renderInputsFor, type PromptHashes } from './hashes.js';
 
@@ -299,6 +299,14 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
       items = travel
         ? { route: readItems(dataDir, 'routes.json', 'route'), hotel: readItems(dataDir, 'hotels.json', 'hotel') }
         : Object.fromEntries(kinds.map((kind) => [kind, readPackItems(dataDir, kind, runtime.catalog[kind]!)]));
+      assertCatalogCrossItems(runtime, {
+        tenantId: tenant.id,
+        generation: 0,
+        items,
+        routes: [],
+        hotels: [],
+        versions: Object.fromEntries(kinds.flatMap((kind) => items[kind]!.map((item) => [`${kind}:${String(item.id)}`, 1]))),
+      });
     } catch (e) {
       return fail(`文件不合格：${message(e)}`);
     }

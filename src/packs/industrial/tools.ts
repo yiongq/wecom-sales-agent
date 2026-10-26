@@ -8,7 +8,8 @@ import {
   type ToolSpec,
   type TurnToolContext,
 } from '../../core/pack-api.js';
-import { MAX_QTY, priceLine, tiersOf } from './catalog.js';
+import { MAX_QTY, priceLine, tiersOf, type Part } from './catalog.js';
+import { normalizePartNo } from './normalize.js';
 import { createMatcher } from './match.js';
 import { writeState, type RfqDraft } from './state.js';
 
@@ -41,7 +42,15 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
         const args = z.object({ query: z.string().min(1), category: z.string().optional() }).parse(input);
         const found = await match(args.query, args.category);
         cancel?.throwIfAborted();
-        writeState(session, {}, found.parts);
+        // 工具展示的替代型号也进入同一有界缓存，只接受当前已上架的目标。
+        const alternatives = new Set(found.parts.flatMap((part) => part.substitutes ?? []).map(normalizePartNo));
+        const shownAlternatives = (sources.currentCatalog().items.part ?? []) as Part[];
+        writeState(session, {}, [
+          ...shownAlternatives
+            .filter((part) => alternatives.has(normalizePartNo(part.partNo)))
+            .map((part) => ({ partNo: part.partNo, specs: [] })),
+          ...found.parts,
+        ]);
         sources.saveSession(session);
         return JSON.stringify({
           match: found.match,
