@@ -643,6 +643,186 @@ v2 快照比对：865 条 case · 0 处差异
 
 ## 验收记录
 
+### 中期验收（第 15 步前半，2026-10-26）
+
+- 验收对象：`c8cf3ed`，第 0–14 步已提交；本轮仅改本文件的验收记录与交接。spec 保持 ready，第 15 步不打勾。不改产品代码、自测、锁定八文件或任何基线，不提交、不 push、不开 PR。
+- 边界：仅进程内请求和 localhost:3290；所有模型调用均为 mock。没有读取部署配置、密钥文件，没有真实 SSH、服务器操作、Docker 或浏览器操作。回滚自测里的 ssh/docker 是隔离目录中的替身，配置为自测自己生成的合成内容。
+- **回滚演练（协调者补，2026-10-26，本机一次性容器）**：compose 项目 `wecom-09-acc`（只有 `db`，`pgvector/pgvector:pg17`），用 `createRealPgFixture` 建库并跑完 21 个迁移；macOS 无 `timeout`，演练用 perl 的同名替身。插入合成报价单（已付 + 已驳回，均为终态）后 `bash deploy/rollback-guard.sh <部署目录> pre-09 wecom-09-acc` **退出 9**，打印「拒绝回滚：目标是 09 之前的镜像……」与「前滚修复，或者回滚到另一个含 09 的 tag」；删掉后同命令**退出 0**；空库同样退出 0。`git ls-tree demo-v9 src/core/site-links.ts` 为空（判为 pre-09），当前 HEAD 有该文件（不误拦）。deploy.sh 串联与自动回滚路径由 rollback-guard 自测 316 项（替身）覆盖。容器、卷、网络已删。
+- **截图（协调者补，2026-10-26）**：照下方命令在 3290 起服务（`env -i`，不读 `.env`），内置浏览器逐张打开 8 个 URL：1 待审只有状态；2 已批准有效显示行、有效期与「合计 1,250元」；3 已过期、4 已驳回与 5 已撤回（失效）、6 被取代均无行与金额；7 已付显示行与合计；8 显示「报价单不存在」且页面与接口均 404。八张都没有「¥」与付款按钮；接口状态依次为 pending / approved / expired / invalid / invalid / superseded / paid / 404。截图未入库。服务已停。
+
+#### 1. 回滚步骤核对与 E 批演练补充
+
+E 批原步骤的判断与代码一致：手动根据 tag 文件树缺少 `src/core/site-links.ts` 传 `pre-09`，自动根据 prev 镜像文件探测；guard 有审批订单退出 9，deploy 接住后退出 1，打印「前滚修复，或者回滚到另一个含 09 的 tag」。无审批订单本项放行；含 09 的目标不查本项。SQL 不过滤订单状态或重置标记。`src/db/rollback-guard.selftest.ts` 本次 **316 项通过**，包含两入口、SQL 八种历史、查询故障与超时，但 Docker/SSH 为替身、SQL 为 PGlite，真实容器演练未完成。
+
+原步骤缺少直接可执行的命令、数据库选择、macOS 的 timeout 前提和两层退出码，补充如下。此段放在验收记录，保留 E 批原实施记录。协调者须使用本机已有镜像，不拉取外部镜像；镜像探测与完整 app 演练另由协调者记录。
+
+先在仓库根目录的独立 shell 准备一次性真实库。只创建本次项目，无映射端口；不使用仓库原 compose 或已有 env 文件：
+
+```sh
+roll_run="$PWD/var/09-acc/rollback"
+roll_project=wecom-09-acc-rollback
+mkdir -p "$roll_run/docker-config" "$roll_run/bin"
+export DOCKER_CONFIG="$roll_run/docker-config"
+unset DOCKER_HOST DOCKER_CONTEXT
+# 要求默认本机 Docker socket 可用；若本机需其他 socket，先由协调者核实，不能切远程 context。
+# 脚本内部用 GNU timeout；macOS 需已有 gtimeout，没有就先停止此演练。
+if ! command -v timeout >/dev/null; then
+  roll_timeout=$(command -v gtimeout) || exit 1
+  ln -s "$roll_timeout" "$roll_run/bin/timeout"
+  export PATH="$roll_run/bin:$PATH"
+fi
+cat > "$roll_run/compose.yml" <<'YAML'
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    pull_policy: never
+    container_name: wecom-09-acc-db
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_DB: agent
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:
+YAML
+roll_compose() { docker compose -p "$roll_project" -f "$roll_run/compose.yml" "$@"; }
+roll_cleanup() { perl -e 'alarm 60; exec @ARGV' docker compose -p "$roll_project" -f "$roll_run/compose.yml" down -v --remove-orphans; }
+trap roll_cleanup EXIT INT TERM
+perl -e 'alarm 60; exec @ARGV' docker compose -p "$roll_project" -f "$roll_run/compose.yml" up -d db
+# 至多等 30 秒，未 ready 就退出，由 trap 清理。
+roll_ready=0
+for roll_i in $(seq 1 30); do
+  if perl -e 'alarm 3; exec @ARGV' docker exec wecom-09-acc-db pg_isready -U postgres -d agent; then
+    roll_ready=1
+    break
+  fi
+  sleep 1
+done
+[ "$roll_ready" = 1 ] || exit 1
+roll_sql() { perl -e 'alarm 12; exec @ARGV' docker exec -i wecom-09-acc-db psql -U postgres -d agent -v ON_ERROR_STOP=1 "$@"; }
+# 最小表专用于 guard 的真实 SQL，不冒充迁移/RLS/app 端到端验收。
+roll_sql -c 'CREATE TABLE orders (status text, data jsonb, void_reason text);'
+for roll_state in pending approved expired paid rejected withdrawn superseded reset; do
+  roll_approval=approved
+  roll_status=pending_payment
+  roll_reason=NULL
+  roll_decided=1792972800000
+  case "$roll_state" in
+    pending) roll_approval=pending ;;
+    expired) roll_decided=0 ;;
+    paid) roll_status=paid ;;
+    rejected|withdrawn) roll_approval="$roll_state"; roll_status=cancelled ;;
+    superseded) roll_status=superseded ;;
+    reset) roll_reason="'reset'" ;;
+  esac
+  roll_sql -c "TRUNCATE orders; INSERT INTO orders VALUES ('$roll_status', jsonb_build_object('approval', jsonb_build_object('state', '$roll_approval', 'decidedAt', $roll_decided)), $roll_reason);" || exit 1
+  perl -e 'alarm 120; exec @ARGV' bash deploy/rollback-guard.sh "$roll_run" pre-09 "$roll_project" 3291 > "$roll_run/$roll_state.log" 2>&1
+  roll_rc=$?
+  [ "$roll_rc" = 9 ] || exit 1
+  rg -q '前滚修复，或者回滚到另一个含 09 的 tag' "$roll_run/$roll_state.log" || exit 1
+  printf '%s guard=%s\n' "$roll_state" "$roll_rc"
+done
+roll_sql -c "TRUNCATE orders; INSERT INTO orders VALUES ('paid', '{}', NULL);" || exit 1
+perl -e 'alarm 120; exec @ARGV' bash deploy/rollback-guard.sh "$roll_run" pre-09 "$roll_project" 3291 > "$roll_run/no-approval.log" 2>&1
+roll_rc=$?
+[ "$roll_rc" = 0 ] || exit 1
+printf 'no-approval guard=%s\n' "$roll_rc"
+# shell 退出即清理本次容器和卷，保留日志；不要执行全机 prune。
+```
+
+以上是 guard 的真库补验命令。完整 E 批演练还须补：
+
+- 用本机已构建的 08、09 镜像与隔离 compose（名称统一 `wecom-09-acc-`，合成配置、mock 模型）覆盖实际目标镜像参数。镜像探测内部 `docker run --rm` 默认未指定名字，演练环境应通过临时命令包装给每次探测加此前缀，退出后核对清理。新库用完整迁移与证明包装配创建合成订单，不能拿上面的最小表声称 app 端到端通过。
+- 自动路径须确实走「新 app 健康失败 → prev 为 08 → guard=9 → deploy=1」，并保存旧 app 未启动、未打 current tag 的日志。`bash deploy.sh <tag>` 自身会读部署配置并调用 SSH，本任务禁止直接运行；协调者需在隔离副本中使用只转发到本机 compose 的传输替身，或沿用既有自测核对编排，再补真实库/镜像 guard 结果。不能把单独 guard 的镜像参数检查写成已完成自动部署演练。
+- 本次编排自测的等价复跑命令（实际以子进程 timeout=240 秒运行）：`perl -e 'alarm 240; exec @ARGV' pnpm exec tsx src/db/rollback-guard.selftest.ts`，预期退出 0、`PASS rollback brand/sandbox/nontravel：316 项`；它同时断言手动拒绝在 rsync 前、自动拒绝未启动旧 app。完整真容器日志仍由协调者补，验收 13 暂不通过。
+
+#### 2. 报价单页 HTTP 与截图数据
+
+仿照 `src/quote-page.selftest.ts`，使用文件配置、证明包、合成订单和 `app.request` 逐项请求页面/API，并以 node:vm 执行**请求返回的页面脚本**，把 API 响应接给 fetch，断言实际状态文字与明细显隐；没有使用浏览器替代品声称截图完成。八个 HTML 的两个 og 标签均不含金额，HTML 及渲染文字无「¥」，唯一按钮为「重试」，无付款链接/按钮。
+
+| 订单情况   | 固定订单号末位（其余 23 位为 0） | 页 / API  | PublicQuote.state | 页面脚本文字   | 明细 / 金额          | og 无金额 / HTML 无「¥」/ 无付款按钮 |
+| ---------- | -------------------------------- | --------- | ----------------- | -------------- | -------------------- | ------------------------------------ |
+| 待审       | 1                                | 200 / 200 | pending           | 报价单待审核   | 无                   | 通过 / 通过 / 通过                   |
+| 已批准有效 | 2                                | 200 / 200 | approved          | 报价单已批准   | 有；上海自然日有效期 | 通过 / 通过 / 通过                   |
+| 已批准过期 | 3                                | 200 / 200 | expired           | 报价单已过期   | 无                   | 通过 / 通过 / 通过                   |
+| 已驳回     | 4                                | 200 / 200 | invalid           | 报价单已失效   | 无                   | 通过 / 通过 / 通过                   |
+| 已撤回     | 5                                | 200 / 200 | invalid           | 报价单已失效   | 无                   | 通过 / 通过 / 通过                   |
+| 被取代     | 6                                | 200 / 200 | superseded        | 报价单已被取代 | 无                   | 通过 / 通过 / 通过                   |
+| 已付       | 7                                | 200 / 200 | paid              | 已收款         | 有                   | 通过 / 通过 / 通过                   |
+| 不存在     | 8                                | 404 / 404 | 无                | 报价单不存在   | 无                   | 通过 / 通过 / 通过                   |
+
+- `src/quote-page.selftest.ts`：`QUOTE PAGE PASS`，七态 DB 重置后页/API 全 404，审批历史不变、void_reason=reset、重新预载仍无记录；品牌转义、cookie GET 与未登记 POST、加载/空/错/重试通过。
+- 另在独立的文件数据副本对七态逐一调用 `handleMessage(..., '重置', 'web')`：每态均 `FILE RESET PASS ... page=404 api=404 memory=deleted disk=deleted`，内存与 orders.json 均删除。截图数据没有被重置。
+- 截图资料在已忽略的 `var/09-acc/`：`config/` 为证明包配置副本（pack.json 指定 __fixture，含品牌、SOP、合成 widget 产品库），`data/sessions.json` 和 `data/orders.json` 含七态订单；第八个号码故意不存订单，表示 404。日志在 `logs/`，逐态机器可读结果在 `http-results.json`。文件模式只有宿主运行时的包绑定，不伪称创建了数据库租户。
+- 服务实启证据：`/healthz` 为 `ok=true, revision=dev, role=host`；localhost:3290 的 16 个真实 HTTP 请求均为上表状态；SIGTERM 后退出 143。截图仍为「协调者补」。
+
+协调者从仓库根目录起服务（不加载任何现有 env；本工作区没有 .env，换目录前也先核实不存在）：
+
+```sh
+[ ! -e .env ] || { echo '此截图命令不允许读取现有 .env'; exit 1; }
+env -i PATH="$PATH" PACK_FIXTURES=1 LLM_MOCK=1 CONFIG_SOURCE=file SESSION_STORE=file \
+  DEPLOY_PROFILE=demo PORT=3290 PUBLIC_BASE_URL=http://localhost:3290 \
+  SOP_PATH="$PWD/var/09-acc/config/sop.md" VAR_DIR="$PWD/var/09-acc/data" \
+  perl -e 'alarm 600; exec @ARGV' node --import tsx src/server.ts
+```
+
+前台运行，截图完成用 Ctrl-C 停止，最迟 600 秒结束。已批准样例使用生成时的批准时间，证明包有效期两自然日；超过截止日须重新准备有效样例，不把已过期的第 2 张算作有效截图。八个 URL（API 为同一订单号的 `/api/quotes/` 路径）：
+
+```text
+http://localhost:3290/quote/ord_000000000000000000000001
+http://localhost:3290/quote/ord_000000000000000000000002
+http://localhost:3290/quote/ord_000000000000000000000003
+http://localhost:3290/quote/ord_000000000000000000000004
+http://localhost:3290/quote/ord_000000000000000000000005
+http://localhost:3290/quote/ord_000000000000000000000006
+http://localhost:3290/quote/ord_000000000000000000000007
+http://localhost:3290/quote/ord_000000000000000000000008
+```
+
+#### 3. 验收 1–13 对照
+
+「通过」仅指本次本机自动化已验证的契约；群通知/企微卡片使用 mock transport/fetch，不声称真实客户收到。CI 列是仓库定义的套件归属，本次没有访问远端 CI 或声称当前 CI 绿。真实 PG 分支按任务约定留 CI 的一次性 pgvector:pg17 服务。
+
+| 验收            | 结论   | 本次证据与剩余项                                                                                                                                                                                                               | CI 套件归属                                                   |
+| --------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| 1 旅游不变      | 待线上 | 锁定八文件对 origin/dev 零 diff；PREFIX 两哈希与开工一致；link-bytes 317 条/517 项、legacy-bytes 60 条/140 项；两模式 v2 各 865/865、当前快照 0 差异，另对旧基线各 861 条 0 差异。线上四哈希、企微与网页一句一回待授权上线后验 | test:locked、两种 eval/run、两套 bytes；gates + test 1–4      |
+| 2 六入口        | 通过   | quote-approval 的 `QUOTE ENTRIES PASS`：online/advisor × 七态，三公开入口 404，confirm=409 quote_order、mark-paid=409 not_approved，批准后收款与取消各态正确                                                                   | quote-approval，test 1                                        |
+| 3 试算与正式    | 通过   | `QUOTE DATA PASS`：试算账本、正式金额隔离、待审工具结果仅 state；mock 对话不外泄报价链接                                                                                                                                       | quote-approval，test 1；两种 v2                               |
+| 4 状态表        | 通过   | quote-actions 的 `QUOTE MATRIX PASS`、`QUOTE CONCURRENCY PASS`：七态×六动作、批准/驳回两先后、提交期间撤回/重置/另一单批准均零错误推送                                                                                         | quote-actions，test 3                                         |
+| 5 批准与驳回    | 通过   | `QUOTE PERMISSIONS PASS` 6 身份×4 关系×3 动作；`QUOTE HTTP/AUDIT PASS` agent=200/viewer=403、空/过长原因拒绝；`QUOTE DELIVERY PASS` 单卡/账本1/extra/重复零推送/失败备注，过期撤回仍通知；真实企微调用由 mock fetch 接住       | quote-actions，test 3                                         |
+| 6 复用取代过期  | 通过   | `QUOTE DATA PASS` 并发复用、待审/已批两槽、取代与上海跨年秒边界；总览过期排除                                                                                                                                                  | quote-approval，test 1；quote-actions，test 3                 |
+| 7 报价单页      | 通过   | HTTP 八情况与四项检查通过；quote-page 验 DB 全态重置404/历史/重载/页面三态，本轮补文件全态删除；workbench 177 项、overview 246 项通过。**缺八张真实浏览器截图，协调者补**                                                      | quote-page，test 1；workbench，test 4；overview，test 3       |
+| 8 提醒总览      | 通过   | `QUOTE NOTIFY PASS` 去重、两类文案、无旧原因、非转人工确认；`QUOTE ATOMIC PASS` 注入 jobs 事务失败全部回滚；`QUOTE PROCESS RESTART PASS` 独立进程再次确认仍一任务；overview 246 项                                             | quote-actions、overview，test 3；真实 PG 分支留 CI            |
+| 9 链接登记      | 通过   | `SITE LINKS SELFTEST PASS` 租户隔离、标题、删链/孤立引导语、cookie/显式方法；public-routes、sandbox/pages、sandbox/outbound、锁定 wecom 与 link-bytes 全过；报价 API 的 cookie GET/POST 拒绝由 quote-page 实验覆盖             | site-links，test 3；quote-page，test 1；sandbox 与锁定 suites |
+| 10 确定性与pack | 通过   | `QUOTE REPLIES PASS` 固定句/模板全文、schema 拒绝、pack 转人工与统计、确认去重；未登记/文本不符在测试环境抛错                                                                                                                  | quote-replies，test 2                                         |
+| 11 评测         | 通过   | quote-replies 验 handoffKind 与包 richTools；sim/predicates 73 项、sim/fixture 42 项；两种 v2 旅游结论不变                                                                                                                     | quote-replies，test 2；sim/predicates、sim/fixture、两种 v2   |
+| 12 两钩子       | 通过   | `QUOTE REPLIES PASS` 动作钩子幂等、批准推进 closing、注入时钟的待审跳过跟进；自动批准不误调用动作钩子                                                                                                                          | quote-replies，test 2                                         |
+| 13 回滚         | 通过   | rollback-guard 316 项通过，覆盖八种历史SQL、guard=9/deploy=1、无单放行与手动/自动同检。**真实容器与完整隔离编排日志，协调者补**；命令与退出码补充见第1项                                                                       | rollback-guard 普通 test 4 + strict test 1                    |
+
+本轮命令均带外层 alarm 或子进程 timeout；15 个关联自测全部退出 0：`src/quote-{approval,actions,page,replies}.selftest.ts`、`src/site-links.selftest.ts`、`src/db/rollback-guard.selftest.ts`、`src/tenancy/public-routes.selftest.ts`、`src/tenancy/sandbox/{pages,outbound}.selftest.ts`、`eval/sim/{fixture,predicates}.selftest.ts`、`console/src/conversations/workbench.selftest.tsx`、`console/src/overview/overview.selftest.tsx`、`src/core/link-bytes.selftest.ts`、`src/payment/legacy-bytes.selftest.ts`。命令为 `node --import tsx <文件>` 或 `pnpm exec tsx <文件>`，console 加 `--tsconfig console/tsconfig.json`，两套 bytes 加 `PARITY_CLOCK_MS=1790913600000` 和 `--import ./src/store/parity-clock.ts`。逐套日志与退出码存 `var/09-acc/logs/`，不提交。
+
+质量门与基准：
+
+- ✔ `pnpm -s format:check`、`pnpm -s lint`、`pnpm -s typecheck`、`pnpm -s test:locked` 均退出 0；完整 `pnpm test` 按本次任务约定不在本机执行，交 CI。lint 提示未配置内容黑名单而跳过该子项；依赖方向、迁移、console、租户状态均通过。
+- ✔ `CONFIG_SOURCE=file LLM_MOCK=1 pnpm exec tsx eval/run.ts` 与加 `CONFIG_TEST_DB=pglite` 的同命令均退出 0，均 865/865、8587 项断言，`v2 快照比对：865 条 case · 0 处差异`。
+- ✔ 另加 `EVAL_V2_BASELINE=eval/baselines/v2-08-step17.json`，用 `node --import tsx eval/run.ts` 重跑文件/PGlite两模式，均退出 0；新增四 case 仍验自身断言。输出分别如下，未伪造旧用例总数：
+
+```text
+文件：v2 回归评测：865/865 用例通过 · 跳过 0 条 realOnly · 8587 项断言
+v2 快照比对：861 条 case · 0 处差异
+PGlite：v2 回归评测：865/865 用例通过 · 跳过 0 条 realOnly · 8587 项断言
+v2 快照比对：861 条 case · 0 处差异
+PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd
+```
+
+- ✔ 用 JSON 原始片段对比两份基线：旧 861 条全部逐字节一致，新增四条均为 q09-fixture；旅游 857 条原始片段 sha256 仍为 `3d009373eaa0b797ed7d831c880d15fefca7fe50a59145c7239b69e7bfc1d813`。基线文件未写。
+- ✔ `node --import tsx scripts/ci-shard.ts --check 4`：`CHECK PASS: 191 units, 25 strict suites`；完整链归属没有漏套件。本次未运行 CI、真实 PG 或真实模型。
+- ✔ 锁定八文件零 diff；本次仅 plan 的两个允许区域有受控改动；新增行无本机绝对路径或超长假企微 id，`git diff --check` 通过。
+
+发现的缺陷：未发现产品缺陷。演练文档缺口的现象为 E 批只有叙述、不能直接复制执行；复现为按原段落找启动命令、库名及 guard/deploy 退出码无明示；位置在本文件 E 批回滚段，本轮仅在允许的验收记录补命令与限制。截图与真实演练是未完成验收项，不把替身自测写成已完成。
+
+清理：未创建容器、浏览器或后台模型任务；3290 服务已 SIGTERM 并 wait 确认退出，测试子进程均完成。删除本轮临时探针、文件重置副本，仅保留 gitignored 的截图配置/数据、HTTP 结果与验收日志给协调者；不提交这些资料。需要确认的问题：无。
+
 ## Open
 
 无。
@@ -706,3 +886,11 @@ v2 快照比对：865 条 case · 0 处差异
 - 第 11–14 步实现与随批自测完成，最终验证结果见「E 批 · 第 11–14 步」。改动留在工作区，不提交、不 push、不开 PR，spec 保持 ready；无新增表、列、环境变量或依赖。
 - 当前没有功能半成品或未定设计问题；101 个关联自测、门禁、旅游字节和两种 v2 均通过，测试进程均已退出，没有遗留浏览器、容器或后台服务。
 - 下一步为第 15 步：做整体验收与审查；上线必须取得 owner 当次授权。第 16 步由协调者补七态真实浏览器截图、一次性真实 PG 分支与上述手动 / 自动回滚演练。本批未调用真实模型、未访问服务器或外部服务。
+
+### 交接（2026-10-26，第 15 步前半中期验收）
+
+- 已完成：本机七态与404的页面/API及实际页面脚本核对；文件/DB全态重置核验；3290 实启16请求；截图数据准备；验收1–13逐条对照；三项静态门禁、锁定套件、15个关联自测、两种当前/旧基线回归与CI分片覆盖检查。只改本文件「验收记录」与此交接，产品代码、自测和基线未动，未提交。
+- 未完成：验收7截图与验收13真实容器演练由协调者补，执行补充见本次验收记录；真实PG分支与完整pnpm test留CI。验收1线上四哈希与企微/网页冒烟待线上。第15步保持未勾选，spec保持ready，不代owner确认implemented。
+- 资料与清理：截图资料为gitignored的 `var/09-acc/config/`、`var/09-acc/data/`，固定订单号与3290完整启动命令见本次验收记录；日志/HTTP结果保留作本机证据。临时探针和重置副本已删除，服务及测试进程已退出，无容器、浏览器或其他后台资源。
+- 下一步：回滚演练与八张截图已由协调者补完（见本节），验收 2–13 本机通过；确认 CI 完整链及真实 PG 绿后，由owner在当次会话授权上线 `demo-v10-rc1`，本轮不操作服务器。按08「上线清单」写法逐项核对：部署前手动备份并复制到异地；dev上打本地rc tag（不推）；线上不设PACK_FIXTURES、无证明包租户；09无新增迁移/列，保留现有21迁移；上线前记录旅游租户/订单及看板值；上线后宿主与沙箱revision均为demo-v10-rc1，宿主role=host、DB/锁/渠道健康；`/healthz` 四哈希与开工相同（promptHash `cf3b163c9f69`、toolsHash `59e071568f5d`、prefixHash `6630127f79d7`、sopHash `1f850038290b`）；企微与网页各一句一回（企微由owner手机发送），新开沙箱G01走一遍；看板本月成交额及既有订单与上线前一致、检查两容器日志。含审批历史时pre-09回滚必须拒绝，只能前滚修复或退含09的tag。上线补证后再勾第15步，最终Status更新仍需owner确认。
+- 无产品半成品或待定设计；需要确认的问题：无。
