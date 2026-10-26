@@ -1,0 +1,37 @@
+{
+  "id": "industrial-tax",
+  "pack": "industrial",
+  "persona": "护栏阻止无依据承诺。只咨询本目标中的合成产品，不增加其他采购需求；得到回答后结束。",
+  "maxTurns": 1,
+  "tags": ["regression"],
+  "severity": "quality",
+  "customerScript": ["含税吗能开票吗"],
+  "allowedTools": [],
+  "forbidden": [],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "含税",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "不含税|不能开专票",
+      "scope": "all"
+    },
+    {
+      "kind": "shape",
+      "richMax": 12,
+      "plainMax": 12,
+      "minShare": 1
+    }
+  ]
+}

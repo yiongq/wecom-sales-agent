@@ -1,0 +1,44 @@
+{
+  "id": "industrial-12-lines",
+  "pack": "industrial",
+  "persona": "多行询价裁剪后提供报价单。只咨询本目标中的合成产品，不增加其他采购需求；得到回答后结束。",
+  "maxTurns": 1,
+  "tags": ["regression"],
+  "severity": "quality",
+  "customerScript": [
+    "6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件"
+  ],
+  "allowedTools": ["quote_items"],
+  "forbidden": [],
+  "predicates": [
+    {
+      "kind": "tool_called",
+      "name": "quote_items",
+      "min": 1
+    },
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "另外 2 行已算好",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "正式报价单",
+      "scope": "last"
+    },
+    {
+      "kind": "shape",
+      "richMax": 12,
+      "plainMax": 12,
+      "minShare": 1
+    }
+  ]
+}

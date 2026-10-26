@@ -310,6 +310,10 @@ export async function engineRuntime(
         };
       },
       async start(seed) {
+        if (seed && pack !== 'travel') {
+          const { validatePackInitial } = await import('./goals.js');
+          seed = validatePackInitial(seed, Date.now(), !!currentPack().runtime.quotes);
+        }
         const id = `sim-eval-${randomUUID()}`;
         const session = store.getOrCreateSession(id, 'simulator');
         if (seed) {
@@ -327,6 +331,12 @@ export async function engineRuntime(
               // 08 R11：通用单的种子只给条目和数量，经包的 priceLine 建；状态建好后再改成种子要的
               const result = await createLineOrder(session, o.lines, { approval: false });
               if ('rejected' in result) throw new Error(`种子订单被包拒绝：${JSON.stringify(result.rejected)}`);
+              // 仅隔离模拟器写审批快照；不走批准动作、自动批准或通知路径。
+              if (o.approval) {
+                result.order.createdAt = o.approval.requestedAt;
+                result.order.approval = { ...o.approval };
+                store.saveOrder(result.order);
+              }
               if (o.status === 'paid') store.markOrderPaid(result.order.id);
               else if (o.status !== 'pending_payment') {
                 result.order.status = o.status;
