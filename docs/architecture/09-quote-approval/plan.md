@@ -1,13 +1,13 @@
 # 09 · 报价审批、报价单页与站内链接 — 执行计划
 
-对应 [spec.md](./spec.md)。只记步骤和状态，不复述设计；R、不变量、验收、开放问题的编号都指本 spec。本文件仍是起草稿；各步的「做 / 验 / 依赖」与相对工作量已补齐，翻 `ready` 仍由 owner 决定。
+对应 [spec.md](./spec.md)。只记步骤和状态，不复述设计；R、不变量、验收、开放问题的编号都指本 spec。owner 已于 2026-10-26 定本 spec 为 `ready`；各步的「做 / 验 / 依赖」与相对工作量已补齐，下一步从第 0 步开始。
 
 ## 开工条件
 
 缺一条就停下，告诉 owner：
 
 1. 08 已 `implemented` 并上线。
-2. 本 spec `Status: ready`；反向引用随 09 的 docs PR 合入，包括 02、05、08 的 `Superseded in part by:` 与 02、04、06、08 的 `Amended by:`，整行文本见下方「翻 ready 的 PR：目录外反向引用」。
+2. 本 spec `Status: ready`；反向引用随 09 的 docs PR 合入，包括 02、05、08 的 `Superseded in part by:` 与 02、04、06、08 的 `Amended by:`，整行文本见下方「翻 ready 的 PR：目录外反向引用」。已满足（2026-10-26）：owner 定 ready，七条反向引用随本次 docs 改动落入上述五份 spec。
 3. 本机能跑 format / lint / typecheck、`test:locked`、受影响的自测、v2 假模型回归（文件与 PGlite 两条），能起一次性 `pgvector/pgvector:pg17` 容器。
 4. 部署要 owner 当次授权（第 15 步）。
 
@@ -61,59 +61,59 @@
 
 ## ready 自查（2026-10-26）
 
-按 `docs/spec-driven-dev.md` 逐条检查文档就绪条件；本轮只补设计与计划，不把实现验收提前记成通过。下表中的「✘」是翻 ready 的 PR 待办，不是新的设计开放问题。
+按 `docs/spec-driven-dev.md` 逐条检查文档就绪条件；owner 于 2026-10-26 定 ready，目录外反向引用随本次 docs 改动落入，以下条件已满足。实现验收仍按步骤执行。
 
 | 结果 | 条件与依据                                                                           | 09 的证据与本轮补齐                                                                                                                                                                                         |
 | ---- | ------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| ✔    | RFC 与唯一执行跟踪，目录 / 来源清楚（`docs/spec-driven-dev.md:17-26、74`）           | 只有 spec / plan 两份交付；spec 顶部 Phase 指向主参考，目标 / 非目标与前置条件齐全（`spec.md:9、41、50、58`）。                                                                                             |
-| ✔    | 设计足够落地，接口用真实 TypeScript 字段（`docs/spec-driven-dev.md:34-35`）          | R1–R16、状态表、接口与数据流覆盖状态 / 权限 / 持久化 / 发送 / 链接 / 回滚；此前核对已有接口与新增字段的区别。本轮补 `FixedReply.pattern` 的类型说明与已声明扩展的 amendment 归属（`spec.md:68、105、12`）。 |
-| ✔    | 不变量独立且可断言（`docs/spec-driven-dev.md:36`）                                   | 单列 10 条不变量，金额、外发时状态、订单流转与固定句都可测试（`spec.md:211`）。                                                                                                                             |
-| ✔    | 验收为可观察结果 / 可验证契约（`docs/spec-driven-dev.md:37`）                        | 验收 1–13 覆盖输出字节、HTTP 状态、并发、提醒、界面、钩子和回滚；本轮把回滚改为退出码 / 提示 / 无单放行 / 自动同检（`spec.md:237、263`）。                                                                  |
-| ✔    | 界面覆盖加载 / 空 / 错误（`docs/spec-driven-dev.md:38`）                             | 本轮在 R9 与验收 7 补报价单页、工作台报价卡及总览三态、禁用动作和 409 / 403 展示（`spec.md:80、257`）。                                                                                                     |
-| ✔    | 开放问题有结论或裁决时机（`docs/spec-driven-dev.md:39`）                             | 原 1–5 已由 owner 决定；回滚 C 已记录为第五条 Revisions；plan Open 为「无」（`spec.md:8、265`；`plan.md:165`）。                                                                                            |
-| ✔    | 合法状态与就地修订留痕（`docs/spec-driven-dev.md:40、42、56`）                       | Status 保持 draft；既有四条 Revisions 原样保留，新加 owner 回滚裁决与本次自查记录，未写实现代码（`spec.md:3、8`）。                                                                                         |
+| ✔    | RFC 与唯一执行跟踪，目录 / 来源清楚（`docs/spec-driven-dev.md:17-26、74`）           | 只有 spec / plan 两份交付；spec 顶部 Phase 指向主参考，目标 / 非目标与前置条件齐全（`spec.md:10、42、51、59`）。                                                                                            |
+| ✔    | 设计足够落地，接口用真实 TypeScript 字段（`docs/spec-driven-dev.md:34-35`）          | R1–R16、状态表、接口与数据流覆盖状态 / 权限 / 持久化 / 发送 / 链接 / 回滚；此前核对已有接口与新增字段的区别。本轮补 `FixedReply.pattern` 的类型说明与已声明扩展的 amendment 归属（`spec.md:69、106、13`）。 |
+| ✔    | 不变量独立且可断言（`docs/spec-driven-dev.md:36`）                                   | 单列 10 条不变量，金额、外发时状态、订单流转与固定句都可测试（`spec.md:212`）。                                                                                                                             |
+| ✔    | 验收为可观察结果 / 可验证契约（`docs/spec-driven-dev.md:37`）                        | 验收 1–13 覆盖输出字节、HTTP 状态、并发、提醒、界面、钩子和回滚；本轮把回滚改为退出码 / 提示 / 无单放行 / 自动同检（`spec.md:238、264`）。                                                                  |
+| ✔    | 界面覆盖加载 / 空 / 错误（`docs/spec-driven-dev.md:38`）                             | 本轮在 R9 与验收 7 补报价单页、工作台报价卡及总览三态、禁用动作和 409 / 403 展示（`spec.md:81、258`）。                                                                                                     |
+| ✔    | 开放问题有结论或裁决时机（`docs/spec-driven-dev.md:39`）                             | 原 1–5 已由 owner 决定；回滚 C 已记录为第五条 Revisions；plan Open 为「无」（`spec.md:8、266`；`plan.md:165`）。                                                                                            |
+| ✔    | 合法状态与就地修订留痕（`docs/spec-driven-dev.md:40、42、56`）                       | Status 按 owner 决定更新为 ready；前五条 Revisions 原样保留，新增 ready 裁决，未写实现代码（`spec.md:3、9`）。                                                                                              |
 | ✔    | 步骤有序、带勾选且不重排（`docs/spec-driven-dev.md:46`；本轮要求各步做 / 验 / 依赖） | 步骤 0–18 编号与未勾选状态不变，全部补齐做 / 验 / 依赖，补相对工作量和共享文件的串行约束（`plan.md:22、44`）。                                                                                              |
 | ✔    | 最终审查、验证决定、质量门与固定最后三步（`docs/spec-driven-dev.md:26、48、69`）     | 第 15、16 步审查和验证；每批四门与新增测试接入已写明；16–18 为全验收、清理、owner 确认后更新 Status（`plan.md:39、40、41、42、59`）。                                                                       |
-| ✔    | 按日期交接，只在 plan 跟踪，不复制设计正文（`docs/spec-driven-dev.md:49-50、70`）    | 最新交接写明完成项、半成品、阻塞和下一步；实现步骤引用 R 与验收编号，设计正文留在 spec（`plan.md:183`）。                                                                                                   |
+| ✔    | 按日期交接，只在 plan 跟踪，不复制设计正文（`docs/spec-driven-dev.md:49-50、70`）    | 最新交接写明完成项、半成品、阻塞和下一步；实现步骤引用 R 与验收编号，设计正文留在 spec（`plan.md:191`）。                                                                                                   |
 | ✔    | 跨阶段技术选型 / 公开边界（`docs/spec-driven-dev.md:60、62`）                        | 沿用现有存储、排程和渠道技术，无新增跨阶段技术选型；文档没有客户数据、密钥或本机绝对路径。                                                                                                                  |
-| ✘    | 部分取代 / amendment 双向可追溯（`docs/spec-driven-dev.md:58`）                      | 09 正向头部已齐（`spec.md:11、12`）；02、04、05、06、08 的反向引用尚未写入，超出本轮范围。目标、位置与整行文本见下一节。                                                                                    |
-| ✘    | owner 决定 draft → ready（`docs/spec-driven-dev.md:41`）                             | owner 已定回滚 C，尚未授权翻 ready；按本轮要求保留 draft（`spec.md:3`）。                                                                                                                                   |
+| ✔    | 部分取代 / amendment 双向可追溯（`docs/spec-driven-dev.md:58`）                      | 09 正向头部已齐（`spec.md:12、13`）；2026-10-26 已按清单将七条反向引用落入 02、04、05、06、08，实际位置见下一节。                                                                                           |
+| ✔    | owner 决定 draft → ready（`docs/spec-driven-dev.md:41`）                             | owner 于 2026-10-26 定 ready，本次已更新 Status 并新增第六条 Revisions（`spec.md:3、9`）。                                                                                                                  |
 
 实现环境、旅游基准和功能验收属于开工条件及步骤 0–16，不是这次文档自查的已通过结果；「验收记录」继续只留给实际验收证据。
 
 ## 翻 ready 的 PR：目录外反向引用
 
-以下位置按 `dev e2e724f`：统一紧接目标文件第 3 行 `Status: implemented` 后插入，第一行落第 4 行；同文件的第二行落第 5 行。保留原有反向引用、Status 与正文。这里只列待加文本，本轮没有修改这些文件。
+已于 2026-10-26 落入。按各文件现有头部顺序，同类引用加在最后；没有同类行时放在 Status 后。以下保留整行文字与实际新增行号作记录，五份旧 spec 的 Status、正文及已有引用均未改。
 
 02 除部分取代外，还需一条 amendment：09 的 `Amends:` 已扩展它的 `HandoffKind` 与提醒原因，不能漏掉反向引用。
 
-- 目标 `docs/architecture/02-conversations-workbench/spec.md`，在原第 3 行之后依次插入：
+- 目标 `docs/architecture/02-conversations-workbench/spec.md`，已新增于第 11、13 行：
 
 ```text
 Superseded in part by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md) — 「订单动作只限接手人本人」及不变量 39 的对应限制：报价单的批准、驳回、撤回允许 agent 操作 AI 接待中（没转人工）的会话，其他接手关系与角色权限按 09 R7；不带审批的订单不变。
 Amended by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md)（只做新增，全文见该 spec 顶部 Amends：「转人工记录与四种状态」的 HandoffKind 加 pack；「任务表与跟进」「通知」的 handoff_notify 原因加 quote_pending、quote_accepted，见 09 R8、R12）。
 ```
 
-- 目标 `docs/architecture/05-tenancy-sandbox/spec.md`，在原第 3 行之后插入：
+- 目标 `docs/architecture/05-tenancy-sandbox/spec.md`，已新增于第 4 行：
 
 ```text
 Superseded in part by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md) — R21「微信里点开的链接」中固定三类公开页及其接口的白名单：改由核心登记与本租户包的 SiteLinkDef 登记合并生成，页面与 resources 的方法 / 路径按 09 R10；旅游白名单逐项相同，令牌、cookie 优先级、同源与限频规则不变。
 ```
 
-- 目标 `docs/architecture/08-pack-generalization/spec.md`，在原第 3 行之后依次插入：
+- 目标 `docs/architecture/08-pack-generalization/spec.md`，已新增于第 4、5 行：
 
 ```text
 Superseded in part by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md) — R3「复用与作废」中「同一会话最多一张待付的通用单」及对应的复用、取代规则：带审批的报价单改按 09 R6，待审与已批准各至多一张；不带审批的通用单不变。
 Amended by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md)（只做新增或收紧，全文见该 spec 顶部 Amends：R3 的 createLineOrder 加 approval 选项；R8 放行集合第 (2) 项限于已批准或不需审批的订单；R12 的公开订单接口与支付入口对报价单返回 404，见 09 R1、R2、R4）。
 ```
 
-- 目标 `docs/architecture/04-industry-packs/spec.md`，在原第 3 行之后插入：
+- 目标 `docs/architecture/04-industry-packs/spec.md`，已新增于第 10 行：
 
 ```text
 Amended by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md)（只做新增或收紧，全文见该 spec 顶部 Amends：R3 的 PackRuntime 加 quotes、siteLinks、onQuoteDecided、followupGate，DeterministicReply 加 fixedId、handoff、notify、statePatch，EnginePackHooks 加 quoteRejectedText、quoteWithdrawnText；R15 的 MessagePart.linkKind 扩为字符串并加 title；R11 的 handoff 谓词加可选 handoffKind，shape 改读包已有的 ShapePolicy.richTools；R14 的回滚检查加 pre-09 与退出码 9，见 09 R5、R10–R13、R15、R16）。
 ```
 
-- 目标 `docs/architecture/06-reply-quality/spec.md`，在原第 3 行之后插入：
+- 目标 `docs/architecture/06-reply-quality/spec.md`，已新增于第 5 行：
 
 ```text
 Amended by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md)（只做新增或收紧，全文见该 spec 顶部 Amends：R21 的 FixedReply 加可选 pattern；R2「谓词修正与新谓词」及「回归集目标的扩展」的 handoff 谓词加可选 handoffKind，shape 改读包已有的 ShapePolicy.richTools，见 09 R11–R13）。
@@ -187,3 +187,10 @@ Amended by: [09 · 报价审批、报价单页与站内链接（核心）](../09
 - 半成品状态：只有 09 两份文档的未提交 diff；没有实现代码、没有执行实现验收，验收记录仍为空，Status 仍是 draft；旅游基准在第 0 步采集，所有步骤保持未勾选。
 - 阻塞：无未定设计问题。owner 尚未决定翻 ready，目录外反向引用尚未实际写入；这两项是进入实现前的流程待办。
 - 下一步：owner 定 ready 后，由协调者在同一 docs PR 更新 Status 并补齐列出的反向引用；再核实现环境、从第 0 步复核基准，按计划实现。当前不提交、不发版。
+
+### 交接（2026-10-26，owner 定 ready）
+
+- 已完成：owner 在开工核对、评审补齐及回滚选 C 后定 09 为 ready；本次更新 Status、新增 ready 修订，将七条反向引用落入 02、04、05、06、08，并同步主参考的阶段 8 记录。ready 自查全部满足，清单已标实际位置。
+- 当前状态：本轮只改了八份文档；没有实现代码，未触碰服务器或密钥。步骤 0–18 的勾选状态不变，验收记录仍留给实际验收。
+- 阻塞：无未定设计问题；开工时核对本机实现环境。
+- 下一步：第 0 步，在实际开工提交上采集旅游字节基准与 v2 基准，复核已有接口和消费方，再按依赖推进实现。
