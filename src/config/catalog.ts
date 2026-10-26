@@ -17,6 +17,7 @@ import {
   readCatalogItem,
   readCatalogItemForUpdate,
   readCatalogOfKind,
+  readActiveCatalog,
   updateItemPayload,
   type CatalogRow,
 } from '../db/repo/catalog.js';
@@ -92,6 +93,20 @@ const isPlainObject = (v: unknown): v is Record<string, unknown> => !!v && typeo
 function validate(spec: CatalogKindSpec, payload: unknown): void {
   const r = spec.schema.safeParse(payload);
   if (!r.success) throw new CatalogValidationError(r.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })));
+}
+
+/** 配置锁内读数据库的 active 集合，避免用回合固定的旧内存快照检查并发上架。 */
+async function validateAcross(tx: Tx, spec: CatalogKindSpec, item: Record<string, unknown>, tenantId: string): Promise<void> {
+  if (!spec.crossItemCheck) return;
+  const rows = await readActiveCatalog(tx);
+  const items: Record<string, unknown[]> = {};
+  const versions: Record<string, number> = {};
+  for (const row of rows) {
+    (items[row.kind] ??= []).push(row.payload);
+    versions[`${row.kind}:${row.code}`] = row.version;
+  }
+  const issues = spec.crossItemCheck(item, { tenantId, generation: 0, items, versions, routes: [], hotels: [] });
+  if (issues.length) throw new CatalogValidationError([...issues]);
 }
 
 /** 审计的 diff：只放变了的顶层字段 { 字段: [旧, 新] }；原样提交回去时为空对象 */
@@ -213,6 +228,7 @@ export async function updateCatalogItem(ctx: TenantCtx, kind: CatalogKind, code:
     const locked = lockedFieldChanges(kind, cur.status, cur.payload, next, spec.lockedWhenActive);
     if (locked.length) throw new CatalogLockedFieldError(locked);
     validate(spec, next);
+    if (cur.status === 'active') await validateAcross(tx, spec, next, ctx.tenantId);
     const version = await nextVersion(tx, cur, next, 'console', ctx.actor.name);
     const row = await updateItemPayload(tx, kind, code, cur.rev, next, by(ctx), version);
     if (!row) throw new CatalogRevConflictError('条目已被别人改过，刷新后重来');
@@ -233,6 +249,7 @@ export async function activateCatalogItem(ctx: TenantCtx, kind: CatalogKind, cod
     if (!cur) throw new CatalogNotFoundError(`没有 ${kind} ${code}`);
     if (cur.rev !== input.rev || cur.status !== 'draft') throw new CatalogRevConflictError('条目已被别人改过，刷新后重来');
     validate(spec, cur.payload);
+    await validateAcross(tx, spec, cur.payload, ctx.tenantId);
     const row = await activateItem(tx, kind, code, cur.rev, by(ctx));
     if (!row) throw new CatalogRevConflictError('条目已被别人改过，刷新后重来');
     await writeAudit(tx, { action: 'catalog.activate', targetType: kind, targetId: code, diff: { status: ['draft', 'active'] } });
@@ -312,6 +329,7 @@ export async function fixLockedFields(input: {
     );
     if (idChanged.length) throw new CatalogLockedFieldError(idChanged);
     validate(spec, next);
+    if (cur.status === 'active') await validateAcross(tx, spec, next, ctx.tenantId);
     const version = await nextVersion(tx, cur, next, 'fix', 'catalog-fix');
     const updated = await updateItemPayload(tx, input.kind, input.code, cur.rev, next, { userId: null, name: 'catalog-fix' }, version);
     if (!updated) throw new CatalogRevConflictError('条目在修正期间被改过');

@@ -1474,6 +1474,7 @@ function liveSources(): PackSources {
 }
 export function packSources(): PackSources {
   return {
+    currentPolicy,
     configMode,
     currentCatalog,
     catalogVersionKey,

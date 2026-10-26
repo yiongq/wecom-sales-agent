@@ -2235,8 +2235,11 @@ check(
     __profileTest.reset();
   }
   check(
-    '注册表：只有 travel；查不到的包名和原型上的名字都返回 null',
-    PACK_IDS.join() === 'travel' && packById('renovation') === null && packById('toString') === null && packById('__proto__') === null,
+    '注册表：travel 与 industrial；查不到的包名和原型上的名字都返回 null',
+    PACK_IDS.join() === 'travel,industrial' &&
+      packById('renovation') === null &&
+      packById('toString') === null &&
+      packById('__proto__') === null,
   );
 
   // 包不在注册表里时拒绝启动：配置归运行时，另建启动作用域，不动本进程已装好的这份

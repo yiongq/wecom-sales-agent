@@ -209,6 +209,7 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
   if (!followupQuotaAllows(s, clock())) return { status: 'cancelled', lastError: 'quota' };
   const text = await composeUnlessStopping(s);
   if (text === null || own.stopping) return { status: 'stopped' };
+  if (!text.trim()) return { status: 'cancelled', lastError: 'guard_empty' };
   // 生成话术要几秒到几十秒，这期间客户可能回了消息：在活对象上重判（spec：到点后在活对象上重判 shouldFollowUp）
   const fresh = getSession(sid) as SessionWithFollowup | undefined;
   if (!fresh || !shouldFollowUp(fresh, clock()) || fresh.stage !== p.stage) {

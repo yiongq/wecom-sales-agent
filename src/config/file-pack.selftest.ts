@@ -332,7 +332,7 @@ if (mode === 'parent') {
         ['packs'],
       ),
     );
-    check(() => assert.deepEqual(fs.readdirSync('data/packs').toSorted(), ['__fixture']));
+    check(() => assert.deepEqual(fs.readdirSync('data/packs').toSorted(), ['__fixture', 'industrial']));
     check(() => assert.equal(fs.existsSync('data/packs/__fixture/pack.json'), true));
 
     const noise = path.join(tmp, 'noise');

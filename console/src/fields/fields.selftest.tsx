@@ -2538,6 +2538,36 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   );
   await pk.unmount();
 
+  // 10 R14：工业包直接驱动同一个通用产品页，使用一条合成小夹具。
+  const industrialPack = packById('industrial')!;
+  const industrialPart: Payload = {
+    id: 'part-ui',
+    partNo: 'HS1000',
+    name: '合成轴承',
+    brand: '合成品牌',
+    category: '轴承',
+    specs: ['内径25mm'],
+    unit: '件',
+    unitPrice: 3.65,
+    moq: 1,
+    stock: 20,
+    leadDays: 7,
+  };
+  const industrialPage = await mountPage('/catalog/part', owner(industrialPack), { part: [asRow(industrialPart)] });
+  eq(
+    '工业包正常页：实体、建单入口与列按part配置',
+    [header(industrialPage.box).title, header(industrialPage.box).actions],
+    ['工业品', ['导入CSV', '新建工业品']],
+  );
+  check(
+    '工业包正常页：型号和小数单价可见',
+    !!industrialPage.box.textContent?.includes('HS1000') && !!industrialPage.box.textContent?.includes('3.65'),
+  );
+  await industrialPage.unmount();
+  const industrialEmpty = await mountPage('/catalog/part', owner(industrialPack), { part: [] });
+  eq('工业包空页：导入与新建入口保留', texts(industrialEmpty.box, '.state-empty-actions button'), ['导入CSV', '新建工业品']);
+  await industrialEmpty.unmount();
+
   // 加载、出错：状态句还没有，先占一行（取到以后下面不跳）；fetch 换成不回来的、连不上的
   const realFetch = globalThis.fetch;
   globalThis.fetch = () => new Promise<Response>(() => undefined);
@@ -2548,6 +2578,13 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     [1, 1],
   );
   await ld.unmount();
+  const industrialLoading = await mountPage('/catalog/part', owner(industrialPack), {});
+  eq(
+    '工业包加载：页头保留且显示骨架',
+    [header(industrialLoading.box).title, industrialLoading.box.querySelectorAll('.state-skeleton').length],
+    ['工业品', 1],
+  );
+  await industrialLoading.unmount();
   globalThis.fetch = () => Promise.reject(new TypeError('Failed to fetch'));
   const er = await mountPage('/catalog/route', owner(travel), {});
   eq(
@@ -2556,6 +2593,13 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     [1, ['没取到']],
   );
   await er.unmount();
+  const industrialError = await mountPage('/catalog/part', owner(industrialPack), {});
+  eq(
+    '工业包错误：页头保留且显示没取到',
+    [header(industrialError.box).title, texts(industrialError.box, '.list-tabs .ant-alert-title')],
+    ['工业品', ['没取到']],
+  );
+  await industrialError.unmount();
   globalThis.fetch = realFetch;
 }
 

@@ -23,6 +23,7 @@ import {
 // 调度两种存储不同（02 spec R17）：文件存储是这里的扫描器（锁定的 llm.selftest F1 测它）；db 存储由任务表驱动（src/jobs/followup.ts），
 // 那里排程、到点重判都调这里的 shouldFollowUp，话术同样经 followUpText
 import { flushStoreNow, getSession, isDemoClassId, listSessions, onShutdown, saveSession, sessionStoreMode } from '../store.js';
+import { usesLinkWhitelist } from './guards/link-whitelist.js';
 import { completeText } from './llm/client.js';
 import { pinCatalogForTurn, currentPack } from '../config/source.js';
 import { guardOutbound } from './engine/index.js';
@@ -148,7 +149,7 @@ async function composeFollowUp(s: Session): Promise<string> {
   const out = cleanText((await completeText(sys, user, { purpose: 'followup' })).trim().split('\n')[0]);
   // 订单号先抹掉（跟进消息是主动外发，风险更高）：支付链接随之成了半截，白名单按假支付链接抹成空位。网址不在这里清：
   // 原文交给 guardOutbound，它的链接白名单才看得见「说了给链接」的地方，连同承诺那句一起删（此前先抹成空串，「方案链接： 」照发）
-  const cleaned = out.replace(/ord_[A-Za-z0-9]+/g, '').trim();
+  const cleaned = usesLinkWhitelist(currentPack().runtime.replySteps) ? out : out.replace(/ord_[A-Za-z0-9]+/g, '').trim();
   return cleaned || templateFor(s.stage);
 }
 
@@ -161,7 +162,7 @@ const templateFor = (stage: SalesStage): string => templates().byStage[stage] ||
 export function followUpText(s: Session): Promise<string> {
   return pinCatalogForTurn(async () => {
     const guarded = await guardOutbound(s, await composeFollowUp(s), { kind: 'followup' });
-    return guarded || templateFor(s.stage);
+    return usesLinkWhitelist(currentPack().runtime.replySteps) ? guarded.trim() : guarded || templateFor(s.stage);
   });
 }
 
@@ -246,6 +247,7 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
         console.log(`[followup] 停机中，放弃尚未发出的跟进 ${convLabel(s.id)}（下次启动再追）`);
         break;
       }
+      if (!text.trim()) continue;
       // 生成话术要几秒到几十秒，这期间客户很可能已经回消息了——那就不是跟进而是打断。
       // 用最新的会话对象重新判一次，避免发出「您之前的顾虑…」跟在客户刚说完的话后面。
       const fresh = getSession(s.id) as SessionWithFollowup | undefined;

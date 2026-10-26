@@ -1,0 +1,12 @@
+{
+  "quoteValidDays": 7,
+  "autoApproveMaxFen": 0,
+  "taxIncluded": true,
+  "taxRate": 13,
+  "shipping": {
+    "freeOverFen": 0,
+    "feeFen": 0
+  },
+  "paymentTerms": "款到发货，对公转账",
+  "invoice": ["增值税普通发票", "增值税专用发票"]
+}

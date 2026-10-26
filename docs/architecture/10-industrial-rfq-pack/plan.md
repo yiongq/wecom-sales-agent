@@ -23,18 +23,18 @@
 ## 步骤
 
 - [x] 0. 做：复核下方 08、09 接口对照，列出旅游 `HandoffVocab` 104 个键的处理表，采集实际开工提交的旅游基准，在预发环境跑 R16 开通前检查；验：接口可复查、词表逐键有归类、前缀 / 四类输出 / 卡片 / 部件 / v2 有具名基准，Host 检查有记录（验收 1、6、10）；依赖：开工条件 1–3，涉及预发外部环境须有对应操作授权。本批已完成接口、104 键表与开工基准；预发 R16 检查待授权，移至上线前复验，只挡上线、不挡实现（见本批实施记录）。
-- [ ] 1. 做：核心加声明式 `itemRules`，让 `checkItem` 与 schema 读取同一声明，接 `crossItemCheck` 调用时机（R2）；验：五种规则的正反例两侧一致，草稿与上架 / 编辑 active 的边界符合验收 2，既有 active → draft 禁令不变且不增加下架触发点；依赖：0。
-- [ ] 1.1 做：包骨架（新建 `src/packs/industrial/runtime.ts`，用作 R17 镜像标记）、登记、白名单、`part` 字段与 schema、条目规则、跨条目检查、CSV（R1、R2）；验：合成条目导入为草稿，编号 / 重复型号 / 替代型号 / 两位小数 / 改价版本符合验收 2；依赖：1，ADR-005 已随 ready 合入。
-- [ ] 2. 做：型号归一与匹配顺序（R3）；验：验收 3 的精确、别名、歧义排序、无命中、知识库召回逐项通过，语义路径另记含 embedding 的端到端时延 / 样本量 / 环境；依赖：1.1。
-- [ ] 3. 做：`priceLine`（R4）；验：档位、起订量、库存三种情况与整数分算式符合验收 4；40 条产品、最多 30 行的内存匹配加定价 p95 ≤ 50 ms，记录环境 / 样本量，不含网络、装载与持久化；依赖：2。
-- [ ] 4. 做：四个工具、`amounts`、R7 的有界 `rfqDraft`，建单入参映射为 `{ kind: 'part', code, qty }[]`；按接口表声明副作用、缓存与重试，并显式投影 empty_lines / kind_unknown / item_inactive / invalid_qty / below_moq（R5）；验：30 / 31 行、逐行金额 / 合计、五种及混合拒绝、待审保密符合验收 4、6、7，只有 below_moq 带 moq；拒绝无新报价 / 通知，未知或异常不冒充 below_moq；实际写入与声明一致、跟进排除四工具；依赖：3；容量与淘汰联验待 6。
-- [ ] 5. 做：接入已有 `quotes`、自动批准、`siteLinks`（含 `resources`、`partTitle`）、卡片、`engineHooks`；核心 `quotes` 增加可选 `notes`，服务端按 R13 的状态与租户范围调用（R6、R13）；验：新建缺省人审与三项自动批准条件、默认人审后人工批准再重复建单复用原 approved / 链接 / 金额且不重审或重复通知、复用待审仍 pending、链接隔离、标题 / 文案、approved / paid 的 notes、其余状态和无钩子响应符合验收 7，冻结金额不变；依赖：4。
-- [ ] 6. 做：会话状态、画像、重置与阶段推进，工作台接 `onQuoteDecided`，AI 回合接 `advanceStage`；摘要只保留编号 / 版本 / 数量 / 匹配类型 / 时间，型号通过已有内存版本接口取，缓存整项淘汰（R7）；验：手审 / 自动批准进入促成、驳回 / 撤回回报价，30 行必留状态 ≤ 6,144 字节、含转义 / 多字节与超长缓存项的完整状态 ≤ 8,192 字节，四键重置；淘汰不改变 R6 / R11 判断（验收 8）；依赖：5。
-- [ ] 7. 做：主回复护栏与跟进只删句版本，核心新增 `linkWhitelistFollowupStep` 并与主回复共享窄删除逻辑；适配 `src/core/followup.ts` 的生成器 / followUpText / 文件扫描和 `src/jobs/followup.ts` 的任务执行体：白名单启用包保留完整 ord_ URL 交登记 / allowed 判断，护栏删空返回空串，两条调度路径在额度预占和跟进记账前跳过；数据库任务 cancelled / guard_empty 不立即重排，旅游继续原订单号清洗及删空后换模板。`rfq_trim` 按最终删行数重算 N、给补句留预算，保护内容超限走固定兜底（R8、R9、R14）；验：真实跟进生成链路（只桩 LLM / 发送端）的合法报价 URL 完整发出 / 非法链接删除、删空无发送 / 额度占用 / 消息 / 次数和元数据增长，文件与数据库两路全覆盖；验收 5 的短行 10+5、二次裁剪 / 部分保留、保护句终止、金额出处及链接边界，主回复工厂 / guard 记录与旅游模板输出 / 计数不变；依赖：4–6。
-- [ ] 8. 做：按第 0 步的逐键表处理词表（R10）；验：104 键无遗漏，旅游专有键的反例与工业改写键的正例符合验收 6；依赖：0、4。
-- [ ] 9. 做：非标 / 超长 / 确认报价的判定表，接 `fixedId`、`handoff`、`notify`、`statePatch` 与 `contextNote`（R11）；共享同一 now 下的 quoteState 候选筛选与固定排序：事件时间降序、同时间草稿优先、订单再按 createdAt / id 降序；验：验收 6 的四种确认情况、全部终态排除、同毫秒草稿 / 订单与多单打乱遍历顺序仍同结论，两个入口一致；跨消息边界、固定句全文匹配、patch 校验、首次确认提醒去重；依赖：5、6、8。
-- [ ] 10. 做：SOP 模板、契约规则、policy、品牌、一致性登记（R12），统一「新建缺省人审，自动批准按 R6；复用不重审」与裁剪固定兜底；验：三节可改、五节锁定、无旅游词 / 渠道名，policy / 固定句 / 审批缺省一致，验收 9 的发布前静态检查通过；依赖：1.1；工具与固定句最终联验待 4、5、7、9。
-- [ ] 11. 做：跟进、洞察、mock、后台配置、快捷回复、字体子集（R14）；验：用合成企微会话、注入时钟覆盖两个 24 小时阶段与待审抑制，复核第 7 步文件 / 数据库两路真实生成到发送的非空 / 删空、额度与次数行为（验收 8），界面加载 / 空 / 错误态与字体检查通过；依赖：6–10。
+- [x] 1. 做：核心加声明式 `itemRules`，让 `checkItem` 与 schema 读取同一声明，接 `crossItemCheck` 调用时机（R2）；验：五种规则的正反例两侧一致，草稿与上架 / 编辑 active 的边界符合验收 2，既有 active → draft 禁令不变且不增加下架触发点；依赖：0。
+- [x] 1.1 做：包骨架（新建 `src/packs/industrial/runtime.ts`，用作 R17 镜像标记）、登记、白名单、`part` 字段与 schema、条目规则、跨条目检查、CSV（R1、R2）；验：合成条目导入为草稿，编号 / 重复型号 / 替代型号 / 两位小数 / 改价版本符合验收 2；依赖：1，ADR-005 已随 ready 合入。
+- [x] 2. 做：型号归一与匹配顺序（R3）；验：验收 3 的精确、别名、歧义排序、无命中、知识库召回逐项通过，语义路径另记含 embedding 的端到端时延 / 样本量 / 环境；依赖：1.1。
+- [x] 3. 做：`priceLine`（R4）；验：档位、起订量、库存三种情况与整数分算式符合验收 4；40 条产品、最多 30 行的内存匹配加定价 p95 ≤ 50 ms，记录环境 / 样本量，不含网络、装载与持久化；依赖：2。
+- [x] 4. 做：四个工具、`amounts`、R7 的有界 `rfqDraft`，建单入参映射为 `{ kind: 'part', code, qty }[]`；按接口表声明副作用、缓存与重试，并显式投影 empty_lines / kind_unknown / item_inactive / invalid_qty / below_moq（R5）；验：30 / 31 行、逐行金额 / 合计、五种及混合拒绝、待审保密符合验收 4、6、7，只有 below_moq 带 moq；拒绝无新报价 / 通知，未知或异常不冒充 below_moq；实际写入与声明一致、跟进排除四工具；依赖：3；容量与淘汰联验待 6。
+- [x] 5. 做：接入已有 `quotes`、自动批准、`siteLinks`（含 `resources`、`partTitle`）、卡片、`engineHooks`；核心 `quotes` 增加可选 `notes`，服务端按 R13 的状态与租户范围调用（R6、R13）；验：新建缺省人审与三项自动批准条件、默认人审后人工批准再重复建单复用原 approved / 链接 / 金额且不重审或重复通知、复用待审仍 pending、链接隔离、标题 / 文案、approved / paid 的 notes、其余状态和无钩子响应符合验收 7，冻结金额不变；依赖：4。
+- [x] 6. 做：会话状态、画像、重置与阶段推进，工作台接 `onQuoteDecided`，AI 回合接 `advanceStage`；摘要只保留编号 / 版本 / 数量 / 匹配类型 / 时间，型号通过已有内存版本接口取，缓存整项淘汰（R7）；验：手审 / 自动批准进入促成、驳回 / 撤回回报价，30 行必留状态 ≤ 6,144 字节、含转义 / 多字节与超长缓存项的完整状态 ≤ 8,192 字节，四键重置；淘汰不改变 R6 / R11 判断（验收 8）；依赖：5。
+- [x] 7. 做：主回复护栏与跟进只删句版本，核心新增 `linkWhitelistFollowupStep` 并与主回复共享窄删除逻辑；适配 `src/core/followup.ts` 的生成器 / followUpText / 文件扫描和 `src/jobs/followup.ts` 的任务执行体：白名单启用包保留完整 ord_ URL 交登记 / allowed 判断，护栏删空返回空串，两条调度路径在额度预占和跟进记账前跳过；数据库任务 cancelled / guard_empty 不立即重排，旅游继续原订单号清洗及删空后换模板。`rfq_trim` 按最终删行数重算 N、给补句留预算，保护内容超限走固定兜底（R8、R9、R14）；验：真实跟进生成链路（只桩 LLM / 发送端）的合法报价 URL 完整发出 / 非法链接删除、删空无发送 / 额度占用 / 消息 / 次数和元数据增长，文件与数据库两路全覆盖；验收 5 的短行 10+5、二次裁剪 / 部分保留、保护句终止、金额出处及链接边界，主回复工厂 / guard 记录与旅游模板输出 / 计数不变；依赖：4–6。
+- [x] 8. 做：按第 0 步的逐键表处理词表（R10）；验：104 键无遗漏，旅游专有键的反例与工业改写键的正例符合验收 6；依赖：0、4。
+- [x] 9. 做：非标 / 超长 / 确认报价的判定表，接 `fixedId`、`handoff`、`notify`、`statePatch` 与 `contextNote`（R11）；共享同一 now 下的 quoteState 候选筛选与固定排序：事件时间降序、同时间草稿优先、订单再按 createdAt / id 降序；验：验收 6 的四种确认情况、全部终态排除、同毫秒草稿 / 订单与多单打乱遍历顺序仍同结论，两个入口一致；跨消息边界、固定句全文匹配、patch 校验、首次确认提醒去重；依赖：5、6、8。
+- [x] 10. 做：SOP 模板、契约规则、policy、品牌、一致性登记（R12），统一「新建缺省人审，自动批准按 R6；复用不重审」与裁剪固定兜底；验：三节可改、五节锁定、无旅游词 / 渠道名，policy / 固定句 / 审批缺省一致，验收 9 的发布前静态检查通过；依赖：1.1；工具与固定句最终联验待 4、5、7、9。
+- [x] 11. 做：跟进、洞察、mock、后台配置、快捷回复、字体子集（R14）；验：用合成企微会话、注入时钟覆盖两个 24 小时阶段与待审抑制，复核第 7 步文件 / 数据库两路真实生成到发送的非空 / 删空、额度与次数行为（验收 8），界面加载 / 空 / 错误态与字体检查通过；依赖：6–10。
 - [ ] 12. 做：至少 30 条工业 cases v2（R15），保留现有 `fixtures.now` 与对话动作，不扩 v2 审批种子；验：文件与 PGlite 模式全过，旅游快照逐条不变（验收 1、9）；依赖：11。
 - [ ] 13. 做：至少 20 个 regression 目标（其中至少 8 个 safety），仅扩模拟目标的嵌套审批种子，沿用 `FIXTURE_CLOCK` / `fixtureClock()`（R15）；验：pending / approved 时间与状态组合校验、批准有效 / 已过期确认可复现，保留单槽 pending_payment 校验和旧种子无审批语义，初始化无通知；`handoffKind` / `richTools` 生效，mock 目标集通过（验收 9）；依赖：12。
 - [ ] 14. 做：约 40 条合成产品及同内容 CSV（R16）；验：四类齐全、JSON 与 CSV 语义相同，导入 / 上架 / 匹配 / 改价符合验收 2–4；依赖：1.1、2、3，最终联验依赖 11–13。
@@ -311,6 +311,141 @@ DB 模式：22 个请求的前缀哈希核对，0 个与 /healthz 不符
 - 锁定八文件、`eval/baselines/`、两份 bytes 夹具相对 HEAD 与 origin/dev 的 diff 均为空；`git diff --stat` 只有本 plan。未新增夹具；10 的新链接种类在后续步骤继续对照这份基准。
 - 按本批共同约定，完整 `pnpm test` 留 CI，本机不跑；预发 R16 待当次授权，移到上线前。此记录只完成第 0 步本机基准，不替代 09 / 10 联合上线与全量验收。
 
+### B+C 批 · 第 1–6 步
+
+第 1、1.1、2、3、4、5、6 步已完成本批本机实现与验收；后续真实 PG / 全量测试留 CI，整份 spec 仍为 ready。本批只用合成夹具，不生成第 14 步的演示产品，不提交、push 或开 PR。
+
+- 第 1 步：`EntityType.itemRules` 声明五种规则，`checkItem` 与 `withItemRules` 的 zod refinement 共用解释器，配置自检核对引用键与数值类型。`CatalogKindSpec.crossItemCheck` 在上架、编辑 active（包括已有 catalog-fix 修正路径）时调用；草稿创建、编辑、CSV 不调用。在配置锁内重读本租户 active 集合，避免旧回合快照漏掉并发冲突；原有 active → draft 禁令不变。
+- 第 1.1 步：工业包入口、生产注册、公开包白名单、part 字段与 schema、跨条目检查及 CSV 完成；证明包仍受 PACK_FIXTURES 门控。型号 / 别名归一后冲突与替代型号缺失在上架 / active 编辑时点名字段拒绝；价格两位小数，改价留新版本。参考配置只有 pack.json；三套既有自测只更新新增包 / 目录的枚举预期，不改旧夹具。
+- 第 2 步：全半角、前缀、分隔符、乘号归一，按型号 → 别名 → 至少四位前缀 → 知识库匹配，候选有现货优先再按型号升序，最多五条。局部取舍：前缀 / 语义候选均要求客户选择，不作 exact；纯型号查无命中时不把语义最近邻当另一型号返回，25mm / IP65 这类规格须有条目 specs 的字面支持。完整工具 / 检索 / 查询 embedding 处理使用 HTTP 边界合成桩，20 次端到端 p95 为 42.154 ms；Node 22.22.0、darwin/arm64、PGlite，与兼容回归并行运行，无外部请求。这是本机桩环境证据，不冒称外部 embedding 服务时延。
+- 第 3 步：按数量取最高适用档，起订量拒绝、库存三种交期、整数分乘加与安全整数检查通过。即时生成 40 条测试夹具、每批 30 行、1,000 批覆盖精确 / 别名 / 前缀，内存匹配加定价 p95 为 9.849 ms，小于 50 ms；同一 Node / 系统，与兼容回归并行运行，不含装载、持久化与语义调用。
+- 第 4 步：四工具与副作用 / 缓存 / 重试声明、各档 / 行 / 合计金额出处、30 / 31 行、建单补 kind 完成。五种拒绝逐行保留，只有 below_moq 带合法 moq；混合拒绝、未知原因、缺失 moq 与定价异常不会伪报成功或起订量，不改 lastQuoteId、不建单、不排通知。待审只返回 state；跟进按原 sideEffects 过滤后四工具全部排除，转人工的会话 / 备注 / 通知实际写入已核对。
+- 第 5 步：复用核心 quotes；默认阈值 0，开启后仅合计不超阈值、建单时所有行现货足够、草稿中每个编号都是 exact 才自动批准，库存读不到不放行。实际验证默认待审、pending 复用、工作台批准后再建单 reused=true，原 id / 链接 / 金额保留，不重审、不重复通知。登记 quote 页、仅 GET 的 API 资源、allowed、网页标题与企微卡片；服务端 notes 只在本租户可读的 approved / paid 调用，复制只读数组，无钩子 / 空数组不加字段，其他状态 / 404 不调用；当前发布政策、文件 policy.json、跨租户隔离与页面真实脚本的 textContent 展示均已验证。实际改价后新试算 / 新单按新价，已批准单行与总额仍冻结。
+- 第 6 步：画像四字段的提取 / 投影 / 持久化，四键重置、版本读取和阶段全链路完成。真 handleMessage / stage_advance 跑出问需、多候选 / 替代型号 → 推荐、试算 → 报价、自动批准 / 取代 → 促成、新试算覆盖旧批准状态；真工作台动作跑出批准 → 促成、驳回 / 撤回 → 报价，实际收款进入已支付。摘要只存 code / version / qty / match / at，文件模式只回退版本 1；缓存为型号和规格数组，插入顺序代表新旧，重复展示移到末尾。必留最坏 30 行状态实测 **4,404 ≤ 6,144 字节，余量 1,740 字节**；缓存同时满足最多 100 项与完整 UTF-8 JSON ≤ 8,192 字节，转义 / 多字节 / 超长项均按最旧整项淘汰，不截型号。淘汰前后自动批准及 latestQuoteCandidate 结果不变，缓存清空仍按摘要版本取型号；真实重置清四键，重载后仍不沿用状态，旧报价 404 且审批历史保留。latestQuoteCandidate 按 R11 的状态 / 时间 / 草稿优先 / createdAt / ASCII id 排序，供 D 批两个入口共用；本批不实现 D 批的确认回复。
+
+协调者裁决（2026-10-26，本轮已落实）：
+
+1. 为 R6 增加只读 `PackSources.currentPolicy()`，两个 sources 装配点接已有同名函数；DB 读内存已发布快照、文件模式读既有 policy.json，不读草稿、不写状态、不加环境开关。10 spec 加实现中 Revisions 与 Amends（04 R2 / R3、08 R5），Status 不变。
+2. 不放宽静态检查：工业字段改为「零件编号」「品名」，中文 CSV 表头随标签；既有后台文字、GENERIC 与依赖允许名单均未改。
+3. R6 / R13 所需 policy 先落 schema / defaults：已定的 7 天、阈值 0、含税 true、税率 13；未指定的参考运费取 freeOverFen=0 / feeFen=0，付款文字取 spec 例句「款到发货，对公转账」，票种用普通 / 专用发票。全是合成缺省值，自动批准始终读取发布值；E 批继续补政策文案、SOP 与后台配置，不另造政策接口成员。
+4. 未增加模块级可变租户数据；静态 schema / 包定义也被现有清单检查要求登记，故 state-manifest 补 21 个 instance 条目并注明不保存租户快照，未修改检查规则。
+
+新增耐久自测均只追加在 package.json 的 test 末尾，CI 从原链自动分片，无第二份清单：
+
+| 自测                                 | 覆盖与本机结果                                                                                                                                                                                                                                  |
+| ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/item-rules.selftest.ts`         | 五种规则 26 个正反例，schema / checkItem 的结论及字段消息一致，退出 0。                                                                                                                                                                         |
+| `src/industrial-domain.selftest.ts`  | 产品字段、CSV、匹配排序、阶梯 / 起订量 / 库存、工具声明 / 金额 / 拒绝、摘要容量 / 缓存淘汰 / 历史读取及内存性能，退出 0。                                                                                                                       |
+| `src/industrial-catalog.selftest.ts` | PGlite 实际写路径、草稿 / 上架 / active 编辑、锁定 / 禁下架、版本 / 冻结、30 / 31 行、拒绝 / 异常无建单通知、实际转人工，以及完整语义链路与启用索引后的无命中 / 规格召回，退出 0。PG_TEST_URL 分支覆盖重复型号并发上架恰一成功，本机明确 SKIP。 |
+| `src/industrial-quotes.selftest.ts`  | 实际工具 / 引擎 / 工作台动作 / 公开路由 / 页面脚本 / 存储，只桩模型策略与发送边界；自动批准三条件、人审复用、链接 / notes、冻结金额、阶段 / 收款、画像 / 重置 / 重载、淘汰判断不变、DB / 文件政策读取，退出 0。                                 |
+
+本机质量门与硬性对照（日志在 gitignored 的 `var/10-bc/logs/`）：
+
+- format:check、lint、typecheck、test:locked 全部退出 0；公开边界路径检查无拒绝，内容黑名单因未配置 SENSITIVE_PATTERNS / .sensitive-patterns 按既有逻辑明示跳过；依赖方向为「656 个代码文件、6312 处 import，没有越界」。console-src 全部不变量通过，tenant-state 的 582 个绑定与清单一致；未放宽检查。
+- 锁定输出：`PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd`，tools 即 JSON.stringify(toolDefs) 的字节哈希。
+- 文件配置与 PGlite 配置 v2 各为 **865/865、8587 项断言**，各输出 `v2 快照比对：865 条 case · 0 处差异`；PGlite 另核对 22 请求前缀，0 个不符。没有新增工业 v2 case 或改基线。
+- legacy-bytes：60 条出口、140 项断言；link-bytes：317 条基准、517 项断言，旧夹具不改全部通过。quote-approval / quote-actions / quote-page / quote-replies / site-links 五套 09 自测全绿；真实 PG 分支按环境明确跳过，交 CI 一次性 pgvector:pg17。
+- 按改动文件路径及文件名检索后，额外逐套跑 packs、registry-binding、pack-runtime、catalog-kind、catalog-snapshot、config、file-pack、policy、brand、brand-publish、brand-transfer、reply-pipeline、sop-per-pack、transfer-per-pack、gate-per-pack、retrieval-kb、pack-catalog、catalog-money、line-order、pack-session、money-ledger、tools/registry、console-api/console、check-tenant-state、ci-shard，全部退出 0。console 套件最初只有新增包的旧枚举预期失败，更新为 travel / industrial 后复跑 465 项通过；没有改旅游行为断言。
+- 锁定八文件、eval/baselines、两份 bytes 夹具零 diff，git diff --check 与新增行公共边界补查通过。所有可能挂起的命令设超时；未连接外部服务、真实模型或服务器，没有容器 / 浏览器 / 后台服务遗留，费用零。完整 pnpm test 按共同约定交 CI，本机不跑。
+
+### D+E 批 · 第 7–11 步
+
+2026-10-26：按第 7、8、9、10、11 步依次交付；只使用合成小夹具，不生成第 14 步的演示产品，不改 spec、既有 v2 基线或锁定测试，不提交、不 push、不开 PR。Status 保持 ready。
+
+逐步实现与验收：
+
+| 步骤 | 实际改动与验收证据                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| ---- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 7    | 核心链接主回复与新增跟进工厂共用窄删除执行函数，保留登记 / 原始 URL / allowed / guard 事件语义；工业主回复与跟进分别装配链接、库存交期 / 替代 / 税票 / 价格承诺 / 型号、金额出处及 rfq_trim。文件扫描删空直接跳过；数据库任务在 holdSend / 渠道 pending / sending 前返回 cancelled / guard_empty，现有 afterSettle 不重排。industrial-followup 只桩模型与发送端，真实生成到两路发送覆盖合法完整 ord_ URL、非法链接、跨租户 / 会话、待审 / 过期 / 撤回、零消息 / outbound / 额度 / 次数及全部跟进元数据变化；旅游同输入保留旧清洗字节，裸链接删空仍发旧模板且计一次。industrial-replies 覆盖金额以外的每条护栏正反例、12 类规格、10+5、二次裁剪、部分行不计 N、保护内容超限终止；实际引擎分别制造编造库存、替代、型号、税票、最低价与无来源金额，并核对 guard_events 落库。 |
+| 8    | 独立工业 handoff-vocab 声明 104 键：80 通用语义与旅游逐键一致，4 键永不匹配，20 键按第 0 步表改写。industrial-replies 从本 plan 读表核对 104 键、80 键值、4 条旧旅游命中 / 工业不命中样例及20条改写样例；联验通用医疗、业务问法、情绪归属与高反 / 行程变更不触发旅游转人工。                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| 9    | preModel / contextNote 复用 B+C 的 latestQuoteCandidate，每次只捕获一次 now。非标 / 来图 / 账期 / 样品 / 单条31行携 fixedId 与 handoff；已批确认携 schema patch 与 notify，待审固定句，过期 / 新试算 / 无候选交回模型。industrial-replies 覆盖两条20行不累计、终态全排除、同毫秒草稿优先 / createdAt / id 排序及乱序输入；industrial-followup 通过实际引擎核对5类 pack 转人工、固定句 / patch、approval.acceptedAt 与 quote_accepted 任务同事务去重。                                                                                                                                                                                                                                                                                                                      |
+| 10   | data/packs/industrial 的 SOP / policy / 品牌参考文件，包内8节 / 三可改五锁定、契约禁语、policy clauses / segments / lint、固定句与一致性登记。所有固定内容无旅游词或渠道名；默认 autoApproveMaxFen=0、7天有效期、13%税率及付款口径保持原契约。新建缺省人审、三条件自动批准、复用不重审与 R13 notes / 驳回 / 撤回文案保持一致；industrial-replies 真实调用 checkSopContract 与 policy lint，新增工业默认 mock 经实际工具 / 引擎分别验证试算合计、自动批准链接和缺省待审不泄露。                                                                                                                                                                                                                                                                                             |
+| 11   | 报价 / 促成各24小时跟进、全部待审抑制、询价洞察与离线脚本、part 阶段 / SOP / 词汇、五条快捷回复及注册表接线；无新开关。工业正常 / 加载 / 空 / 错误页加入既有 fields DOM 套件（1751项全过）。缓存的固定版本字体源离线重建 UI 优先片至913码位 / 191968 B，Geist 与许可原文无差异，check-fonts 通过。                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+
+自定的小实现细节（均不新增接口成员、环境变量、表或错误码）：
+
+- **同名步骤辨识。** 旅游自己的旧步骤也叫 link_whitelist，单查 id 会错误改变旅游行为。因此按 replySteps 中 id 与核心工厂的共享 run 函数身份共同识别“接入核心白名单”；不按包 id 分支，不改旅游步骤，不新增能力开关。两工厂输出 / 事件格式不变，link-bytes 与两种 v2 均零差异。
+- **事实与规格。** 历史 exact 摘要按编号 / 版本重算当时工具的交期投影，不把缓存或当前改价后的产品当事实；本轮同型号工具结果覆盖旧摘要。部分现货、现货数字、预计天数分别核对，不把部分库存升级为全现货；未知型号检查跳过已登记的绝对 / 相对链接，规格按保守白名单与 partsInPlay 的规格词保留。
+- **统一裁剪。** ShapePolicy 的现有保护回调使 shape_check 只记录；rfq_trim 是统一删行 / 删句的地方。保留原始行索引、每次按最终完全删空的行重算 N，补句计入预算；绝对 / 相对合法站内链接句受保护，保护内容仍超限走已登记短句。主回复被前置护栏全部删空时用已登记的型号 / 数量短句兜底；跟进始终只删，删空不发送。
+- **固定前缀与政策。** 锁定节规定从本轮已发布政策读取税票 / 运费 / 有效期 / 收款条款，数值片段通过 policy 纯函数与 contextNote 给模型及固定护栏，避免将每轮政策或会话摘要拼进系统前缀；不读取草稿，也不在工厂初始化时访问未装载的政策。确认措辞保守排除问句、否定、尚未决定的说法。
+- **登记与测试。** 25个新增固定字典 / 正则 / 模板绑定按静态配置登记进 state-manifest；没有新增租户运行时状态。package.json 只在 test 末尾追加 industrial-replies 与 industrial-followup 两个 tsx 自测；CI分片由原链派生，ci-shard 自测通过，无第二份清单。真实 PostgreSQL 分支继续留给 CI 的一次性 pgvector:pg17，未连接外部服务、生产、密钥或真实模型，费用零。
+
+质量门与硬性对照（日志留在 gitignored 的 var/10-de/logs）：
+
+- format:check、lint、typecheck、test:locked 均通过；完整 pnpm test 按本批共同约定留 CI，不在本机跑。
+- 中断恢复后复查工作区与本批 diff，再跑 format:check、lint、typecheck、test:locked、industrial-replies、industrial-followup、industrial-quotes，七项均退出0（resumed-results.json）；再次确认 package.json 仅追加两条自测、锁定文件 / spec / 基线 / 字节自测零 diff、公共边界补查及 git diff --check 通过。
+- lint：公开边界路径检查通过；未配置 SENSITIVE_PATTERNS / .sensitive-patterns，内容黑名单按既有逻辑明确跳过，未放宽检查。依赖方向结论为“667 个代码文件、6399 处 import，没有越界”；tenant-state 的607个绑定与清单一致。
+- `PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd`；tools 对应 JSON.stringify(toolDefs) 的字节哈希。
+- 文件与 PGlite 两种 v2 各 **865/865、8587项断言**，各为 `v2 快照比对：865 条 case · 0 处差异`；PGlite另核对22请求前缀，0不符。未新增工业 v2 case或更改基线。
+- legacy-bytes **60条出口 / 140项断言**，link-bytes **317条基准 / 517项断言**，夹具不改全过；quote-approval / quote-actions / quote-page / quote-replies / site-links 五套09自测全绿。锁定八文件、eval/baselines、两份 bytes 夹具零 diff。
+- 按实际改动路径 / 文件名检索消费套件后逐个跑61套，全部退出0；工业护栏复核补例后再次单跑两套新增自测通过。具名结论见下表。
+- console生产构建与check-console-dist通过：169个文件，首屏JS 357295 B、双字体preload 203852 B，无服务端依赖 / 假包 / 第三方字体进入产物；git diff --check、全PR新增行 / 新文件的绝对路径与假ID检查、工作区diff加未跟踪新文件的gitleaks扫描通过。无PR或提交，未把空的提交范围扫描当作工作区证据。
+- 浏览器附加走查未完成：Browser plugin not available（没有对应 browser skill）；使用已有 Playwright 与已缓存 Chromium 尝试本地页面，Chromium 的 MachPortRendezvous 因沙箱 Permission denied退出，不能提供浏览器截图或视觉通过结论。DOM 的工业正常 / 加载 / 空 / 错误态已全过；本地 QA 服务与浏览器启动尝试已退出，不保留进程。
+
+| 自测 / 检查                                         | 结论    |
+| --------------------------------------------------- | ------- |
+| `scripts/check-boundaries.selftest.ts`              | ✔ 退出0 |
+| `src/store/parity.selftest.ts`                      | ✔ 退出0 |
+| `console/src/fields/fields.selftest.tsx`            | ✔ 退出0 |
+| `scripts/check-tenant-state.selftest.ts`            | ✔ 退出0 |
+| `src/line-order.selftest.ts`                        | ✔ 退出0 |
+| `src/quote-replies.selftest.ts`                     | ✔ 退出0 |
+| `src/quote-approval.selftest.ts`                    | ✔ 退出0 |
+| `src/industrial-domain.selftest.ts`                 | ✔ 退出0 |
+| `src/pack-catalog.selftest.ts`                      | ✔ 退出0 |
+| `src/order-readers.selftest.ts`                     | ✔ 退出0 |
+| `src/industrial-catalog.selftest.ts`                | ✔ 退出0 |
+| `src/jobs/jobs.selftest.ts`                         | ✔ 退出0 |
+| `src/industrial-replies.selftest.ts`                | ✔ 退出0 |
+| `src/tenancy/seed-fixture.selftest.ts`              | ✔ 退出0 |
+| `src/quota/quota.selftest.ts`                       | ✔ 退出0 |
+| `src/config/registry-binding.selftest.ts`           | ✔ 退出0 |
+| `src/config/config.selftest.ts`                     | ✔ 退出0 |
+| `src/quote-page.selftest.ts`                        | ✔ 退出0 |
+| `src/config/catalog-kind.selftest.ts`               | ✔ 退出0 |
+| `src/config/gate-per-pack.selftest.ts`              | ✔ 退出0 |
+| `src/config/sop-per-pack.selftest.ts`               | ✔ 退出0 |
+| `src/tenancy/fixture-tenant.selftest.ts`            | ✔ 退出0 |
+| `src/money-ledger.selftest.ts`                      | ✔ 退出0 |
+| `src/industrial-followup.selftest.ts`               | ✔ 退出0 |
+| `src/trace/trace.selftest.ts`                       | ✔ 退出0 |
+| `src/config/consistency.selftest.ts`                | ✔ 退出0 |
+| `src/config/retrieval-kb.selftest.ts`               | ✔ 退出0 |
+| `src/config/catalog-snapshot.selftest.ts`           | ✔ 退出0 |
+| `src/config/reply-pipeline.selftest.ts`             | ✔ 退出0 |
+| `src/console-api/console.selftest.ts`               | ✔ 退出0 |
+| `src/config/pack-runtime.selftest.ts`               | ✔ 退出0 |
+| `src/quote-actions.selftest.ts`                     | ✔ 退出0 |
+| `src/catalog-money.selftest.ts`                     | ✔ 退出0 |
+| `src/tenancy/sandbox/refund-seed.selftest.ts`       | ✔ 退出0 |
+| `src/console-api/traces.selftest.ts`                | ✔ 退出0 |
+| `src/industrial-quotes.selftest.ts`                 | ✔ 退出0 |
+| `src/pack-session.selftest.ts`                      | ✔ 退出0 |
+| `src/handoff/handoff.selftest.ts`                   | ✔ 退出0 |
+| `src/after-sales.selftest.ts`                       | ✔ 退出0 |
+| `src/tenancy/sandbox/http.selftest.ts`              | ✔ 退出0 |
+| `src/tenancy/sandbox/provision.selftest.ts`         | ✔ 退出0 |
+| `src/site-links.selftest.ts`                        | ✔ 退出0 |
+| `src/payment/legacy-bytes.selftest.ts`              | ✔ 退出0 |
+| `src/core/link-bytes.selftest.ts`                   | ✔ 退出0 |
+| `src/followup-guards.selftest.ts`                   | ✔ 退出0 |
+| `src/core/guards/money-provenance.selftest.ts`      | ✔ 退出0 |
+| `src/core/guards/execute.selftest.ts`               | ✔ 退出0 |
+| `src/core/guards/validate.selftest.ts`              | ✔ 退出0 |
+| `src/core/guards/shape.selftest.ts`                 | ✔ 退出0 |
+| `src/packs/packs.selftest.ts`                       | ✔ 退出0 |
+| `src/config/brand.selftest.ts`                      | ✔ 退出0 |
+| `src/config/brand-publish.selftest.ts`              | ✔ 退出0 |
+| `src/config/policy.selftest.ts`                     | ✔ 退出0 |
+| `src/config/template-derive.selftest.ts`            | ✔ 退出0 |
+| `src/config/file-pack.selftest.ts`                  | ✔ 退出0 |
+| `src/core/consistency.selftest.ts`                  | ✔ 退出0 |
+| `src/core/tools/registry.selftest.ts`               | ✔ 退出0 |
+| `scripts/ci-shard.selftest.ts`                      | ✔ 退出0 |
+| `scripts/check-fonts.ts`                            | ✔ 退出0 |
+| `console/src/conversations/pack-cards.selftest.tsx` | ✔ 退出0 |
+| `console/src/sop/sop.selftest.tsx`                  | ✔ 退出0 |
+
 ## 验收记录
 
 ### 首轮文档核对（2026-10-26，协调者答复前）
@@ -406,3 +541,39 @@ DB 模式：22 个请求的前缀哈希核对，0 个与 /healthz 不符
 - 当前状态：只有本 plan 的干净、可审阅文档 diff，无代码半成品；spec 仍 ready，第 1 步及以后未动。未提交、未 push、未开 PR；未访问服务器、密钥、真实模型或外部服务，未新增夹具、容器、浏览器；本批启动的测试命令均已退出，无遗留后台任务。
 - 待授权：第 0 步原文的预发 R16 三项 Host 开通前检查移到第 16 步上线前复验，只挡上线、不挡实现；不要把本机 Host 源码核对当作预发实测。
 - 下一步：**B 批（第 1、1.1 步）**，先做声明式 itemRules 与 schema / checkItem 同源规则，再做工业包骨架、登记、part 字段、跨条目检查与 CSV。第 8 步按本表落工业词表及正反例；后续每批保持旅游 / 09 基准逐字节不变，不能为新链接重写旧夹具或基线。09 的收尾继续与 10 联合验收、一次上线，不提前翻 implemented。
+
+### 交接（2026-10-26，B+C 批第 1–6 步完成）
+
+- 已完成第 1、1.1、2、3、4、5、6 步并勾选；协调者的 currentPolicy 接口、Revisions / Amends 与标签裁决已落实。实现取舍、逐步验收、四套新自测与全部硬性对照见「B+C 批 · 第 1–6 步」。
+- 当前为未提交、可审阅的完整本批 diff；format / lint / typecheck / locked、相关自测与旅游字节 / v2 对照通过。spec 保持 ready；不提交、不 push、不开 PR。真实 PG 分支与完整测试留 CI；预发 R16 仍留上线前授权复验，不把本机结果当成线上验收。
+- 下一步：**D 批（第 7–9 步）**。沿用工业包的 StateSchema / draftParts / latestQuoteCandidate，确认回复的 preModel 与 contextNote 共用该候选函数；继续完成链接与金额 / 工业护栏、104 键词表及确定性转人工。E 批再补可发布 SOP、政策文案、跟进与后台配置；本批没有演示产品和完整发布配置，不提前开通工业演示租户。09 继续与 10 联合验收、一次上线，不提前翻 implemented。
+- 无待确认问题；无测试后台资源遗留，费用零。
+
+### 交接（2026-10-26，D+E 批第 7–11 步完成）
+
+- 第7–11步已完成并勾选；实际改动、自定细节、新增两套自测、61套相关验证及旅游 / 09 的硬性对照见「D+E 批 · 第 7–11 步」。新增工业正常 / 加载 / 空 / 错误态 DOM 用例与离线字体产物一并交付；浏览器视觉走查受沙箱限制，不能当作已完成。
+- 当前是未提交、可审阅的完整本批 diff；Status 保持 ready，不提交、不 push、不开 PR。无演示产品、评测基线改动或生产操作；真实 PG 与完整测试留 CI，真实模型和预发 R16 仍留后续获授权的联合验收。
+- 下一步：**F 批（第 12–14 步）**，新增工业 v2 cases及模拟目标，再造约40条合成产品与CSV。v2不扩审批种子；模拟目标的嵌套approval沿用现有FIXTURE_CLOCK。保留865条旧快照逐字节一致，沿用PACK_FIXTURES门控，不发明开关；09继续与10联合验收、一次上线，不提前翻implemented。
+- 工业运行时可直接装载本包参考SOP / policy / brand，测试与评测的产品夹具仍须各自提供；不要把本批小夹具当演示租户数据。无待确认问题，无后台服务 / 浏览器 / 容器遗留，费用零。
+
+### D+E 批 CI 时区修复（基于 11e834a）
+
+- 根因是工业跟进自测没有完整注入时钟：替换 Date.now 不影响 new Date()，四处 runFollowUpScan(push) 的静默判断仍读真实运行钟点；固定 04:00Z 在 UTC 又落入静默时段，数据库任务会顺延。修前 TZ=UTC 重现原第187行预期1、实际0；同轮逐个跑 item-rules 及五套工业自测，只有 industrial-followup 失败。
+- 产品依据：02 spec「任务表与跟进」沿用22:00–9:00免打扰；core/followup 的 inQuietHours / deferQuiet 和原 jobs 自测按本地时间判断。生产 Dockerfile 安装 tzdata 并显式 ENV TZ=Asia/Shanghai，compose 未覆盖时区；本次未访问生产，不把镜像配置核对称为线上实测。按现有部署约定，这是测试隔离缺陷，本次不改产品、旅游行为或时区契约。
+- 修复仅在 industrial-followup.selftest：固定日期取进程本地12:00，四处扫描显式传 new Date(now)，使扫描免打扰判断与会话 / 数据库任务使用同一测试时间。补断言：23:00不生成、不发送、不记账；中午删空必须经过真实生成和护栏，防止因静默提前退出而假通过。
+- 同类静态排查：industrial-quotes / industrial-replies 的固定UTC值用于时间戳、有效期与候选排序，不依赖跟进静默钟点；工业报价卡用东八区偏移加UTC取值。catalog / domain / item-rules 没有本地日期依赖。没有为通过测试强制覆盖进程TZ。
+- 验证日志在 gitignored 的 var/10-tz：format:check、lint、typecheck、check-fonts 均退出0；字体730个界面汉字全部覆盖，913码位 / 191968 B，未修改字体产物。完整测试与真实PG仍按本批约定留CI，不调用外部服务或真实模型。
+- 修后逐个以 TZ=UTC、TZ=Asia/Shanghai 运行下列8套，16次均退出0（results.json）；jobs在每个时区均109项断言通过，工业跟进两种存储路径及旅游模板 / 计数对照均通过。
+
+| 自测                                | UTC | Asia/Shanghai |
+| ----------------------------------- | --- | ------------- |
+| src/item-rules.selftest.ts          | ✔   | ✔             |
+| src/industrial-catalog.selftest.ts  | ✔   | ✔             |
+| src/industrial-domain.selftest.ts   | ✔   | ✔             |
+| src/industrial-followup.selftest.ts | ✔   | ✔             |
+| src/industrial-quotes.selftest.ts   | ✔   | ✔             |
+| src/industrial-replies.selftest.ts  | ✔   | ✔             |
+| src/followup-guards.selftest.ts     | ✔   | ✔             |
+| src/jobs/jobs.selftest.ts           | ✔   | ✔             |
+
+- 当前仅测试与本plan的未提交diff；不提交、不push、不开PR。下一步仍为F批第12–14步，无需确认新决定。
