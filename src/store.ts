@@ -1070,7 +1070,7 @@ export function markOrderPaid(id: string): Order | undefined {
   const state = storeState();
   const o = state.orders.get(id);
   if (!o) return undefined;
-  if (o.status === 'pending_payment') {
+  if (o.status === 'pending_payment' && (!isLineOrder(o) || !o.approval || o.approval.state === 'approved')) {
     o.status = 'paid';
     o.paidAt = Date.now();
     const s = state.sessions.get(o.sessionId);

@@ -523,6 +523,8 @@ eq(
 {
   const say = (action: string, diff: unknown, targetType = 'conversation') =>
     line(describeAudit(entry({ action, targetType, targetId: 'f3a0c1d2-0000-4000-8000-000000000001', diff }), TRAVEL));
+  eq('报价撤回的审计句子', say('quote.withdraw', { shortId: 'A01', reason: '合成原因' }, 'order'), '小林 撤回了会话A01的报价单');
+  eq('报价撤回的中文动作', auditAction('quote.withdraw')?.label, '撤回报价单');
   eq(
     '会话与订单：每种动作的句子',
     [

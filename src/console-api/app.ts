@@ -118,7 +118,14 @@ import { readMetricsView } from '../ops/metrics.js';
 import { defaultQuickRepliesOf } from '../packs/registry.js';
 import { paymentMode } from '../payment/mode.js';
 import { approveRefund, rejectRefund, settleRefund } from '../payment/refunds.js';
-import { cancelOrder, confirmOrder, markPaidByAdvisor, OrderNotFoundError, OrderStateError } from '../payment/orders.js';
+import {
+  cancelOrderAndNotify,
+  confirmOrder,
+  markPaidByAdvisor,
+  OrderNotFoundError,
+  OrderStateError,
+  QuoteStateError,
+} from '../payment/orders.js';
 import { profile } from '../profile.js';
 import { loginShowcase, sandboxTryUrl } from './entry.js';
 import { indexHealth } from '../retrieval.js';
@@ -418,6 +425,7 @@ function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503
     const error = e.reason === 'window_closed' ? 'send_window_closed' : 'send_quota_exhausted';
     return { status: 409, body: { error, detail: e.message, closesAt: e.closesAt, remaining: e.remaining } };
   }
+  if (e instanceof QuoteStateError) return { status: 409, body: { error: e.code } };
   if (e instanceof OrderStateError) return { status: 409, body: { error: 'order_state', detail: e.message, status: e.status } };
   if (e instanceof StoreLaggingError)
     return {
@@ -965,7 +973,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
     return c.json(orderView(order), 200);
   })
   .post('/orders/:id/cancel', canHandle, zValidator('json', CancelOrderBody, badRequest), async (c) => {
-    const o = cancelOrder(c.req.param('id'), actorOf(c.var.user!, dbIp(c)), c.req.valid('json').reason);
+    const o = await cancelOrderAndNotify(c.req.param('id'), actorOf(c.var.user!, dbIp(c)), c.req.valid('json').reason);
     await committed(o.sessionId);
     const body: OrderView = orderView(o);
     return c.json(body, 200);

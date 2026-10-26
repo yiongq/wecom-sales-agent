@@ -25,9 +25,9 @@
 - [x] 1. 做：实现 `PackRuntime.siteLinks`、核心登记与沙箱 `resources` 合并，旅游登记 `proposal`（R10）；验：旅游沙箱白名单逐项等价、按租户隔离，卡片与部件字节保持基准；报价路径先用证明包夹具验证登记（验收 1、9）；依赖：0。
 - [x] 2. 做：仅给 `public/web.js` 加通用 `part.title` 分支，`chat.html`、`admin.html` 守原输出（R10）；验：有标题与无标题部件均正确，旅游字节及 `stripLink` 锁定断言不变（验收 1、9）；依赖：1。
 - [x] 3. 做：实现 `linkWhitelistStep` 并在证明包使用（R10）；验：删未登记或不允许的链接及孤立引导语；旅游不使用该步骤，字节不变（验收 9）；依赖：1、2。
-- [ ] 4. 做：实现 `QuoteApproval`、建单 `approval` 选项、自动批准与工具结果形态（R1、R2）；验：待审工具结果无订单号 / 合计 / 链接，试算有出处；自动批准按建单快照判定（验收 3、4）；依赖：3。
-- [ ] 5. 做：实现复用、取代、过期与 `quoteState`（R6）；验：待审与已批准复用及取代关系正确，自然日边界与过期总览正确（验收 6）；依赖：4。
-- [ ] 6. 做：收紧六个订单入口与正式金额来源（R1、R4）；验：六入口逐项符合 R4，online / advisor 都验；旅游公开输出不变（验收 1–3）；依赖：5。
+- [x] 4. 做：实现 `QuoteApproval`、建单 `approval` 选项、自动批准与工具结果形态（R1、R2）；验：待审工具结果无订单号 / 合计 / 链接，试算有出处；自动批准按建单快照判定（验收 3、4）；依赖：3。
+- [x] 5. 做：实现复用、取代、过期与 `quoteState`（R6）；验：待审与已批准复用及取代关系正确，自然日边界与过期总览正确（验收 6）；依赖：4。
+- [x] 6. 做：收紧六个订单入口与正式金额来源（R1、R4）；验：六入口逐项符合 R4，online / advisor 都验；旅游公开输出不变（验收 1–3）；依赖：5。
 - [ ] 7. 做：实现批准、驳回、撤回的条件写入、重读、推送、备注与转人工（R3、R5）；验：状态表、并发两种先后与提交期间失效正确；卡片条数、驳回备注、过期撤回通知正确（验收 4、5，权限在第 8 步验）；依赖：6。
 - [ ] 8. 做：接入报价动作权限与审计标签（R7）；验：角色与接手关系符合 R7，agent 可审 AI 接待会话、viewer 为 403；审计动作与操作者正确（验收 4、5）；依赖：7。
 - [ ] 9. 做：实现工作台报价按钮、发送窗口提示、高亮和总览（R5、R8）；验：按钮受权限 / 状态限制，加载 / 空 / 错误态、窗口提示、待审计数正确（验收 5、7、8）；依赖：8。
@@ -312,6 +312,81 @@ v2 快照比对：861 条 case · 0 处差异
 | `scripts/check-tenant-state.selftest.ts`         | ✔ 退出 0 |
 | `scripts/check-boundaries.selftest.ts`           | ✔ 退出 0 |
 
+### C 批 · 第 4–6 步
+
+- 第 4 步（R1、R2）：`LineOrder` 增加可选 `QuoteApproval`，`createLineOrder` 接受 `approval` 并默认取包的 `quotes.approval`。建单的同步段只调用一次 `autoApprovable`，当场批准写 `auto`、`decidedAt`、`confirmedAt`；复用不重审。待审工具结果严格只有 `{ state: 'pending' }`，自动批准结果严格为 `state` / `quoteUrl` / `totalText`。`money_provenance` 的订单来源只接受无审批或 `approval.state=approved`；试算仍由工具 `amounts` 记账，待审建单不向账本写正式金额。
+- 第 5 步（R6）：报价单与无审批单分开复用、取代；待审与有效已批准各保留一个槽。同样的行优先复用有效正式单，其次待审单；新待审单取代旧待审，自动批准新单取代旧待审与旧正式单。过期单不复用，下次建单（包括复用另一张单）时标取代。`quoteState` 将拒绝 / 撤回映为 invalid，paid 与 superseded 优先于过期，过期只推算、不改持久状态；总览待付款只统计无审批单与有效已批准单。
+- 第 6 步（R4）：三条旧公开入口对所有带审批的通用单返回 404；console 确认价格返回 `quote_order`，待审收款返回 `not_approved`，无效 / 被取代按状态表拒绝；已批准与过期单在 online、advisor 两种模式都可收款，已付幂等。存储的 `markOrderPaid` 同样拦未批准单。取消入口将报价单写为 withdrawn / cancelled，待审不通知，曾批准的单提交成功后发包的撤回固定句（过期也发），失败记备注；重复取消不重复通知，原因只给顾问。
+- 接回第 1 步：证明包 `quote.allowed` 经核心只读辅助函数读取当前租户订单，核对所属会话与 `quoteState=approved`，待审、过期、无效、被取代、已付均不放行。核心 order 卡片同时拒绝报价单，避免旧支付卡片泄露其正式金额；旅游与无审批单的卡片路径保持原状。
+- 本批取舍：在证明包导出 `createFixtureQuoteRuntime`，为 09 验收显式装配审批，沿用同一工具定义与参数。08 的原证明场景仍由 `createFixtureRuntime` 建无审批单（原工具显式传 false），不改四个旧证明 case 或任何基线。证明装配有效期为 2 天、合计不超过 1000 分自动批准；没有自动钩子时全部人审。后续证明包收口可复用该装配。
+- 本批取舍：有效期按上海固定 UTC+8 的自然日计算，截止日 23:59:59.999 仍有效、下一毫秒过期；有效天数从包对当前已发布政策的 `validDays` 读取，不新增订单字段。将现有 `readFilePolicy` 原样提取到 `config/file-policy.ts`，DB 读已装载政策、文件模式复用原读取，避免同步状态读者反向装载包注册表引起模块循环；没有新增模块状态、环境变量或迁移。
+- 本批取舍：为本批已实际写出的 `quote.withdraw` 同步补齐中文审计标签与句子，避免 console 的审计动作穷举检查出现缺项；只补撤回，批准 / 驳回的登记仍在后续步骤。`shared/audit-text.selftest.ts` 新增两项断言，console 的 465 项断言重跑通过。
+- 本批取舍：保留旧 `cancelOrder` 同步签名，console 经 `cancelOrderAndNotify` 包装提交与通知；无审批单仍走原取消逻辑及原路由提交。第 7 步新增报价动作时应复用这条撤回路径，勿重复发送。本批不实现批准 / 驳回动作、权限扩展、提醒或报价页，分别留给第 7 步及以后。
+- 新增 `src/quote-approval.selftest.ts`：PGlite 持久化 / 预载、真实核心 mock 一轮试算与待审工具保密、金额来源、并发建单复用、两槽取代、自动批准快照、上海跨年边界、过期总览；真实 HTTP 对 online / advisor 各遍历七状态的六入口、错误码、过期撤回通知与重复取消幂等。`package.json` 仅在 test 末尾追加该自测，CI 耗时登记 10 秒。
+- 最终门禁：`pnpm -s format:check`、`pnpm -s lint`、`pnpm -s typecheck`、`pnpm -s test:locked` 均退出 0。lint 的既有内容黑名单因未配置 `SENSITIVE_PATTERNS` / `.sensitive-patterns` 跳过，其余边界 / 迁移 / console / 租户状态检查通过；补扫相对 `origin/dev` 的新增行及两个新文件，无本机绝对路径或超长假企微 id，`git diff --check` 通过。
+- 旅游硬性对照：两份字节夹具不改，`LINK BYTES SELFTEST PASS: 317 条字节基准，517 项断言`；`LEGACY BYTES SELFTEST PASS: 140 项断言全通（60 条出口字节与夹具逐字节相同；旅游会话 state json 无 packState、moneyLedger）`。锁定八文件、`eval/baselines/`、spec 均零 diff；锁定套件的请求前缀字节断言与 tools 哈希证明 `JSON.stringify(toolDefs)` 不变。链接字节夹具 sha256 仍为 `4688c34e5ee02df443f6986ed110af066e5a7fd513a1ee6ea6c33dd8f943f14e`。
+
+```text
+PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd
+CONFIG_SOURCE=file LLM_MOCK=1 tsx eval/run.ts
+v2 回归评测：861/861 用例通过 · 跳过 0 条 realOnly · 8565 项断言
+v2 快照比对：861 条 case · 0 处差异
+CONFIG_SOURCE=file CONFIG_TEST_DB=pglite LLM_MOCK=1 tsx eval/run.ts
+v2 回归评测：861/861 用例通过 · 跳过 0 条 realOnly · 8565 项断言
+v2 快照比对：861 条 case · 0 处差异
+```
+
+- 验收对照：验收 3 的真实核心 mock 一轮及试算出处已验证；验收 4 的本批建单 / 自动批准 / 收款 / 取消状态部分已验证，工作台批准 / 驳回与并发部分留第 7 步；验收 6 的复用、自动批准取代、自然日边界与过期汇总已验证，手审批准后的取代随第 7 步动作补验。验收 2 的六入口在 online / advisor 下逐个通过；验收 1 的旅游硬性对照见上。本批不宣称验收 4、5 已全量完成。
+- 按改动文件名及其符号（建单、订单动作、存储付款、金额工厂、站内链接、总览、政策读取、审计标签）检索关联自测，并逐个执行；下表是最终结果，console 补标签后的重跑也已通过。前端四个自测使用 `tsx --tsconfig console/tsconfig.json`，其余使用普通 tsx。另跑上面的锁定套件、两份字节自测与两种 v2。PGlite 全过，相关套件的真实 PG 分支按既有条件跳过；按本批任务不连真实 PG、不运行真实模型、不启动外部服务，完整 `pnpm test` 留 CI。`ci-shard.ts --check 4`：188 units、25 strict suites，CHECK PASS。
+
+| 自测                                           | 结果     |
+| ---------------------------------------------- | -------- |
+| `src/quote-approval.selftest.ts`               | ✔ 退出 0 |
+| `src/line-order.selftest.ts`                   | ✔ 退出 0 |
+| `src/order-view.selftest.ts`                   | ✔ 退出 0 |
+| `src/order-readers.selftest.ts`                | ✔ 退出 0 |
+| `src/core/guards/money-provenance.selftest.ts` | ✔ 退出 0 |
+| `src/money-ledger.selftest.ts`                 | ✔ 退出 0 |
+| `src/site-links.selftest.ts`                   | ✔ 退出 0 |
+| `src/payment/orders.selftest.ts`               | ✔ 退出 0 |
+| `src/payment/refunds.selftest.ts`              | ✔ 退出 0 |
+| `src/payment/legacy-pay-poisoned.selftest.ts`  | ✔ 退出 0 |
+| `src/ops/board.selftest.ts`                    | ✔ 退出 0 |
+| `src/ops/ops.selftest.ts`                      | ✔ 退出 0 |
+| `src/store/order-storage.selftest.ts`          | ✔ 退出 0 |
+| `src/store/store.selftest.ts`                  | ✔ 退出 0 |
+| `src/console-api/console.selftest.ts`          | ✔ 退出 0 |
+| `src/web/web.selftest.ts`                      | ✔ 退出 0 |
+| `src/jobs/jobs.selftest.ts`                    | ✔ 退出 0 |
+| `src/notify/notify.selftest.ts`                | ✔ 退出 0 |
+| `src/handoff/handoff.selftest.ts`              | ✔ 退出 0 |
+| `src/pack-session.selftest.ts`                 | ✔ 退出 0 |
+| `src/pack-catalog.selftest.ts`                 | ✔ 退出 0 |
+| `src/after-sales.selftest.ts`                  | ✔ 退出 0 |
+| `src/policy-ask.selftest.ts`                   | ✔ 退出 0 |
+| `src/packs/travel/tools/tools.selftest.ts`     | ✔ 退出 0 |
+| `src/packs/travel/policy.selftest.ts`          | ✔ 退出 0 |
+| `src/adapters/wecom-03.selftest.ts`            | ✔ 退出 0 |
+| `src/config/config.selftest.ts`                | ✔ 退出 0 |
+| `src/config/consistency.selftest.ts`           | ✔ 退出 0 |
+| `src/config/file-pack.selftest.ts`             | ✔ 退出 0 |
+| `src/config/policy.selftest.ts`                | ✔ 退出 0 |
+| `src/config/brand.selftest.ts`                 | ✔ 退出 0 |
+| `src/config/brand-publish.selftest.ts`         | ✔ 退出 0 |
+| `src/config/brand-transfer.selftest.ts`        | ✔ 退出 0 |
+| `src/config/template-derive.selftest.ts`       | ✔ 退出 0 |
+| `scripts/check-boundaries.selftest.ts`         | ✔ 退出 0 |
+| `scripts/ci-shard.selftest.ts`                 | ✔ 退出 0 |
+| `src/shared/audit-text.selftest.ts`            | ✔ 退出 0 |
+| `src/channels/restore-cutoff.selftest.ts`      | ✔ 退出 0 |
+| `src/channels/channels.selftest.ts`            | ✔ 退出 0 |
+| `src/console-api/traces.selftest.ts`           | ✔ 退出 0 |
+| `src/db/brand.selftest.ts`                     | ✔ 退出 0 |
+| `console/src/overview/overview.selftest.tsx`   | ✔ 退出 0 |
+| `console/src/shell/shell.selftest.ts`          | ✔ 退出 0 |
+| `console/src/traces/traces.selftest.tsx`       | ✔ 退出 0 |
+| `console/src/audit/audit.selftest.tsx`         | ✔ 退出 0 |
+
 ## 验收记录
 
 ## Open
@@ -359,3 +434,9 @@ v2 快照比对：861 条 case · 0 处差异
 - 第 1–3 步实现与本批验收测试已完成，门禁、两种 v2 及旅游字节基准均通过；改动留工作区，不提交、不推送、不开 PR。spec 与字节夹具、锁定文件未修改。
 - 无功能半成品与阻塞；未启动容器、浏览器或外部服务，测试进程均已退出，临时测试脚本和日志在交接前删除。
 - 下一步为第 4 步：实现审批数据与建单选项后，将证明包 `quote.allowed` 的默认拒绝换成 R10 的已批准且有效判定；报价页与接口仍按后续步骤推进。
+
+### 交接（2026-10-26，C 批）
+
+- 第 4–6 步与证明包审批装配已完成，审批数据、复用 / 取代 / 过期、六入口和正式金额来源已接通；测试结果见「C 批 · 第 4–6 步」。改动留工作区，不提交、不推送、不开 PR，spec 保持 ready。
+- 当前无功能半成品或未定设计；45 个关联自测、门禁、锁定套件、旅游字节与两种 v2 均通过，逐项证据见实施记录。没有启动容器、浏览器、真实模型或外部服务；所有测试进程均已退出，临时脚本和日志已清理。
+- 下一步为第 7 步：实现批准、驳回与撤回的完整条件写入、提交后重读及推送。复用本批 `quoteState` 与取消入口的撤回逻辑，补手审批准后取代旧正式单、并发与通知失败验收；权限、钩子与提醒按后续步骤接入，旅游字节夹具与锁定文件仍不可修改。

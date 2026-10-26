@@ -1,6 +1,8 @@
 // 08 R3、R12：通用单的形状与展示；旧版旅游单保留原来的渲染路径。
 import type { Order, OrderStatus, Session } from '../types.js';
 import { formatYuan } from '../shared/format.js';
+import { currentRuntime } from '../tenancy/runtime.js';
+import { readFilePolicy } from '../config/file-policy.js';
 
 export interface LinePick {
   kind: string;
@@ -21,6 +23,16 @@ export interface OrderLine {
   attrs?: Readonly<Record<string, string>>;
 }
 
+export interface QuoteApproval {
+  state: 'pending' | 'approved' | 'rejected' | 'withdrawn';
+  requestedAt: number;
+  acceptedAt?: number;
+  auto?: boolean;
+  decidedAt?: number;
+  decidedBy?: { userId: string | null; name: string };
+  reason?: string;
+}
+
 export interface LineOrder {
   v: 2;
   id: string;
@@ -37,6 +49,7 @@ export interface LineOrder {
   confirmedBy?: Order['confirmedBy'];
   paidMarkedBy?: Order['paidMarkedBy'];
   cancelReason?: string;
+  approval?: QuoteApproval;
 }
 
 export type AnyOrder = Order | LineOrder;
@@ -66,10 +79,30 @@ export function orderTotalFen(o: AnyOrder): number {
   return isLineOrder(o) ? o.totalFen : o.totalPrice * 100;
 }
 
+/** 09 R6：上海没有夏令时；把本地自然日映射到 UTC 日，终点含最后一毫秒。 */
+export function quoteState(o: LineOrder, now: number): 'pending' | 'approved' | 'expired' | 'invalid' | 'superseded' | 'paid' {
+  if (o.status === 'superseded' || o.supersededBy) return 'superseded';
+  if (!o.approval || o.status === 'cancelled' || o.approval.state === 'rejected' || o.approval.state === 'withdrawn') return 'invalid';
+  if (o.approval.state !== 'approved') return 'pending';
+  if (o.status === 'paid') return 'paid';
+  const runtime = currentRuntime();
+  const pack = runtime.pack?.runtime;
+  const quotes = pack?.quotes;
+  if (!quotes || o.approval.decidedAt == null) return 'invalid';
+  const policy = runtime.config.loaded ? runtime.config.loaded.sop.policy : readFilePolicy(pack?.policy).policy;
+  const days = quotes.validDays(policy);
+  if (!Number.isSafeInteger(days) || days < 0) throw new Error('报价有效天数无效');
+  const day = 86_400_000;
+  const offset = 8 * 3_600_000;
+  const end = (Math.floor((o.approval.decidedAt + offset) / day) + days + 1) * day - offset;
+  return now < end ? 'approved' : 'expired';
+}
+
 /** 08 R3：只读条目与数量，先完整计价再修改存储；同步段内完成复用/作废，不留并发建单窗口。 */
 export async function createLineOrder(
   session: Session,
   picks: readonly LinePick[],
+  opts?: { approval?: boolean },
 ): Promise<
   { order: LineOrder; reused: boolean } | { rejected: { kind: string; code: string; reason: string; detail?: Record<string, unknown> }[] }
 > {
@@ -132,15 +165,44 @@ export async function createLineOrder(
     });
   }
   if (rejected.length) return { rejected };
+  const approval = opts?.approval ?? runtime.quotes?.approval ?? false;
+  const now = Date.now();
   const pending = store
     .listAnyOrders()
-    .filter((order): order is LineOrder => isLineOrder(order) && order.sessionId === session.id && order.status === 'pending_payment');
+    .filter(
+      (order): order is LineOrder =>
+        isLineOrder(order) && order.sessionId === session.id && order.status === 'pending_payment' && !!order.approval === approval,
+    );
   const key = (rows: readonly OrderLine[]): string =>
     JSON.stringify(rows.map(({ kind, code, qty, unitPriceFen }) => JSON.stringify([kind, code, qty, unitPriceFen])).toSorted());
-  const reused = pending.find((order) => key(order.lines) === key(lines));
-  if (reused) return { order: reused, reused: true };
-  const order = store.createStoredLineOrder({ v: 2, sessionId: session.id, lines: lines as LineOrder['lines'], totalFen });
-  for (const old of pending) store.supersedeOrder(old.id, order.id);
+  const reusable = pending.filter((order) => !approval || ['pending', 'approved'].includes(quoteState(order, now)));
+  // 正式单优先：已有可用链接时不退回待审草稿。
+  const reused = reusable
+    .toSorted((a, b) => Number(b.approval?.state === 'approved') - Number(a.approval?.state === 'approved'))
+    .find((order) => key(order.lines) === key(lines));
+  if (reused) {
+    if (approval)
+      for (const old of pending) {
+        if (quoteState(old, now) === 'expired') store.supersedeOrder(old.id, reused.id);
+      }
+    return { order: reused, reused: true };
+  }
+  const order = store.createStoredLineOrder({
+    v: 2,
+    sessionId: session.id,
+    lines: lines as LineOrder['lines'],
+    totalFen,
+    ...(approval ? { approval: { state: 'pending', requestedAt: now } as QuoteApproval } : {}),
+  });
+  if (approval && runtime.quotes?.autoApprovable?.(order, session)) {
+    order.approval = { state: 'approved', requestedAt: now, auto: true, decidedAt: now };
+    order.confirmedAt = now;
+    store.saveOrder(order);
+  }
+  for (const old of pending) {
+    if (!approval || old.approval?.state === 'pending' || quoteState(old, now) === 'expired' || order.approval?.state === 'approved')
+      store.supersedeOrder(old.id, order.id);
+  }
   session.orderIds.push(order.id);
   store.saveSession(session);
   return { order, reused: false };

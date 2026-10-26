@@ -293,6 +293,10 @@ function single(entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups
       };
     case 'order.refund_settle':
       return { parts: [plain('确认退回了'), ...conv(diff), plain('的款项')], ...amount({ totalPrice: diff.amount }) };
+    case 'quote.withdraw': {
+      const reason = str(diff.reason);
+      return { parts: [plain('撤回了'), ...conv(diff), plain('的报价单')], ...(reason ? { summary: `原因：${reason}` } : {}) };
+    }
     case 'order.cancel': {
       const reason = str(diff.reason);
       return { parts: [plain('取消了'), ...conv(diff), plain('的订单')], ...(reason ? { summary: `原因：${reason}` } : {}) };

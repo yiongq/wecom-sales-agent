@@ -30,7 +30,7 @@ export {
   type ItemCheck,
 } from '../shared/pack.js';
 export type { QuickReplyDefault } from '../shared/quick-reply-defaults.js';
-export { createLineOrder, orderDisplay, type LinePick } from './order-view.js';
+export { createLineOrder, orderDisplay, quoteState, type LinePick, type QuoteApproval } from './order-view.js';
 export { yuanToFen } from '../shared/catalog-money.js';
 export type { SectionSpec, SectionSpec as SopSectionDef, SopSection } from '../shared/sop-sections.js';
 
@@ -656,6 +656,7 @@ export interface ProfileExtractionSources {
 
 export { partsOf } from './message-parts.js';
 export { linkWhitelistStep } from './guards/link-whitelist.js';
+export { quoteLinkAllowed } from './site-links.js';
 
 /**
  * 第 18 步收口实际工具、主回复与跟进 context；第 20 步补齐客户出口品牌模板。
@@ -759,6 +760,11 @@ export interface SiteLinkDef {
 export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   id: string;
   documents?: { proposal?: boolean };
+  quotes?: {
+    approval: true;
+    validDays(policy: unknown): number;
+    autoApprovable?(order: LineOrder, session: Session): boolean;
+  };
   siteLinks?: readonly SiteLinkDef[];
   policy?: PackPolicy;
   defaultBrand: BrandProfile;
@@ -841,6 +847,7 @@ export function boundPack(): PackBinding | null {
 
 /** 第 18 步：模型前安全网、重置与支付通知的行业能力，按旧调用位置注入。 */
 export interface EnginePackHooks {
+  quoteWithdrawnText?(order: LineOrder): string;
   afterSales?(input: AfterSalesInput): AfterSalesStep | null;
   isComplaint(text: string): boolean;
   isHandoffIntent(text: string): boolean;

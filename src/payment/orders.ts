@@ -3,6 +3,7 @@
 // 先查写库健康，改内存，随落库写一行审计；确认收款等提交（≤5 秒）之后才对客户发付款确认（不变量 20）。
 // 操作者：owner、admin、supervisor 任何订单；agent（与共享工作台）只限订单所属会话的接手人本人，否则 NotHandlingError；
 // 会话已被清除（订单不再指向内存里的会话）的订单只许 supervisor 以上
+import { currentPack } from '../config/source.js';
 import { notifyPaid } from '../engine.js';
 import {
   type Actor,
@@ -12,13 +13,14 @@ import {
   isAssignee,
   NotHandlingError,
   pushToChannel,
+  prepareChannel,
   supervisesConversations,
 } from '../handoff/takeover.js';
 import { shortIdOf } from '../shared/conversation.js';
 import { cleanText } from '../shared/text.js';
 import { getAnyOrder, getSession, markOrderPaid, queueAudit, saveOrder, saveSession, storeLagging, StoreLaggingError } from '../store.js';
-import { isLineOrder, orderTotalFen, type AnyOrder } from '../core/order-view.js';
-import type { OrderStatus } from '../types.js';
+import { isLineOrder, orderTotalFen, quoteState, type AnyOrder } from '../core/order-view.js';
+import type { ChatMessage, OrderStatus } from '../types.js';
 import { terminalStageKey } from '../handoff/record.js';
 import { paymentMode } from './mode.js';
 
@@ -28,6 +30,13 @@ export class OrderStateError extends Error {
     super(status === 'unconfirmed' ? '还没确认价格，不能确认收款' : `订单现在是 ${status}，不能这样改`);
   }
 }
+/** 09 状态表的报价拒绝码；旧订单的 order_state 口径保持不变。 */
+export class QuoteStateError extends Error {
+  constructor(readonly code: 'quote_order' | 'not_approved' | 'invalid' | 'superseded' | 'paid') {
+    super(code);
+  }
+}
+
 /** 内存里没有这张订单（不存在、或已作废移出内存）→ 404 */
 export class OrderNotFoundError extends Error {
   constructor() {
@@ -63,6 +72,7 @@ function audit(o: AnyOrder, actor: Actor, entry: { action: string; diff: Record<
 /** 确认价格：只对未作废的 pending_payment；重复确认幂等（不改、不再记审计）。调用方再 await flushSession */
 export function confirmOrder(orderId: string, actor: Actor): AnyOrder {
   const o = orderFor(orderId, actor);
+  if (isLineOrder(o) && o.approval) throw new QuoteStateError('quote_order');
   if (o.status !== 'pending_payment') throw new OrderStateError(o.status);
   if (o.confirmedAt != null) return o;
   if (storeLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId);
@@ -76,6 +86,17 @@ export function confirmOrder(orderId: string, actor: Actor): AnyOrder {
 /** 取消订单：pending_payment → cancelled，记原因（≤200 字）。调用方再 await flushSession */
 export function cancelOrder(orderId: string, actor: Actor, reason: string): AnyOrder {
   const o = orderFor(orderId, actor);
+  if (isLineOrder(o) && o.approval) {
+    const state = quoteState(o, Date.now());
+    if (state === 'superseded' || state === 'paid') throw new QuoteStateError(state);
+    if (state === 'invalid') return o;
+    if (storeLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId);
+    o.approval = { ...o.approval, state: 'withdrawn', decidedAt: Date.now(), decidedBy: who(actor), reason: cleanText(reason.trim(), 120) };
+    o.status = 'cancelled';
+    audit(o, actor, { action: 'quote.withdraw', diff: { reason: o.approval.reason } });
+    saveOrder(o);
+    return o;
+  }
   if (o.status !== 'pending_payment') throw new OrderStateError(o.status);
   if (storeLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId);
   o.status = 'cancelled';
@@ -83,6 +104,37 @@ export function cancelOrder(orderId: string, actor: Actor, reason: string): AnyO
   audit(o, actor, { action: 'order.cancel', diff: { reason: o.cancelReason } });
   saveOrder(o);
   return o;
+}
+
+/** console 取消入口：先提交再通知；只对本次撤回且曾批准的单发送，不泄露原因。 */
+export async function cancelOrderAndNotify(orderId: string, actor: Actor, reason: string): Promise<AnyOrder> {
+  const before = orderFor(orderId, actor);
+  if (!isLineOrder(before) || !before.approval) return cancelOrder(orderId, actor, reason);
+  const notify = before.approval.state === 'approved' && before.status === 'pending_payment';
+  const text = notify ? currentPack().runtime.engineHooks.quoteWithdrawnText?.(before) : undefined;
+  const order = cancelOrder(orderId, actor, reason);
+  const { persisted } = await awaitCommit(order.sessionId);
+  if (!persisted) throw new StoreLaggingError(order.sessionId);
+  const session = getSession(order.sessionId);
+  if (
+    text &&
+    session &&
+    getAnyOrder(order.id) === order &&
+    order.status === 'cancelled' &&
+    !session.seed &&
+    !SEED_SESSION_RE.test(session.id)
+  ) {
+    const message: ChatMessage = { role: 'agent', content: text, at: Date.now() };
+    const prepared = prepareChannel(session.id, text, { kind: 'notice', message });
+    session.messages.push(message);
+    saveSession(session, false);
+    const sent = await pushToChannel(session.id, text, { kind: 'notice', message, prepared });
+    if (!sent) {
+      session.messages.push({ role: 'system', content: '报价单撤回通知发送失败，请另行告知客户。', at: Date.now() });
+      saveSession(session, false);
+    }
+  }
+  return order;
 }
 
 /**
@@ -95,8 +147,13 @@ export function cancelOrder(orderId: string, actor: Actor, reason: string): AnyO
 export async function markPaidByAdvisor(orderId: string, actor: Actor): Promise<{ order: AnyOrder; persisted: boolean }> {
   const o = orderFor(orderId, actor);
   if (o.status === 'paid') return { order: o, persisted: (await awaitCommit(o.sessionId)).persisted };
+  if (isLineOrder(o) && o.approval) {
+    const state = quoteState(o, Date.now());
+    if (state === 'superseded' || state === 'invalid') throw new QuoteStateError(state);
+    if (o.approval.state !== 'approved') throw new QuoteStateError('not_approved');
+  }
   if (o.status !== 'pending_payment') throw new OrderStateError(o.status);
-  if (paymentMode() === 'advisor' && o.confirmedAt == null) throw new OrderStateError('unconfirmed');
+  if (!(isLineOrder(o) && o.approval) && paymentMode() === 'advisor' && o.confirmedAt == null) throw new OrderStateError('unconfirmed');
   if (storeLagging(o.sessionId)) throw new StoreLaggingError(o.sessionId);
   if (isLineOrder(o)) terminalStageKey();
   o.paidMarkedBy = who(actor);

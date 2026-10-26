@@ -2,6 +2,7 @@
 import {
   deepFreeze,
   createLineOrder,
+  quoteLinkAllowed,
   orderDisplay,
   yuanToFen,
   moneyProvenanceStep,
@@ -129,8 +130,7 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
         resources: [{ pattern: /^\/api\/quotes\/ord_[0-9a-f]{24}$/, methods: ['GET'] }],
         card: () => ({ title: '报价单', desc: '查看报价明细' }),
         partTitle: () => '报价单',
-        // 本批只登记；审批数据尚未接入，默认拒绝外发。
-        allowed: () => false,
+        allowed: quoteLinkAllowed,
       },
     ],
     money: { minimumAmount: 0.01, precisionTolerance: 0.5, decimals: true },
@@ -297,6 +297,7 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
           const result = await createLineOrder(
             session,
             parsed.data.lines.map(({ kind, code, qty }) => ({ kind, code, qty })),
+            { approval: false },
           );
           if ('rejected' in result) return JSON.stringify(result);
           const display = orderDisplay(result.order);
@@ -416,6 +417,40 @@ export function createFixtureRuntime(sources?: Pick<PackSources, 'currentCatalog
         return '测试禁词：需求已经核验';
       },
     },
+  };
+}
+
+/** 09 证明场景显式装配审批，08 的基准场景继续使用无审批的原工具。 */
+export function createFixtureQuoteRuntime(sources: PackSources): PackRuntime {
+  const runtime = createFixtureRuntime(sources);
+  const original = runtime.tools.find((tool) => tool.def.function.name === 'fixture_order')!;
+  return {
+    ...runtime,
+    quotes: { approval: true, validDays: () => 2, autoApprovable: (order) => order.totalFen <= 1000 },
+    engineHooks: { ...runtime.engineHooks, quoteWithdrawnText: () => '报价单已撤回，请联系顾问确认。' },
+    tools: runtime.tools.map((tool) =>
+      tool !== original
+        ? tool
+        : {
+            ...tool,
+            async execute(input, { session }) {
+              const parsed = z
+                .object({ lines: z.array(z.object({ kind: z.string(), code: z.string(), qty: z.number() })).min(1) })
+                .safeParse(input);
+              if (!parsed.success) return JSON.stringify({ error: 'lines 必须包含 kind、code 和数量 qty' });
+              const result = await createLineOrder(session, parsed.data.lines, { approval: true });
+              if ('rejected' in result) return JSON.stringify(result);
+              if (result.order.approval?.state !== 'approved') return JSON.stringify({ state: 'pending' });
+              return JSON.stringify({
+                state: 'approved',
+                quoteUrl: `/quote/${result.order.id}`,
+                totalText: orderDisplay(result.order).totalText,
+              });
+            },
+            // 待审不把正式金额偷渡进试算账本；自动批准的金额由订单来源放行。
+            amounts: () => [],
+          },
+    ),
   };
 }
 

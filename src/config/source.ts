@@ -56,7 +56,6 @@ import {
   BrandProfileSchema,
   type CatalogKindSpec,
   type PackBinding,
-  type PackPolicy,
   type PackRuntime,
   type PackSources,
   type BrandProfile,
@@ -69,6 +68,7 @@ import { checkSopContract } from '../sop/contract.js';
 import { decodeSopFile, joinSop, mergeWithImage, splitSop, type SectionSpec, type SopSection } from '../sop/sections.js';
 import { contractInputs, readImageSop, tenantImage, tenantRenderer, switchPreamble, preambleWarning } from './brand.js';
 import { readPackFile } from './pack-file.js';
+import { readFilePolicy } from './file-policy.js';
 import { promptHashes, renderInputsFor, sha256, publishedBrand, policySnapshot, publishedPolicy } from './hashes.js';
 
 export type { TenantLock } from '../db/client.js';
@@ -1300,15 +1300,6 @@ export function currentPolicy(): ReturnType<typeof policySnapshot> {
   if (state.loaded) return { policy: state.loaded.sop.policy, policyHash: state.loaded.sop.policyHash };
   if (configMode() === 'db') throw new ConfigNotReadyError();
   return readFilePolicy(currentPack().runtime.policy);
-}
-
-function readFilePolicy(pack: PackPolicy | undefined): ReturnType<typeof policySnapshot> {
-  const file = path.join(path.dirname(fileSopPath()), 'policy.json');
-  const value = fs.existsSync(file) ? JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file))) : pack?.defaults;
-  const snapshot = policySnapshot(pack, value);
-  const violations = pack?.lint?.(snapshot.policy) ?? [];
-  if (violations.length) throw new Error(`policy_invalid: ${violations.map((v) => v.detail).join('；')}`);
-  return deepFreeze(snapshot);
 }
 
 /** 与引擎共用有效路径，品牌不会误读 cwd/data 或产品库所在目录。 */

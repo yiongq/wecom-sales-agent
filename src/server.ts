@@ -766,7 +766,7 @@ app.get('/api/orders', anonReadable, (c) => {
 // 单订单读取对支付页开放：订单号即凭据（不可猜的随机 ID，列表接口只给登录者与订单本人，不可枚举）。只给白名单字段（R22）
 app.get('/api/orders/:id', lookupLimit, (c) => {
   const o = getAnyOrder(c.req.param('id'));
-  if (!o) return c.json({ error: 'order not found' }, 404);
+  if (!o || (isLineOrder(o) && o.approval)) return c.json({ error: 'order not found' }, 404);
   return c.json(publicAnyOrder(o));
 });
 
@@ -785,7 +785,7 @@ const payAuth: MiddlewareHandler = async (c, next) => {
 app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
   const id = c.req.param('id');
   const order = getAnyOrder(id);
-  if (!order) return c.json({ error: 'order not found' }, 404);
+  if (!order || (isLineOrder(order) && order.approval)) return c.json({ error: 'order not found' }, 404);
   // 改单后被新订单替代的旧单（或已取消的）不能再付：客户翻聊天记录点开旧链接，此前照样付款成功，一趟行程收两笔钱
   if (order.status === 'superseded' || order.status === 'cancelled') {
     return c.json({ error: order.status === 'superseded' ? '这笔订单已被新订单替代' : '订单已取消', order: publicAnyOrder(order) }, 409);
@@ -855,6 +855,8 @@ function withHead(html: string, head: string): string {
 
 // 支付页：/pay/:orderId 直接回 pay.html，页面 JS 从路径取 orderId
 app.get('/pay/:orderId', async (c) => {
+  const quote = getAnyOrder(c.req.param('orderId'));
+  if (quote && isLineOrder(quote) && quote.approval) return c.notFound();
   const binding = currentPack();
   const html = renderBrandPage(await readFile(path.resolve('public/pay.html'), 'utf8'), 'pay', binding.runtime, binding.brand);
   // 同方案页：标题服务端注入，避免微信里先闪一下网址再变标题

@@ -7,7 +7,7 @@ import { type HandoffKind, isHandoffKind } from '../shared/conversation-types.js
 import { originOf, type Origin } from '../shared/origin.js';
 import { getSession, listAnyOrders } from '../store.js';
 import { currentRuntime } from '../tenancy/runtime.js';
-import { orderTotalFen, type AnyOrder } from '../core/order-view.js';
+import { isLineOrder, quoteState, orderTotalFen, type AnyOrder } from '../core/order-view.js';
 
 type TenantKind = 'standard' | 'sandbox';
 /** 会话的种子标记（Session.seed）：会话不在内存里（订单的会话已被清理）为 undefined */
@@ -79,7 +79,7 @@ function addToSummary(part: OrderSummaryPart, o: AnyOrder, from: number, to: num
   } else if ((o.status === 'paid' || o.status === 'refund_pending') && inMonth) {
     part.paidTotal += orderTotalFen(o);
     part.paidCount += 1;
-  } else if (o.status === 'pending_payment') {
+  } else if (o.status === 'pending_payment' && (!isLineOrder(o) || !o.approval || quoteState(o, Date.now()) === 'approved')) {
     part.pendingTotal += orderTotalFen(o);
     part.pendingCount += 1;
   }
