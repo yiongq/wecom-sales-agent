@@ -206,6 +206,8 @@ try {
   const { app } = await withoutTenantScope(() => import('./server.js'));
   const accounts = await import('./auth/accounts.js');
   const owner = { email: 'quote@example.com', password: 'quote-test-password' };
+  // 全程共用一条 PGlite 连接：切角色前先排空写队列，否则 CI 慢时前面会话的写入会以 agent_platform 执行（42501）。
+  assert.deepEqual((await store.drainStore(30_000)).undrained, [], '切换角色前必须排空写队列');
   await t.pg.exec('SET ROLE agent_platform');
   const created = await accounts.createUser(t.db, {
     tenantSlug: tenant.slug,
