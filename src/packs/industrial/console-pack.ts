@@ -90,12 +90,23 @@ export const industrial: IndustryPack = deepFreeze({
   entities: [partEntity],
   vocabulary: {
     customer: '客户',
-    advisor: '顾问',
-    productNoun: '工业品',
+    advisor: '销售顾问',
+    productNoun: '产品',
     tools: { find_parts: '查找工业品', quote_items: '询价试算', create_quote_sheet: '起草报价单', handoff_to_human: '转人工' },
     sopFields: Object.fromEntries(partEntity.fields.filter((f) => !f.key.startsWith('$')).map((f) => [f.key, f.label])),
   },
-  sopSections: [],
+  sopSections: [
+    { key: 'preamble', heading: null, locked: false },
+    { key: 'tone', heading: '语气', locked: false },
+    { key: 'objections', heading: '异议处理', locked: false },
+    ...[
+      ['capabilities', '能力边界'],
+      ['pricing', '报价规则'],
+      ['inventory', '库存与交期'],
+      ['handoff', '转人工'],
+      ['orders', '订单与付款'],
+    ].map(([key, heading]) => ({ key: key!, heading: heading!, locked: true, lockReason: '工具和护栏依赖这些规则' })),
+  ],
   nav: { catalogGroup: '产品', entities: ['part'] },
   stages: [
     { key: 'greeting', label: '开始' },

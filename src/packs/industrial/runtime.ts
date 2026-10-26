@@ -1,4 +1,19 @@
-// R1 / R17：公开工业包入口，也是部署镜像识别标记。后续 D / E 批补护栏、词表与发布配置。
+import {
+  linkWhitelistStep,
+  linkWhitelistFollowupStep,
+  moneyProvenanceStep,
+  moneyProvenanceFollowupStep,
+  type ShapePolicy,
+} from '../../core/pack-api.js';
+import { handoffVocab } from './handoff-vocab.js';
+import { industrialReplyGuard, industrialFollowupGuard, rfqTrimStep, rfqTrimFollowupStep } from './guards.js';
+import { IndustrialPolicySchema, quoteNotes } from './policy.js';
+import { preModel, contextNote } from './turn.js';
+import { sopSections, templates, contractRules, hardRequirements } from './sop.js';
+import { fixedReplies, consistencyRules } from './fixed-replies.js';
+import { followupTemplates, followupGate, insightPrompts, mock } from './auxiliary.js';
+import { isComplaint, isHandoffIntent } from './handoff-intent.js';
+// R1 / R17：公开工业包的完整运行时入口，也是部署镜像识别标记。
 import { getAnyOrder, type PackRuntime, type PackSources, type Session, type SalesStage } from '../../core/pack-api.js';
 import { industrial } from './console-pack.js';
 import { partCatalog, MAX_QTY, PartSchema, priceLine } from './catalog.js';
@@ -8,116 +23,6 @@ import { industrialPolicy } from './policy.js';
 import { quoteCapabilities, quoteSiteLinks } from './quotes.js';
 import { latestQuoteCandidate } from './quote-candidate.js';
 
-// 词表在 D 批按逐键表落地；骨架阶段不复用另一个行业包的运行时或话术。
-function emptyHandoff(): PackRuntime['vocab']['handoff'] {
-  const never = /(?!) /g;
-  return {
-    TRAD: {},
-    TRAD_RE: never,
-    COND: never,
-    HEARSAY: never,
-    PAST: never,
-    PAST_CUT: never,
-    HEARSAY_CUT: never,
-    NOW_LEAD: never,
-    ASKING_TAIL: never,
-    ASKING_WORDS: never,
-    NOT_A_QUESTION: never,
-    NEG_BEFORE: never,
-    E_ALTITUDE_MARKER: never,
-    E_ALTITUDE_OVERLAP: never,
-    EMERGENCY_RULES: [],
-    CARELESS: never,
-    E_HYPO: never,
-    E_PRETRIP: never,
-    E_NEAR: never,
-    E_HABIT: never,
-    E_PRICE: never,
-    E_JOKE: never,
-    E_POLICY: never,
-    E_HEARSAY: never,
-    E_NEG_BEFORE: never,
-    E_UNSURE: never,
-    E_EXAGGERATE: never,
-    E_AFTER_SKIP: never,
-    E_ATTACHED: never,
-    E_HAPPENED_BEFORE: never,
-    E_FEVER: never,
-    E_NOW: never,
-    E_ONGOING: never,
-    E_FALL_HURT: never,
-    E_FALL_THING: never,
-    E_VEHICLE_STUCK: never,
-    E_WOUND: never,
-    E_FINE_AFTER: never,
-    E_TRAPPED_AT: never,
-    E_TRAPPED_ABSTRACT: never,
-    E_NOT_STUCK: never,
-    E_ELSEWHERE: never,
-    E_RESCUE_LEAD: never,
-    E_HELP: never,
-    E_IDENTITY: never,
-    E_GREETING: never,
-    E_UNKNOWN: never,
-    E_ASKING: never,
-    E_EVERY: never,
-    E_ARRANGE: never,
-    COMPANION_PHRASE: never,
-    COMPANION_MARK: '\u0000',
-    PARTY_MENTION: never,
-    OTHER_MENTION: never,
-    NOT_SUBJECT_LEAD: never,
-    FAMILY_LEAD: never,
-    THIRD_PARTY: never,
-    ASK_TAIL: never,
-    EMBEDDED: never,
-    DEPENDS_LEAD: never,
-    ASK_WORDS: never,
-    EVERY_AFTER: never,
-    EVERY_ANOTA_AFTER: never,
-    NOT_ASKING_REST: never,
-    US: never,
-    OWNED_BY_US: never,
-    OWNED_KIND: never,
-    SELF: never,
-    OTHERS: never,
-    OBJECT_LEAD: never,
-    OTHER_AGENCY: never,
-    JOKE: never,
-    DOUBT_WORD: never,
-    STRONG_DIRECTED: never,
-    INSULT: never,
-    STUPID: never,
-    INSULT_TARGET_AFTER: never,
-    INSULT_OBJECT: never,
-    BARE_FILLER: never,
-    BARE_INSULT: never,
-    BROKEN: never,
-    INTENSIFIER: never,
-    WEAK: never,
-    SLOW_PACE: never,
-    WEAK_US_BEFORE: never,
-    WEAK_RHETORICAL: never,
-    REPEAT_SAID: never,
-    PEOPLE: never,
-    WEAK_DIRECTED: never,
-    POSITIVE_BEFORE: never,
-    WORRY_BEFORE: never,
-    SEG_ASKING: never,
-    COMPLAINT_TAG: never,
-    ONLY_US: never,
-    HEALTH: never,
-    PERSON: never,
-    CHILD_AGE_AFTER: never,
-    CHILD_AGE_BEFORE: never,
-    SCHOOL: never,
-    CHILD_RE: never,
-    WITHDRAW: [],
-    POLITE_ASK: never,
-    POLICY_ASK: never,
-    NOT_WANTED: never,
-  };
-}
 const profileFields = [
   { key: 'company', label: '公司' },
   { key: 'deliveryCity', label: '交货城市' },
@@ -179,7 +84,17 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     },
     onQuoteDecided: (_session, _order, event) =>
       event === 'approved' ? 'closing' : event === 'rejected' || event === 'withdrawn' ? 'quote' : null,
-    contextNote: () => [],
+    preModel,
+    contextNote(ctx) {
+      const state = readState(ctx.session);
+      const policy = IndustrialPolicySchema.parse(ctx.policy ?? sources.currentPolicy().policy);
+      return [
+        ...contextNote(ctx),
+        ...quoteNotes(policy),
+        `付款条款：${policy.paymentTerms}；可开票种：${policy.invoice.join('、')}；报价有效期${policy.quoteValidDays}天`,
+        ...(state.rfqDraft ? [`询价摘要：${JSON.stringify(state.rfqDraft)}`] : []),
+      ];
+    },
     tools: createIndustrialTools(sources),
     money: { minimumAmount: 0.01, precisionTolerance: 0.5, decimals: true },
     defaultBrand: {
@@ -189,48 +104,57 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
       scopeNoun: '工业品询价',
       identityLine: '我是衡石工业品的 AI 询价顾问',
     },
-    // 发布话术与品牌模板在 E 批交付；此骨架不包含可发布的 SOP。
     legacy: {
-      offTopicReply: '',
-      welcomeText: '',
-      welcomeBackText: '',
-      webWelcome: '',
-      mockOpening: '',
-      quickReplies: [],
-      hardRequirements: '',
-      identityAnswer: '',
+      identityAnswer: '我是衡石工业品的 AI 询价顾问',
+      offTopicReply: templates.offTopicReply,
+      welcomeText: '您好，请告诉我型号和数量。',
+      welcomeBackText: templates.welcomeBackText,
+      webWelcome: '欢迎来到衡石工业品（虚构），请告诉我型号和数量。',
+      mockOpening: templates.mockOpening,
+      quickReplies: templates.quickReplies,
+      hardRequirements,
       resetReply: '已重新开始',
       resetDisabledReply: '请告诉我新的需求',
       handoffFallback: '顾问会继续确认',
     },
-    templates: {
-      hardRequirements: '',
-      lockedSectionTemplates: {},
-      identityAnswer: '{identityLine}',
-      offTopicReply: '',
-      welcomeText: '',
-      welcomeBackText: '',
-      webWelcome: '',
-      mockOpening: '',
-      quickReplies: [],
-      preamble: '',
-      pages: {},
-    },
-    sopSections: [],
-    contractRules: () => [],
+    templates,
+    sopSections,
+    contractRules,
+    fixedReplies,
+    consistencyRules,
     knownFields: { names: industrial.entities[0]!.fields.map((field) => field.key), sourceFiles: ['src/packs/industrial/catalog.ts'] },
-    replySteps: [],
-    followupSteps: [],
+    replyAnchors: { markdown: 'industrial_claims', 'takeover_check:post': 'rfq_trim' },
+    replySteps: [
+      industrialReplyGuard(sources),
+      { ...linkWhitelistStep(), after: ['shape_check'] },
+      {
+        ...moneyProvenanceStep({
+          staticAmounts: (raw) => Object.values(IndustrialPolicySchema.parse(raw).shipping),
+          fallback: '金额需要先试算，请告诉我型号和数量。',
+        }),
+        after: ['stage_advance', 'link_whitelist'],
+      },
+      rfqTrimStep(sources),
+    ],
+    followupSteps: [
+      linkWhitelistFollowupStep(),
+      industrialFollowupGuard(sources),
+      {
+        ...moneyProvenanceFollowupStep({ staticAmounts: (raw) => Object.values(IndustrialPolicySchema.parse(raw).shipping) }),
+        after: ['industrial_claims'],
+      },
+      rfqTrimFollowupStep(sources),
+    ],
     engineHooks: {
-      isComplaint: () => false,
-      isHandoffIntent: () => false,
-      safetyNetKind: () => 'request',
+      isComplaint,
+      isHandoffIntent,
+      safetyNetKind: (_session, text) => (/退款|退钱|退费/.test(text) ? 'refund' : isComplaint(text) ? 'complaint' : 'request'),
       handoffReply: () => '顾问会继续确认',
       departNoteForHandoff: () => undefined,
       fallbackReply: () => '请告诉我型号和数量',
       hintsFor: () => ({}),
       withNotes: (text) => text,
-      modelRequestedHandoff: () => false,
+      modelRequestedHandoff: (calls) => calls.some((call) => call.name === 'handoff_to_human'),
       retrievalEmpty: () => false,
       createOrderTool: null,
       resetSession() {},
@@ -238,8 +162,23 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
       quoteRejectedText: () => '这份报价需要顾问再核对一下，顾问会直接联系您',
       quoteWithdrawnText: () => '这份报价单已撤回，顾问会跟您重新确认',
     },
-    vocab: { handoff: emptyHandoff(), dejargon: { english: {}, internal: [] } },
-    thresholds: {},
+    vocab: { handoff: handoffVocab, dejargon: { english: {}, internal: [] } },
+    thresholds: {
+      shape: {
+        richMaxLines: 12,
+        plainMaxLines: 12,
+        generatedListMaxLines: 12,
+        maxChars: 600,
+        richTools: ['find_parts', 'quote_items'],
+        asksPrice: (text) => /价|多少钱/.test(text),
+        isClosingTurn: (text) => /确认下单|就按这个|可以下单/.test(text),
+        // 形状步骤只记录；所有实际删行交给 rfq_trim 统一计数。
+        isRouteTitleLine: () => true,
+        isClosingLine: () => false,
+        proposalSent: () => false,
+        droppable: () => null,
+      } satisfies ShapePolicy,
+    },
     retrievalItems: () => {
       const snapshot = sources.currentCatalog();
       return (snapshot.items.part ?? []).map((payload, ord) => ({
@@ -259,22 +198,10 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     },
     retrievalCacheFile: 'industrial-vectors.json',
     evalGoalsDir: 'eval/sim/goals/industrial/quality',
-    followupTemplates: { idleMinutes: {}, byStage: {}, fallback: '', system: '' },
-    insightPrompts: {
-      draftFallbackStage: 'discovery',
-      stuckStages: [],
-      insights: '',
-      suggestion: '',
-      draft: '',
-      reach: {},
-      funnelNames: [],
-      draftFallback: {},
-    },
-    mock: {
-      async chat() {
-        return '请告诉我型号和数量';
-      },
-    },
+    followupTemplates,
+    followupGate,
+    insightPrompts,
+    mock,
     quoteCard(session) {
       const draft = readState(session).rfqDraft;
       return draft ? { title: '最近询价', amountFen: null, lines: [`${draft.lines.length} 项`] } : null;

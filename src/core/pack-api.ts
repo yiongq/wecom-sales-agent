@@ -661,7 +661,7 @@ export interface ProfileExtractionSources {
 }
 
 export { partsOf } from './message-parts.js';
-export { linkWhitelistStep } from './guards/link-whitelist.js';
+export { linkWhitelistStep, linkWhitelistFollowupStep } from './guards/link-whitelist.js';
 export { getAnyOrder, quoteLinkAllowed } from './site-links.js';
 
 /**

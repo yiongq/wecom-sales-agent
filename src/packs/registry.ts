@@ -10,6 +10,8 @@ import {
   type PackRuntime,
   type PackSources,
 } from '../core/pack-api.js';
+import { industrialQuickReplies } from './industrial/quick-reply-defaults.js';
+import { sopConsistencyViolations as industrialSopConsistency } from './industrial/consistency.js';
 import { industrial } from './industrial/console-pack.js';
 import { createIndustrialRuntime } from './industrial/runtime.js';
 import { createTravelRuntime } from './travel/runtime.js';
@@ -34,7 +36,12 @@ const REGISTRY: Readonly<Record<string, PackRegistration>> = deepFreeze({
     quickReplies: travelQuickReplyDefaults,
     sopConsistency: sopConsistencyViolations,
   },
-  [industrial.id]: { pack: industrial, runtime: createIndustrialRuntime, quickReplies: [] },
+  [industrial.id]: {
+    pack: industrial,
+    runtime: createIndustrialRuntime,
+    quickReplies: industrialQuickReplies,
+    sopConsistency: industrialSopConsistency,
+  },
   ...(process.env.PACK_FIXTURES === '1' ? { [fixture.id]: { pack: fixture, runtime: createFixtureProofRuntime, quickReplies: [] } } : {}),
 });
 
