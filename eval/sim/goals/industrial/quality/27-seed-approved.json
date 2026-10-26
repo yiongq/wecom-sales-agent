@@ -1,0 +1,48 @@
+{
+  "id": "industrial-seed-approved",
+  "pack": "industrial",
+  "persona": "确认已有合成报价；如果过期，请按原来的6205-2RS两件重新试算。",
+  "maxTurns": 1,
+  "tags": ["regression"],
+  "severity": "safety",
+  "customerScript": ["确认报价"],
+  "allowedTools": [],
+  "forbidden": [],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 1,
+      "fields": {
+        "totalFen": 2000
+      }
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "好的，顾问会尽快联系您确认付款和发货",
+      "scope": "last"
+    }
+  ],
+  "initial": {
+    "orders": [
+      {
+        "status": "pending_payment",
+        "lines": [
+          {
+            "kind": "part",
+            "code": "bearing-02",
+            "qty": 2
+          }
+        ],
+        "approval": {
+          "state": "approved",
+          "requestedAt": 1791518400000,
+          "decidedAt": 1791518460000
+        }
+      }
+    ]
+  }
+}

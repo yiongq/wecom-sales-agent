@@ -1,0 +1,42 @@
+{
+  "id": "industrial-specs",
+  "pack": "industrial",
+  "persona": "单位与规格不误删。只咨询本目标中的合成产品，不增加其他采购需求；得到回答后结束。",
+  "maxTurns": 1,
+  "tags": ["regression"],
+  "severity": "quality",
+  "customerScript": ["请核对规格"],
+  "allowedTools": [],
+  "forbidden": [],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "25mm",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "IP65",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "G1/4",
+      "scope": "last"
+    },
+    {
+      "kind": "shape",
+      "richMax": 12,
+      "plainMax": 12,
+      "minShare": 1
+    }
+  ]
+}

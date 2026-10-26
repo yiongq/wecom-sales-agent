@@ -35,9 +35,9 @@
 - [x] 9. 做：非标 / 超长 / 确认报价的判定表，接 `fixedId`、`handoff`、`notify`、`statePatch` 与 `contextNote`（R11）；共享同一 now 下的 quoteState 候选筛选与固定排序：事件时间降序、同时间草稿优先、订单再按 createdAt / id 降序；验：验收 6 的四种确认情况、全部终态排除、同毫秒草稿 / 订单与多单打乱遍历顺序仍同结论，两个入口一致；跨消息边界、固定句全文匹配、patch 校验、首次确认提醒去重；依赖：5、6、8。
 - [x] 10. 做：SOP 模板、契约规则、policy、品牌、一致性登记（R12），统一「新建缺省人审，自动批准按 R6；复用不重审」与裁剪固定兜底；验：三节可改、五节锁定、无旅游词 / 渠道名，policy / 固定句 / 审批缺省一致，验收 9 的发布前静态检查通过；依赖：1.1；工具与固定句最终联验待 4、5、7、9。
 - [x] 11. 做：跟进、洞察、mock、后台配置、快捷回复、字体子集（R14）；验：用合成企微会话、注入时钟覆盖两个 24 小时阶段与待审抑制，复核第 7 步文件 / 数据库两路真实生成到发送的非空 / 删空、额度与次数行为（验收 8），界面加载 / 空 / 错误态与字体检查通过；依赖：6–10。
-- [ ] 12. 做：至少 30 条工业 cases v2（R15），保留现有 `fixtures.now` 与对话动作，不扩 v2 审批种子；验：文件与 PGlite 模式全过，旅游快照逐条不变（验收 1、9）；依赖：11。
-- [ ] 13. 做：至少 20 个 regression 目标（其中至少 8 个 safety），仅扩模拟目标的嵌套审批种子，沿用 `FIXTURE_CLOCK` / `fixtureClock()`（R15）；验：pending / approved 时间与状态组合校验、批准有效 / 已过期确认可复现，保留单槽 pending_payment 校验和旧种子无审批语义，初始化无通知；`handoffKind` / `richTools` 生效，mock 目标集通过（验收 9）；依赖：12。
-- [ ] 14. 做：约 40 条合成产品及同内容 CSV（R16）；验：四类齐全、JSON 与 CSV 语义相同，导入 / 上架 / 匹配 / 改价符合验收 2–4；依赖：1.1、2、3，最终联验依赖 11–13。
+- [x] 12. 做：至少 30 条工业 cases v2（R15），保留现有 `fixtures.now` 与对话动作，不扩 v2 审批种子；验：文件与 PGlite 模式全过，旅游快照逐条不变（验收 1、9）；依赖：11。
+- [x] 13. 做：至少 20 个 regression 目标（其中至少 8 个 safety），仅扩模拟目标的嵌套审批种子，沿用 `FIXTURE_CLOCK` / `fixtureClock()`（R15）；验：pending / approved 时间与状态组合校验、批准有效 / 已过期确认可复现，保留单槽 pending_payment 校验和旧种子无审批语义，初始化无通知；`handoffKind` / `richTools` 生效，mock 目标集通过（验收 9）；依赖：12。
+- [x] 14. 做：约 40 条合成产品及同内容 CSV（R16）；验：四类齐全、JSON 与 CSV 语义相同，导入 / 上架 / 匹配 / 改价符合验收 2–4；依赖：1.1、2、3，最终联验依赖 11–13。
 - [ ] 15. 做：中期审查 diff、接口 / 数据边界与质量门，逐条核对 10 验收 1–9，并合并补验 09 第 15 步的本机部分（09 验收 1–13）；落实 R17 的 pre-10 guard、手动 tag 树 / 自动镜像判定与两路接线，隔离测试先通过再部署；协调者跑真实模型 k = 5；验：两份 spec 各有证据与待线上项目，pre-10 的三类风险 / 未知 / 空库 / 含 10 目标覆盖且不删数据，结果 / 费用入本 plan，不达标记 Open；依赖：0–14，开工条件 4；09 既有记录只作基准，联合改动后需复核受影响项。
 - [ ] 16. 做：owner 当次授权后，09 与 10 一次上线 `demo-v10-rc1`，开通 `industrial-demo`、设置 Host、开网页渠道、导入产品库、发布 SOP；验：10 验收 10 与 09 验收 1 的线上补证同时完成，宿主 / 沙箱 revision 与健康、旅游四哈希 / 既有订单与看板、企微及网页一句一回、新沙箱冒烟有记录；依赖：15、开工条件 5，R17 已随 ready 确认且仅前滚 / 含 10 tag 的恢复路径已核实。部署前备份与异地副本、预发 R16 复验、线上不启用证明包，沿用 09 plan 的上线清单。
 - [ ] 17. 做：在一次性测试库与隔离部署环境演练 R17、10 验收 11，并复核 09 R15 / 验收 13 的 pre-09 检查；验：手动部署和健康失败自动回滚均按新建 runtime 文件识别目标；part 条目 / industrial 租户 / 工业报价三类风险分别单独存在、停用 / 终态 / 重置历史、未知查询均 guard=9 / deploy=1，提示「前滚修复，或者回滚到另一个含 10 的 tag」。三项均无时只放行 pre-10；含 10 目标仍过其他检查；无工业数据但有任意 approval 历史时，pre-09 仍拒绝。记录目标、数据、退出码与提示；依赖：16，第 15 步已实现并预验 R17。全程只读，不停用 / purge / 删历史，不对线上做破坏演练。
@@ -446,6 +446,103 @@ DB 模式：22 个请求的前缀哈希核对，0 个与 /healthz 不符
 | `console/src/conversations/pack-cards.selftest.tsx` | ✔ 退出0 |
 | `console/src/sop/sop.selftest.tsx`                  | ✔ 退出0 |
 
+### F 批 · 第 12–14 步
+
+- 第 12 步：新增 35 条 `industrial` cases v2，保持既有 `fixtures.now` 与对话动作，未扩 v2 审批种子；仅本步生成 `eval/baselines/v2-10-step12.json` 并切换默认基线。独立用 JSON 解码器定位对象原文、截取 UTF-8 字节比对：原 865 条逐字节相同，新文件共 900 条，旧快照不改。
+- PGlite 装配发现旧 `eval/v2/pack-db.ts` 将非旅游政策一律写 null，工业契约以 `policy_invalid` 拒绝。按已有 `policySnapshot` 接口装载参考目录政策并保存同源哈希；没有 policy 能力的证明包仍为 null。该修复仅在评测装配，不改业务运行时 / SOP / 工具定义或 v2 schema。
+- 第 13 步：新增 28 个 regression 目标，其中 15 个 safety，目录沿工业 `evalGoalsDir` 接入既有发布闸。仅扩模拟目标通用单的嵌套 approval；pending / approved 时间为非负安全整数、时间顺序合法且不超前，pending 仅搭配 pending_payment，保留单槽末位校验。装载按 FIXTURE_CLOCK 校验，初始化再按 fixtureClock 当前时间与包 quotes 能力校验，整组验证发生在创建会话前。先经 `priceLine` 与 `{ approval: false }` 建单，再在隔离模拟器里落审批快照，createdAt 对齐 requestedAt；不走自动批准或通知动作。旧无审批种子维持原语义。
+- 模拟新增自测覆盖非法时间 / 状态 / 顶层字段 / 新时钟拒绝、四种订单状态与旧种子、待审 / 已批有效 / 已批过期确认；过期样例比自然日边界早至少一天。真实引擎只桩模型 HTTP，以 28 个目标验证 simulate / simulateGate / runGate 入口、包目标选择、完整报告；handoffKind 与 richTools 均有反例判红，不新增谓词或核心接口。脚本只证明结构、确定性流程与闸接线，不当作真实模型质量结果。
+- 第 14 步：新增 `catalog/part.json` 与同内容 `part.csv`，40 条全合成产品，轴承 / 紧固件 / 气动元件 / 低压电器各 10 条；品牌统一「衡石工业品」，每条标注合成演示数据。沿公开型号规则自行编写，不取厂商资料；库存、价格、规格均为演示值，未写真实联系方式。CSV 金额写两位小数，含四档价格、三种库存情况、别名与有 / 无替代；按依赖顺序先上架替代目标。
+- 数据验收自测核对 JSON / CSV 语义一致、40 条 CSV 导入全为草稿、40 条逐一上架、列表与详情一致、所有型号与别名匹配及跨条目校验；实际批准报价后改价，生成版本 2，之后两件试算由 20 元变 20.50 元，原已批准订单所有字段不变。40 条实际演示数据 / 30 行 / 1000 批内存匹配加定价 p95 低于 50 ms；不含装载、网络或持久化。
+- 自定细节：评测先固定 4 条合成产品，第 14 步只追加其余 36 条，工业快照不再重写；共 28 个目标以覆盖全部 R15 场景，15 个 safety；模拟脚本复用 v2 的假响应但使用独立目标谓词，真实模型入口不读取假脚本。两个新增自测只追加到 package.json 的 test 尾部，CI 分片自动从该脚本导出，无第二份清单。
+
+新增快照 id（全部是工业用例）：
+
+- `q10-industrial-12-lines`
+- `q10-industrial-31-lines`
+- `q10-industrial-alias`
+- `q10-industrial-ambiguous`
+- `q10-industrial-bargain`
+- `q10-industrial-below-moq`
+- `q10-industrial-credit`
+- `q10-industrial-drawing`
+- `q10-industrial-exact`
+- `q10-industrial-injection`
+- `q10-industrial-invent-model`
+- `q10-industrial-invent-stock`
+- `q10-industrial-invent-substitute`
+- `q10-industrial-lowest`
+- `q10-industrial-moq`
+- `q10-industrial-multiply-cross`
+- `q10-industrial-multiply-star`
+- `q10-industrial-multiply-x`
+- `q10-industrial-no-stock`
+- `q10-industrial-nonstandard`
+- `q10-industrial-off-catalog`
+- `q10-industrial-pending`
+- `q10-industrial-reject-moq`
+- `q10-industrial-sample`
+- `q10-industrial-short-prefix`
+- `q10-industrial-specs`
+- `q10-industrial-substitute-known`
+- `q10-industrial-substitute-none`
+- `q10-industrial-tax`
+- `q10-industrial-tier-at`
+- `q10-industrial-tier-before`
+- `q10-industrial-tier3-at`
+- `q10-industrial-tier3-before`
+- `q10-industrial-tier4-at`
+- `q10-industrial-tier4-before`
+
+验证结果（全部离线；Node v22.22.0，darwin/arm64）：
+
+- ✔ `format:check`、`lint`、`typecheck`、`test:locked` 均通过；完整 `pnpm test` 按本批任务不在本机执行，留 CI。CI 分片自测确认新套件来自 test 尾部自动登记。
+- ✔ 文件配置：`v2 回归评测：900/900 用例通过 · 8742 项断言`；`v2 快照比对：900 条 case · 0 处差异`。
+- ✔ PGlite 配置：`v2 回归评测：900/900 用例通过 · 8742 项断言`；`v2 快照比对：900 条 case · 0 处差异`；v1 的 22 个请求前缀哈希与 healthz 对照 0 处不符。
+- ✔ `PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd`。
+- ✔ legacy-bytes：60 条出口字节、140 项断言；link-bytes：317 条字节基准、517 项断言；两套夹具不改。09 的 quote-approval / quote-actions / quote-page / quote-replies / site-links 全绿。
+- ✔ 模拟：28 regression / 15 safety，模拟器、simulateGate 与 runGate 均通过；另经 PGlite 实际后台发布链，required 闸先拒绝未评测草稿，两边各 28 个目标通过后，tone 可编辑节发布为 v2；不覆盖授权后在线后台操作。
+- ✔ 实际演示产品内存计算：40 条 / 30 行 / 1000 批，p95 = 0.816 ms；数据导入、上架、匹配、改价与批准金额冻结通过。字段渲染套件 1751 项断言、金额套件均通过，未改 UI。
+- ✔ 独立原文切片验证旧 865 个快照对象逐字节相同，只新增上述 35 个 id；八个锁定文件、旧快照、两套字节夹具、spec 均零 diff；本批不改 PREFIX / toolDefs、旅游文案或业务代码。
+- ✔ `git diff --check`、新增与修改文件公共边界补查、相对 origin/dev 的整个 PR 新增行检查：本机路径与超长假企微 id 均 0 命中。lint 未配置敏感词表，内容黑名单按原脚本跳过，数据来源与品牌逐项核对为合成；未打开 PR，未执行提交或推送。
+- ✘ 本批不执行真实模型 k = 5、真实 PG / Docker、预发 R16 与生产验收：按任务边界留第 15–16 步及 CI，mock 结果不代替这些证据。没有真实模型费用，没有后台进程 / 浏览器 / 容器遗留。
+
+按文件名与引用搜索出的直接影响套件，加旅游 / 09 硬性对照，逐套结果如下（31 套，退出码均为 0）：
+
+| 自测                                       | 结果          |
+| ------------------------------------------ | ------------- |
+| `eval/sim/sim.selftest.ts`                 | ✔ 退出 0      |
+| `eval/sim/fixture.selftest.ts`             | ✔ 退出 0      |
+| `eval/sim/predicates.selftest.ts`          | ✔ 退出 0      |
+| `eval/sim/gate.selftest.ts`                | ✔ 退出 0      |
+| `eval/sim/industrial.selftest.ts`          | ✔ 退出 0      |
+| `eval/v2/runner.selftest.ts`               | ✔ 退出 0      |
+| `eval/v2/isolation.selftest.ts`            | ✔ 退出 0      |
+| `src/config/gate-per-pack.selftest.ts`     | ✔ 退出 0      |
+| `src/config/gate.selftest.ts`              | ✔ 退出 0      |
+| `src/config/file-pack.selftest.ts`         | ✔ 退出 0      |
+| `src/config/policy.selftest.ts`            | ✔ 退出 0      |
+| `src/config/transfer-per-pack.selftest.ts` | ✔ 退出 0      |
+| `src/config/sop-per-pack.selftest.ts`      | ✔ 退出 0      |
+| `src/config/catalog-snapshot.selftest.ts`  | ✔ 退出 0      |
+| `src/config/registry-binding.selftest.ts`  | ✔ 退出 0      |
+| `src/industrial-domain.selftest.ts`        | ✔ 退出 0      |
+| `src/industrial-catalog.selftest.ts`       | ✔ 退出 0      |
+| `src/industrial-quotes.selftest.ts`        | ✔ 退出 0      |
+| `src/industrial-replies.selftest.ts`       | ✔ 退出 0      |
+| `src/industrial-followup.selftest.ts`      | ✔ 退出 0      |
+| `src/industrial-demo.selftest.ts`          | ✔ 退出 0      |
+| `src/quote-approval.selftest.ts`           | ✔ 退出 0      |
+| `src/quote-actions.selftest.ts`            | ✔ 退出 0      |
+| `src/quote-page.selftest.ts`               | ✔ 退出 0      |
+| `src/quote-replies.selftest.ts`            | ✔ 退出 0      |
+| `src/site-links.selftest.ts`               | ✔ 退出 0      |
+| `src/payment/legacy-bytes.selftest.ts`     | ✔ 退出 0      |
+| `src/core/link-bytes.selftest.ts`          | ✔ 退出 0      |
+| `scripts/ci-shard.selftest.ts`             | ✔ 退出 0      |
+| `src/catalog-money.selftest.ts`            | ✔ 退出 0      |
+| `console/src/fields/fields.selftest.tsx`   | ✔ 1751 项断言 |
+
 ## 验收记录
 
 ### 首轮文档核对（2026-10-26，协调者答复前）
@@ -577,3 +674,10 @@ DB 模式：22 个请求的前缀哈希核对，0 个与 /healthz 不符
 | src/jobs/jobs.selftest.ts           | ✔   | ✔             |
 
 - 当前仅测试与本plan的未提交diff；不提交、不push、不开PR。下一步仍为F批第12–14步，无需确认新决定。
+
+### 交接（2026-10-26，F 批第 12–14 步）
+
+- 第 12–14 步已实现并勾选；新增用例、审批模拟种子、目标、演示 JSON / CSV 与两套自测，当前仅工作区 diff，不提交、不 push、不开 PR；spec 保持 ready。
+- 最终门禁、两种 v2 配置、31 套相关自测全部通过；独立比对 865 条旧快照逐字节相同。逐套结果、28 个目标（15 safety）、40 条产品、工业 required 发布闸的本机证据见本批实施记录；没有半成品或待确认问题。
+- 下一步：**第 15 步中期审查**，核对 10 验收 1–9 并与 09 联验；真实模型 k = 5 由协调者在 owner 授权后跑，费用与结果另记。本批 mock 不代替真实模型质量闸。
+- **第 16 步与 09 一起上线，需要 owner 当次授权；预发 R16 开通前检查同样需要授权。** 演示租户开通、Host 隔离、网页完整流程与线上哈希未执行，不把本机产品验收当成验收 10 的线上通过。

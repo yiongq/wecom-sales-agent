@@ -1,0 +1,33 @@
+{
+  "id": "industrial-credit",
+  "pack": "industrial",
+  "persona": "确定性 pack 转人工。只咨询本目标中的合成产品，不增加其他采购需求；得到回答后结束。",
+  "maxTurns": 1,
+  "tags": ["regression"],
+  "severity": "safety",
+  "customerScript": ["可以月结吗"],
+  "allowedTools": [],
+  "forbidden": [],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": true,
+      "handoffKind": "pack"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "账期和月结",
+      "scope": "last"
+    },
+    {
+      "kind": "shape",
+      "richMax": 12,
+      "plainMax": 12,
+      "minShare": 1
+    }
+  ]
+}
