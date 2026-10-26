@@ -83,13 +83,13 @@ echo "目标：${NAME} @ ${SERVER}:${REMOTE_DIR}，宿主端口 ${HOST_PORT}$([[
 # 项目名、容器名用 NAME，宿主端口用 HOST_PORT：旁路实例因此有自己的 compose 项目、数据库卷和容器名，碰不到线上。
 # 新版本与回滚只差 APP_IMAGE
 compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} docker compose -p ${NAME} -f deploy/compose.yml"; }
-# 回滚前检查（02、03「导入、导出与切换」、04 R14、05 R18、07 R20、08 R13、09 R15）：旧镜像不认识库里的数据或部署状态时拒绝。
-# 判断在服务器上做（deploy/rollback-guard.sh 经 ssh 交给 bash -s）；$1 是镜像名，或 pre-02 到 pre-09 的档位（已按 tag 文件树判定）。
+# 回滚前检查（02、03「导入、导出与切换」、04 R14、05 R18、07 R20、08 R13、09 R15、10 R17）：旧镜像不认识库里的数据或部署状态时拒绝。
+# 判断在服务器上做（deploy/rollback-guard.sh 经 ssh 交给 bash -s）；$1 是镜像名，或 pre-02 到 pre-10 的档位（已按 tag 文件树判定）。
 # 用的是本地这份脚本：02 之前的 tag 里没有它。项目名与宿主端口传进去：打印的手工命令要带上（旁路实例不能去抢线上的端口）。
 # 拒绝的退出码为 3–9，下面的提示按它分开写：3 只有会话在库里（先回到文件存储就能回滚，步骤打在上面）；4 有条目版本大于 1
 # 或看不出来（回到文件存储也去不掉，只能用 02 之后的镜像）；5 渠道状态在库里，先 channel-export。
 # 6 有品牌风险，按上面打印的品牌状态与部署路径恢复。
-# 7 有多租户或沙箱风险；8 有退款订单风险；9 有非旅游数据或报价审批风险。按上面打印的步骤确认并处理，检查通过后再部署或回滚。
+# 7 有多租户或沙箱风险；8 有退款订单风险；9 有非旅游数据、报价审批或工业数据风险。按上面打印的步骤确认并处理，检查通过后再部署或回滚。
 guard_rollback() { ssh "${SERVER}" bash -s -- "$REMOTE_DIR" "$1" "$NAME" "$HOST_PORT" <deploy/rollback-guard.sh; }
 # 05 以前只核对 revision；目标镜像判断失败从严按 pre-05 处理。
 pre05_image() { ssh "${SERVER}" "timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh $1 -c 'test -e /app/src/tenancy/runtime.ts'"; }
@@ -151,6 +151,12 @@ CHECK
 fi
 # 按 tag 文件树判定旧镜像，保留更早的检查：pre-02 → pre-03 → pre-04。在 rsync 之前拦下。
 rollback_target=""
+# 分开检查命令状态与文件是否存在，不能把 git 查询失败当作一个可放行的旧 tag。
+industrial_tree=$(git ls-tree -r --name-only "refs/tags/${TAG}" -- src/packs/industrial/runtime.ts) || {
+  echo "错误：无法确认 ${TAG} 是否含 10，拒绝部署（服务器上什么都没动）。" >&2
+  echo "前滚修复，或者回滚到另一个含 10 的 tag" >&2
+  exit 1
+}
 if ! git cat-file -e "refs/tags/${TAG}:src/store/pg-backend.ts" 2>/dev/null; then
   rollback_target=pre-02
 elif ! git cat-file -e "refs/tags/${TAG}:src/channels/registry.ts" 2>/dev/null; then
@@ -165,6 +171,8 @@ elif ! git cat-file -e "refs/tags/${TAG}:src/core/order-view.ts" 2>/dev/null; th
   rollback_target=pre-08
 elif ! git ls-tree -r --name-only "refs/tags/${TAG}" -- src/core/site-links.ts | grep -qx 'src/core/site-links.ts'; then
   rollback_target=pre-09
+elif ! printf '%s\n' "$industrial_tree" | grep -qx 'src/packs/industrial/runtime.ts'; then
+  rollback_target=pre-10
 fi
 if [ -n "$rollback_target" ]; then
   guard_rollback "$rollback_target" || {
@@ -174,7 +182,7 @@ if [ -n "$rollback_target" ]; then
       5) echo "错误：${TAG} 是 03 之前的版本，拒绝部署（服务器上什么都没动）。渠道状态在库里：按上面的步骤先 channel-export，再部署它。" >&2 ;;
       6) echo "错误：${TAG} 是 04 之前的版本，拒绝部署（服务器上什么都没动）。有品牌风险：按上面对应品牌状态的步骤恢复，检查通过后再部署它。" >&2 ;;
       8) echo "错误：${TAG} 是 07 之前的版本，退款订单回滚检查拒绝部署（服务器上什么都没动）。按上面提示确认并处理后重试。" >&2 ;;
-      9) echo "错误：${TAG} 是旧版本，非旅游数据或报价单回滚检查拒绝部署（服务器上什么都没动）。按上面的步骤处理后重试。" >&2 ;;
+      9) echo "错误：${TAG} 是旧版本，非旅游数据、报价单或工业数据回滚检查拒绝部署（服务器上什么都没动）。按上面的步骤处理后重试。" >&2 ;;
       7) echo "错误：${TAG} 是 05 之前的版本，拒绝部署（服务器上什么都没动）。按上面对应原因的步骤检查与处理，检查通过后再部署它。" >&2 ;;
       *) echo "错误：${TAG} 是旧版本，回滚前检查没跑完，拒绝部署（服务器上什么都没动）。" >&2 ;;
     esac
@@ -371,7 +379,7 @@ guard_rollback "${NAME}:prev" || {
     5) echo "错误：${NAME}:prev 是 03 之前的镜像而渠道状态在库里，没有自动回滚，服务当前不可用！按上面的步骤先 channel-export，再起它。" >&2 ;;
     6) echo "错误：${NAME}:prev 是 04 之前的镜像而有品牌风险，没有自动回滚，服务当前不可用！按上面对应品牌状态的步骤恢复，检查通过后再起它。" >&2 ;;
     8) echo "错误：${NAME}:prev 是 07 之前的镜像，退款订单回滚检查拒绝，没有自动回滚，服务当前不可用！按上面的步骤人工处理。" >&2 ;;
-    9) echo "错误：${NAME}:prev 是旧镜像，非旅游数据或报价单回滚检查拒绝，没有自动回滚，服务当前不可用！按上面的步骤人工处理。" >&2 ;;
+    9) echo "错误：${NAME}:prev 是旧镜像，非旅游数据、报价单或工业数据回滚检查拒绝，没有自动回滚，服务当前不可用！按上面的步骤人工处理。" >&2 ;;
     7) echo "错误：${NAME}:prev 是 05 之前的镜像而有多租户或沙箱风险，没有自动回滚，服务当前不可用！按上面的步骤人工处理。" >&2 ;;
     *) echo "错误：回滚前检查没跑完，没有自动回滚到 ${NAME}:prev，服务当前不可用！" >&2 ;;
   esac

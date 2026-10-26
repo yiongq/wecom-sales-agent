@@ -3672,6 +3672,8 @@ await t.close();
   fake('docker', [
     // 模拟 compose exec 转发 stdin；run / inspect 也主动读，守住 bash -s 后续脚本的边界。
     'case "$1" in exec|compose|run|inspect|image|container) cat >/dev/null ;; esac',
+    // 10 的探测独立记账，旧库夹具无工业数据；目标标记不存在，查询仍走真实脚本。
+    'case "$*" in *src/packs/industrial/runtime.ts*) echo "docker10 $PWD|$*" >> "$FAKE_LOG"; exit 1 ;; *"select to_regclass(\'public.tenants\') is not null"|*"select to_regclass(\'public.catalog_items\') is not null") echo "docker10 $PWD|$*" >> "$FAKE_LOG"; echo f; exit 0 ;; esac',
     // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
     // 只认 rollback-guard.sh 自己的两条渠道查询：backup.sh 的探测里也有 channel_accounts（'public.' || t 的写法），不能被截走
     'case "$*" in *order-view.ts*|*"pack_id <>"*|*"data->>"*|*"kind not in"*|*"source <>"*|*to_regclass*public.kb_chunks*) echo "docker08 $PWD|$*" >> "$FAKE_LOG" ;; *0015_order_refund_status.sql*|*public.orders*) echo "docker07 $PWD|$*" >> "$FAKE_LOG" ;; *information_schema.columns*"column_name = \'kind\'"*) echo "docker05 $PWD|$*" >> "$FAKE_LOG" ;; *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',

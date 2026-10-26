@@ -31,6 +31,7 @@ const fake = (name: string, source: string): void => {
 };
 // 只传必要的环境变量，避免开发机部署配置、PG_TEST_URL 等混入隔离夹具。
 const baseEnv = {
+  ...(process.env.TZ ? { TZ: process.env.TZ } : {}),
   PATH: `${bin}:${process.env.PATH}`,
   TMPDIR: tmp,
   FAKE_LOG: log,
@@ -94,7 +95,7 @@ case "$*" in
       *) exit 99 ;;
     esac
     case "\${FAKE_HANG:-}:$*" in
-      pending-probe:*information_schema.columns*tenants*|published-probe:*information_schema.columns*sop_versions*|pending:*"from public.tenants"*|published:*"from public.sop_versions"*|catalog-probe:*to_regclass*catalog_item_versions*|catalog:*"from catalog_item_versions"*|channel-probe:*to_regclass*channel_accounts*|channel:*"from channel_accounts where"*)
+      pending-probe:*information_schema.columns*tenants*|published-probe:*information_schema.columns*sop_versions*|pending:*"from public.tenants t"*|published:*"from public.sop_versions"*|catalog-probe:*to_regclass*catalog_item_versions*|catalog:*"from catalog_item_versions"*|channel-probe:*to_regclass*channel_accounts*|channel:*"from channel_accounts where"*)
         exec perl -e 'sleep 60' ;;
     esac ;;
 esac
@@ -105,9 +106,24 @@ case "$*" in
   *pg-backend.ts*|*registry.ts*|*pack-api.ts*|*runtime.ts*|*0015_order_refund_status.sql*|*order-view.ts*|*site-links.ts*)
     phase="\${FAKE_TARGET:-3}"
     case "$*" in *sha256:running*) phase="\${FAKE_RUNNING:-4}" ;; esac
+    case "$*" in *src/packs/industrial/runtime.ts*) phase="\${FAKE_INDUSTRIAL_TARGET:-$phase}" ;; esac
+    case "$*" in *site-links.ts*) phase="\${FAKE_QUOTE_TARGET:-$phase}" ;; esac
+    [ "$phase" = hang ] && exec perl -e 'sleep 60'
     [ "$phase" = error ] && exit 125
-    case "$*" in *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *pack-api.ts*) need=4 ;; *runtime.ts*) need=5 ;; *order-view.ts*) need=8 ;; *site-links.ts*) need=9 ;; *) need=7 ;; esac
+    case "$*" in *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *pack-api.ts*) need=4 ;; *src/packs/industrial/runtime.ts*) need=10 ;; *runtime.ts*) need=5 ;; *order-view.ts*) need=8 ;; *site-links.ts*) need=9 ;; *) need=7 ;; esac
     [ "$phase" -ge "$need" ] ;;
+  *"select to_regclass('public.tenants') is not null"|*"select to_regclass('public.catalog_items') is not null")
+    case "$*" in *public.tenants*) key=tenants ;; *) key=catalog ;; esac
+    printf '%s' "\${!#}" > "$FAKE_QUERY.industrial-$key-probe"
+    case "\${FAKE_INDUSTRIAL_SCHEMA-t}" in down) exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "\${FAKE_INDUSTRIAL_SCHEMA-t}" ;; esac ;;
+  *"pack_id = 'industrial'"*|*"kind = 'part'"*|*"data->'lines'"*)
+    case "$*" in
+      *"pack_id = 'industrial'"*) key=tenants; value="\${FAKE_INDUSTRIAL_TENANTS-f}" ;;
+      *"kind = 'part'"*) key=catalog; value="\${FAKE_INDUSTRIAL_CATALOG-f}" ;;
+      *) key=orders; value="\${FAKE_INDUSTRIAL_ORDERS-f}" ;;
+    esac
+    printf '%s' "\${!#}" > "$FAKE_QUERY.industrial-$key"
+    case "$value" in down) exit 1 ;; lock-timeout) echo f; exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "$value" ;; esac ;;
   *to_regclass*public.kb_chunks*)
     case "\${FAKE_KB_SCHEMA-t}" in down) exit 1 ;; *) echo "\${FAKE_KB_SCHEMA-t}" ;; esac ;;
   *"pack_id <> 'travel'"*|*"data->>'v' = '2'"*|*"kind not in ('route','hotel')"*|*"source <> 'route'"*)
@@ -150,7 +166,8 @@ case "$*" in
     printf '%s' "\${!#}" > "$FAKE_QUERY.quote"
     case "\${FAKE_QUOTE:-f}" in down) exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "\${FAKE_QUOTE:-f}" ;; esac ;;
   *to_regclass*public.orders*)
-    case "\${FAKE_REFUND_SCHEMA:-f}" in down) exit 1 ;; *) echo "\${FAKE_REFUND_SCHEMA:-f}" ;; esac ;;
+    printf '%s' "\${!#}" > "$FAKE_QUERY.industrial-orders-probe"
+    case "\${FAKE_REFUND_SCHEMA-f}" in down) exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "\${FAKE_REFUND_SCHEMA-f}" ;; esac ;;
   *"from public.orders where status in"*)
     printf '%s' "\${!#}" > "$FAKE_QUERY.refund"
     case "\${FAKE_REFUND:-f}" in down) exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "\${FAKE_REFUND:-f}" ;; esac ;;
@@ -180,12 +197,18 @@ case "$1" in
     case "$3" in
       *pg-backend.ts) case "$3" in *v01:*) exit 1 ;; esac ;;
       *registry.ts) case "$3" in *v01:*|*v02:*) exit 1 ;; esac ;;
-      *pack-api.ts) case "$3" in *v04:*|*v06:*|*v07:*|*v08:*|*v09:*) exit 0 ;; *) exit 1 ;; esac ;;
-      *runtime.ts) case "$3" in *v06:*|*v07:*|*v08:*|*v09:*) exit 0 ;; *) exit 1 ;; esac ;;
-      *0015_order_refund_status.sql) case "$3" in *v07:*|*v08:*|*v09:*) exit 0 ;; *) exit 1 ;; esac ;;
-      *order-view.ts) case "$3" in *v08:*|*v09:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *pack-api.ts) case "$3" in *v04:*|*v06:*|*v07:*|*v08:*|*v09:*|*v10:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *runtime.ts) case "$3" in *v06:*|*v07:*|*v08:*|*v09:*|*v10:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *0015_order_refund_status.sql) case "$3" in *v07:*|*v08:*|*v09:*|*v10:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *order-view.ts) case "$3" in *v08:*|*v09:*|*v10:*) exit 0 ;; *) exit 1 ;; esac ;;
     esac ;;
-  ls-tree) case "$*" in *v09*) echo src/core/site-links.ts ;; esac ;;
+  ls-tree)
+    case "$*" in
+      *src/packs/industrial/runtime.ts*)
+        [ "\${FAKE_TREE_DOWN:-0}" = 0 ] || exit 1
+        case "$*" in *v10*) echo src/packs/industrial/runtime.ts ;; esac ;;
+      *) case "$*" in *v09*|*v10*) echo src/core/site-links.ts ;; esac ;;
+    esac ;;
   archive) tar -cf - package.json Dockerfile deploy src ;;
   *) exit 98 ;;
 esac`,
@@ -515,12 +538,20 @@ exit 0`,
       check('07：库问不到且运行镜像不能明确证明是旧版，从严退出 8', r.code === 8, r.out);
     }
     r = guard('pre-07', { ...env, FAKE_RUNNING: '6' });
-    check('07：库问不到但运行镜像明确是旧版，照 05 豁免', r.code === 0, r.out);
+    check(
+      '07：旧运行镜像仍豁免退款检查，订单表未知另由10从严拒绝',
+      env.FAKE_REFUND_SCHEMA === 'down' ? r.code === 9 && r.out.includes('另一个含 10 的 tag') : r.code === 0,
+      r.out,
+    );
   }
   r = guard('pre-07', { FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 'f' });
   check('07：没有退款订单放行', r.code === 0, r.out);
   r = guard('side1:prev', { FAKE_TARGET: '7', FAKE_REFUND_SCHEMA: 'down' });
-  check('07：目标已有迁移标记不查询退款数据', r.code === 0 && !r.log.includes("status in ('refund_pending', 'refunded')"), r.out);
+  check(
+    '07：目标已有迁移标记不查询退款数据，订单表未知另由10拒绝',
+    r.code === 9 && r.out.includes('另一个含 10 的 tag') && !r.log.includes("status in ('refund_pending', 'refunded')"),
+    r.out,
+  );
   r = guard('pre-07', { FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 'hang', FAKE_RUNNING: '7', FAKE_TIMEOUT_MS: '100' });
   check('07：退款查询挂住有时限，退出 8', r.code === 8 && r.elapsed < 4000, r.out);
 
@@ -567,7 +598,7 @@ exit 0`,
       `08：${label}部署旧 tag，9 转 1、原样透出、rsync 前拒绝`,
       d.code === 1 &&
         d.out.includes(pre08.out.trim()) &&
-        d.out.includes('旧版本，非旅游数据或报价单回滚检查拒绝部署（服务器上什么都没动）') &&
+        d.out.includes('旧版本，非旅游数据、报价单或工业数据回滚检查拒绝部署（服务器上什么都没动）') &&
         !d.log.includes('rsync '),
       d.out,
     );
@@ -585,7 +616,7 @@ exit 0`,
       `08：${label}自动回滚，9 转 1、原样透出、不启动 prev`,
       auto.code === 1 &&
         auto.out.includes(r.out.trim()) &&
-        auto.out.includes('非旅游数据或报价单回滚检查拒绝，没有自动回滚，服务当前不可用！按上面的步骤人工处理') &&
+        auto.out.includes('非旅游数据、报价单或工业数据回滚检查拒绝，没有自动回滚，服务当前不可用！按上面的步骤人工处理') &&
         !fs.existsSync(rolledBack),
       auto.out,
     );
@@ -744,7 +775,7 @@ exit 0`,
     r = guard('pre-09', { ...quoteEnv, FAKE_QUOTE: 'f' });
     check('09：无报价放行', r.code === 0, r.out);
     r = guard('side1:prev', { ...quoteEnv, FAKE_TARGET: '9' });
-    check('09：目标有site-links标记不查报价', r.code === 0 && !r.log.includes("data->'approval'"), r.out);
+    check('09：目标有site-links标记不查09报价风险', r.code === 0 && !r.log.includes("where data->'approval' IS NOT NULL)"), r.out);
     for (const state of ['down', 'unexpected', 'hang']) {
       r = guard('pre-09', { ...quoteEnv, FAKE_QUOTE: state, FAKE_TIMEOUT_MS: '100' });
       check('09：查询故障从严拒绝且有时限', r.code === 9 && r.elapsed < 5000, r.out);
@@ -808,6 +839,165 @@ exit 0`,
           Number((await pg.query<{ count: number }>(countSql)).rows[0]?.count) === (i === 1 ? 2 : 1),
         );
       }
+    } finally {
+      await pg.close();
+    }
+  }
+
+  // 10 R17：三类风险取 OR，两个旧档位和两条部署入口均受同一道只读检查保护。
+  {
+    const message = '前滚修复，或者回滚到另一个含 10 的 tag';
+    const industrialEnv = { FAKE_RUNNING: '10', FAKE_REFUND_SCHEMA: 't' };
+    const industrialRisks = [
+      ['tenants', 'FAKE_INDUSTRIAL_TENANTS'],
+      ['catalog', 'FAKE_INDUSTRIAL_CATALOG'],
+      ['orders', 'FAKE_INDUSTRIAL_ORDERS'],
+    ] as const;
+    for (const [key, variable] of industrialRisks) {
+      for (const phase of ['8', '9']) {
+        const env = { ...industrialEnv, [variable]: 't', FAKE_TARGET: phase, FAKE_QUOTE: 't' };
+        for (const target of [phase === '8' ? 'pre-09' : 'pre-10', 'side1:prev']) {
+          r = guard(target, env);
+          check(`10：${key} 单独存在，目标 ${target}/${phase} 拒绝9`, r.code === 9 && r.out.includes(message), r.out);
+          check(
+            '10：工业提示优先于09且拒绝前不写库、不purge',
+            !r.log.includes("where data->'approval' IS NOT NULL)") &&
+              !r.log.includes('sandbox.ts purge') &&
+              !/\b(insert|update|delete|truncate)\b/i.test(r.log),
+            r.log,
+          );
+        }
+        r = deploy(`v0${phase}`, env);
+        check(`10：手动部署${phase}拒绝1，在rsync之前`, r.code === 1 && r.out.includes(message) && !r.log.includes('rsync '), r.out);
+        r = deploy('v10', { ...env, FAKE_HEALTH_FAIL: '1' });
+        check(
+          `10：健康失败回滚到${phase}拒绝1，不切换旧镜像`,
+          r.code === 1 && r.out.includes(message) && r.out.includes('没有自动回滚') && !fs.existsSync(rolledBack),
+          r.out,
+        );
+      }
+      for (const state of ['down', 'lock-timeout', 'unexpected', '', 'hang']) {
+        r = guard('pre-10', { ...industrialEnv, [variable]: state, FAKE_RUNNING: '8', FAKE_TIMEOUT_MS: '100' });
+        check(
+          `10：${key} 查询 ${state || '空结果'} 从严限时拒绝，旧运行镜像不豁免`,
+          r.code === 9 && r.out.includes(message) && r.elapsed < 5000,
+          r.out,
+        );
+      }
+    }
+    for (const schema of ['down', 'unexpected', '', 'hang']) {
+      r = guard('pre-10', { ...industrialEnv, FAKE_INDUSTRIAL_SCHEMA: schema, FAKE_TIMEOUT_MS: '100' });
+      check('10：表探测失败或挂住从严限时拒绝', r.code === 9 && r.out.includes(message) && r.elapsed < 5000, r.out);
+    }
+    for (const schema of ['down', 'unexpected', '', 'hang']) {
+      r = guard('pre-10', { ...industrialEnv, FAKE_REFUND_SCHEMA: schema, FAKE_TIMEOUT_MS: '100' });
+      check('10：订单表探测未知从严拒绝', r.code === 9 && r.out.includes(message) && r.elapsed < 5000, r.out);
+    }
+    for (const state of ['down', 'hang']) {
+      const env = { ...industrialEnv, FAKE_INDUSTRIAL_ORDERS: state, FAKE_TARGET: '9', FAKE_TIMEOUT_MS: '100' };
+      r = deploy('v09', env);
+      check('10：工业查询故障经手动部署转为1且不同步', r.code === 1 && r.out.includes(message) && !r.log.includes('rsync '), r.out);
+      r = deploy('v10', { ...env, FAKE_HEALTH_FAIL: '1' });
+      check('10：工业查询故障经自动回滚转为1且不切换', r.code === 1 && r.out.includes(message) && !fs.existsSync(rolledBack), r.out);
+    }
+    r = guard('pre-10', { ...industrialEnv, FAKE_INDUSTRIAL_SCHEMA: 'f', FAKE_REFUND_SCHEMA: 'f' });
+    check('10：确认三表不存在的空库放行', r.code === 0, r.out);
+    r = guard('pre-10', { ...industrialEnv, FAKE_QUOTE: 't', FAKE_NONTRAVEL_TENANTS: 't', FAKE_BRAND: 't', FAKE_HEALTH_FAIL: '1' });
+    check(
+      '10：无工业风险放行，只查工业、不探测健康或旧风险',
+      r.code === 0 && !r.log.includes('curl ') && !r.log.includes('site-links.ts') && !r.log.includes('information_schema'),
+      r.log + r.out,
+    );
+    r = guard('pre-09', { ...industrialEnv, FAKE_QUOTE: 't' });
+    check(
+      '10：工业三项均无，pre-09仍拒绝任意approval历史',
+      r.code === 9 && r.out.includes('另一个含 09 的 tag') && !r.out.includes(message),
+      r.out,
+    );
+    for (const phase of ['8', '9']) {
+      r = deploy(`v0${phase}`, industrialEnv);
+      check('10：无风险手动部署旧tag成功', r.code === 0 && r.log.includes('rsync '), r.out);
+      r = deploy('v10', { ...industrialEnv, FAKE_TARGET: phase, FAKE_HEALTH_FAIL: '1' });
+      check('10：无风险健康失败可以切换旧镜像', r.code === 1 && fs.existsSync(rolledBack), r.out);
+    }
+    r = guard('side1:prev', { ...industrialEnv, FAKE_TARGET: '10', FAKE_INDUSTRIAL_TENANTS: 't' });
+    check('10：含10目标不查工业数据', r.code === 0 && !r.log.includes("pack_id = 'industrial'"), r.log + r.out);
+    r = guard('side1:prev', { ...industrialEnv, FAKE_TARGET: '10', FAKE_QUOTE_TARGET: '8', FAKE_QUOTE: 't' });
+    check('10：工业标记不跳过其他独立能力检查', r.code === 9 && r.out.includes('另一个含 09 的 tag'), r.out);
+    for (const state of ['error', 'hang']) {
+      r = guard('side1:prev', { ...industrialEnv, FAKE_TARGET: '9', FAKE_INDUSTRIAL_TARGET: state, FAKE_TIMEOUT_MS: '100' });
+      check('10：目标文件探测失败或挂住，即使三项为零仍拒绝9', r.code === 9 && r.out.includes(message) && r.elapsed < 5000, r.out);
+      r = deploy('v10', {
+        ...industrialEnv,
+        FAKE_TARGET: '9',
+        FAKE_INDUSTRIAL_TARGET: state,
+        FAKE_HEALTH_FAIL: '1',
+        FAKE_TIMEOUT_MS: '100',
+      });
+      check('10：自动回滚目标能力未知拒绝1，不切换', r.code === 1 && r.out.includes(message) && !fs.existsSync(rolledBack), r.out);
+    }
+    r = deploy('v10', { FAKE_TREE_DOWN: '1' });
+    check('10：手动tag文件树查询失败拒绝1，不同步', r.code === 1 && r.out.includes(message) && !r.log.includes('rsync '), r.out);
+
+    // 执行生产脚本捕获的真实探测 / 谓词；不用重写SQL来证明自己。
+    guard('pre-10', industrialEnv);
+    const pg = new PGlite();
+    try {
+      for (const [key] of industrialRisks) {
+        const sql = fs.readFileSync(`${queryFile}.industrial-${key}-probe`, 'utf8');
+        check(`10 SQL：${key} 表不存在可识别`, Object.values((await pg.query(sql)).rows[0]!)[0] === false);
+      }
+      await pg.exec(`create table tenants(id text, slug text, pack_id text, status text);
+        create table catalog_items(tenant_id text, kind text, status text);
+        create table orders(tenant_id text, status text, data jsonb, void_reason text);
+        insert into tenants values ('other', 'other-business', 'travel', 'disabled');`);
+      const sqls = Object.fromEntries(industrialRisks.map(([key]) => [key, fs.readFileSync(`${queryFile}.industrial-${key}`, 'utf8')]));
+      const exists = async (key: string) => (await pg.query<{ exists: boolean }>(sqls[key]!)).rows[0]?.exists;
+      for (const [key] of industrialRisks) {
+        const sql = fs.readFileSync(`${queryFile}.industrial-${key}-probe`, 'utf8');
+        check(`10 SQL：${key} 表存在可识别`, Object.values((await pg.query(sql)).rows[0]!)[0] === true);
+        check(`10 SQL：无工业数据时 ${key} 为false`, (await exists(key)) === false);
+      }
+      for (const status of ['active', 'disabled']) {
+        await pg.query("insert into tenants values ('fixture', 'not-demo', 'industrial', $1)", [status]);
+        check(`10 SQL：非demo工业租户 ${status} 仍拒绝`, (await exists('tenants')) === true);
+        await pg.exec("delete from tenants where id = 'fixture'");
+      }
+      for (const status of ['draft', 'active']) {
+        await pg.query("insert into catalog_items values ('other', 'part', $1)", [status]);
+        check(`10 SQL：其他停用租户part条目 ${status} 仍拒绝`, (await exists('catalog')) === true);
+        await pg.exec('delete from catalog_items');
+      }
+      for (const status of ['pending_payment', 'paid', 'cancelled', 'superseded', 'refund_pending', 'refunded']) {
+        for (const approval of ['pending', 'approved', 'rejected', 'withdrawn']) {
+          for (const voidReason of [null, 'reset']) {
+            await pg.query('insert into orders values ($1,$2,$3,$4)', [
+              'other',
+              status,
+              JSON.stringify({ v: 2, approval: { state: approval, decidedAt: 0 }, lines: [{ kind: 'widget' }, { kind: 'part' }] }),
+              voidReason,
+            ]);
+            check(`10 SQL：工业报价 ${status}/${approval}/${voidReason} 不漏历史`, (await exists('orders')) === true);
+            await pg.exec('delete from orders');
+          }
+        }
+      }
+      for (const data of [
+        {},
+        { v: 1, approval: {}, lines: [{ kind: 'part' }] },
+        { v: 2, lines: [{ kind: 'part' }] },
+        { v: 2, approval: {}, lines: [{ kind: 'widget' }] },
+        { v: 2, approval: {} },
+        { v: 2, approval: {}, lines: [] },
+        { v: 2, approval: {}, lines: null },
+      ]) {
+        await pg.query("insert into orders values ('other', 'paid', $1, 'reset')", [JSON.stringify(data)]);
+        check('10 SQL：缺少任一工业报价必要条件不误拒绝', (await exists('orders')) === false);
+        await pg.exec('delete from orders');
+      }
+      // JSON null 仍符合原文 IS NOT NULL；不能悄悄收紧成审批对象判断。
+      await pg.exec(`insert into orders values ('other', 'paid', '{"v":"2","approval":null,"lines":[{"kind":"part"}]}', 'reset')`);
+      check('10 SQL：严格沿用v文本比较和approval IS NOT NULL', (await exists('orders')) === true);
     } finally {
       await pg.close();
     }
