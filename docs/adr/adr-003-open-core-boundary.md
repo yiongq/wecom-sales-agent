@@ -1,8 +1,10 @@
 # ADR-003：公开 / 私有边界：开源核心 + 私有运营层
 
 - **状态**：采纳
+- **Superseded in part by**：[ADR-005](adr-005-industrial-reference-pack.md) — 决策 2「本仓库（MIT）」一格中的第二个参考行业包由电商售后改为工业品询价（owner 2026-10-23 拍板）；其余内容不变。
 - **日期**：2026-09-25
 - **Amended by**：[08 · 核心去旅游化：产品种类、通用订单与金额](../architecture/08-pack-generalization/spec.md) — 决策 4 的包白名单（第 50 行）同样管 `data/packs/<名>/`，白名单以外的目录让 `pnpm lint` 失败（08 R5）。
+- **Amended by**：[ADR-005](adr-005-industrial-reference-pack.md) — 决策 4 的公开包白名单增加 `industrial`，保留 `travel`、`ecommerce-aftersales`；同样适用于 `src/packs/` 与 `data/packs/`。
 - **背景**：本仓库以 MIT 公开并继续公开开发，产品化之后会出现四类不能进公开仓库的东西：客户数据、生产配置、来自真实对话的评测集、运营设施。GitHub 上推送过的提交即使改写历史，`refs/pull/*` 中的副本也只能联系 GitHub 支持清除，所以边界要在写代码之前定好，并由门禁拦截。
 
 ---
