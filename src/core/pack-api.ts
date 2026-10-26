@@ -21,6 +21,8 @@ export { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, REPRICE_FIELDS, typ
 export { UNSTORABLE_TEXT, type CatalogItem } from '../shared/console-api.js';
 export {
   checkItem,
+  withItemRules,
+  type ItemRule,
   checkPack,
   ENTITY_ICONS,
   type CheckIssue,
@@ -30,7 +32,7 @@ export {
   type ItemCheck,
 } from '../shared/pack.js';
 export type { QuickReplyDefault } from '../shared/quick-reply-defaults.js';
-export { createLineOrder, orderDisplay, quoteState, type LinePick, type QuoteApproval } from './order-view.js';
+export { createLineOrder, orderDisplay, quoteState, quoteValidUntil, type LinePick, type QuoteApproval } from './order-view.js';
 export { yuanToFen } from '../shared/catalog-money.js';
 export type { SectionSpec, SectionSpec as SopSectionDef, SopSection } from '../shared/sop-sections.js';
 
@@ -716,6 +718,7 @@ export interface CatalogKindSpec {
   /** 数组项用 []，如 tiers[].unitPrice。 */
   moneyFields: readonly { path: string; decimals: 0 | 2 }[];
   retrieval: boolean;
+  crossItemCheck?(item: Readonly<Record<string, unknown>>, snapshot: CatalogSnapshot): readonly { path: string; message: string }[];
 }
 
 /** 08 R4：包的画像字段声明；attrs 的键只有声明过的才进模型（核心再筛一次） */
@@ -768,6 +771,7 @@ export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
     approval: true;
     validDays(policy: unknown): number;
     autoApprovable?(order: LineOrder, session: Session): boolean;
+    notes?(order: LineOrder, policy: unknown): readonly string[];
   };
   siteLinks?: readonly SiteLinkDef[];
   onQuoteDecided?(session: Session, order: LineOrder, event: 'approved' | 'rejected' | 'withdrawn' | 'superseded'): SalesStage | null;
@@ -950,6 +954,8 @@ export interface FollowupGuardContext extends GuardContext {
 
 /** 包工厂的存储、配置与检索能力，组合根提供，包不引用运行时模块。 */
 export interface PackSources extends Omit<TravelToolSources, 'budgetVerdict'> {
+  /** 只读当前已发布政策；不访问草稿、不写状态。 */
+  readonly currentPolicy: typeof import('../config/source.js').currentPolicy;
   isConfigNotReadyError(error: unknown): boolean;
   isTerminalStage(stage: SalesStage): boolean;
   handoffReasons: typeof import('../handoff/record.js').HANDOFF_REASON;

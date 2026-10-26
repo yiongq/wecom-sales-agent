@@ -334,6 +334,90 @@ export const STATE_MANIFEST: Record<
   'src/otel/export.ts:warnBuild': { kind: 'instance', why: '唯一进程 OTel 导出器 / 节流；租户字段由调用作用域取（第 7 步）' },
   'src/otel/export.ts:warnExport': { kind: 'instance', why: '唯一进程 OTel 导出器 / 节流；租户字段由调用作用域取（第 7 步）' },
   'src/otel/export.ts:warnFlush': { kind: 'instance', why: '唯一进程 OTel 导出器 / 节流；租户字段由调用作用域取（第 7 步）' },
+  'src/packs/industrial/catalog.ts:text': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/catalog.ts:price': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/catalog.ts:integer': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/catalog.ts:PartSchema': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/catalog.ts:partCatalog': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/console-pack.ts:partEntity': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/console-pack.ts:industrial': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/policy.ts:fen': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/policy.ts:text': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/policy.ts:IndustrialPolicySchema': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/policy.ts:defaultIndustrialPolicy': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/policy.ts:industrialPolicy': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/runtime.ts:profileFields': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/state.ts:safe': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/state.ts:positive': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/state.ts:code': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/state.ts:draftLine': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/state.ts:RfqDraftSchema': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/state.ts:CacheItem': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/state.ts:MandatorySchema': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
+  'src/packs/industrial/state.ts:StateSchema': {
+    kind: 'instance',
+    why: '工业包的静态 schema、字段或政策定义，不保存租户产品、会话或已发布政策快照。',
+  },
   'src/packs/__fixture/runtime.ts:fixture': { kind: 'instance', why: '固定包 / 元数据（此写法不在 R5 字面豁免内），不含运行时租户数据' },
   'src/packs/registry.ts:REGISTRY': { kind: 'instance', why: '固定包 / 元数据（此写法不在 R5 字面豁免内），不含运行时租户数据' },
   'src/packs/registry.ts:PACK_IDS': { kind: 'instance', why: '固定包 / 元数据（此写法不在 R5 字面豁免内），不含运行时租户数据' },

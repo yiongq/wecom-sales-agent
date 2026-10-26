@@ -95,6 +95,11 @@ export interface FieldDef {
   autoIndexKey?: string;
 }
 
+/** 跨字段规则只声明键；界面检查与服务端 schema 共用同一解释器。 */
+export type ItemRule =
+  | { kind: 'ascending' | 'descending' | 'together' | 'contiguous'; keys: readonly string[] }
+  | { kind: 'greaterThan'; key: string; other: string };
+
 export interface EntityType {
   /** URL 用：/catalog/{kind} */
   kind: string;
@@ -112,6 +117,7 @@ export interface EntityType {
   /** 锁定组：卡片头的 Tag 与原因，每组只说一次 */
   lockGroups: Record<string, { tag: string; reason: string }>;
   fields: FieldDef[];
+  itemRules?: readonly ItemRule[];
   list: { columns: string[]; filters: string[]; search: string[]; defaultSort: '-$updated' };
   /** 能否导入 CSV；false 时不渲染入口 */
   csvImport: boolean;
@@ -286,6 +292,18 @@ function checkEntity(pack: IndustryPack, e: EntityType, out: string[]): void {
     if (!byKey.has(m[1])) out.push(`${at}.activateLine 的「{${m[1]}}」不是本实体的字段`);
   }
 
+  for (const rule of e.itemRules ?? []) {
+    const keys = rule.kind === 'greaterThan' ? [rule.key, rule.other] : rule.keys;
+    if (keys.length < 2 || new Set(keys).size !== keys.length || keys.some((key) => !byKey.has(key))) {
+      out.push(`${at}.itemRules：规则必须引用至少两个不同的已有字段`);
+    }
+    if (
+      ['ascending', 'descending', 'greaterThan'].includes(rule.kind) &&
+      keys.some((key) => !['money', 'intUnit'].includes(byKey.get(key)?.type ?? ''))
+    ) {
+      out.push(`${at}.itemRules：大小比较只能用于数值字段`);
+    }
+  }
   for (const f of e.fields) {
     const fat = `${at}.fields[${f.key}]`;
     if (f.key.startsWith('$') && !SYSTEM_KEYS.includes(f.key)) out.push(`${fat}：系统字段只有 $code、$status、$updated`);
@@ -528,5 +546,53 @@ export function checkItem(entity: EntityType, payload: Record<string, unknown>):
       }
     }
   }
+  for (const rule of entity.itemRules ?? []) count(itemRuleIssues(entity, payload, rule));
   return { requiredTotal: total, requiredPassed: total - failed, required, recommended };
+}
+
+/** 只比较已填数值；字段本身的类型错误由原字段规则负责。 */
+function itemRuleIssues(entity: EntityType, payload: Record<string, unknown>, rule: ItemRule): CheckIssue[] {
+  const keys = rule.kind === 'greaterThan' ? [rule.other, rule.key] : rule.keys;
+  const entries = keys.map((key) => ({ key, value: valueAt(payload, key) }));
+  const issue = (key: string, message: string): CheckIssue => ({
+    path: key,
+    label: entity.fields.find((field) => field.key === key)?.label ?? key,
+    message,
+  });
+  if (rule.kind === 'together') {
+    return entries.some(({ value }) => filled(value))
+      ? entries.filter(({ value }) => !filled(value)).map(({ key }) => issue(key, '这些字段要一起填写'))
+      : [];
+  }
+  if (rule.kind === 'contiguous') {
+    let gap = false;
+    return entries.flatMap(({ key, value }) => {
+      if (!filled(value)) {
+        gap = true;
+        return [];
+      }
+      return gap ? [issue(key, '请先填写前一档')] : [];
+    });
+  }
+  const present = entries.filter(({ value }) => filled(value));
+  const out: CheckIssue[] = [];
+  for (let i = 1; i < present.length; i++) {
+    const prev = present[i - 1]!;
+    const cur = present[i]!;
+    if (typeof prev.value !== 'number' || typeof cur.value !== 'number') continue;
+    const descending = rule.kind === 'descending';
+    if (!(descending ? cur.value < prev.value : cur.value > prev.value))
+      out.push(issue(cur.key, descending ? '必须严格递减' : '必须严格递增'));
+  }
+  return out;
+}
+
+/** schema 的跨字段部分由同一份声明生成，不另写一套规则。 */
+export function withItemRules<T extends Record<string, unknown>>(schema: z.ZodType<T>, entity: EntityType): z.ZodType<T> {
+  return schema.superRefine((payload, ctx) => {
+    for (const rule of entity.itemRules ?? [])
+      for (const issue of itemRuleIssues(entity, payload, rule)) {
+        ctx.addIssue({ code: 'custom', path: issue.path.split('.'), message: issue.message });
+      }
+  });
 }

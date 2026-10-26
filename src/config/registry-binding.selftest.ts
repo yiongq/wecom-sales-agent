@@ -41,7 +41,7 @@ if (process.argv[2] !== 'worker') {
   observeRequests(() => modelCalls++);
   const unboundError = (e: unknown): boolean => e instanceof ConfigNotReadyError && e.message === 'DB 模式没有绑定行业包';
   try {
-    assert.deepEqual(PACK_IDS, process.env.PACK_FIXTURES === '1' ? ['travel', '__fixture'] : ['travel']);
+    assert.deepEqual(PACK_IDS, process.env.PACK_FIXTURES === '1' ? ['travel', 'industrial', '__fixture'] : ['travel', 'industrial']);
     for (const id of ['unknown', 'toString', 'constructor', '__proto__']) {
       assert.equal(packById(id), null);
       assert.equal(runtimeById(id, packSources()), null);

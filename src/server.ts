@@ -16,7 +16,7 @@ import {
   currentRuntime,
   TenantScopeMissing,
 } from './tenancy/runtime.js';
-import { currentPack } from './config/source.js';
+import { currentPack, currentPolicy } from './config/source.js';
 import { renderBrandPage } from './core/brand.js';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
@@ -867,12 +867,15 @@ function publicQuote(id: string): import('./core/order-view.js').PublicQuote | n
   const order = getAnyOrder(id);
   if (!runtime.quotes || !order || !isLineOrder(order) || !order.approval) return null;
   const state = quoteState(order, Date.now());
+  const notes =
+    (state === 'approved' || state === 'paid') && runtime.quotes.notes ? runtime.quotes.notes(order, currentPolicy().policy) : undefined;
   return {
     id: order.id,
     state,
     brandName: (brand ?? runtime.defaultBrand).brandName,
     ...(state === 'approved' || state === 'paid' ? { display: orderDisplay(order) } : {}),
     ...(state === 'approved' ? { validUntil: quoteValidUntil(order) } : {}),
+    ...(notes?.length ? { notes: [...notes] } : {}),
   };
 }
 app.get('/api/quotes/:orderId', lookupLimit, (c) => {

@@ -5,6 +5,7 @@ import {
   catalogVersionKey,
   configMode,
   currentCatalog,
+  currentPolicy,
   ConfigNotReadyError,
   installRuntimeSources,
 } from '../../config/source.js';
@@ -23,6 +24,7 @@ export function packSources(): PackSources {
     catalogVersionKey,
     configMode,
     currentCatalog,
+    currentPolicy,
     indexReady,
     semanticRecall,
     createOrder,

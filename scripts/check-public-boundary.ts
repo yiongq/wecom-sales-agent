@@ -20,7 +20,7 @@ import fs from 'node:fs';
  * 两处用同一份白名单：包的代码和它的参考配置要么都公开，要么都不进这个仓库
  */
 // __fixture 是 04 R16 的测试假包（只在 PACK_FIXTURES=1 时登记），内容公开
-const PUBLIC_PACKS = new Set(['travel', 'ecommerce-aftersales', '__fixture']);
+const PUBLIC_PACKS = new Set(['travel', 'ecommerce-aftersales', 'industrial', '__fixture']);
 
 /** 目录（子模块）以 / 结尾 */
 function pathViolation(p: string): boolean {
