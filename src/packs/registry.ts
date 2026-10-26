@@ -12,7 +12,7 @@ import {
 } from '../core/pack-api.js';
 import { createTravelRuntime } from './travel/runtime.js';
 import { sopConsistencyViolations } from './travel/consistency-sop.js';
-import { fixture, createFixtureRuntime } from './__fixture/runtime.js';
+import { fixture, createFixtureProofRuntime } from './__fixture/runtime.js';
 import { travel } from './travel/console-pack.js';
 import { travelQuickReplyDefaults } from './travel/quick-reply-defaults.js';
 
@@ -32,7 +32,7 @@ const REGISTRY: Readonly<Record<string, PackRegistration>> = deepFreeze({
     quickReplies: travelQuickReplyDefaults,
     sopConsistency: sopConsistencyViolations,
   },
-  ...(process.env.PACK_FIXTURES === '1' ? { [fixture.id]: { pack: fixture, runtime: createFixtureRuntime, quickReplies: [] } } : {}),
+  ...(process.env.PACK_FIXTURES === '1' ? { [fixture.id]: { pack: fixture, runtime: createFixtureProofRuntime, quickReplies: [] } } : {}),
 });
 
 function registrationOf(id: string): PackRegistration | null {

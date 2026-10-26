@@ -2,11 +2,17 @@
 import type { PackRuntime, SiteLinkDef } from './pack-api.js';
 import { currentRuntime } from '../tenancy/runtime.js';
 import type { AnyOrder } from './order-view.js';
-import { isLineOrder, orderDisplay } from './order-view.js';
+import { isLineOrder, orderDisplay, quoteState } from './order-view.js';
 
 // 与存储门面的同步访问器相同，读取当前租户内存权威；不在 pack-api 装配期反向加载存储/配置。
-function getAnyOrder(id: string): AnyOrder | undefined {
+export function getAnyOrder(id: string): AnyOrder | undefined {
   return currentRuntime().store.orders.get(id);
+}
+
+/** 报价链接只读取当前租户的订单；给包的 allowed 判定复用同一条核心状态规则。 */
+export function quoteLinkAllowed(session: import('../types.js').Session, path: string): boolean {
+  const order = getAnyOrder(path.slice('/quote/'.length).replace(/\?v=\d+$/, ''));
+  return !!order && isLineOrder(order) && order.sessionId === session.id && quoteState(order, Date.now()) === 'approved';
 }
 
 /** 日期格式沿用旅游旧卡片，跨年才带年份。 */
@@ -32,7 +38,7 @@ export const coreSiteLinks: readonly SiteLinkDef[] = Object.freeze([
     },
     card(path) {
       const o = getAnyOrder(path.slice('/pay/'.length));
-      if (!o) return null;
+      if (!o || (isLineOrder(o) && o.approval)) return null;
       if (isLineOrder(o)) {
         const display = orderDisplay(o);
         return { title: `${display.title} · 待支付`, desc: `${display.summary} · 合计 ${display.totalText}` };

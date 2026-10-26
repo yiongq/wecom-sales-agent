@@ -177,6 +177,8 @@ export const TracesQuery = z.object({
 export const ReplyBody = z.strictObject({ text: str.min(1).max(2000), clientId: z.uuid() });
 /** 接手；force 是改派（别人接手中时，只有 supervisor 以上） */
 export const TakeoverBody = z.strictObject({ force: z.boolean().optional() });
+export const RejectQuoteBody = z.strictObject({ reason: str.trim().min(1).max(120) });
+export const WithdrawQuoteBody = z.strictObject({ reason: str.trim().max(120).optional() });
 export const RejectRefundBody = z.strictObject({ reason: str.min(1).max(200) });
 export const CancelOrderBody = z.strictObject({ reason: str.min(1).max(200) });
 /** 更早的消息：seq 小于 beforeSeq 的最近 limit 条（默认 50） */
@@ -609,6 +611,12 @@ export interface LineOrderView extends Pick<
   };
   totalFen: number;
   totalText: string;
+  approval?: {
+    state: 'pending' | 'approved' | 'rejected' | 'withdrawn';
+    reason?: string;
+    decidedBy?: { userId: string | null; name: string };
+  };
+  quoteState?: 'pending' | 'approved' | 'expired' | 'invalid' | 'superseded' | 'paid';
   refund?: never;
 }
 
@@ -684,6 +692,9 @@ export interface ConversationDetail {
     confirmOrder: boolean;
     markPaid: boolean;
     traces: boolean;
+    approveQuote?: boolean;
+    rejectQuote?: boolean;
+    withdrawQuote?: boolean;
   };
 }
 

@@ -1,0 +1,176 @@
+[
+  {
+    "version": 2,
+    "pack": "__fixture",
+    "tags": ["q09", "fixture"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "id": "q09-fixture-nonstandard",
+    "desc": "R11：非标由登记固定句转pack人工，不调用模型",
+    "turns": [
+      {
+        "say": "需要非标方盒",
+        "expect": {
+          "handoff": true,
+          "stage": "handoff",
+          "tools": [],
+          "replyMatches": ["非标需求由顾问继续确认"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "pack": "__fixture",
+    "tags": ["q09", "fixture"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "id": "q09-fixture-pending",
+    "desc": "R14：超过100元的现货报价待审，模型不能外发草稿链接",
+    "turns": [
+      {
+        "say": "丙方盒100件要正式报价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "fixture_quote_order",
+                "args": {
+                  "lines": [
+                    {
+                      "kind": "widget",
+                      "code": "w-c",
+                      "qty": 100
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "content": "报价单已提交，等顾问审核。"
+          }
+        ],
+        "expect": {
+          "orders": {
+            "count": 1,
+            "last": {
+              "totalFen": 36500
+            }
+          },
+          "tools": ["fixture_quote_order"],
+          "replyMatches": ["等顾问审核"],
+          "replyExcludes": ["/quote/", "365元"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "pack": "__fixture",
+    "tags": ["q09", "fixture"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "id": "q09-fixture-no-stock",
+    "desc": "R14：低于100元但是没有现货，不自动批准",
+    "turns": [
+      {
+        "say": "礼盒1盒正式报价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "fixture_quote_order",
+                "args": {
+                  "lines": [
+                    {
+                      "kind": "widget",
+                      "code": "w-gift-box",
+                      "qty": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "content": "报价单已提交，等顾问审核。"
+          }
+        ],
+        "expect": {
+          "tools": ["fixture_quote_order"],
+          "orders": {
+            "count": 1
+          },
+          "replyExcludes": ["/quote/"]
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "pack": "__fixture",
+    "tags": ["q09", "fixture"],
+    "fixtures": {
+      "now": "2026-10-02T12:00:00+08:00"
+    },
+    "id": "q09-fixture-auto-accepted",
+    "desc": "R14：低于100元且有现货自动批准，客户重复确认走固定句和持久去重",
+    "turns": [
+      {
+        "say": "丙方盒2件正式报价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "fixture_quote_order",
+                "args": {
+                  "lines": [
+                    {
+                      "kind": "widget",
+                      "code": "w-c",
+                      "qty": 2
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "content": "报价单：{{call:fixture_quote_order.quoteUrl}}"
+          }
+        ],
+        "expect": {
+          "tools": ["fixture_quote_order"],
+          "orders": {
+            "count": 1,
+            "last": {
+              "totalFen": 730
+            }
+          },
+          "replyMatches": ["/quote/ord_"]
+        }
+      },
+      {
+        "say": "确认报价",
+        "expect": {
+          "tools": [],
+          "replyMatches": ["已记下您的报价确认"]
+        }
+      },
+      {
+        "say": "确认报价",
+        "expect": {
+          "tools": [],
+          "orders": {
+            "count": 1
+          },
+          "replyMatches": ["已记下您的报价确认"]
+        }
+      }
+    ]
+  }
+]

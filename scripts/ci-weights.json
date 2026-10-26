@@ -1,4 +1,6 @@
 {
+  "src/quote-actions.selftest.ts": 20,
+  "src/quote-approval.selftest.ts": 10,
   "src/site-links.selftest.ts": 1,
   "src/core/link-bytes.selftest.ts": 10,
   "strict:src/channels/channels.selftest.ts": 420,
@@ -127,5 +129,7 @@
   "src/core/tools/registry.selftest.ts": 1,
   "src/shared/typography.selftest.ts": 1,
   "hang.cjs": 1,
-  "fail.cjs": 1
+  "fail.cjs": 1,
+  "src/quote-page.selftest.ts": 3,
+  "src/quote-replies.selftest.ts": 3
 }

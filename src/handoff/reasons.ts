@@ -5,6 +5,7 @@ import type { HandoffKind } from '../types.js';
  * 按类型写的固定原因（model 取模型给的原因，这里的只在模型没给时兜底）。
  * 不用「待人工」「已转人工」「待接管」「需要介入」这类状态词：界面上会话状态只有四种叫法（设计系统 §11）
  */
+// pack 的实际原因由包的确定性回复给出，不登记固定原因。
 export const HANDOFF_REASON = {
   request: '客户要找顾问',
   complaint: '客户投诉',

@@ -1,0 +1,34 @@
+{
+  "id": "fixture-quote-pending",
+  "persona": "合成客户要100件方盒丙的正式报价",
+  "maxTurns": 1,
+  "customerScript": ["丙方盒100件正式报价"],
+  "allowedTools": ["fixture_quote_order"],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 1,
+      "fields": {
+        "totalFen": 36500
+      }
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "/quote/",
+      "scope": "all"
+    },
+    {
+      "kind": "tool_called",
+      "name": "fixture_quote_order"
+    },
+    {
+      "kind": "shape",
+      "richMax": 6,
+      "plainMax": 1,
+      "minShare": 1
+    }
+  ],
+  "pack": "__fixture",
+  "forbidden": ["<tool_call>", "【硬性要求】"],
+  "tags": ["fixture", "regression", "q09"]
+}

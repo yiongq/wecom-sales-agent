@@ -22,7 +22,7 @@ import type {
 import { conversationState } from '../../../src/shared/conversation.js';
 import { clockTime, formatYuan } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
-import { api, unwrap } from '../api.js';
+import { api, unwrap, HttpError } from '../api.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
 import { errorLine } from '../parts/ErrorAlert.js';
 import { popupRegion } from '../parts/popupRegion.js';
@@ -39,6 +39,7 @@ import { cjk } from '../typography.js';
 import { refreshSandboxProgress, usePack, useViewer } from '../viewer.js';
 import { OwnConversationTag, SimulatorLink } from '../sandbox/Sandbox.js';
 import { stageLabel } from './model.js';
+import { QuoteActions, type QuoteAction, type QuoteActionProps } from './QuoteActions.js';
 import { QuickRepliesCard } from './QuickReplies.js';
 import { TraceTab } from './TraceDetail.js';
 import {
@@ -684,6 +685,7 @@ export function OrderRow({
   onRefund,
   refundError,
   refundPending = false,
+  quoteActions,
 }: {
   o: OrderView;
   canConfirm: boolean;
@@ -699,14 +701,16 @@ export function OrderRow({
   onRefund?: (action: 'approve' | 'reject' | 'settle', reason?: string) => void;
   refundError?: unknown;
   refundPending?: boolean;
+  quoteActions?: QuoteActionProps;
 }) {
   const [cancelOpen, setCancelOpen] = useState(false);
   const [rejectOpen, setRejectOpen] = useState(false);
   const [reason, setReason] = useState('');
   const actions = refundActions(o, role, canMarkPaid, mode);
   const refund = refundLine(o);
+  const quote = 'approval' in o && o.approval ? o : null;
   return (
-    <div className="wb-order">
+    <div className={quote?.quoteState === 'pending' ? 'wb-order is-quote-pending' : 'wb-order'}>
       {'display' in o ? (
         <div className="wb-order-display">
           <p className="wb-order-line">{cjk(o.display.title)}</p>
@@ -732,8 +736,12 @@ export function OrderRow({
       )}
       {/* 订单状态不是会话的四态，design-system §5.6 的 Status 没有给它配色；按原则 9（红色只表示出错），
           这里只用文字，不新造一种带色胶囊（不新加令牌、不碰 Status 组件） */}
-      <p className="wb-order-status">{ORDER_STATUS_LABEL[o.status]}</p>
-      {o.status === 'pending_payment' && (
+      {quote && quoteActions ? (
+        <QuoteActions order={quote} {...quoteActions} />
+      ) : (
+        <p className="wb-order-status">{ORDER_STATUS_LABEL[o.status]}</p>
+      )}
+      {!quote && o.status === 'pending_payment' && (
         <div className="wb-order-actions">
           {!o.confirmed && canConfirm && (
             <Button size="small" onClick={onConfirm}>
@@ -751,6 +759,11 @@ export function OrderRow({
             </Button>
           )}
         </div>
+      )}
+      {quote?.approval?.state === 'approved' && (quote.quoteState === 'approved' || quote.quoteState === 'expired') && canMarkPaid && (
+        <Button size="small" disabled={quoteActions?.pending} onClick={onMarkPaid}>
+          确认收款
+        </Button>
       )}
       {refund && <p>{refund}</p>}
       {o.status === 'refunded' && o.refund && (
@@ -904,6 +917,19 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
     },
     onSettled: invalidate,
   });
+  const quoteOrder = useMutation({
+    mutationFn: ({ orderId, action, reason }: { orderId: string; action: QuoteAction; reason?: string }) => {
+      const route = api.orders[':id'].quote;
+      const param = { id: orderId };
+      if (action === 'approve') return unwrap(route.approve.$post({ param }));
+      if (action === 'reject') return unwrap(route.reject.$post({ param, json: { reason: reason! } }));
+      return unwrap(route.withdraw.$post({ param, json: { reason } }));
+    },
+    onSettled: () => {
+      invalidate();
+      void qc.invalidateQueries({ queryKey: ['orders'] });
+    },
+  });
   const loadEarlier = useMutation({
     mutationFn: (beforeSeq: number) =>
       unwrap(api.conversations[':id'].messages.$get({ param: { id }, query: { beforeSeq: String(beforeSeq), limit: '50' } })),
@@ -933,6 +959,8 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
     );
   }
   const detail = q.data;
+  const hasQuotes = detail.orders.some((o) => 'approval' in o && o.approval);
+  const quoteError = quoteOrder.error instanceof HttpError ? quoteOrder.error : null;
   const hasEarlier = earlierHasMore ?? detail.hasEarlier;
   // 输入框只在「这个会话现在的接手人就是我」时可用（spec「J 页」：接手之前禁用，接手后可用）。detail.can.reply
   // 由服务端算，handles && (!cur || mine)——没有接手人时也是 true（reply() 支持隐式接手，后端行为没错），但界面
@@ -1055,16 +1083,36 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
         ) : (
           <>
             <ProfileCard cd={detail} now={now} />
-            <QuoteCard cd={detail} />
+            {hasQuotes && (q.isFetching || q.error) ? (
+              <StateView pending={q.isFetching} error={q.error} onRetry={() => void q.refetch()} />
+            ) : (
+              <QuoteCard cd={detail} />
+            )}
             <div className="wb-card">
               <h3 className="wb-card-title">订单与付款</h3>
-              {detail.orders.length === 0 ? (
+              {hasQuotes && (q.isFetching || q.error) ? (
+                <StateView pending={q.isFetching} error={q.error} onRetry={() => void q.refetch()} />
+              ) : detail.orders.length === 0 ? (
                 <p className="wb-side-empty">还没有订单</p>
               ) : (
                 detail.orders.map((o) => (
                   <OrderRow
                     key={o.id}
                     o={o}
+                    quoteActions={{
+                      can: detail.can,
+                      window: detail.sendWindow,
+                      now,
+                      pending: quoteOrder.isPending || q.isFetching,
+                      onRetry: () => {
+                        if (quoteOrder.variables) quoteOrder.mutate(quoteOrder.variables);
+                      },
+                      error: quoteOrder.variables?.orderId === o.id ? quoteOrder.error : null,
+                      onAction: (action, reason) => {
+                        if (quoteOrder.variables?.orderId === o.id && quoteError?.status === 403) return;
+                        quoteOrder.mutate({ orderId: o.id, action, reason });
+                      },
+                    }}
                     canConfirm={detail.can.confirmOrder}
                     canMarkPaid={detail.can.markPaid}
                     onConfirm={() => confirmOrder.mutate(o.id)}

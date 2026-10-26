@@ -213,7 +213,8 @@ function paymentEntry(
   pack: IndustryPack,
   now: number,
 ): AttentionEntry {
-  const unconfirmed = paymentMode === 'advisor' && o.confirmed === null;
+  const quotePending = 'approval' in o && o.quoteState === 'pending';
+  const unconfirmed = !('approval' in o && o.approval) && paymentMode === 'advisor' && o.confirmed === null;
   const conv = o.conversation;
   const label = conversationLabel(conv, pack);
   return {
@@ -221,11 +222,17 @@ function paymentEntry(
       key: `order:${o.id}`,
       sandboxOwner: conv.sandboxOwner,
       icon: { page: 'conversations' },
-      type: { text: '待付款' },
+      type: { text: quotePending ? '报价单等你审核' : '待付款' },
       title: conv.needSummary ? [...label, conv.needSummary] : label,
       context: [
         { text: 'display' in o ? o.totalText : money(o.totalPrice) },
-        { text: unconfirmed ? '等你确认价格' : `下单${waitDurationText(now - Date.parse(o.createdAt))}未付` },
+        {
+          text: quotePending
+            ? '报价单等你审核'
+            : unconfirmed
+              ? '等你确认价格'
+              : `下单${waitDurationText(now - Date.parse(o.createdAt))}未付`,
+        },
       ],
       action: '打开会话',
       target: { kind: 'open', id: conv.id },
@@ -250,8 +257,9 @@ export function attentionTodos(
   now: number,
   waitingTotal = waiting.length,
 ): TodoRow[] {
-  const withConversation = pendingOrders.filter((o): o is OrderView & { conversation: NonNullable<OrderView['conversation']> } =>
-    Boolean(o.conversation),
+  const withConversation = pendingOrders.filter(
+    (o): o is OrderView & { conversation: NonNullable<OrderView['conversation']> } =>
+      Boolean(o.conversation) && (!('approval' in o) || !o.approval || o.quoteState === 'pending' || o.quoteState === 'approved'),
   );
   const entries = [
     ...waiting.map((row) => handoffEntry(row, false, pack, now)),

@@ -4135,6 +4135,7 @@ function sandboxDeploySelftest(): void {
     `case "$1" in
     show-ref) exit 0 ;;
     cat-file) case "$3" in *runtime.ts) [ "\${NEW_PHASE:-5}" = 5 ] ;; *) exit 0 ;; esac ;;
+    ls-tree) echo src/core/site-links.ts ;;
     archive) tar -cf - package.json Dockerfile deploy src ;;
     *) exit 98 ;;
   esac`,

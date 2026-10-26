@@ -1,3 +1,4 @@
+import { canDecideQuote } from '../payment/orders.js';
 // 会话工作台的投影（docs/architecture/02-conversations-workbench/spec.md「后台接口」）：列表行、计数、J 页详情、消息、订单。
 // 读接口只读内存（identity map、发送账本）；例外只有 spec 写明的 trace 类读法（护栏改写的句数、更早的消息、步骤摘要与改写对照），
 // 它们只在 db 存储的真实会话上查库，文件存储与 demo 类会话不查（返回 null、空或 503，见 app.ts）。
@@ -22,7 +23,7 @@ import { conversationState, paidNeedsHuman } from '../shared/conversation.js';
 import type { IndustryPack } from '../shared/pack.js';
 import { getAnyOrder, getSession, isDemoClassId, listSessions, seqOf, sessionStoreMode, turnIdOf, windowStartOf } from '../store.js';
 import type { ChatMessage, MessageAuthor, Session } from '../types.js';
-import { isLineOrder, orderDisplay, orderTotalFen, type AnyOrder } from '../core/order-view.js';
+import { isLineOrder, quoteState, orderDisplay, orderTotalFen, type AnyOrder } from '../core/order-view.js';
 import { scopedRuntime } from '../tenancy/runtime.js';
 import { sandboxWechatIndex } from '../tenancy/sandbox/outbound.js';
 import { maskNumbers } from './mask.js';
@@ -226,12 +227,13 @@ function orderConversation(o: AnyOrder, viewer: boolean): OrderView['conversatio
   };
 }
 
-export function orderView(o: AnyOrder, viewer = false): OrderView {
+export function orderView(o: AnyOrder, viewer = false, now = Date.now()): OrderView {
   if (isLineOrder(o)) {
     const display = orderDisplay(o);
     return {
       id: o.id,
       display,
+      ...(o.approval ? { approval: { ...o.approval }, quoteState: quoteState(o, now) } : {}),
       totalFen: display.totalFen,
       totalText: display.totalText,
       status: o.status,
@@ -339,7 +341,7 @@ export function conversationDetail(
     ...(quote.quoteCard ? { quoteCard: quote.quoteCard } : {}),
     orders: s.orderIds.flatMap((id) => {
       const o = getAnyOrder(id);
-      return o ? [orderView(o, viewer)] : [];
+      return o ? [orderView(o, viewer, now)] : [];
     }),
     sendWindow: s.channel === 'wecom' ? sendWindow(s.id, now) : null,
     paymentMode: paymentMode(),
@@ -351,6 +353,13 @@ export function conversationDetail(
       reassign: supervises && !!cur && !mine,
       confirmOrder: handles && (supervises || mine),
       markPaid: handles && (supervises || mine),
+      ...(currentPack().runtime.quotes
+        ? {
+            approveQuote: canDecideQuote(s, actor),
+            rejectQuote: canDecideQuote(s, actor),
+            withdrawQuote: canDecideQuote(s, actor),
+          }
+        : {}),
       traces: (user.role === 'owner' || user.role === 'admin') && withTurns,
     },
   };

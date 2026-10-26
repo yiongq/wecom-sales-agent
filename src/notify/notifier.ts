@@ -46,7 +46,12 @@ export function workbenchLink(): string {
   return `${base}/console/conversations?state=human`;
 }
 
-const TIME_LABEL: Partial<Record<HandoffNoticeKind, string>> = { window_closing: '窗口关闭', order_unconfirmed: '下单' };
+const TIME_LABEL: Partial<Record<HandoffNoticeKind, string>> = {
+  window_closing: '窗口关闭',
+  order_unconfirmed: '下单',
+  quote_pending: '申请报价',
+  quote_accepted: '确认报价',
+};
 
 /** 窗口的发送额度用完时追加的一句：只有这几个字，不碰会话内容（审查之后改的第 1 条） */
 export const QUOTA_EXHAUSTED_MARK = '这个窗口的发送额度已用完，没法再主动发消息';

@@ -27,7 +27,15 @@ import path from 'node:path';
 import { Hono } from 'hono';
 import type { Context, MiddlewareHandler, Next } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { isLineOrder, orderDisplay, orderTotalFen, type AnyOrder, type PublicLineOrder } from './core/order-view.js';
+import {
+  isLineOrder,
+  orderDisplay,
+  orderTotalFen,
+  quoteState,
+  quoteValidUntil,
+  type AnyOrder,
+  type PublicLineOrder,
+} from './core/order-view.js';
 import { handleMessage, notifyPaid, promptPrefix, sopFileText } from './engine.js';
 import { enterHandoff, loadHotels, loadRoutes, quoteFor, routeForProposal } from './tools.js';
 import { HANDOFF_REASON, terminalStageKey } from './handoff/record.js';
@@ -766,7 +774,7 @@ app.get('/api/orders', anonReadable, (c) => {
 // 单订单读取对支付页开放：订单号即凭据（不可猜的随机 ID，列表接口只给登录者与订单本人，不可枚举）。只给白名单字段（R22）
 app.get('/api/orders/:id', lookupLimit, (c) => {
   const o = getAnyOrder(c.req.param('id'));
-  if (!o) return c.json({ error: 'order not found' }, 404);
+  if (!o || (isLineOrder(o) && o.approval)) return c.json({ error: 'order not found' }, 404);
   return c.json(publicAnyOrder(o));
 });
 
@@ -785,7 +793,7 @@ const payAuth: MiddlewareHandler = async (c, next) => {
 app.post('/api/orders/:id/pay', payAuth, lookupLimit, async (c) => {
   const id = c.req.param('id');
   const order = getAnyOrder(id);
-  if (!order) return c.json({ error: 'order not found' }, 404);
+  if (!order || (isLineOrder(order) && order.approval)) return c.json({ error: 'order not found' }, 404);
   // 改单后被新订单替代的旧单（或已取消的）不能再付：客户翻聊天记录点开旧链接，此前照样付款成功，一趟行程收两笔钱
   if (order.status === 'superseded' || order.status === 'cancelled') {
     return c.json({ error: order.status === 'superseded' ? '这笔订单已被新订单替代' : '订单已取消', order: publicAnyOrder(order) }, 409);
@@ -853,8 +861,36 @@ function withHead(html: string, head: string): string {
   return html.replace(/<title>[\s\S]*?<\/title>/, () => head);
 }
 
+// 报价页只属于声明报价能力的租户；订单号为凭据，重置后沿用存储的不可读集合。
+function publicQuote(id: string): import('./core/order-view.js').PublicQuote | null {
+  const { runtime, brand } = currentPack();
+  const order = getAnyOrder(id);
+  if (!runtime.quotes || !order || !isLineOrder(order) || !order.approval) return null;
+  const state = quoteState(order, Date.now());
+  return {
+    id: order.id,
+    state,
+    brandName: (brand ?? runtime.defaultBrand).brandName,
+    ...(state === 'approved' || state === 'paid' ? { display: orderDisplay(order) } : {}),
+    ...(state === 'approved' ? { validUntil: quoteValidUntil(order) } : {}),
+  };
+}
+app.get('/api/quotes/:orderId', lookupLimit, (c) => {
+  const quote = publicQuote(c.req.param('orderId'));
+  return quote ? c.json(quote) : c.json({ error: 'quote not found' }, 404);
+});
+app.get('/quote/:orderId', lookupLimit, async (c) => {
+  const quote = publicQuote(c.req.param('orderId'));
+  if (!currentPack().runtime.quotes) return c.notFound();
+  const binding = currentPack();
+  const html = renderBrandPage(await readFile(path.resolve('public/quote.html'), 'utf8'), 'quote', binding.runtime, binding.brand);
+  return c.html(html, quote ? 200 : 404);
+});
+
 // 支付页：/pay/:orderId 直接回 pay.html，页面 JS 从路径取 orderId
 app.get('/pay/:orderId', async (c) => {
+  const quote = getAnyOrder(c.req.param('orderId'));
+  if (quote && isLineOrder(quote) && quote.approval) return c.notFound();
   const binding = currentPack();
   const html = renderBrandPage(await readFile(path.resolve('public/pay.html'), 'utf8'), 'pay', binding.runtime, binding.brand);
   // 同方案页：标题服务端注入，避免微信里先闪一下网址再变标题

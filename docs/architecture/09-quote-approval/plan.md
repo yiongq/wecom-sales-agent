@@ -25,17 +25,17 @@
 - [x] 1. 做：实现 `PackRuntime.siteLinks`、核心登记与沙箱 `resources` 合并，旅游登记 `proposal`（R10）；验：旅游沙箱白名单逐项等价、按租户隔离，卡片与部件字节保持基准；报价路径先用证明包夹具验证登记（验收 1、9）；依赖：0。
 - [x] 2. 做：仅给 `public/web.js` 加通用 `part.title` 分支，`chat.html`、`admin.html` 守原输出（R10）；验：有标题与无标题部件均正确，旅游字节及 `stripLink` 锁定断言不变（验收 1、9）；依赖：1。
 - [x] 3. 做：实现 `linkWhitelistStep` 并在证明包使用（R10）；验：删未登记或不允许的链接及孤立引导语；旅游不使用该步骤，字节不变（验收 9）；依赖：1、2。
-- [ ] 4. 做：实现 `QuoteApproval`、建单 `approval` 选项、自动批准与工具结果形态（R1、R2）；验：待审工具结果无订单号 / 合计 / 链接，试算有出处；自动批准按建单快照判定（验收 3、4）；依赖：3。
-- [ ] 5. 做：实现复用、取代、过期与 `quoteState`（R6）；验：待审与已批准复用及取代关系正确，自然日边界与过期总览正确（验收 6）；依赖：4。
-- [ ] 6. 做：收紧六个订单入口与正式金额来源（R1、R4）；验：六入口逐项符合 R4，online / advisor 都验；旅游公开输出不变（验收 1–3）；依赖：5。
-- [ ] 7. 做：实现批准、驳回、撤回的条件写入、重读、推送、备注与转人工（R3、R5）；验：状态表、并发两种先后与提交期间失效正确；卡片条数、驳回备注、过期撤回通知正确（验收 4、5，权限在第 8 步验）；依赖：6。
-- [ ] 8. 做：接入报价动作权限与审计标签（R7）；验：角色与接手关系符合 R7，agent 可审 AI 接待会话、viewer 为 403；审计动作与操作者正确（验收 4、5）；依赖：7。
-- [ ] 9. 做：实现工作台报价按钮、发送窗口提示、高亮和总览（R5、R8）；验：按钮受权限 / 状态限制，加载 / 空 / 错误态、窗口提示、待审计数正确（验收 5、7、8）；依赖：8。
-- [ ] 10. 做：实现两类提醒及执行体，首次确认时间与排程同事务持久化（R8）；验：提醒完成后与重启后重复确认不再提醒；事务失败无半写入；过时任务跳过且不排旧原因（验收 8）；依赖：9。
-- [ ] 11. 做：实现报价单页、品牌槽与数据接口，复用 02 重置规则（R9）；验：七种显示状态及加载 / 空 / 错误态正确，所有状态重置后页与接口 404，DB 审批历史保留；沙箱 GET 数据可用（验收 7、9）；依赖：10。
-- [ ] 12. 做：实现确定性回复四字段、执行顺序和固定句核对，扩展 `HandoffKind` 与全部消费方（R11、R12）；验：转人工、状态写入、提醒及原因统计正确，未登记或文本不匹配抛错，旅游不变（验收 1、10）；依赖：11。
-- [ ] 13. 做：扩展 `handoffKind` 谓词、按包读取 `richTools`，实现两个包钩子（R12、R13、R16）；验：证明包与旅游的谓词结论、批准后阶段及待审时跳过跟进均正确（验收 11、12）；依赖：12；钩子复用第 7 步动作。
-- [ ] 14. 做：完成证明包并实现 R15 检查，在一次性本机容器演练 08 tag 的手动与自动回滚（R14、R15）；验：按验收 13：有报价单以 9 拒绝并打印两条出路，无报价单时本项放行，自动回滚同检；覆盖所有保留审批的状态并记录日志；依赖：13。
+- [x] 4. 做：实现 `QuoteApproval`、建单 `approval` 选项、自动批准与工具结果形态（R1、R2）；验：待审工具结果无订单号 / 合计 / 链接，试算有出处；自动批准按建单快照判定（验收 3、4）；依赖：3。
+- [x] 5. 做：实现复用、取代、过期与 `quoteState`（R6）；验：待审与已批准复用及取代关系正确，自然日边界与过期总览正确（验收 6）；依赖：4。
+- [x] 6. 做：收紧六个订单入口与正式金额来源（R1、R4）；验：六入口逐项符合 R4，online / advisor 都验；旅游公开输出不变（验收 1–3）；依赖：5。
+- [x] 7. 做：实现批准、驳回、撤回的条件写入、重读、推送、备注与转人工（R3、R5）；验：状态表、并发两种先后与提交期间失效正确；卡片条数、驳回备注、过期撤回通知正确（验收 4、5，权限在第 8 步验）；依赖：6。
+- [x] 8. 做：接入报价动作权限与审计标签（R7）；验：角色与接手关系符合 R7，agent 可审 AI 接待会话、viewer 为 403；审计动作与操作者正确（验收 4、5）；依赖：7。
+- [x] 9. 做：实现工作台报价按钮、发送窗口提示、高亮和总览（R5、R8）；验：按钮受权限 / 状态限制，加载 / 空 / 错误态、窗口提示、待审计数正确（验收 5、7、8）；依赖：8。
+- [x] 10. 做：实现两类提醒及执行体，首次确认时间与排程同事务持久化（R8）；验：提醒完成后与重启后重复确认不再提醒；事务失败无半写入；过时任务跳过且不排旧原因（验收 8）；依赖：9。
+- [x] 11. 做：实现报价单页、品牌槽与数据接口，复用 02 重置规则（R9）；验：七种显示状态及加载 / 空 / 错误态正确，所有状态重置后页与接口 404，DB 审批历史保留；沙箱 GET 数据可用（验收 7、9）；依赖：10。
+- [x] 12. 做：实现确定性回复四字段、执行顺序和固定句核对，扩展 `HandoffKind` 与全部消费方（R11、R12）；验：转人工、状态写入、提醒及原因统计正确，未登记或文本不匹配抛错，旅游不变（验收 1、10）；依赖：11。
+- [x] 13. 做：扩展 `handoffKind` 谓词、按包读取 `richTools`，实现两个包钩子（R12、R13、R16）；验：证明包与旅游的谓词结论、批准后阶段及待审时跳过跟进均正确（验收 11、12）；依赖：12；钩子复用第 7 步动作。
+- [x] 14. 做：完成证明包并实现 R15 检查，在一次性本机容器演练 08 tag 的手动与自动回滚（R14、R15）；验：按验收 13：有报价单以 9 拒绝并打印两条出路，无报价单时本项放行，自动回滚同检；覆盖所有保留审批的状态并记录日志；依赖：13。
 - [ ] 15. 做：中期逐条核对验收 1–13，审查 diff、权限 / 数据边界与质量门；上线仅在 owner 当次授权后执行；验：各条都有证据，验收 13 引用第 14 步有 / 无报价单及自动回滚的日志；四门全绿，上线后复查旅游验收 1；依赖：14；上线另需开工条件 4。
 - [ ] 16. 做：对照当前全部验收 1–13 逐条复核，将通过 / 部分通过 / 未过及证据写入验收记录；验：覆盖每条验收与质量门，验收 13 引用第 14 步对应日志；偏离交 owner 决定，不自行判通过；依赖：15。
 - [ ] 17. 做：清理本次临时探针、测试产物、容器、后台进程及不再使用的临时 worktree / 分支；验：无遗留进程和容器，diff 只含交付内容，耐久回归测试保留；共享与无关资源不动；依赖：16。
@@ -312,7 +312,516 @@ v2 快照比对：861 条 case · 0 处差异
 | `scripts/check-tenant-state.selftest.ts`         | ✔ 退出 0 |
 | `scripts/check-boundaries.selftest.ts`           | ✔ 退出 0 |
 
+### C 批 · 第 4–6 步
+
+- 第 4 步（R1、R2）：`LineOrder` 增加可选 `QuoteApproval`，`createLineOrder` 接受 `approval` 并默认取包的 `quotes.approval`。建单的同步段只调用一次 `autoApprovable`，当场批准写 `auto`、`decidedAt`、`confirmedAt`；复用不重审。待审工具结果严格只有 `{ state: 'pending' }`，自动批准结果严格为 `state` / `quoteUrl` / `totalText`。`money_provenance` 的订单来源只接受无审批或 `approval.state=approved`；试算仍由工具 `amounts` 记账，待审建单不向账本写正式金额。
+- 第 5 步（R6）：报价单与无审批单分开复用、取代；待审与有效已批准各保留一个槽。同样的行优先复用有效正式单，其次待审单；新待审单取代旧待审，自动批准新单取代旧待审与旧正式单。过期单不复用，下次建单（包括复用另一张单）时标取代。`quoteState` 将拒绝 / 撤回映为 invalid，paid 与 superseded 优先于过期，过期只推算、不改持久状态；总览待付款只统计无审批单与有效已批准单。
+- 第 6 步（R4）：三条旧公开入口对所有带审批的通用单返回 404；console 确认价格返回 `quote_order`，待审收款返回 `not_approved`，无效 / 被取代按状态表拒绝；已批准与过期单在 online、advisor 两种模式都可收款，已付幂等。存储的 `markOrderPaid` 同样拦未批准单。取消入口将报价单写为 withdrawn / cancelled，待审不通知，曾批准的单提交成功后发包的撤回固定句（过期也发），失败记备注；重复取消不重复通知，原因只给顾问。
+- 接回第 1 步：证明包 `quote.allowed` 经核心只读辅助函数读取当前租户订单，核对所属会话与 `quoteState=approved`，待审、过期、无效、被取代、已付均不放行。核心 order 卡片同时拒绝报价单，避免旧支付卡片泄露其正式金额；旅游与无审批单的卡片路径保持原状。
+- 本批取舍：在证明包导出 `createFixtureQuoteRuntime`，为 09 验收显式装配审批，沿用同一工具定义与参数。08 的原证明场景仍由 `createFixtureRuntime` 建无审批单（原工具显式传 false），不改四个旧证明 case 或任何基线。证明装配有效期为 2 天、合计不超过 1000 分自动批准；没有自动钩子时全部人审。后续证明包收口可复用该装配。
+- 本批取舍：有效期按上海固定 UTC+8 的自然日计算，截止日 23:59:59.999 仍有效、下一毫秒过期；有效天数从包对当前已发布政策的 `validDays` 读取，不新增订单字段。将现有 `readFilePolicy` 原样提取到 `config/file-policy.ts`，DB 读已装载政策、文件模式复用原读取，避免同步状态读者反向装载包注册表引起模块循环；没有新增模块状态、环境变量或迁移。
+- 本批取舍：为本批已实际写出的 `quote.withdraw` 同步补齐中文审计标签与句子，避免 console 的审计动作穷举检查出现缺项；只补撤回，批准 / 驳回的登记仍在后续步骤。`shared/audit-text.selftest.ts` 新增两项断言，console 的 465 项断言重跑通过。
+- 本批取舍：保留旧 `cancelOrder` 同步签名，console 经 `cancelOrderAndNotify` 包装提交与通知；无审批单仍走原取消逻辑及原路由提交。第 7 步新增报价动作时应复用这条撤回路径，勿重复发送。本批不实现批准 / 驳回动作、权限扩展、提醒或报价页，分别留给第 7 步及以后。
+- 新增 `src/quote-approval.selftest.ts`：PGlite 持久化 / 预载、真实核心 mock 一轮试算与待审工具保密、金额来源、并发建单复用、两槽取代、自动批准快照、上海跨年边界、过期总览；真实 HTTP 对 online / advisor 各遍历七状态的六入口、错误码、过期撤回通知与重复取消幂等。`package.json` 仅在 test 末尾追加该自测，CI 耗时登记 10 秒。
+- 最终门禁：`pnpm -s format:check`、`pnpm -s lint`、`pnpm -s typecheck`、`pnpm -s test:locked` 均退出 0。lint 的既有内容黑名单因未配置 `SENSITIVE_PATTERNS` / `.sensitive-patterns` 跳过，其余边界 / 迁移 / console / 租户状态检查通过；补扫相对 `origin/dev` 的新增行及两个新文件，无本机绝对路径或超长假企微 id，`git diff --check` 通过。
+- 旅游硬性对照：两份字节夹具不改，`LINK BYTES SELFTEST PASS: 317 条字节基准，517 项断言`；`LEGACY BYTES SELFTEST PASS: 140 项断言全通（60 条出口字节与夹具逐字节相同；旅游会话 state json 无 packState、moneyLedger）`。锁定八文件、`eval/baselines/`、spec 均零 diff；锁定套件的请求前缀字节断言与 tools 哈希证明 `JSON.stringify(toolDefs)` 不变。链接字节夹具 sha256 仍为 `4688c34e5ee02df443f6986ed110af066e5a7fd513a1ee6ea6c33dd8f943f14e`。
+
+```text
+PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd
+CONFIG_SOURCE=file LLM_MOCK=1 tsx eval/run.ts
+v2 回归评测：861/861 用例通过 · 跳过 0 条 realOnly · 8565 项断言
+v2 快照比对：861 条 case · 0 处差异
+CONFIG_SOURCE=file CONFIG_TEST_DB=pglite LLM_MOCK=1 tsx eval/run.ts
+v2 回归评测：861/861 用例通过 · 跳过 0 条 realOnly · 8565 项断言
+v2 快照比对：861 条 case · 0 处差异
+```
+
+- 验收对照：验收 3 的真实核心 mock 一轮及试算出处已验证；验收 4 的本批建单 / 自动批准 / 收款 / 取消状态部分已验证，工作台批准 / 驳回与并发部分留第 7 步；验收 6 的复用、自动批准取代、自然日边界与过期汇总已验证，手审批准后的取代随第 7 步动作补验。验收 2 的六入口在 online / advisor 下逐个通过；验收 1 的旅游硬性对照见上。本批不宣称验收 4、5 已全量完成。
+- 按改动文件名及其符号（建单、订单动作、存储付款、金额工厂、站内链接、总览、政策读取、审计标签）检索关联自测，并逐个执行；下表是最终结果，console 补标签后的重跑也已通过。前端四个自测使用 `tsx --tsconfig console/tsconfig.json`，其余使用普通 tsx。另跑上面的锁定套件、两份字节自测与两种 v2。PGlite 全过，相关套件的真实 PG 分支按既有条件跳过；按本批任务不连真实 PG、不运行真实模型、不启动外部服务，完整 `pnpm test` 留 CI。`ci-shard.ts --check 4`：188 units、25 strict suites，CHECK PASS。
+
+| 自测                                           | 结果     |
+| ---------------------------------------------- | -------- |
+| `src/quote-approval.selftest.ts`               | ✔ 退出 0 |
+| `src/line-order.selftest.ts`                   | ✔ 退出 0 |
+| `src/order-view.selftest.ts`                   | ✔ 退出 0 |
+| `src/order-readers.selftest.ts`                | ✔ 退出 0 |
+| `src/core/guards/money-provenance.selftest.ts` | ✔ 退出 0 |
+| `src/money-ledger.selftest.ts`                 | ✔ 退出 0 |
+| `src/site-links.selftest.ts`                   | ✔ 退出 0 |
+| `src/payment/orders.selftest.ts`               | ✔ 退出 0 |
+| `src/payment/refunds.selftest.ts`              | ✔ 退出 0 |
+| `src/payment/legacy-pay-poisoned.selftest.ts`  | ✔ 退出 0 |
+| `src/ops/board.selftest.ts`                    | ✔ 退出 0 |
+| `src/ops/ops.selftest.ts`                      | ✔ 退出 0 |
+| `src/store/order-storage.selftest.ts`          | ✔ 退出 0 |
+| `src/store/store.selftest.ts`                  | ✔ 退出 0 |
+| `src/console-api/console.selftest.ts`          | ✔ 退出 0 |
+| `src/web/web.selftest.ts`                      | ✔ 退出 0 |
+| `src/jobs/jobs.selftest.ts`                    | ✔ 退出 0 |
+| `src/notify/notify.selftest.ts`                | ✔ 退出 0 |
+| `src/handoff/handoff.selftest.ts`              | ✔ 退出 0 |
+| `src/pack-session.selftest.ts`                 | ✔ 退出 0 |
+| `src/pack-catalog.selftest.ts`                 | ✔ 退出 0 |
+| `src/after-sales.selftest.ts`                  | ✔ 退出 0 |
+| `src/policy-ask.selftest.ts`                   | ✔ 退出 0 |
+| `src/packs/travel/tools/tools.selftest.ts`     | ✔ 退出 0 |
+| `src/packs/travel/policy.selftest.ts`          | ✔ 退出 0 |
+| `src/adapters/wecom-03.selftest.ts`            | ✔ 退出 0 |
+| `src/config/config.selftest.ts`                | ✔ 退出 0 |
+| `src/config/consistency.selftest.ts`           | ✔ 退出 0 |
+| `src/config/file-pack.selftest.ts`             | ✔ 退出 0 |
+| `src/config/policy.selftest.ts`                | ✔ 退出 0 |
+| `src/config/brand.selftest.ts`                 | ✔ 退出 0 |
+| `src/config/brand-publish.selftest.ts`         | ✔ 退出 0 |
+| `src/config/brand-transfer.selftest.ts`        | ✔ 退出 0 |
+| `src/config/template-derive.selftest.ts`       | ✔ 退出 0 |
+| `scripts/check-boundaries.selftest.ts`         | ✔ 退出 0 |
+| `scripts/ci-shard.selftest.ts`                 | ✔ 退出 0 |
+| `src/shared/audit-text.selftest.ts`            | ✔ 退出 0 |
+| `src/channels/restore-cutoff.selftest.ts`      | ✔ 退出 0 |
+| `src/channels/channels.selftest.ts`            | ✔ 退出 0 |
+| `src/console-api/traces.selftest.ts`           | ✔ 退出 0 |
+| `src/db/brand.selftest.ts`                     | ✔ 退出 0 |
+| `console/src/overview/overview.selftest.tsx`   | ✔ 退出 0 |
+| `console/src/shell/shell.selftest.ts`          | ✔ 退出 0 |
+| `console/src/traces/traces.selftest.tsx`       | ✔ 退出 0 |
+| `console/src/audit/audit.selftest.tsx`         | ✔ 退出 0 |
+
+### D 批 · 第 7–10 步
+
+- 第 7 步（R3、R5，验收 4、5）：报价动作沿用订单 identity map 的同步条件写入和会话落库队列。批准写审批人与价格确认、取代旧正式单、排审计，提交后核对订单身份、会话订单集合与当前状态再推送；重复批准不发第二条。驳回原因必填且不超过 120 字，取消订单、写审计；未转人工时复用 `takeover` 由驳回人接手（kind=agent），已转人工时只记备注。撤回复用 C 批取消通知路径，待审不通知、已批准含过期通知，原因不对客。
+- 第 8 步（R7，验收 4、5）：三个专用接口只接受成员，agent 可操作 AI 接待或自己接手的会话，主管以上不限，viewer/shared 拒绝；确认收款权限不变。三类 `quote.*` 审计均带中文标签及操作者，原 console 路由权限矩阵扩展三个新接口。
+- 第 9 步（R5、R8，验收 5、7、8 的工作台部分）：报价单下发独立审批投影与 `can`，工作台待审高亮、状态/权限控制动作，审批弹窗展示窗口提示，原因支持必填/选填。403 禁用、409 自动重取；报价卡和总览在重取时隐藏旧金额、出错可重试、无记录显示原空态。报价单待审进入审核待办，不显示确认价格，过期单不进待付款；旅游分支与文字不改。
+- 第 10 步（R8，验收 8）：待审建单排 `quote_pending:<id>`；`recordQuoteAccepted` 在同步段内写首次 `acceptedAt`、排 `quote_accepted:<id>` 并保存同一会话，沿用现有事务。执行体重新读取订单与会话，跳过过时状态，不要求转人工；禁止旧 `order_unconfirmed` 执行体通知报价单。提醒完成后、预载重载后和独立新进程确认后均不新增任务，任务约束故障注入验证时间与任务均回滚。
+- 实现取舍：批准通知正文仅相对报价链接，经原适配器生成一张卡片、原账本计 1 次；新增消息字段 `quoteStates` 经现有投影进入 `messages.extra`，记录外发当时的 approved 状态。种子会话不推送，失败只追加备注、不重试。报价群提醒链接打开含报价待办的总览，避免 AI 接待会话被旧 human 筛选隐藏；原通知链接不变。窗口提示按 console 的 text-autospace 规范显示，状态冲突文案局限报价控件，不改通用错误文案表。
+- 证明包 `createFixtureQuoteRuntime` 增加驳回固定句，保持原工具定义与 08 装配不变；没有新增表、列、环境变量或模块级租户状态。新增两份请求 schema 按惯例登记为实例静态规则。
+- 本批测试：新增 `src/quote-actions.selftest.ts`。七状态逐格覆盖批准 / 驳回 / 撤回 / 收款 / 新单（含自动批准）/ 重置；批准与驳回两种先后各只有一方成功；待审批准及幂等批准等提交期间被撤回 / 重置 / 另一张单批准均返回相应 409，旧链接零推送。6 身份 × 4 接手关系 × 3 动作与实际 HTTP 的 agent=200 / viewer=403、400 原因校验、工作台权限投影、三类审计操作者均通过。真正企微适配器用假 fetch 验证一张带包标题的卡片、账本 1 次、网页带标题部件、消息 `extra` 实际入库；重复与种子零推送、失败有备注，过期撤回仍通知。
+- 验收 8：实际建单只排新原因并按订单号去重；两类任务走原认领 / 完成路径，过时任务跳过；非转人工也能收到确认提醒，完成后重复确认不新增任务 / 提醒。内存清空预载与独立新进程读磁盘 PGlite 后再次确认，首次时间与已完成任务均保留，任务仍只有一条。给 jobs 临时加失败约束，确认时间与任务均未提交；真实 PG 的同类 FORCE RLS / 事务失败自测写在 `PG_TEST_URL` 分支，本机按任务约定跳过，交 CI 一次性测试库执行。
+- 验收 5、7、8 的界面部分：工作台 **177 项**、总览 **246 项**断言通过，覆盖权限 / 状态按钮、待审高亮、关闭窗口仍可审批且先提示、120 字原因校验、403 禁用、409 重取以及加载隐藏旧金额 / 空态 / 请求失败重试。报价单页与公共数据接口的七状态、截图及重置后 404 仍由第 11 步实现；确定性回复确认触发器留第 12 步调用 `recordQuoteAccepted`，本批没有提前扩展 `DeterministicReply` 或转人工类型。验收 4、5、7、8 的最终全链路收口仍按第 15–16 步核对。
+- 最终门禁：`pnpm -s format:check`、`pnpm -s lint`、`pnpm -s typecheck`、`pnpm -s test:locked` 全部退出 0。lint 的既有内容黑名单因未配置 `SENSITIVE_PATTERNS` / `.sensitive-patterns` 跳过，其余边界 / 迁移 / console / 租户状态检查通过；新增行和新文件另查无本机绝对路径或超长假企微 id，`git diff --check` 通过。gitleaks 对 `origin/dev..HEAD` 历史及本批工作区（含新文件）均未发现泄露。
+- 旅游硬性对照：两份字节夹具未改；`LINK BYTES SELFTEST PASS: 317 条字节基准，517 项断言`，`LEGACY BYTES SELFTEST PASS: 140 项断言全通（60 条出口字节与夹具逐字节相同；旅游会话 state json 无 packState、moneyLedger）`。锁定八文件、spec、`eval/baselines/`、`public/chat.html` 和 `public/admin.html` 零 diff；前缀锁定断言与相同 tools 哈希确认 `JSON.stringify(toolDefs)` 不变。链接夹具 sha256 仍为 `4688c34e5ee02df443f6986ed110af066e5a7fd513a1ee6ea6c33dd8f943f14e`。
+
+```text
+PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd
+CONFIG_SOURCE=file LLM_MOCK=1 tsx eval/run.ts
+v2 回归评测：861/861 用例通过 · 跳过 0 条 realOnly · 8565 项断言
+v2 快照比对：861 条 case · 0 处差异
+CONFIG_SOURCE=file CONFIG_TEST_DB=pglite LLM_MOCK=1 tsx eval/run.ts
+v2 回归评测：861/861 用例通过 · 跳过 0 条 realOnly · 8565 项断言
+v2 快照比对：861 条 case · 0 处差异
+```
+
+- 按改动文件名及符号检索关联自测，下面 **95 个**最终均退出 0。新增能力使四处枚举需同步：报价路由登记进原权限矩阵、提醒中文数量增至 16、AI 记录筛选排除两个报价提醒；全局 ERROR_COPY 保留原表，报价 409 仅在报价控件提示。对应套件修正后已逐个重跑通过，未放宽断言或修改锁定测试。真实 PG 条件分支未跑，完整 `pnpm test` 按本批任务留 CI。
+- 补充检查：`check-fonts` 通过，716 个界面汉字与已有字体产物匹配，不需要重建字体；console 构建与 `check-console-dist` 通过，首屏 JS 356,913 B / 上限 420,000 B；`ci-shard.ts --check 4` 为 189 units、25 strict suites，CHECK PASS。构建产物和临时测试日志已清理，不留后台进程或容器。
+
+| 自测                                                   | 最终结果 |
+| ------------------------------------------------------ | -------- |
+| `console/src/audit/audit.selftest.tsx`                 | ✔ 退出 0 |
+| `console/src/conversations/conversations.selftest.tsx` | ✔ 退出 0 |
+| `console/src/conversations/pack-cards.selftest.tsx`    | ✔ 退出 0 |
+| `console/src/conversations/workbench.selftest.tsx`     | ✔ 退出 0 |
+| `console/src/fields/fields.selftest.tsx`               | ✔ 退出 0 |
+| `console/src/overview/overview.selftest.tsx`           | ✔ 退出 0 |
+| `console/src/pages/login.selftest.tsx`                 | ✔ 退出 0 |
+| `console/src/parts/errors.selftest.ts`                 | ✔ 退出 0 |
+| `console/src/parts/popupRegion.selftest.tsx`           | ✔ 退出 0 |
+| `console/src/session.selftest.ts`                      | ✔ 退出 0 |
+| `console/src/shell/shell.selftest.ts`                  | ✔ 退出 0 |
+| `console/src/sop/sop.selftest.tsx`                     | ✔ 退出 0 |
+| `console/src/traces/traces.selftest.tsx`               | ✔ 退出 0 |
+| `scripts/check-boundaries.selftest.ts`                 | ✔ 退出 0 |
+| `scripts/check-console-src.selftest.ts`                | ✔ 退出 0 |
+| `scripts/check-tenant-state.selftest.ts`               | ✔ 退出 0 |
+| `scripts/ci-shard.selftest.ts`                         | ✔ 退出 0 |
+| `src/after-sales.selftest.ts`                          | ✔ 退出 0 |
+| `src/catalog-money.selftest.ts`                        | ✔ 退出 0 |
+| `src/channels/channels.selftest.ts`                    | ✔ 退出 0 |
+| `src/channels/recovery.selftest.ts`                    | ✔ 退出 0 |
+| `src/channels/restore-cutoff.selftest.ts`              | ✔ 退出 0 |
+| `src/config/brand-publish.selftest.ts`                 | ✔ 退出 0 |
+| `src/config/brand-transfer.selftest.ts`                | ✔ 退出 0 |
+| `src/config/brand.selftest.ts`                         | ✔ 退出 0 |
+| `src/config/catalog-kind.selftest.ts`                  | ✔ 退出 0 |
+| `src/config/catalog-snapshot.selftest.ts`              | ✔ 退出 0 |
+| `src/config/consistency.selftest.ts`                   | ✔ 退出 0 |
+| `src/config/file-pack.selftest.ts`                     | ✔ 退出 0 |
+| `src/config/gate.selftest.ts`                          | ✔ 退出 0 |
+| `src/config/pack-runtime.selftest.ts`                  | ✔ 退出 0 |
+| `src/config/registry-binding.selftest.ts`              | ✔ 退出 0 |
+| `src/config/retrieval-kb.selftest.ts`                  | ✔ 退出 0 |
+| `src/config/sop-per-pack.selftest.ts`                  | ✔ 退出 0 |
+| `src/console-api/console.selftest.ts`                  | ✔ 退出 0 |
+| `src/console-api/traces.selftest.ts`                   | ✔ 退出 0 |
+| `src/core/link-bytes.selftest.ts`                      | ✔ 退出 0 |
+| `src/db/brand.selftest.ts`                             | ✔ 退出 0 |
+| `src/db/db.selftest.ts`                                | ✔ 退出 0 |
+| `src/db/rollback-guard.selftest.ts`                    | ✔ 退出 0 |
+| `src/followup-guards.selftest.ts`                      | ✔ 退出 0 |
+| `src/handoff/handoff.selftest.ts`                      | ✔ 退出 0 |
+| `src/jobs/jobs.selftest.ts`                            | ✔ 退出 0 |
+| `src/line-order.selftest.ts`                           | ✔ 退出 0 |
+| `src/money-ledger.selftest.ts`                         | ✔ 退出 0 |
+| `src/notify/notify.selftest.ts`                        | ✔ 退出 0 |
+| `src/ops/ops.selftest.ts`                              | ✔ 退出 0 |
+| `src/order-readers.selftest.ts`                        | ✔ 退出 0 |
+| `src/order-view.selftest.ts`                           | ✔ 退出 0 |
+| `src/pack-catalog.selftest.ts`                         | ✔ 退出 0 |
+| `src/pack-session.selftest.ts`                         | ✔ 退出 0 |
+| `src/packs/packs.selftest.ts`                          | ✔ 退出 0 |
+| `src/packs/travel/claim-words.selftest.ts`             | ✔ 退出 0 |
+| `src/packs/travel/dates.selftest.ts`                   | ✔ 退出 0 |
+| `src/packs/travel/policy-ask.selftest.ts`              | ✔ 退出 0 |
+| `src/packs/travel/policy-claims.selftest.ts`           | ✔ 退出 0 |
+| `src/packs/travel/policy.selftest.ts`                  | ✔ 退出 0 |
+| `src/packs/travel/price.selftest.ts`                   | ✔ 退出 0 |
+| `src/packs/travel/progress.selftest.ts`                | ✔ 退出 0 |
+| `src/packs/travel/quote-template.selftest.ts`          | ✔ 退出 0 |
+| `src/packs/travel/refund-words.selftest.ts`            | ✔ 退出 0 |
+| `src/packs/travel/reply-notes.selftest.ts`             | ✔ 退出 0 |
+| `src/packs/travel/shape-words.selftest.ts`             | ✔ 退出 0 |
+| `src/packs/travel/state-note.selftest.ts`              | ✔ 退出 0 |
+| `src/packs/travel/tools/tools.selftest.ts`             | ✔ 退出 0 |
+| `src/packs/travel/turn.selftest.ts`                    | ✔ 退出 0 |
+| `src/payment/legacy-bytes.selftest.ts`                 | ✔ 退出 0 |
+| `src/payment/legacy-pay-poisoned.selftest.ts`          | ✔ 退出 0 |
+| `src/payment/orders.selftest.ts`                       | ✔ 退出 0 |
+| `src/policy-ask.selftest.ts`                           | ✔ 退出 0 |
+| `src/price-guard-parse.selftest.ts`                    | ✔ 退出 0 |
+| `src/quota/outbound.selftest.ts`                       | ✔ 退出 0 |
+| `src/quota/quota.selftest.ts`                          | ✔ 退出 0 |
+| `src/quote-actions.selftest.ts`                        | ✔ 退出 0 |
+| `src/quote-approval.selftest.ts`                       | ✔ 退出 0 |
+| `src/shared/audit-text.selftest.ts`                    | ✔ 退出 0 |
+| `src/site-links.selftest.ts`                           | ✔ 退出 0 |
+| `src/store/order-storage.selftest.ts`                  | ✔ 退出 0 |
+| `src/store/parity.selftest.ts`                         | ✔ 退出 0 |
+| `src/store/spill-channel.selftest.ts`                  | ✔ 退出 0 |
+| `src/store/store.selftest.ts`                          | ✔ 退出 0 |
+| `src/tenancy/events-channels.selftest.ts`              | ✔ 退出 0 |
+| `src/tenancy/fixture-tenant.selftest.ts`               | ✔ 退出 0 |
+| `src/tenancy/local-state.selftest.ts`                  | ✔ 退出 0 |
+| `src/tenancy/public-routes.selftest.ts`                | ✔ 退出 0 |
+| `src/tenancy/runtime.selftest.ts`                      | ✔ 退出 0 |
+| `src/tenancy/sandbox/budget.selftest.ts`               | ✔ 退出 0 |
+| `src/tenancy/sandbox/http.selftest.ts`                 | ✔ 退出 0 |
+| `src/tenancy/sandbox/isolation.selftest.ts`            | ✔ 退出 0 |
+| `src/tenancy/sandbox/outbound.selftest.ts`             | ✔ 退出 0 |
+| `src/tenancy/sandbox/provision.selftest.ts`            | ✔ 退出 0 |
+| `src/tenancy/sandbox/refund-seed.selftest.ts`          | ✔ 退出 0 |
+| `src/tenancy/seed-fixture.selftest.ts`                 | ✔ 退出 0 |
+| `src/trace/trace.selftest.ts`                          | ✔ 退出 0 |
+| `src/web/web.selftest.ts`                              | ✔ 退出 0 |
+
+### E 批 · 第 11–14 步
+
+- 第 11 步（R9、R10，验收 7、9）：新增报价单页与限流公开接口，响应只给白名单字段；approved / paid 才含 OrderDisplay，其余不含行与金额，重置与非报价单返回 404。页面和静态入口注入同一品牌槽，og 无金额，没有付款按钮或货币符号；页面脚本使用 textContent，加载 / 空 / 失败 / 重试均不保留旧金额。七种订单状态逐项验证重置后两路 404，数据库审批历史和 reset 标记保留、清空内存重新预载仍不可读；真正沙箱 cookie 可 GET 报价数据，未登记 POST 不获放行。BrandPage 在 B 批已经扩为 string，本批直接使用 quote 槽；notes 是可选项，证明包没有额外说明，不发明新的包接口。
+- 第 12 步（R11、R12，验收 10）：扩展四字段，发送前先校验登记固定句或完整模板匹配，再合并校验 packState、记录回复、pack 转人工、调用 recordQuoteAccepted；沿用原渠道回复出口，不另推一条消息。原因限制 1–120 字；缺 fixedId、未登记、文本不符、越界 patch、缺状态 schema 都拒绝。生产环境沿用 DEPLOY_PROFILE=prod，固定句错误只记不含正文的日志后继续发送；不增加环境变量。旅游原有确定性回复无需 fixedId。新增 pack 进入共享校验 / 中文标签 / 既有统计，实际原因仍由包给出，不往 HANDOFF_REASON 写兜底原因。通知自测的类型数同步为 17，种子枚举同步新增类型。
+- 第 13 步（R12、R13、R16，验收 11、12）：handoff 谓词可指定 handoffKind；shape 同出口一样读当前包的 ShapePolicy.richTools。工作台批准 / 驳回 / 撤回及批准造成的取代在原同步写入段调用 onQuoteDecided，幂等动作不重复调用，不另发卡片；AI 自动批准 / 取代不调动作钩子。两种跟进共用资格判断接 followupGate，数据库跟进等提交后、真正推送前也复查。证明包批准推进 closing，quote 阶段存在待审单则跳过跟进。
+- 第 14 步（R14、R15，验收 13）：证明包具备 ≤100 元且全部现货才自动批准、报价链接 / 卡片 / 固定句 / 两个触发器 / 两个钩子。现货判定优先读订单行版本对应的产品快照，文件模式用本轮捕获目录快照；缺现货声明不自动批准。注册装配保留 08 的 fixture_order，另加 fixture_quote_order 验证报价；包的订单读取经 pack-api 再导出已有的租户内存访问器，避免反向依赖存储或装配期循环；评测的既有种子通用单显式 approval:false，08 语义和全部旧快照均保持不变。AI / 确定性回复 / 两种跟进在保存前登记消息 extra.quoteStates，原批准通知沿用 D 批记录。
+- 新增 4 个 v2 case 与 3 个模拟目标；默认快照改为 **eval/baselines/v2-09-step14.json**。用 JSON 解码器定位每条 case 的原始文件片段、按原始字节比较，v2-08-step17.json 的 **861 条全部逐字节相同**，其中旅游 **857 条、0 处差异**；只新增 q09-fixture-nonstandard / pending / no-stock / auto-accepted 四条。旅游原始片段拼接 sha256：`3d009373eaa0b797ed7d831c880d15fefca7fe50a59145c7239b69e7bfc1d813`。旧基线文件未改；新快照因新增证明用例，总数由 861 增为 865。审批时间戳并入原快照时间归一，不影响旧条目。
+- 回滚脚本按 tag 文件树 / 目标镜像的 src/core/site-links.ts 判断 pre-09，直接查询全库 orders.data->'approval' IS NOT NULL，不过滤状态或重置历史。有报价以 9 拒绝并明确打印「前滚修复，或者回滚到另一个含 09 的 tag」，无报价本项放行；手动与自动同检，查询失败从严且带时限。宿主 role 健康校验仅对 pre-05 豁免，不能因 pre-09 触发回滚检查就跳过；部署 / DB 自测同步登记新文件树探测。自测 **316 项**通过，真实 SQL 在 PGlite 逐项验待审 / 批准 / 过期 / 已付 / 驳回 / 撤回 / 被取代 / 重置历史，不改表或列。
+- 容器演练交第 16 步：在一次性 pgvector/pgvector:pg17 与隔离 compose 项目上，先用含 09 的镜像建合成报价；对待审 / 批准 / 过期 / 已付 / 驳回 / 撤回 / 被取代 / 重置历史分别尝试部署 08 tag，断言 guard 退出 9、deploy 转 1、打印两条恢复路径、rsync 与旧 app 启动均未发生；再模拟健康检查失败回到 08 的 prev 镜像，断言同样拒绝。使用另一份无 approval 的干净测试库验证本项放行，再验含 09 目标不误拦。最后移除本次项目的容器、卷与合成数据；不得碰其他容器或线上库。
+- 页面截图待第 16 步补验：本机已有 Playwright，但 Chromium 启动被 macOS 沙箱以 `bootstrap_check_in … Permission denied (1100)` 拒绝，未生成截图，未声称渲染验收通过；实际页面脚本注入、品牌、七态 HTTP、加载 / 空 / 错 / 重试与 stripLink 的锁定断言已有自动化覆盖。真实 PG 分支与完整 pnpm test 按任务约定交 CI，容器回滚演练按本批约定交协调者。
+- 最终门禁：format:check、lint、typecheck、test:locked 全部退出 0；完整 pnpm test 按本批约定不在本机执行。lint 的内容黑名单因未配置 SENSITIVE_PATTERNS / .sensitive-patterns 跳过，依赖方向、迁移、console、租户状态检查均通过；另对新增行和新文件检查本机绝对路径与超长假企微 id，均无命中。锁定八文件、spec、旧快照、两份字节夹具、旅游工具定义、chat.html 与 admin.html 零修改；git diff --check 通过。gitleaks 的 origin/dev..HEAD 历史与本批改动文件扫描均无泄露。
+- 字节与评测证据：link-bytes **317 条基准、517 项断言**；legacy-bytes **60 条旧出口逐字节相同、140 项断言**。工具摘要继续覆盖 JSON.stringify(toolDefs)，前缀与开工值相同。两种 v2 均为 **865/865、8587 项断言、快照 0 处差异**；原 861 条全部保留且逐字节相同的证据见上。字体检查通过（716 个界面汉字），无需重建字体；CI 分片为 191 units、25 strict suites，CHECK PASS。模拟证明包五目标共 42 项断言、目标闸 42 项断言通过；工作台 177 项、总览 246 项通过。
+
+```text
+PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd
+CONFIG_SOURCE=file LLM_MOCK=1 tsx eval/run.ts
+v2 回归评测：865/865 用例通过 · 跳过 0 条 realOnly · 8587 项断言
+v2 快照比对：865 条 case · 0 处差异
+CONFIG_SOURCE=file CONFIG_TEST_DB=pglite LLM_MOCK=1 tsx eval/run.ts
+v2 回归评测：865/865 用例通过 · 跳过 0 条 realOnly · 8587 项断言
+v2 快照比对：865 条 case · 0 处差异
+```
+
+- 按变动文件名与接口 grep 关联自测，并补跑共享标签消费方，下面 **101 个**最终均退出 0。首次运行发现的五处装配同步项已修正并逐个复测：通知类型数、新回滚文件探测清单、部署替身的 ls-tree 与宿主 role、08 无审批订单显式 approval:false，以及闸的五个证明目标 / 假模型脚本。断言未放宽，未改锁定套件。新增的生产 / 开发固定句行为、完整模板匹配、状态 schema 边界、恰好 100 元与混合现货、自动批准不调用动作钩子、已付历史不触发取代钩子、冻结前记录 quoteStates 也已覆盖。
+
+| 自测                                                   | 最终结果 |
+| ------------------------------------------------------ | -------- |
+| `console/src/conversations/conversations.selftest.tsx` | ✔ 退出 0 |
+| `console/src/conversations/workbench.selftest.tsx`     | ✔ 退出 0 |
+| `console/src/fields/fields.selftest.tsx`               | ✔ 退出 0 |
+| `console/src/overview/overview.selftest.tsx`           | ✔ 退出 0 |
+| `console/src/parts/errors.selftest.ts`                 | ✔ 退出 0 |
+| `console/src/traces/traces.selftest.tsx`               | ✔ 退出 0 |
+| `eval/sim/fixture.selftest.ts`                         | ✔ 退出 0 |
+| `eval/sim/predicates.selftest.ts`                      | ✔ 退出 0 |
+| `eval/v2/runner.selftest.ts`                           | ✔ 退出 0 |
+| `scripts/check-boundaries.selftest.ts`                 | ✔ 退出 0 |
+| `scripts/check-console-src.selftest.ts`                | ✔ 退出 0 |
+| `scripts/check-fonts.ts`                               | ✔ 退出 0 |
+| `scripts/ci-shard.selftest.ts`                         | ✔ 退出 0 |
+| `scripts/seed-demo.selftest.ts`                        | ✔ 退出 0 |
+| `src/after-sales.selftest.ts`                          | ✔ 退出 0 |
+| `src/catalog-money.selftest.ts`                        | ✔ 退出 0 |
+| `src/channels/recovery.selftest.ts`                    | ✔ 退出 0 |
+| `src/config/brand-publish.selftest.ts`                 | ✔ 退出 0 |
+| `src/config/brand-transfer.selftest.ts`                | ✔ 退出 0 |
+| `src/config/brand.selftest.ts`                         | ✔ 退出 0 |
+| `src/config/catalog-kind.selftest.ts`                  | ✔ 退出 0 |
+| `src/config/catalog-snapshot.selftest.ts`              | ✔ 退出 0 |
+| `src/config/config.selftest.ts`                        | ✔ 退出 0 |
+| `src/config/consistency.selftest.ts`                   | ✔ 退出 0 |
+| `src/config/file-pack.selftest.ts`                     | ✔ 退出 0 |
+| `src/config/gate-per-pack.selftest.ts`                 | ✔ 退出 0 |
+| `src/config/pack-runtime.selftest.ts`                  | ✔ 退出 0 |
+| `src/config/registry-binding.selftest.ts`              | ✔ 退出 0 |
+| `src/config/reply-pipeline.selftest.ts`                | ✔ 退出 0 |
+| `src/config/retrieval-kb.selftest.ts`                  | ✔ 退出 0 |
+| `src/config/sop-per-pack.selftest.ts`                  | ✔ 退出 0 |
+| `src/console-api/console.selftest.ts`                  | ✔ 退出 0 |
+| `src/console-api/traces.selftest.ts`                   | ✔ 退出 0 |
+| `src/core/guards/execute.selftest.ts`                  | ✔ 退出 0 |
+| `src/core/guards/money-provenance.selftest.ts`         | ✔ 退出 0 |
+| `src/core/guards/shape.selftest.ts`                    | ✔ 退出 0 |
+| `src/core/guards/validate.selftest.ts`                 | ✔ 退出 0 |
+| `src/core/link-bytes.selftest.ts`                      | ✔ 退出 0 |
+| `src/core/llm/client.selftest.ts`                      | ✔ 退出 0 |
+| `src/core/parse/date-count.selftest.ts`                | ✔ 退出 0 |
+| `src/core/parse/money-decimals.selftest.ts`            | ✔ 退出 0 |
+| `src/core/refund.selftest.ts`                          | ✔ 退出 0 |
+| `src/core/tools/registry.selftest.ts`                  | ✔ 退出 0 |
+| `src/db/brand.selftest.ts`                             | ✔ 退出 0 |
+| `src/db/db.selftest.ts`                                | ✔ 退出 0 |
+| `src/db/rollback-guard.selftest.ts`                    | ✔ 退出 0 |
+| `src/followup-guards.selftest.ts`                      | ✔ 退出 0 |
+| `src/handoff/handoff.selftest.ts`                      | ✔ 退出 0 |
+| `src/jobs/jobs.selftest.ts`                            | ✔ 退出 0 |
+| `src/line-order.selftest.ts`                           | ✔ 退出 0 |
+| `src/money-ledger.selftest.ts`                         | ✔ 退出 0 |
+| `src/notify/notify.selftest.ts`                        | ✔ 退出 0 |
+| `src/ops/ops.selftest.ts`                              | ✔ 退出 0 |
+| `src/order-readers.selftest.ts`                        | ✔ 退出 0 |
+| `src/order-view.selftest.ts`                           | ✔ 退出 0 |
+| `src/pack-catalog.selftest.ts`                         | ✔ 退出 0 |
+| `src/pack-session.selftest.ts`                         | ✔ 退出 0 |
+| `src/packs/packs.selftest.ts`                          | ✔ 退出 0 |
+| `src/packs/travel/claim-words.selftest.ts`             | ✔ 退出 0 |
+| `src/packs/travel/dates.selftest.ts`                   | ✔ 退出 0 |
+| `src/packs/travel/policy-ask.selftest.ts`              | ✔ 退出 0 |
+| `src/packs/travel/policy-claims.selftest.ts`           | ✔ 退出 0 |
+| `src/packs/travel/policy.selftest.ts`                  | ✔ 退出 0 |
+| `src/packs/travel/price.selftest.ts`                   | ✔ 退出 0 |
+| `src/packs/travel/progress.selftest.ts`                | ✔ 退出 0 |
+| `src/packs/travel/quote-template.selftest.ts`          | ✔ 退出 0 |
+| `src/packs/travel/refund-words.selftest.ts`            | ✔ 退出 0 |
+| `src/packs/travel/reply-notes.selftest.ts`             | ✔ 退出 0 |
+| `src/packs/travel/shape-words.selftest.ts`             | ✔ 退出 0 |
+| `src/packs/travel/state-note.selftest.ts`              | ✔ 退出 0 |
+| `src/packs/travel/tools/tools.selftest.ts`             | ✔ 退出 0 |
+| `src/packs/travel/turn.selftest.ts`                    | ✔ 退出 0 |
+| `src/payment/legacy-bytes.selftest.ts`                 | ✔ 退出 0 |
+| `src/payment/legacy-pay-poisoned.selftest.ts`          | ✔ 退出 0 |
+| `src/payment/orders.selftest.ts`                       | ✔ 退出 0 |
+| `src/policy-ask.selftest.ts`                           | ✔ 退出 0 |
+| `src/price-guard-parse.selftest.ts`                    | ✔ 退出 0 |
+| `src/quota/outbound.selftest.ts`                       | ✔ 退出 0 |
+| `src/quota/quota.selftest.ts`                          | ✔ 退出 0 |
+| `src/quote-actions.selftest.ts`                        | ✔ 退出 0 |
+| `src/quote-approval.selftest.ts`                       | ✔ 退出 0 |
+| `src/quote-page.selftest.ts`                           | ✔ 退出 0 |
+| `src/quote-replies.selftest.ts`                        | ✔ 退出 0 |
+| `src/site-links.selftest.ts`                           | ✔ 退出 0 |
+| `src/store/order-storage.selftest.ts`                  | ✔ 退出 0 |
+| `src/store/parity.selftest.ts`                         | ✔ 退出 0 |
+| `src/store/spill-channel.selftest.ts`                  | ✔ 退出 0 |
+| `src/store/store.selftest.ts`                          | ✔ 退出 0 |
+| `src/tenancy/fixture-tenant.selftest.ts`               | ✔ 退出 0 |
+| `src/tenancy/local-state.selftest.ts`                  | ✔ 退出 0 |
+| `src/tenancy/public-routes.selftest.ts`                | ✔ 退出 0 |
+| `src/tenancy/runtime.selftest.ts`                      | ✔ 退出 0 |
+| `src/tenancy/sandbox/budget.selftest.ts`               | ✔ 退出 0 |
+| `src/tenancy/sandbox/http.selftest.ts`                 | ✔ 退出 0 |
+| `src/tenancy/sandbox/pages.selftest.ts`                | ✔ 退出 0 |
+| `src/tenancy/sandbox/provision.selftest.ts`            | ✔ 退出 0 |
+| `src/tenancy/sandbox/reaper.selftest.ts`               | ✔ 退出 0 |
+| `src/tenancy/sandbox/refund-seed.selftest.ts`          | ✔ 退出 0 |
+| `src/tenancy/seed-fixture.selftest.ts`                 | ✔ 退出 0 |
+| `src/trace/trace.selftest.ts`                          | ✔ 退出 0 |
+| `src/web/web.selftest.ts`                              | ✔ 退出 0 |
+
 ## 验收记录
+
+### 中期验收（第 15 步前半，2026-10-26）
+
+- 验收对象：`c8cf3ed`，第 0–14 步已提交；本轮仅改本文件的验收记录与交接。spec 保持 ready，第 15 步不打勾。不改产品代码、自测、锁定八文件或任何基线，不提交、不 push、不开 PR。
+- 边界：仅进程内请求和 localhost:3290；所有模型调用均为 mock。没有读取部署配置、密钥文件，没有真实 SSH、服务器操作、Docker 或浏览器操作。回滚自测里的 ssh/docker 是隔离目录中的替身，配置为自测自己生成的合成内容。
+- **回滚演练（协调者补，2026-10-26，本机一次性容器）**：compose 项目 `wecom-09-acc`（只有 `db`，`pgvector/pgvector:pg17`），用 `createRealPgFixture` 建库并跑完 21 个迁移；macOS 无 `timeout`，演练用 perl 的同名替身。插入合成报价单（已付 + 已驳回，均为终态）后 `bash deploy/rollback-guard.sh <部署目录> pre-09 wecom-09-acc` **退出 9**，打印「拒绝回滚：目标是 09 之前的镜像……」与「前滚修复，或者回滚到另一个含 09 的 tag」；删掉后同命令**退出 0**；空库同样退出 0。`git ls-tree demo-v9 src/core/site-links.ts` 为空（判为 pre-09），当前 HEAD 有该文件（不误拦）。deploy.sh 串联与自动回滚路径由 rollback-guard 自测 316 项（替身）覆盖。容器、卷、网络已删。
+- **截图（协调者补，2026-10-26）**：照下方命令在 3290 起服务（`env -i`，不读 `.env`），内置浏览器逐张打开 8 个 URL：1 待审只有状态；2 已批准有效显示行、有效期与「合计 1,250元」；3 已过期、4 已驳回与 5 已撤回（失效）、6 被取代均无行与金额；7 已付显示行与合计；8 显示「报价单不存在」且页面与接口均 404。八张都没有「¥」与付款按钮；接口状态依次为 pending / approved / expired / invalid / invalid / superseded / paid / 404。截图未入库。服务已停。
+
+#### 1. 回滚步骤核对与 E 批演练补充
+
+E 批原步骤的判断与代码一致：手动根据 tag 文件树缺少 `src/core/site-links.ts` 传 `pre-09`，自动根据 prev 镜像文件探测；guard 有审批订单退出 9，deploy 接住后退出 1，打印「前滚修复，或者回滚到另一个含 09 的 tag」。无审批订单本项放行；含 09 的目标不查本项。SQL 不过滤订单状态或重置标记。`src/db/rollback-guard.selftest.ts` 本次 **316 项通过**，包含两入口、SQL 八种历史、查询故障与超时，但 Docker/SSH 为替身、SQL 为 PGlite，真实容器演练未完成。
+
+原步骤缺少直接可执行的命令、数据库选择、macOS 的 timeout 前提和两层退出码，补充如下。此段放在验收记录，保留 E 批原实施记录。协调者须使用本机已有镜像，不拉取外部镜像；镜像探测与完整 app 演练另由协调者记录。
+
+先在仓库根目录的独立 shell 准备一次性真实库。只创建本次项目，无映射端口；不使用仓库原 compose 或已有 env 文件：
+
+```sh
+roll_run="$PWD/var/09-acc/rollback"
+roll_project=wecom-09-acc-rollback
+mkdir -p "$roll_run/docker-config" "$roll_run/bin"
+export DOCKER_CONFIG="$roll_run/docker-config"
+unset DOCKER_HOST DOCKER_CONTEXT
+# 要求默认本机 Docker socket 可用；若本机需其他 socket，先由协调者核实，不能切远程 context。
+# 脚本内部用 GNU timeout；macOS 需已有 gtimeout，没有就先停止此演练。
+if ! command -v timeout >/dev/null; then
+  roll_timeout=$(command -v gtimeout) || exit 1
+  ln -s "$roll_timeout" "$roll_run/bin/timeout"
+  export PATH="$roll_run/bin:$PATH"
+fi
+cat > "$roll_run/compose.yml" <<'YAML'
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    pull_policy: never
+    container_name: wecom-09-acc-db
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_DB: agent
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+volumes:
+  pgdata:
+YAML
+roll_compose() { docker compose -p "$roll_project" -f "$roll_run/compose.yml" "$@"; }
+roll_cleanup() { perl -e 'alarm 60; exec @ARGV' docker compose -p "$roll_project" -f "$roll_run/compose.yml" down -v --remove-orphans; }
+trap roll_cleanup EXIT INT TERM
+perl -e 'alarm 60; exec @ARGV' docker compose -p "$roll_project" -f "$roll_run/compose.yml" up -d db
+# 至多等 30 秒，未 ready 就退出，由 trap 清理。
+roll_ready=0
+for roll_i in $(seq 1 30); do
+  if perl -e 'alarm 3; exec @ARGV' docker exec wecom-09-acc-db pg_isready -U postgres -d agent; then
+    roll_ready=1
+    break
+  fi
+  sleep 1
+done
+[ "$roll_ready" = 1 ] || exit 1
+roll_sql() { perl -e 'alarm 12; exec @ARGV' docker exec -i wecom-09-acc-db psql -U postgres -d agent -v ON_ERROR_STOP=1 "$@"; }
+# 最小表专用于 guard 的真实 SQL，不冒充迁移/RLS/app 端到端验收。
+roll_sql -c 'CREATE TABLE orders (status text, data jsonb, void_reason text);'
+for roll_state in pending approved expired paid rejected withdrawn superseded reset; do
+  roll_approval=approved
+  roll_status=pending_payment
+  roll_reason=NULL
+  roll_decided=1792972800000
+  case "$roll_state" in
+    pending) roll_approval=pending ;;
+    expired) roll_decided=0 ;;
+    paid) roll_status=paid ;;
+    rejected|withdrawn) roll_approval="$roll_state"; roll_status=cancelled ;;
+    superseded) roll_status=superseded ;;
+    reset) roll_reason="'reset'" ;;
+  esac
+  roll_sql -c "TRUNCATE orders; INSERT INTO orders VALUES ('$roll_status', jsonb_build_object('approval', jsonb_build_object('state', '$roll_approval', 'decidedAt', $roll_decided)), $roll_reason);" || exit 1
+  perl -e 'alarm 120; exec @ARGV' bash deploy/rollback-guard.sh "$roll_run" pre-09 "$roll_project" 3291 > "$roll_run/$roll_state.log" 2>&1
+  roll_rc=$?
+  [ "$roll_rc" = 9 ] || exit 1
+  rg -q '前滚修复，或者回滚到另一个含 09 的 tag' "$roll_run/$roll_state.log" || exit 1
+  printf '%s guard=%s\n' "$roll_state" "$roll_rc"
+done
+roll_sql -c "TRUNCATE orders; INSERT INTO orders VALUES ('paid', '{}', NULL);" || exit 1
+perl -e 'alarm 120; exec @ARGV' bash deploy/rollback-guard.sh "$roll_run" pre-09 "$roll_project" 3291 > "$roll_run/no-approval.log" 2>&1
+roll_rc=$?
+[ "$roll_rc" = 0 ] || exit 1
+printf 'no-approval guard=%s\n' "$roll_rc"
+# shell 退出即清理本次容器和卷，保留日志；不要执行全机 prune。
+```
+
+以上是 guard 的真库补验命令。完整 E 批演练还须补：
+
+- 用本机已构建的 08、09 镜像与隔离 compose（名称统一 `wecom-09-acc-`，合成配置、mock 模型）覆盖实际目标镜像参数。镜像探测内部 `docker run --rm` 默认未指定名字，演练环境应通过临时命令包装给每次探测加此前缀，退出后核对清理。新库用完整迁移与证明包装配创建合成订单，不能拿上面的最小表声称 app 端到端通过。
+- 自动路径须确实走「新 app 健康失败 → prev 为 08 → guard=9 → deploy=1」，并保存旧 app 未启动、未打 current tag 的日志。`bash deploy.sh <tag>` 自身会读部署配置并调用 SSH，本任务禁止直接运行；协调者需在隔离副本中使用只转发到本机 compose 的传输替身，或沿用既有自测核对编排，再补真实库/镜像 guard 结果。不能把单独 guard 的镜像参数检查写成已完成自动部署演练。
+- 本次编排自测的等价复跑命令（实际以子进程 timeout=240 秒运行）：`perl -e 'alarm 240; exec @ARGV' pnpm exec tsx src/db/rollback-guard.selftest.ts`，预期退出 0、`PASS rollback brand/sandbox/nontravel：316 项`；它同时断言手动拒绝在 rsync 前、自动拒绝未启动旧 app。完整真容器日志仍由协调者补，验收 13 暂不通过。
+
+#### 2. 报价单页 HTTP 与截图数据
+
+仿照 `src/quote-page.selftest.ts`，使用文件配置、证明包、合成订单和 `app.request` 逐项请求页面/API，并以 node:vm 执行**请求返回的页面脚本**，把 API 响应接给 fetch，断言实际状态文字与明细显隐；没有使用浏览器替代品声称截图完成。八个 HTML 的两个 og 标签均不含金额，HTML 及渲染文字无「¥」，唯一按钮为「重试」，无付款链接/按钮。
+
+| 订单情况   | 固定订单号末位（其余 23 位为 0） | 页 / API  | PublicQuote.state | 页面脚本文字   | 明细 / 金额          | og 无金额 / HTML 无「¥」/ 无付款按钮 |
+| ---------- | -------------------------------- | --------- | ----------------- | -------------- | -------------------- | ------------------------------------ |
+| 待审       | 1                                | 200 / 200 | pending           | 报价单待审核   | 无                   | 通过 / 通过 / 通过                   |
+| 已批准有效 | 2                                | 200 / 200 | approved          | 报价单已批准   | 有；上海自然日有效期 | 通过 / 通过 / 通过                   |
+| 已批准过期 | 3                                | 200 / 200 | expired           | 报价单已过期   | 无                   | 通过 / 通过 / 通过                   |
+| 已驳回     | 4                                | 200 / 200 | invalid           | 报价单已失效   | 无                   | 通过 / 通过 / 通过                   |
+| 已撤回     | 5                                | 200 / 200 | invalid           | 报价单已失效   | 无                   | 通过 / 通过 / 通过                   |
+| 被取代     | 6                                | 200 / 200 | superseded        | 报价单已被取代 | 无                   | 通过 / 通过 / 通过                   |
+| 已付       | 7                                | 200 / 200 | paid              | 已收款         | 有                   | 通过 / 通过 / 通过                   |
+| 不存在     | 8                                | 404 / 404 | 无                | 报价单不存在   | 无                   | 通过 / 通过 / 通过                   |
+
+- `src/quote-page.selftest.ts`：`QUOTE PAGE PASS`，七态 DB 重置后页/API 全 404，审批历史不变、void_reason=reset、重新预载仍无记录；品牌转义、cookie GET 与未登记 POST、加载/空/错/重试通过。
+- 另在独立的文件数据副本对七态逐一调用 `handleMessage(..., '重置', 'web')`：每态均 `FILE RESET PASS ... page=404 api=404 memory=deleted disk=deleted`，内存与 orders.json 均删除。截图数据没有被重置。
+- 截图资料在已忽略的 `var/09-acc/`：`config/` 为证明包配置副本（pack.json 指定 __fixture，含品牌、SOP、合成 widget 产品库），`data/sessions.json` 和 `data/orders.json` 含七态订单；第八个号码故意不存订单，表示 404。日志在 `logs/`，逐态机器可读结果在 `http-results.json`。文件模式只有宿主运行时的包绑定，不伪称创建了数据库租户。
+- 服务实启证据：`/healthz` 为 `ok=true, revision=dev, role=host`；localhost:3290 的 16 个真实 HTTP 请求均为上表状态；SIGTERM 后退出 143。截图仍为「协调者补」。
+
+协调者从仓库根目录起服务（不加载任何现有 env；本工作区没有 .env，换目录前也先核实不存在）：
+
+```sh
+[ ! -e .env ] || { echo '此截图命令不允许读取现有 .env'; exit 1; }
+env -i PATH="$PATH" PACK_FIXTURES=1 LLM_MOCK=1 CONFIG_SOURCE=file SESSION_STORE=file \
+  DEPLOY_PROFILE=demo PORT=3290 PUBLIC_BASE_URL=http://localhost:3290 \
+  SOP_PATH="$PWD/var/09-acc/config/sop.md" VAR_DIR="$PWD/var/09-acc/data" \
+  perl -e 'alarm 600; exec @ARGV' node --import tsx src/server.ts
+```
+
+前台运行，截图完成用 Ctrl-C 停止，最迟 600 秒结束。已批准样例使用生成时的批准时间，证明包有效期两自然日；超过截止日须重新准备有效样例，不把已过期的第 2 张算作有效截图。八个 URL（API 为同一订单号的 `/api/quotes/` 路径）：
+
+```text
+http://localhost:3290/quote/ord_000000000000000000000001
+http://localhost:3290/quote/ord_000000000000000000000002
+http://localhost:3290/quote/ord_000000000000000000000003
+http://localhost:3290/quote/ord_000000000000000000000004
+http://localhost:3290/quote/ord_000000000000000000000005
+http://localhost:3290/quote/ord_000000000000000000000006
+http://localhost:3290/quote/ord_000000000000000000000007
+http://localhost:3290/quote/ord_000000000000000000000008
+```
+
+#### 3. 验收 1–13 对照
+
+「通过」仅指本次本机自动化已验证的契约；群通知/企微卡片使用 mock transport/fetch，不声称真实客户收到。CI 列是仓库定义的套件归属，本次没有访问远端 CI 或声称当前 CI 绿。真实 PG 分支按任务约定留 CI 的一次性 pgvector:pg17 服务。
+
+| 验收            | 结论   | 本次证据与剩余项                                                                                                                                                                                                               | CI 套件归属                                                   |
+| --------------- | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------- |
+| 1 旅游不变      | 待线上 | 锁定八文件对 origin/dev 零 diff；PREFIX 两哈希与开工一致；link-bytes 317 条/517 项、legacy-bytes 60 条/140 项；两模式 v2 各 865/865、当前快照 0 差异，另对旧基线各 861 条 0 差异。线上四哈希、企微与网页一句一回待授权上线后验 | test:locked、两种 eval/run、两套 bytes；gates + test 1–4      |
+| 2 六入口        | 通过   | quote-approval 的 `QUOTE ENTRIES PASS`：online/advisor × 七态，三公开入口 404，confirm=409 quote_order、mark-paid=409 not_approved，批准后收款与取消各态正确                                                                   | quote-approval，test 1                                        |
+| 3 试算与正式    | 通过   | `QUOTE DATA PASS`：试算账本、正式金额隔离、待审工具结果仅 state；mock 对话不外泄报价链接                                                                                                                                       | quote-approval，test 1；两种 v2                               |
+| 4 状态表        | 通过   | quote-actions 的 `QUOTE MATRIX PASS`、`QUOTE CONCURRENCY PASS`：七态×六动作、批准/驳回两先后、提交期间撤回/重置/另一单批准均零错误推送                                                                                         | quote-actions，test 3                                         |
+| 5 批准与驳回    | 通过   | `QUOTE PERMISSIONS PASS` 6 身份×4 关系×3 动作；`QUOTE HTTP/AUDIT PASS` agent=200/viewer=403、空/过长原因拒绝；`QUOTE DELIVERY PASS` 单卡/账本1/extra/重复零推送/失败备注，过期撤回仍通知；真实企微调用由 mock fetch 接住       | quote-actions，test 3                                         |
+| 6 复用取代过期  | 通过   | `QUOTE DATA PASS` 并发复用、待审/已批两槽、取代与上海跨年秒边界；总览过期排除                                                                                                                                                  | quote-approval，test 1；quote-actions，test 3                 |
+| 7 报价单页      | 通过   | HTTP 八情况与四项检查通过；quote-page 验 DB 全态重置404/历史/重载/页面三态，本轮补文件全态删除；workbench 177 项、overview 246 项通过。**缺八张真实浏览器截图，协调者补**                                                      | quote-page，test 1；workbench，test 4；overview，test 3       |
+| 8 提醒总览      | 通过   | `QUOTE NOTIFY PASS` 去重、两类文案、无旧原因、非转人工确认；`QUOTE ATOMIC PASS` 注入 jobs 事务失败全部回滚；`QUOTE PROCESS RESTART PASS` 独立进程再次确认仍一任务；overview 246 项                                             | quote-actions、overview，test 3；真实 PG 分支留 CI            |
+| 9 链接登记      | 通过   | `SITE LINKS SELFTEST PASS` 租户隔离、标题、删链/孤立引导语、cookie/显式方法；public-routes、sandbox/pages、sandbox/outbound、锁定 wecom 与 link-bytes 全过；报价 API 的 cookie GET/POST 拒绝由 quote-page 实验覆盖             | site-links，test 3；quote-page，test 1；sandbox 与锁定 suites |
+| 10 确定性与pack | 通过   | `QUOTE REPLIES PASS` 固定句/模板全文、schema 拒绝、pack 转人工与统计、确认去重；未登记/文本不符在测试环境抛错                                                                                                                  | quote-replies，test 2                                         |
+| 11 评测         | 通过   | quote-replies 验 handoffKind 与包 richTools；sim/predicates 73 项、sim/fixture 42 项；两种 v2 旅游结论不变                                                                                                                     | quote-replies，test 2；sim/predicates、sim/fixture、两种 v2   |
+| 12 两钩子       | 通过   | `QUOTE REPLIES PASS` 动作钩子幂等、批准推进 closing、注入时钟的待审跳过跟进；自动批准不误调用动作钩子                                                                                                                          | quote-replies，test 2                                         |
+| 13 回滚         | 通过   | rollback-guard 316 项通过，覆盖八种历史SQL、guard=9/deploy=1、无单放行与手动/自动同检。**真实容器与完整隔离编排日志，协调者补**；命令与退出码补充见第1项                                                                       | rollback-guard 普通 test 4 + strict test 1                    |
+
+本轮命令均带外层 alarm 或子进程 timeout；15 个关联自测全部退出 0：`src/quote-{approval,actions,page,replies}.selftest.ts`、`src/site-links.selftest.ts`、`src/db/rollback-guard.selftest.ts`、`src/tenancy/public-routes.selftest.ts`、`src/tenancy/sandbox/{pages,outbound}.selftest.ts`、`eval/sim/{fixture,predicates}.selftest.ts`、`console/src/conversations/workbench.selftest.tsx`、`console/src/overview/overview.selftest.tsx`、`src/core/link-bytes.selftest.ts`、`src/payment/legacy-bytes.selftest.ts`。命令为 `node --import tsx <文件>` 或 `pnpm exec tsx <文件>`，console 加 `--tsconfig console/tsconfig.json`，两套 bytes 加 `PARITY_CLOCK_MS=1790913600000` 和 `--import ./src/store/parity-clock.ts`。逐套日志与退出码存 `var/09-acc/logs/`，不提交。
+
+质量门与基准：
+
+- ✔ `pnpm -s format:check`、`pnpm -s lint`、`pnpm -s typecheck`、`pnpm -s test:locked` 均退出 0；完整 `pnpm test` 按本次任务约定不在本机执行，交 CI。lint 提示未配置内容黑名单而跳过该子项；依赖方向、迁移、console、租户状态均通过。
+- ✔ `CONFIG_SOURCE=file LLM_MOCK=1 pnpm exec tsx eval/run.ts` 与加 `CONFIG_TEST_DB=pglite` 的同命令均退出 0，均 865/865、8587 项断言，`v2 快照比对：865 条 case · 0 处差异`。
+- ✔ 另加 `EVAL_V2_BASELINE=eval/baselines/v2-08-step17.json`，用 `node --import tsx eval/run.ts` 重跑文件/PGlite两模式，均退出 0；新增四 case 仍验自身断言。输出分别如下，未伪造旧用例总数：
+
+```text
+文件：v2 回归评测：865/865 用例通过 · 跳过 0 条 realOnly · 8587 项断言
+v2 快照比对：861 条 case · 0 处差异
+PGlite：v2 回归评测：865/865 用例通过 · 跳过 0 条 realOnly · 8587 项断言
+v2 快照比对：861 条 case · 0 处差异
+PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd
+```
+
+- ✔ 用 JSON 原始片段对比两份基线：旧 861 条全部逐字节一致，新增四条均为 q09-fixture；旅游 857 条原始片段 sha256 仍为 `3d009373eaa0b797ed7d831c880d15fefca7fe50a59145c7239b69e7bfc1d813`。基线文件未写。
+- ✔ `node --import tsx scripts/ci-shard.ts --check 4`：`CHECK PASS: 191 units, 25 strict suites`；完整链归属没有漏套件。本次未运行 CI、真实 PG 或真实模型。
+- ✔ 锁定八文件零 diff；本次仅 plan 的两个允许区域有受控改动；新增行无本机绝对路径或超长假企微 id，`git diff --check` 通过。
+
+发现的缺陷：未发现产品缺陷。演练文档缺口的现象为 E 批只有叙述、不能直接复制执行；复现为按原段落找启动命令、库名及 guard/deploy 退出码无明示；位置在本文件 E 批回滚段，本轮仅在允许的验收记录补命令与限制。截图与真实演练是未完成验收项，不把替身自测写成已完成。
+
+清理：未创建容器、浏览器或后台模型任务；3290 服务已 SIGTERM 并 wait 确认退出，测试子进程均完成。删除本轮临时探针、文件重置副本，仅保留 gitignored 的截图配置/数据、HTTP 结果与验收日志给协调者；不提交这些资料。需要确认的问题：无。
 
 ## Open
 
@@ -359,3 +868,29 @@ v2 快照比对：861 条 case · 0 处差异
 - 第 1–3 步实现与本批验收测试已完成，门禁、两种 v2 及旅游字节基准均通过；改动留工作区，不提交、不推送、不开 PR。spec 与字节夹具、锁定文件未修改。
 - 无功能半成品与阻塞；未启动容器、浏览器或外部服务，测试进程均已退出，临时测试脚本和日志在交接前删除。
 - 下一步为第 4 步：实现审批数据与建单选项后，将证明包 `quote.allowed` 的默认拒绝换成 R10 的已批准且有效判定；报价页与接口仍按后续步骤推进。
+
+### 交接（2026-10-26，C 批）
+
+- 第 4–6 步与证明包审批装配已完成，审批数据、复用 / 取代 / 过期、六入口和正式金额来源已接通；测试结果见「C 批 · 第 4–6 步」。改动留工作区，不提交、不推送、不开 PR，spec 保持 ready。
+- 当前无功能半成品或未定设计；45 个关联自测、门禁、锁定套件、旅游字节与两种 v2 均通过，逐项证据见实施记录。没有启动容器、浏览器、真实模型或外部服务；所有测试进程均已退出，临时脚本和日志已清理。
+- 下一步为第 7 步：实现批准、驳回与撤回的完整条件写入、提交后重读及推送。复用本批 `quoteState` 与取消入口的撤回逻辑，补手审批准后取代旧正式单、并发与通知失败验收；权限、钩子与提醒按后续步骤接入，旅游字节夹具与锁定文件仍不可修改。
+
+### 交接（2026-10-26，D 批）
+
+- 第 7–10 步完成：审批动作、成员权限与审计、工作台与总览、两类提醒及首次确认事务持久化均已实现，具体验收与 95 个关联自测见「D 批 · 第 7–10 步」。门禁、锁定套件、旅游字节基准、两种 v2、字体与 console 构建检查均通过；真实 PG 分支与完整 `pnpm test` 按任务约定留 CI。
+- 改动保留在工作区，不提交、不推送、不开 PR，spec 保持 ready；没有功能半成品或需要 owner 决策的设计问题。未运行真实模型、外部服务、浏览器、容器或部署；测试与构建临时产物已清理。
+- 下一步为第 11 步：实现报价单页、品牌槽与公共数据接口，七状态、截图、加载 / 空 / 错误态及全部状态重置后 404 按 R9 补验。第 12 步的确定性确认复用 `recordQuoteAccepted`（不要直接调用 `quoteNotifyOps` 绕过 acceptedAt 去重与事务）；第 13 步在本批动作的同步写入段接 `onQuoteDecided`，勿重复发送卡片。继续保持旅游字节、两种 v2、锁定文件与工具定义不变。
+
+### 交接（2026-10-26，E 批）
+
+- 第 11–14 步实现与随批自测完成，最终验证结果见「E 批 · 第 11–14 步」。改动留在工作区，不提交、不 push、不开 PR，spec 保持 ready；无新增表、列、环境变量或依赖。
+- 当前没有功能半成品或未定设计问题；101 个关联自测、门禁、旅游字节和两种 v2 均通过，测试进程均已退出，没有遗留浏览器、容器或后台服务。
+- 下一步为第 15 步：做整体验收与审查；上线必须取得 owner 当次授权。第 16 步由协调者补七态真实浏览器截图、一次性真实 PG 分支与上述手动 / 自动回滚演练。本批未调用真实模型、未访问服务器或外部服务。
+
+### 交接（2026-10-26，第 15 步前半中期验收）
+
+- 已完成：本机七态与404的页面/API及实际页面脚本核对；文件/DB全态重置核验；3290 实启16请求；截图数据准备；验收1–13逐条对照；三项静态门禁、锁定套件、15个关联自测、两种当前/旧基线回归与CI分片覆盖检查。只改本文件「验收记录」与此交接，产品代码、自测和基线未动，未提交。
+- 未完成：验收7截图与验收13真实容器演练由协调者补，执行补充见本次验收记录；真实PG分支与完整pnpm test留CI。验收1线上四哈希与企微/网页冒烟待线上。第15步保持未勾选，spec保持ready，不代owner确认implemented。
+- 资料与清理：截图资料为gitignored的 `var/09-acc/config/`、`var/09-acc/data/`，固定订单号与3290完整启动命令见本次验收记录；日志/HTTP结果保留作本机证据。临时探针和重置副本已删除，服务及测试进程已退出，无容器、浏览器或其他后台资源。
+- 下一步：回滚演练与八张截图已由协调者补完（见本节），验收 2–13 本机通过；确认 CI 完整链及真实 PG 绿后，由owner在当次会话授权上线 `demo-v10-rc1`，本轮不操作服务器。按08「上线清单」写法逐项核对：部署前手动备份并复制到异地；dev上打本地rc tag（不推）；线上不设PACK_FIXTURES、无证明包租户；09无新增迁移/列，保留现有21迁移；上线前记录旅游租户/订单及看板值；上线后宿主与沙箱revision均为demo-v10-rc1，宿主role=host、DB/锁/渠道健康；`/healthz` 四哈希与开工相同（promptHash `cf3b163c9f69`、toolsHash `59e071568f5d`、prefixHash `6630127f79d7`、sopHash `1f850038290b`）；企微与网页各一句一回（企微由owner手机发送），新开沙箱G01走一遍；看板本月成交额及既有订单与上线前一致、检查两容器日志。含审批历史时pre-09回滚必须拒绝，只能前滚修复或退含09的tag。上线补证后再勾第15步，最终Status更新仍需owner确认。
+- 无产品半成品或待定设计；需要确认的问题：无。

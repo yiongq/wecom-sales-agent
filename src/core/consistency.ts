@@ -29,6 +29,8 @@ export type FixedReplyOrigin = { pipeline: string; step: string | null } | { out
 
 /** 包登记的一条对客固定文字：id 加样例。样例每次现渲染，不在装载时读任何东西 */
 export interface FixedReply {
+  /** 带变量的完整模板；引擎要求整段匹配，忽略有状态的 g/y 标志。 */
+  pattern?: RegExp;
   /** 稳定的点号分隔名，如 handoff.request */
   id: string;
   /** 出处：仓库内文件路径 */

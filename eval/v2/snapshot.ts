@@ -52,6 +52,7 @@ export function observeTurn(reply: AgentReply, handoff: boolean, orders: AnyOrde
       o.createdAt,
       o.paidAt,
       o.confirmedAt,
+      ...('v' in o && o.approval ? [o.approval.requestedAt, o.approval.decidedAt, o.approval.acceptedAt] : []),
       refundOf(o)?.requestedAt,
       refundOf(o)?.decision?.at,
       refundOf(o)?.settled?.at,
@@ -152,7 +153,7 @@ export async function serializeSnapshot(snapshot: V2Snapshot): Promise<string> {
  * 默认比对的具名快照（06 R4）：每个有意改变行为的 PR 把它改成自己生成的 `eval/baselines/v2-06-step<N>.json`。
  * 旧快照不删；`EVAL_V2_BASELINE=<文件>` 临时换，`off` 关闭比对。
  */
-export const DEFAULT_BASELINE = 'v2-08-step17.json';
+export const DEFAULT_BASELINE = 'v2-09-step14.json';
 
 export function readBaseline(
   setting = process.env.EVAL_V2_BASELINE,

@@ -504,6 +504,8 @@ export const STATE_MANIFEST: Record<
   'src/shared/catalog.ts:text': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/shared/catalog.ts:texts': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/shared/console-api.ts:AuditQuery': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
+  'src/shared/console-api.ts:RejectQuoteBody': { kind: 'instance', why: '报价驳回请求的固定校验规则，不保存租户数据。' },
+  'src/shared/console-api.ts:WithdrawQuoteBody': { kind: 'instance', why: '报价撤回请求的固定校验规则，不保存租户数据。' },
   'src/shared/console-api.ts:RejectRefundBody': { kind: 'instance', why: '固定的请求体校验规则，不存租户数据。' },
   'src/shared/console-api.ts:CancelOrderBody': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/shared/console-api.ts:CatalogItemParam': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },

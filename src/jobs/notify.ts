@@ -13,7 +13,7 @@ export const HANDOFF_UNCLAIMED_MS = 10 * 60_000;
 export const WINDOW_NOTICE_MS = 4 * 3_600_000;
 
 /** started 立即、unclaimed 10 分钟仍没人接手、window 企微窗口剩不到 4 小时、order_unconfirmed 待确认的订单 */
-export type HandoffNotifyReason = 'started' | 'unclaimed' | 'window' | 'order_unconfirmed';
+export type HandoffNotifyReason = 'started' | 'unclaimed' | 'window' | 'order_unconfirmed' | 'quote_pending' | 'quote_accepted';
 
 /**
  * 任务的 payload。sessionId 必带（清除与行权删除据它一并删掉，验收 27）；handoffAt 是这次转人工（或升级）的时刻，键里也有它：
@@ -80,6 +80,20 @@ export function orderUnconfirmedNotifyOps(sessionId: string, orderId: string, at
       dedupeKey: `handoff_notify:${sessionId}:order:${orderId}`,
       runAt: at,
       payload,
+      maxAttempts: HANDOFF_NOTIFY_MAX_ATTEMPTS,
+    },
+  ];
+}
+
+/** 09：订单号本身已全局唯一，键只去重这张报价单对应的原因。 */
+export function quoteNotifyOps(sessionId: string, orderId: string, reason: 'quote_pending' | 'quote_accepted', at: number): JobOp[] {
+  return [
+    {
+      op: 'enqueue',
+      kind: 'handoff_notify',
+      dedupeKey: `${reason}:${orderId}`,
+      runAt: at,
+      payload: { sessionId, reason, orderId } satisfies HandoffNotifyPayload,
       maxAttempts: HANDOFF_NOTIFY_MAX_ATTEMPTS,
     },
   ];

@@ -3,7 +3,7 @@
 //      这些值依赖 eval/sim/goals/quality、data/（sop.md、routes.json、hotels.json）与渲染出的提示词：改了它们是有意的变更，
 //      照失败信息里的新值重新钉住，并在 PR 里说明；若是这一步以外的改动带来的，先查是不是改坏了旅游。
 //   二、gateEnvironment()：不设 __gateTest.childEnv 时放行名单与值同开工时；设了只多出自测给的变量，父进程环境不被修改。
-//   三、证明包租户（DB 模式、模板模式）：目标取 PackRuntime.evalGoalsDir（eval/sim/goals/__fixture 的 2 个）；闸导出的 draft、published 两边都有
+//   三、证明包租户（DB 模式、模板模式）：目标取 PackRuntime.evalGoalsDir（eval/sim/goals/__fixture 的 5 个）；闸导出的 draft、published 两边都有
 //      pack.json 与 catalog/widget.json、没有 routes.json / hotels.json；缓存键里的产品库哈希是包声明的各 kind 的数组按声明顺序哈希（一个公式管所有包，旅游声明 route、hotel）；
 //      假模型把两个目标两边都跑过；不给 childEnv 时子进程认不出证明包（PACK_FIXTURES 不在放行名单里），闸以 child_exit 结束。
 // 证明包只在 PACK_FIXTURES=1 时登记，所以放在子进程里跑。
@@ -315,10 +315,16 @@ if (process.argv[2] !== 'worker') {
     process.env.CONFIG_SOURCE = 'db';
     {
       const ctx = { tenantId: tenant.id, actor };
-      const wanted = ['fixture-order-two-widgets', 'fixture-quote-freight-no-order'];
+      const wanted = [
+        'fixture-order-two-widgets',
+        'fixture-quote-freight-no-order',
+        'fixture-pack-nonstandard',
+        'fixture-quote-pending',
+        'fixture-auto-accepted',
+      ];
       const fixtureGoals = await gateTargets(fixtureRuntime);
       check('证明包的目标目录取 evalGoalsDir', fixtureGoals.dir === path.resolve('eval/sim/goals/__fixture'));
-      eq('证明包的目标就是 __fixture 目录里那 2 个', fixtureGoals.ids, wanted);
+      eq('证明包的目标就是 __fixture 目录里的五个', fixtureGoals.ids, wanted);
       check('证明包的目标集不同于旅游', fixtureGoals.hash !== TRAVEL_PIN.goalsHash);
 
       const overview = await sop.getSopOverview(ctx);
@@ -361,6 +367,11 @@ if (process.argv[2] !== 'worker') {
           { content: '合成方盒丙单价3.65元，运费10元。' },
           say('好的，我再想想，谢谢', true),
           { content: '好的，需要时随时联系。' },
+          // 非标目标与确认轮走确定性回复，无模型请求。
+          { tools: [{ name: 'fixture_quote_order', args: { lines: [{ kind: 'widget', code: 'w-c', qty: 100 }] } }] },
+          { content: '报价单已提交。\n等顾问审核。' },
+          { tools: [{ name: 'fixture_quote_order', args: { lines: [{ kind: 'widget', code: 'w-c', qty: 2 }] } }] },
+          { content: '已生成报价单，请核对。' },
         );
       const started = await startGate(ctx, { rev: draft.rev });
       const { sides } = await finishAndCapture(ctx, started.runId);

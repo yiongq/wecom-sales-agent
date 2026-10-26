@@ -4133,9 +4133,10 @@ await t.close();
     };
   };
   const pre05Probes = (commands: string[]): boolean =>
-    commands.length === 2 &&
+    commands.length === 3 &&
     commands[0]!.includes('run --rm --entrypoint /bin/sh side1:prev -c test -e /app/src/tenancy/runtime.ts') &&
-    commands[1]!.includes('container ls -aq --filter name=^/side1-sandbox$');
+    commands[1]!.includes('run --rm --entrypoint /bin/sh side1:prev -c test -e /app/src/core/site-links.ts') &&
+    commands[2]!.includes('container ls -aq --filter name=^/side1-sandbox$');
   const dcOf = (project: string, port: string): string =>
     `APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f deploy/compose.yml`;
   /** 拒绝时打印的步骤。pre-02（部署旧 tag）：stop → export → 去掉 SESSION_STORE=db 再起、按端口确认 → 部署旧 tag */
@@ -4177,15 +4178,15 @@ await t.close();
   };
   const g1 = guard('side1:prev', false);
   check(
-    '回滚前检查：没有标记文件、.env 也不是 db 存储时照常回滚，不看 02 镜像，补查 pre-05 镜像与容器',
+    '回滚前检查：没有标记文件、.env 也不是 db 存储时照常回滚，不看 02 镜像，补查 pre-05 / pre-09 镜像与容器',
     g1.code === 0 && pre05Probes(g1.docker),
     `${g1.code} ${g1.out} ${g1.docker.join()}`,
   );
   const g2 = guard('side1:prev', true, 0);
   check(
-    '回滚前检查：有标记文件、目标镜像里有 pg-backend.ts（两个都是 02 之后的）时照常回滚，补查 pre-05 镜像与容器',
+    '回滚前检查：有标记文件、目标镜像里有 pg-backend.ts（两个都是 02 之后的）时照常回滚，补查 pre-05 / pre-09 镜像与容器',
     g2.code === 0 &&
-      g2.docker.length === 3 &&
+      g2.docker.length === 4 &&
       g2.docker[0]!.includes('run --rm --entrypoint /bin/sh side1:prev -c test -e /app/src/store/pg-backend.ts') &&
       pre05Probes(g2.docker.slice(1)),
     `${g2.code} ${g2.out} ${g2.docker.join()}`,

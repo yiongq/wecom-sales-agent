@@ -116,7 +116,7 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
       // 08 R11：通用单只给条目和数量，经包的 priceLine 建（createLineOrder 的入参里没有金额）；状态建好后再改成夹具要的
       const { createLineOrder } = await import('../../src/core/order-view.js');
       for (const fixture of c.fixtures?.orders ?? []) {
-        const result = await createLineOrder(session, fixture.lines);
+        const result = await createLineOrder(session, fixture.lines, { approval: false });
         if ('rejected' in result) throw new Error(`夹具订单被包拒绝：${JSON.stringify(result.rejected)}`);
         const order = result.order;
         order.status = fixture.status;
