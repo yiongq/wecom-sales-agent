@@ -1,11 +1,12 @@
 # 09 · 报价审批、报价单页与站内链接（核心）
 
-Status: draft
+Status: ready
 Revisions: 2026-10-23 起草期评审（一路 Claude Opus，对照 e1433e0 与 08 草稿）之后，原「09 · 工业品询价包」拆成两份：本 spec 只做核心能力，用 08 的证明包验证；工业品询价包与演示租户移到 [10](../10-industrial-rfq-pack/spec.md)。按评审补齐了以下内容：现有 6 个订单入口对报价单的行为（R4），审批到底保护什么（R1），状态 × 动作表（R3），确定性回复的扩展（R11），站内链接改为按包登记（R10）、并保住锁定测试与静态页的约束，提醒的去重与执行体（R8），以及按「组」计数的外发（R5）。
 Revisions: 2026-10-23 评审复核（同一路 Opus）之后就地修订，尚无代码依赖：不变量 2 改按「外发那一刻」的状态断言，外发时把状态记进消息的 `extra`（不然先合法发出、后来过期的链接都算违反）；批准通知的正文只有链接，企微只发一张卡片，卡片标题统一由 `siteLinks` 的 `card` 给，删掉 `quoteApprovedCard`，发送条数照账本实际记；R3 与验收 4 的例子改成撤回、重置、另一张单先批准（新的待审单本来就不会取代已批准的单）；确定性回复加 `fixedId`，由引擎核对；`linkKind` 改为字符串，`MessagePart` 加 `title`，静态页只加一次通用分支；`order` 链接的 `allowed` 写明；状态表补「新单当场自动批准」；`richTools` 改读已有的 `ShapePolicy.richTools`；新增 R16 的两个包钩子；回滚改用 `quote-void --all` 作废报价单，不推送；去掉 `shared` 身份；更正审计文件的路径。第三轮确认后再补：网页部件的标题改由可选的 `partTitle` 给，核心与旅游的部件不填，旅游部件逐字节不变；`quote-void` 要停机执行，落成撤回状态；`fixedId` 只对带副作用的确定性回复强制，带变量的句子按登记的模板正则比对；`onQuoteDecided` 只在工作台动作之后调用。
 Revisions: 2026-10-23 owner 定开放问题 1–5，全部照推荐：AI 接待中的会话，agent 也能审报价单（R7，相应取代 02 的那一条）；撤回已批准的报价单要通知客户；有效期按 Asia/Shanghai 自然日；审批时不改价；过期的报价单仍可确认收款。正文的裁决与这些推荐本来一致，没有其他改动。`Status` 仍是 `draft`。
 Revisions: 2026-10-26 开工核对（对照 dev e2e724f 与 08 终稿）：更新源码行号、02 的权限条款位置与接口签名，按已实现的通用订单、金额出处、通知和卡片发送路径修正现状描述；补齐部分取代与修订的归属。涉及接口选择、回滚放行、页面范围及验收覆盖的疑点保留原文，记入 plan「Open」，Status 保持 draft。按协调者答复定了 `handoffKind`、第 2 步页面范围与收尾验收编号。按本轮评审补齐确认提醒的持久化去重、各状态重置后的 404、并发审批错误码、过期后撤回通知与沙箱资源登记；回滚方案留 owner 定。
 Revisions: 2026-10-26 owner 定回滚选 C：只要库里有带审批的订单，就拒绝回滚到 pre-09，提示前滚修复或退到另一个含 09 的 tag；删除停机作废命令、动作及审计，把验收改为有报价单拒绝、无报价单放行，自动回滚同检。同次 ready 自查补齐页面加载 / 空 / 错误状态、计划各步做 / 验 / 依赖与质量门，并列出目录外反向引用；Status 保持 draft。
+Revisions: 2026-10-26 owner 定 ready：完成开工核对、评审补齐与回滚选 C 后，owner 确认本 spec 为 ready，反向引用随本次 docs 改动落入 02、04、05、06、08。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8 候选「第二个真实行业包」所需的核心能力。
 Depends on: [08 · 核心去旅游化](../08-pack-generalization/spec.md)（已 implemented 并发版）。本文用到的 08 接口名已按 dev e2e724f 的实现核对，记录见 plan「实施记录」。另依赖 [02](../02-conversations-workbench/spec.md)：订单动作、工作台、`handoff_notify`、发送账本、审计；[04](../04-industry-packs/spec.md)：`PackRuntime`、步骤表、`preModel`；[06](../06-reply-quality/spec.md)：固定句登记与一致性检查（R21）。
 Supersedes in part: [02](../02-conversations-workbench/spec.md)「订单动作只限接手人本人」（02 spec 第 773、986 行，不变量 39 在第 1462 行）——对报价单的批准、驳回与撤回：AI 接待中（没转人工）的会话，agent 也能操作（R7，开放问题 1，owner 定）。[08](../08-pack-generalization/spec.md) R3「复用与作废」（第 99 行）中「同一会话最多一张待付的通用单」及对应的复用、取代规则——报价单改按 R6，待审与已批准各至多一张；不带审批的通用单不变。[05](../05-tenancy-sandbox/spec.md) R21「微信里点开的链接」中固定三类公开页及其接口的白名单（第 94 行）——为支持报价单页及数据接口，改为核心与本租户包的登记合并生成（R10）；令牌、cookie 优先级与安全检查不变。

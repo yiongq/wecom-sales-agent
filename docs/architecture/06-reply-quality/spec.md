@@ -2,6 +2,7 @@
 
 Status: implemented
 Amended by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md)（只做新增：「回归集目标的扩展」的 `SimGoal.initial`（第 467–472 行）在 `pack` 不是 `travel` 时，`orders` 用 `{ status, lines: { kind, code, qty }[] }`，见 08 R11）。
+Amended by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md)（只做新增或收紧，全文见该 spec 顶部 Amends：R21 的 FixedReply 加可选 pattern；R2「谓词修正与新谓词」及「回归集目标的扩展」的 handoff 谓词加可选 handoffKind，shape 改读包已有的 ShapePolicy.richTools，见 09 R11–R13）。
 Superseded in part by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md) — 不变量 3 与验收 3 末条（contextNote 逐字节不变的条件）加「客户这句不是退改、保险、费用含不含的问法」（07 R14）；不变量 16，连同本 spec 顶部对 04 不变量 4、04 验收 7 的改写：主回复步骤顺序等于 04 开工步骤表加 06、07 新增的步骤（07 R22 的 `policy_claims`），原有步骤的相对顺序不变。
 Revisions: 2026-10-15 owner 听完通俗版讲解后定 `ready`：开放问题 1–9 全部照推荐——本 spec 为阶段 6，原 6、7 顺延为 7、8；保持拆分；第二批口径 a–h 照推荐（远期 12 个月）；结尾句只在收尾轮由代码加一句；转人工后不回确认；预算单次 k=3 ≤¥5、k=5 ≤¥8，整份 ≤¥35；授权锁定断言 :2791（V2）、:2855（V5）、:1280（q4）三条，由单独的 PR 只改这三处，:1022、:2770 不授权；重写模型离线实测通过才开；前置测量的数由开工第 0 步给出后 owner 确认，线上近 7 天耗时分布授权协调者只读查询。owner 另要求多线并行开发；#221 与本 spec 第一批一起部署，不单独发。
 Revisions: 2026-10-15 第 0 步测量之后（见 plan 实施记录）：owner 定重写（R11）推到后续、本 spec 不做——两个候选模型离线实测验稿通过率 12–14%，并且常超时或被限流；第一批 `shape` 达标线 P1 = 0.70，字数上限 300，整轮 p90 上限 T = 第一批前 k=5 基线 p90 + 300 ms，超 8 秒占比不升；P2 与起跑时限随 R11 作废。协调者裁决：R10 的受保护句加线路名行；本轮回复整段由代码生成或替换的（订单、支付与付款通知、转人工固定话术、`stranded` 兜底、R14 寒暄）不裁剪，只记 `over_limit`；R12 判断收尾轮前先去掉 `PRICE_OK`，本轮建了单的不算收尾；迁移只加 `turn_traces.reply_shape`，`usage_daily.purpose` 不加 `rewrite`。
