@@ -26,6 +26,7 @@ const { partsOf, bindPack, linkWhitelistStep } = await import('./core/pack-api.j
 const { siteLinks, isSiteHtml } = await import('./core/site-links.js');
 const { wxPage, wxResource, sandboxWechatIndex } = await import('./tenancy/sandbox/outbound.js');
 const { sandboxApp } = await import('./tenancy/sandbox/process.js');
+const { webReply } = await import('./adapters/web.js');
 const { __test } = await import('./adapters/wecom.js');
 const { packPipelines } = await import('./core/engine/pipelines.js');
 const { Hono } = await import('hono');
@@ -104,8 +105,27 @@ try {
   assert.equal(__test.extractCard(`${BASE}${quote}`, BASE, { ...session, id: 'wecom:wmOther' }), null);
   assert.equal(__test.extractCard(`${BASE}${quote}\n${BASE}/pay/${order.id}`, BASE, session), null, '多卡不吞另一条链接');
   assert.deepEqual(partsOf('/privacy', BASE, session), [{ kind: 'link', linkKind: 'site', url: '/privacy' }]);
+  for (const [input, expected] of [
+    [quote, ''],
+    [`就是这份报价单：${quote}`, '就是这份报价单，见下方卡片'],
+    [`请点这里 👉 ${BASE}${quote} 👈`, '请点下方卡片'],
+    [`费用明细：\n${quote}\n交期明天确认。`, '费用明细，见下方卡片。\n交期明天确认。'],
+    [`就是这份报价单：${quote}，合计100元`, '就是这份报价单，见下方卡片，合计100元'],
+    [`${quote}\n${BASE}${quote}\n/privacy`, '/privacy'],
+    [`https://evil.example.test${quote}\n${quote}`, `https://evil.example.test${quote}`],
+    [`${quote} ${quote}`, ''],
+  ]) {
+    const reply = webReply(input!, session);
+    assert.equal(reply.text, expected, input);
+    assert.deepEqual(reply.parts, partsOf(input!, BASE, session), '只改正文，保留部件字节');
+  }
+  assert.deepEqual(webReply(`站外 https://evil.example.test${quote}`, session), {
+    text: `站外 https://evil.example.test${quote}`,
+    parts: [],
+  });
   fixture.siteLinks = [{ ...liveDef, partTitle: () => null }];
   assert.deepEqual(partsOf(quote, BASE, session), [{ kind: 'link', linkKind: 'quote', url: quote }]);
+  assert.equal(webReply(quote, session).text, quote, '没有标题的部件不去正文');
   fixture.siteLinks = [liveDef];
   assert.equal(isSiteHtml('/quote.html'), true);
   assert.ok(packPipelines(fixture).reply.steps.some((s) => s.id === 'link_whitelist'));

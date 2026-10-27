@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import type { ChannelAccount } from './channels/accounts.js';
 import type { AnyOrder, LineOrder } from './core/order-view.js';
 
@@ -21,7 +22,9 @@ const { installPublicHost } = await import('./tenancy/hosts.js');
 const host = tenancy.hostRuntime();
 const config = await import('./config/source.js');
 const { app } = await import('./server.js');
-const { openTestDb, installSeededConfig } = await import('./db/testing.js');
+const store = await import('./store.js');
+const { messageToRow } = await import('./store/project.js');
+const { openTestDb, installSeededConfig, installPgSessionStore } = await import('./db/testing.js');
 const { installAccounts } = await import('./channels/accounts.js');
 const { renderBrandPage, brandTexts } = await import('./core/brand.js');
 const db = await openTestDb();
@@ -54,11 +57,16 @@ try {
       },
     }),
   );
+  await tenancy.withTenantScope(other, async () => {
+    const fx = await installPgSessionStore(db, { slug: other.slug, varDir: dir });
+    await store.initSessionStore(fx.deps);
+    assert.deepEqual((await store.drainStore(5000)).undrained, []);
+  });
   installPublicHost(host, 'travel.example.invalid');
   installPublicHost(other, 'industrial.example.invalid');
   tenancy.configureTenancy({ role: 'host', standardCount: 2 });
   const accounts: ChannelAccount[] = [host, other].map((rt) => ({
-    id: `web-${rt.slug}`,
+    id: randomUUID(),
     tenantId: rt.id,
     key: 'rfq',
     kind: 'web',
@@ -69,6 +77,19 @@ try {
     web: { title: rt === host ? '旅游演示' : '衡石工业品', dailyNewConversations: 10, dailyTurns: 10 },
     inactiveReason: null,
   }));
+  await db.pg.exec('RESET ROLE');
+  for (const account of accounts) {
+    await db.pg.query('insert into channel_accounts (id, tenant_id, key, kind, name, status, settings) values ($1,$2,$3,$4,$5,$6,$7)', [
+      account.id,
+      account.tenantId,
+      account.key,
+      account.kind,
+      account.name,
+      account.status,
+      JSON.stringify(account.web),
+    ]);
+  }
+  await db.pg.exec('SET ROLE agent_app');
   installAccounts(accounts);
   const binding = other.pack!;
   const brand = binding.brand!;
@@ -183,6 +204,78 @@ try {
       assert.equal(Object.hasOwn(JSON.parse(raw), 'brand'), false);
     }
   }
+  // 终验 1：同一报价的批准推送、对话 HTTP / 重试与刷新历史都只改客户投影。
+  const { webAdapter, subscribeWeb, webConversationId } = await import('./adapters/web.js');
+  const { approveQuote } = await import('./payment/orders.js');
+  const { recordQuoteStates } = await import('./core/message-parts.js');
+  await tenancy.withTenantScope(other, async () => {
+    const token = Buffer.alloc(32, 7).toString('base64url');
+    const session = store.getOrCreateSession(webConversationId(accounts[1]!.id, token), 'web');
+    session.channelAccountId = accounts[1]!.id;
+    quote.sessionId = session.id;
+    session.orderIds.push(quote.id);
+    const events: import('./adapters/web.js').WebEvent[] = [];
+    const unsubscribe = subscribeWeb(session.id, 'quote-ui', (event) => events.push(event));
+    assert.equal(typeof unsubscribe, 'function');
+    try {
+      await approveQuote(quote.id, { userId: null, name: '合成顾问', role: 'supervisor' });
+      const raw = `/quote/${quote.id}`;
+      const title = '衡石工业品（虚构）报价单 · 1 项';
+      const parts = [{ kind: 'link', linkKind: 'quote', url: raw, title }];
+      assert.deepEqual(events.at(-1), { type: 'push', text: '', parts }, '批准推送只有卡片');
+      assert.equal(session.messages.at(-1)!.content, raw, '批准通知原文仍是链接');
+      assert.deepEqual(messageToRow(session.messages.at(-1)!, 1).extra?.quoteStates, { [quote.id]: 'approved' });
+      const input = `就是这份报价单：${raw}`;
+      const message = { role: 'agent' as const, content: input, at: Date.now() };
+      recordQuoteStates(message, session);
+      session.messages.push({ role: 'customer', content: raw, at: Date.now(), msgid: 'quote-ui-retry' }, message, {
+        role: 'agent',
+        author: 'human',
+        content: raw,
+        at: message.at + 1,
+      });
+      const original = JSON.stringify(session.messages);
+      const headers = {
+        host: 'industrial.example.invalid',
+        cookie: `__Host-wv=${token}`,
+        'x-web-chat': '1',
+        'content-type': 'application/json',
+      };
+      const body = JSON.stringify({ text: '重试', cid: 'quote-ui-retry' });
+      const response = await app.request('/api/web/rfq/messages', {
+        method: 'POST',
+        headers: { ...headers, 'content-length': String(Buffer.byteLength(body)) },
+        body,
+      });
+      assert.equal(response.status, 200);
+      const expected = { text: '就是这份报价单，见下方卡片', parts };
+      assert.deepEqual(await response.json(), { reply: expected });
+      await webAdapter.push(session.id, input, { kind: 'notice' });
+      assert.deepEqual(events.at(-1), { type: 'push', ...expected });
+      await webAdapter.push(session.id, raw, { kind: 'human' });
+      assert.deepEqual(events.at(-1), { type: 'push', text: '', parts: [{ ...parts[0], title: `【顾问】${title}` }] });
+      const history = await app.request('/api/web/rfq/history', { headers });
+      assert.equal(history.status, 200);
+      const messages = (await history.json()).messages;
+      assert.ok(
+        messages.some((m: { role: string; text: string }) => m.role === 'customer' && m.text === raw),
+        '客户输入保持原文',
+      );
+      assert.ok(messages.some((m: { role: string; text: string }) => m.role === 'agent' && m.text === ''));
+      assert.deepEqual(messages.at(-2), { role: 'agent', ...expected, at: message.at });
+      assert.deepEqual(messages.at(-1), {
+        role: 'agent',
+        text: '',
+        parts: [{ ...parts[0], title: `【顾问】${title}` }],
+        at: message.at + 1,
+      });
+      assert.equal(JSON.stringify(session.messages), original, '推送 / 重试 / 刷新不修改会话与报价状态证据');
+    } finally {
+      if (typeof unsubscribe === 'function') unsubscribe();
+      assert.deepEqual((await store.drainStore(5000)).undrained, []);
+    }
+  });
+  console.log('INDUSTRIAL WEB QUOTE PASS: 批准推送、对话重试、刷新历史、顾问卡片、会话原文与quoteStates');
   const published = tenancy.withTenantScope(other, config.currentSop);
   tenancy.withTenantScope(other, () => config.replacePublishedSop({ ...published, versionNo: published.versionNo + 1, brand: custom }));
   try {
@@ -227,6 +320,10 @@ try {
   console.log('INDUSTRIAL UI PASS: Host隔离、公开页面、品牌转义、中性缺省、欢迎语、旅游HTML/入口逐字节');
 } finally {
   installAccounts([]);
+  await tenancy.withTenantScope(other, async () => {
+    assert.deepEqual((await store.drainStore(5000)).undrained, []);
+    await other.store.pgBackend?.close();
+  });
   for (const rt of [host, other]) await tenancy.withTenantScope(rt, config.closeConfig);
   await db.close();
   fs.rmSync(dir, { recursive: true, force: true });

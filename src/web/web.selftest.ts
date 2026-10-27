@@ -1498,6 +1498,18 @@ assert.ok(ui.nodes.get('msgs')!.textContent.includes('【顾问】您好'));
 assert.equal(ui.nodes.get('msgs')!.querySelectorAll('a').at(-1)!.href, '/pay/advisor', 'SSE 顾问部件渲染卡片');
 await source.emit('push', { data: JSON.stringify({ text: '纯文本 /pay/unlisted 和 https://evil.test/pay/id', parts: [] }) });
 assert.equal(ui.nodes.get('msgs')!.querySelectorAll('a').length, 3, '服务端没有给部件时浏览器不从正文找链接');
+// 执行真实页面脚本：卡片独占的 SSE 与刷新历史都不能生成空气泡。
+const quotePart = { kind: 'link', linkKind: 'quote', url: '/quote/ord_0123456789abcdef01234567', title: '合成报价单' };
+await source.emit('push', { data: JSON.stringify({ text: '', parts: [quotePart] }) });
+const cardRow = ui.nodes.get('msgs')!.children.at(-1)!;
+assert.equal(cardRow.querySelectorAll('div').filter((n) => n.className === 'bubble').length, 0);
+assert.equal(cardRow.querySelectorAll('a')[0]!.href, quotePart.url);
+const cardHistory = pageFixture([{ role: 'agent', text: '', at: Date.now(), parts: [quotePart] as MessagePart[] }]);
+await settle();
+const restoredCard = cardHistory.nodes.get('msgs')!.children.at(-1)!;
+assert.equal(restoredCard.querySelectorAll('div').filter((n) => n.className === 'bubble').length, 0);
+assert.equal(restoredCard.querySelectorAll('a')[0]!.href, quotePart.url);
+await cardHistory.win.emit('pagehide');
 await source.emit('menu', {
   data: JSON.stringify({
     text: '是否同意？',

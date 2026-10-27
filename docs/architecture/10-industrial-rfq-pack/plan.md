@@ -65,6 +65,82 @@
 
 ## 实施记录
 
+### 终验发现 1–3 修复（2026-10-27）
+
+- 范围：按 owner 的修复任务落实发现 1–3；发现 4–6 留后续，spec 由协调者修订，本次不改状态、不提交、不访问服务器或真实模型。
+- 网页链接投影：将企微 `stripLink` 与辅助逻辑移到核心 `src/core/link-prose.ts`，企微调用保持原行为。网页回复、推送与历史的 agent 消息共用 `webReply`，先从原文提取部件，再只删除带 `title` 的链接；网页分支按完整候选匹配，避免相对路径误删完整 / 外站地址，并为其余引导语补「见下方卡片」。客户输入、存储消息、`quoteStates` 与工作台读取不改；无标题的旅游部件原样保留。空正文不生成气泡；顾问只有卡片时标记放在标题上。`public/chat.html` 不动。
+- 型号匹配：整串型号 / 别名均未命中后，才去两端连续汉字，按型号、别名顺序重试全等；前缀与语义检索仍用整串，不把候选升级为精确型号。
+- 单价显示：`moneyText` 对 `decimals: 2` 按整数分固定显示两位；数字框只在非输入中补齐初值 / 失焦值，输入、保存、校验与分换算不变。未声明精度的字段与共用 `formatYuan` 不改。
+- 回归测试：`site-links.selftest.ts` 覆盖证明包、引导语、指示符号、多链接、完整 / 相对 / 外站地址和无标题回退；`industrial-ui.selftest.ts` 覆盖工业批准推送、对话重试、历史、顾问卡片及原文 / 状态证据；`web.selftest.ts` 执行真实页面脚本验证 SSE 与历史卡片没有空气泡；`wecom-nontext.selftest.ts` 经非宿主数据库账号和真实出站链验证卡片与失败兜底的租户完整地址；`industrial-domain.selftest.ts` 覆盖品名、别名、优先级、系列及语义原文；console `fields.selftest.tsx`（含 catalog）覆盖列表、只读、表单初值与保存。
+- 企微多链接边界：两条以上文档链接不出卡片，本次不改。任务说明称正文仍为相对路径；代码与实际出站测试显示现有 `formatForWecom` / `absolutizePayLinks` 已补全本租户地址（该代码未改）。因此不能把「相对路径」写成已验证事实；仍以不出卡片作为已知边界，交协调者核对原观察的入口。
+- 常量搬迁：`LINK_LABEL_RE` 同步登记到 `src/tenancy/state-manifest.ts` 的新路径；状态检查 608 个绑定 / 608 个条目通过。
+- 协调者审查补改：`moneyText` 的千分位改用共用 `digits`，不依赖运行环境的区域设置；fields 自测两时区各 1766 条断言重跑通过。
+- 门禁：✔ `pnpm -s format:check`、✔ `pnpm -s lint`、✔ `pnpm -s typecheck`、✔ `pnpm -s test:locked`；锁定 8 文件、`eval/baselines/`、`public/chat.html` 与共用 `src/shared/format.ts` 的 diff 为空。相对 `origin/dev` 的新增行扫描没有本机绝对路径或过长假企微标识。内容黑名单因本机未提供 `SENSITIVE_PATTERNS` / `.sensitive-patterns` 按既有规则跳过，未把它记为完整内容扫描通过。
+- 字节与回归：两种 v2 均 900/900、各 8742 项断言，比较默认 `v2-10-step12.json` 均为 0 处差异；旧 865 条与其余基线文件未改。link-bytes 为 317 条 / 517 项断言，legacy-bytes 为 60 条 / 140 项断言，两时区均逐字节通过，夹具未改。锁定前缀如下：
+
+```text
+PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd
+CONFIG_SOURCE=file LLM_MOCK=1：v2 快照比对：900 条 case · 0 处差异
+CONFIG_SOURCE=file CONFIG_TEST_DB=pglite LLM_MOCK=1：v2 快照比对：900 条 case · 0 处差异
+```
+
+- console：✔ 构建、✔ `check-console-dist`（169 个产物文件，首屏 JS 357,415 / 420,000 B）、✔ `check-fonts`（730 个界面汉字均覆盖）。fields / catalog 两时区各 1766 条断言通过，包含编辑初值、输入保存、列表 / 只读、导入预览、上架预览及旅游原样。
+- 双时区矩阵：按改动的导入、函数名与文件名检索受影响自测，48 套各跑 UTC / Asia/Shanghai，再补租户状态检查自测两时区（每次 32 项），共 49 套双时区最终通过。UTC 的新增预览断言最初误写单位「元」，按字段配置改为「元/晚」后重跑通过；本机时区工业演示与两个 v2 同时运行时 p95 51.58 ms，待并发任务退出后独立重跑 p95 0.732 ms（40 条 / 30 行 / 1000 批，Node v22.22.0 darwin/arm64），功能代码及 50 ms 阈值未改。最终代码的网页 / 工业 UI 与字段测试均已复核。真实 PG 条件分支未设置 `PG_TEST_URL`，按套件规则跳过；没有连接外部数据库、创建容器或调用真实模型。完整 `pnpm test` 按任务约定留给 CI。
+
+| 自测                                             | UTC | Asia/Shanghai |
+| ------------------------------------------------ | --- | ------------- |
+| `console/src/fields/fields.selftest.tsx`         | ✔   | ✔             |
+| `console/src/parts/popupRegion.selftest.tsx`     | ✔   | ✔             |
+| `eval/sim/industrial.selftest.ts`                | ✔   | ✔             |
+| `src/adapters/wecom-02.selftest.ts`              | ✔   | ✔             |
+| `src/adapters/wecom-03.selftest.ts`              | ✔   | ✔             |
+| `src/adapters/wecom-nontext.selftest.ts`         | ✔   | ✔             |
+| `src/adapters/wecom-outbound-host.selftest.ts`   | ✔   | ✔             |
+| `src/catalog-money.selftest.ts`                  | ✔   | ✔             |
+| `src/channels/channels.selftest.ts`              | ✔   | ✔             |
+| `src/channels/recovery.selftest.ts`              | ✔   | ✔             |
+| `src/config/brand.selftest.ts`                   | ✔   | ✔             |
+| `src/config/config.selftest.ts`                  | ✔   | ✔             |
+| `src/config/template-derive.selftest.ts`         | ✔   | ✔             |
+| `src/core/link-bytes.selftest.ts`                | ✔   | ✔             |
+| `src/handoff/handoff.selftest.ts`                | ✔   | ✔             |
+| `src/industrial-catalog.selftest.ts`             | ✔   | ✔             |
+| `src/industrial-demo.selftest.ts`                | ✔   | ✔             |
+| `src/industrial-domain.selftest.ts`              | ✔   | ✔             |
+| `src/industrial-followup.selftest.ts`            | ✔   | ✔             |
+| `src/industrial-import.selftest.ts`              | ✔   | ✔             |
+| `src/industrial-quotes.selftest.ts`              | ✔   | ✔             |
+| `src/industrial-replies.selftest.ts`             | ✔   | ✔             |
+| `src/industrial-review.selftest.ts`              | ✔   | ✔             |
+| `src/industrial-ui.selftest.ts`                  | ✔   | ✔             |
+| `src/ops/ops.selftest.ts`                        | ✔   | ✔             |
+| `src/order-readers.selftest.ts`                  | ✔   | ✔             |
+| `src/payment/legacy-bytes.selftest.ts`           | ✔   | ✔             |
+| `src/quota/outbound.selftest.ts`                 | ✔   | ✔             |
+| `src/quota/quota.selftest.ts`                    | ✔   | ✔             |
+| `src/quota/shutdown.selftest.ts`                 | ✔   | ✔             |
+| `src/quote-actions.selftest.ts`                  | ✔   | ✔             |
+| `src/quote-approval.selftest.ts`                 | ✔   | ✔             |
+| `src/quote-page.selftest.ts`                     | ✔   | ✔             |
+| `src/quote-replies.selftest.ts`                  | ✔   | ✔             |
+| `src/shared/format.selftest.ts`                  | ✔   | ✔             |
+| `src/site-links.selftest.ts`                     | ✔   | ✔             |
+| `src/store/parity.selftest.ts`                   | ✔   | ✔             |
+| `src/tenancy/events-channels.selftest.ts`        | ✔   | ✔             |
+| `src/tenancy/isolation.selftest.ts`              | ✔   | ✔             |
+| `src/tenancy/public-routes.selftest.ts`          | ✔   | ✔             |
+| `src/tenancy/runtime.selftest.ts`                | ✔   | ✔             |
+| `src/tenancy/sandbox/outbound.selftest.ts`       | ✔   | ✔             |
+| `src/tenancy/sandbox/reaper.selftest.ts`         | ✔   | ✔             |
+| `src/tenancy/sandbox/wechat-e2e.selftest.ts`     | ✔   | ✔             |
+| `src/tenancy/sandbox/wecom-outbound.selftest.ts` | ✔   | ✔             |
+| `src/tenancy/sandbox/wecom.selftest.ts`          | ✔   | ✔             |
+| `src/trace/trace.selftest.ts`                    | ✔   | ✔             |
+| `src/web/web.selftest.ts`                        | ✔   | ✔             |
+| `scripts/check-tenant-state.selftest.ts`         | ✔   | ✔             |
+
+- 交接：发现 1–3 的实现与本机验证已完成，全部改动留在工作区，未提交；无本次遗留的后台进程或容器。下一步由协调者审查 diff、同步 spec 并集成；发现 4–6 仍留后续，09 / 10 的 `implemented` 仍由 owner 确认。
+
 ### R16 非文字消息提示按包取（2026-10-27）
 
 - 已完成任务 1–4：企微旧账号、数据库账号、沙箱三条路径按当前租户的 `PackRuntime.fixedReplies` 取 `non-text.<消息类型>`，缺类型取 `non-text.other`，整个包未提供时回中性通用文字。复用既有 legacy / template 样例渲染，不新增接口、依赖、配置或缓存；异步取句在读取会话接管状态之前完成。旅游六类提示与 other 原文逐字节搬到旅游包；工业七句引导把型号与数量打字发来，图片句允许抄写铭牌文字，不承诺识图。两包固定句登记注明适配器直发；词表搬动同步 state-manifest。
@@ -681,7 +757,7 @@ DB 模式：22 个请求的前缀哈希核对，0 个与 /healthz 不符
 
 #### 本次发现（交 owner 定）
 
-1. **报价链接的显示。** 批准推送的正文就是裸路径（`src/payment/orders.ts:146` 以 `/quote/<单号>` 为正文生成卡片），网页卡片上方多出一个只有路径的气泡；AI 重发时把路径写进句子。链接是相对路径：网页同 Host 能打开，接企微后客户点不开，需要按租户 Host 的完整地址。接工业企微前要修。
+1. **报价链接的显示。** 批准推送的正文就是裸路径（`src/payment/orders.ts:146` 以 `/quote/<单号>` 为正文生成卡片），网页卡片上方多出一个只有路径的气泡；AI 重发时把路径写进句子。（更正：企微抽卡片与退回文字、以及多链接不出卡片时的正文，都已按租户 Host 补全地址，「接企微后点不开」不成立；实际问题只在网页的正文显示。）
 2. **型号后带品名不精确命中。** `matchInMemory('M8×30 螺栓')` 返回 none（本机复现），于是走语义召回；查询含中文，不按纯型号过滤，返回 5 个候选（含正确型号）追问。没有编造型号。
 3. **单价两位小数。** 后台列表与编辑表单的整数价不补「.00」，验收 2 原文要求两位小数。
 4. **时延。** 两轮建单（三次模型调用、两次对冲）整轮约 10 秒，超 8 秒线；真实闸记录超 8 秒的占 1.1%。
@@ -1047,13 +1123,7 @@ DB 模式：22 个请求的前缀哈希核对，0 个与 /healthz 不符
 
 ## Open
 
-2026-10-27 终验后交 owner 定（详见「联合上线与终验」）：
-
-1. **本次发现 1–6 的处理。** 推荐：翻 `implemented` 前修 1、2、3，其中 1 是接工业企微的前置；4、5、6 记为后续。
-2. **偏离：没有独立的预发环境。** R16 在线上开通后检查，开通前由进程内双租户自测承担。推荐接受。
-3. **要 owner 手机补验：** rc2 后旅游企微一问一答；新沙箱扫码 G01 冒烟；报价待审与客户确认两条通知是否送达。
-
-2026-10-27 早些时候：协调者已确认 R16 公开品牌投影；实现与验收见「演示租户界面残留清单」。
+无。2026-10-27 owner 定：发现 1–3 修复后再翻 `implemented`（实现见实施记录「终验发现 1–3 修复」，spec 末条 Revisions）；4–6 记入 spec「后续」。偏离「没有独立预发」与手机补验三项随 implemented 确认一起交 owner。
 
 ## 已定
 

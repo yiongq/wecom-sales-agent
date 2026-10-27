@@ -17,6 +17,14 @@ export function matchInMemory(query: string, parts: readonly Part[]): PartMatch 
   if (direct.length) return result(direct, true);
   const aliases = parts.filter((part) => part.aliases?.some((alias) => normalizePartNo(alias) === normalized));
   if (aliases.length) return result(aliases, true);
+  // 品名只允许从两端去掉，且只重试全等；系列与语义回退仍用整串。
+  const model = normalized.replace(/^\p{Script=Han}+|\p{Script=Han}+$/gu, '');
+  if (model && model !== normalized) {
+    const directModel = parts.filter((part) => normalizePartNo(part.partNo) === model);
+    if (directModel.length) return result(directModel, true);
+    const modelAliases = parts.filter((part) => part.aliases?.some((alias) => normalizePartNo(alias) === model));
+    if (modelAliases.length) return result(modelAliases, true);
+  }
   return result(normalized.length >= 4 ? parts.filter((part) => normalizePartNo(part.partNo).startsWith(normalized)) : [], false);
 }
 export function createMatcher(sources: Pick<PackSources, 'currentCatalog' | 'indexReady' | 'semanticRecall'>) {
