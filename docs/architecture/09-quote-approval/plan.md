@@ -929,3 +929,8 @@ PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b487
 
 - 第 15–17 步完成：09 随 `demo-v10-rc1`、`demo-v10-rc2` 上线，线上走完工业报价流程，验收 1–13 终验见「联合上线与终验」，清理与 10 一起做。
 - 下一步：owner 看 10 plan 的 Open（发现 1 关系到报价链接，属 09 R5 / R10 的范围），确认后第 18 步与 10 第 20 步一起翻 `implemented`；发版到 `main` 要 owner 说发版。
+
+### 交接（2026-10-27，owner 确认验收，翻 implemented）
+
+- owner 确认 09 验收 1–13，spec 翻 `implemented`（末条 `Revisions:`）；接受 10 记录的偏离「没有独立预发」，手机补验跳过。线上为 `demo-v10-rc3`。
+- 第 18 步只差发版：照 08 的做法从 `dev` 开 `release/*` 进 `main`、在 `main` 上打并推 annotated tag，要 owner 说发版；发版后勾第 18 步。
