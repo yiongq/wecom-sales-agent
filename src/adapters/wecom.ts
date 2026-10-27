@@ -1675,17 +1675,15 @@ function dedupeFor(rt: WecomRuntime, sessionId: string, msg: KfMessage, replay: 
   return sentOrSkip(reply);
 }
 
-// 小红书来的客户第一条常是笔记截图、行程截图或语音。一句「只能处理文字」是把
-// 首响这个唯一能碾压人工的环节浪费掉——收不到内容也要接住话头、把人拉回文字。
-const NON_TEXT_HINT: Record<string, string> = {
-  image: '图我收到了～不过我这边暂时看不了图片内容，您用文字说一下想去哪、几位出行，我马上给您找线路。',
-  voice: '语音我这边暂时听不了，您打几个字给我就行～想去哪儿、几位出行、大概什么时候走？',
-  video: '视频收到啦～您用文字说说想要什么样的行程，我这就帮您安排。',
-  file: '文件我这边暂时打不开，方便的话把关键需求打字发我：目的地、几位、大概日期。',
-  link: '链接收到～您想找类似的行程吗？跟我说下目的地和人数，我帮您对一条。',
-  location: '位置收到～您是想从这边出发，还是想去这附近玩？跟我说下大概日期和人数。',
-};
-const NON_TEXT_HINT_OTHER = '这条消息我这边暂时处理不了，您用文字说说想去哪儿、几位出行，我马上帮您安排～';
+// 复用包的固定句登记；每次按当前租户绑定取，不缓存跨租户文字。
+const NON_TEXT_HINT_OTHER = '这条消息我这边暂时处理不了，请用文字描述您的需求，我来帮您。';
+async function nonTextHint(msgtype: string): Promise<string> {
+  const { runtime, brand } = currentPack();
+  const replies = runtime.fixedReplies;
+  const fixed = replies?.find((reply) => reply.id === `non-text.${msgtype}`) ?? replies?.find((reply) => reply.id === 'non-text.other');
+  const samples = await fixed?.samples();
+  return samples?.find((sample) => sample.mode === (brand ? 'template' : 'legacy'))?.text || NON_TEXT_HINT_OTHER;
+}
 const NON_TEXT_PLACEHOLDER: Record<string, string> = {
   image: '[图片]',
   voice: '[语音]',
@@ -1711,6 +1709,7 @@ function handleCustomerMessage(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessag
 async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage, replay: boolean): Promise<'deferred' | void> {
   const sessionId = rt.prefix + msg.external_userid;
   if (msg.msgtype !== 'text' || !msg.text?.content) {
+    const hint = await nonTextHint(msg.msgtype);
     // 这一条不经引擎，同样是一轮（02 R16「每处理一条客户消息收集一条轮次记录」）：口径同引擎的确定性路径，
     // 回了固定提示记 deterministic、已转人工不回话记 silent；重放时提示已经发过、什么都不做的不算一轮（同重发已生成的回复）。
     // 只记轮次、关联提示消息的 turnId，客户收到的与会话里记下的都不变
@@ -1735,7 +1734,6 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
         endTurn('silent', '', stageBefore, session.stage);
         return; // 与文本消息一致：只入库，交给真人
       }
-      const hint = NON_TEXT_HINT[msg.msgtype] ?? NON_TEXT_HINT_OTHER;
       // 提示发成功才记进会话（同老客户欢迎语），所以重放时占位之后已经有这条提示，就是客户收到过了，不再发
       if (seen >= 0 && session.messages.slice(seen + 1).some((m) => m.role === 'agent' && m.content === hint)) return;
       // 消息对象先建好交给账本（发成功才写进会话，写进去的是同一个对象，账本行据它取 seq）
@@ -2282,6 +2280,7 @@ function processNonTextRow(
   alreadyRecorded = false,
 ): Promise<void> {
   return withTurnScope(async () => {
+    const hint = await nonTextHint(msg.msgtype);
     const session = accountSession(rt, sessionId);
     startTurn(sessionId);
     const stageBefore = session.stage;
@@ -2305,7 +2304,6 @@ function processNonTextRow(
       await finishInboxRow(sessionId, row.id, 'done');
       return;
     }
-    const hint = NON_TEXT_HINT[msg.msgtype] ?? NON_TEXT_HINT_OTHER;
     // 消息对象先建好交给账本（发成功才写进会话，写进去的是同一个对象，账本行据它取 seq）
     const sent: ChatMessage = { role: 'agent', content: hint, at: Date.now() };
     const out = await sendTextDb(rt, cfg, sessionId, hint, 'ai', sent, takeoverGen(sessionId), row.id);
@@ -3479,6 +3477,7 @@ export class SandboxWecomRuntime {
         return;
       }
       if (msg.msgtype !== 'text' || !msg.text?.content) {
+        const hint = await nonTextHint(msg.msgtype);
         const s = getOrCreateSession(id, 'wecom');
         s.messages.push({
           role: 'customer',
@@ -3490,7 +3489,7 @@ export class SandboxWecomRuntime {
         trimSessionMessages(s);
         saveSession(s);
         if (!s.handedOver) {
-          const sent: ChatMessage = { role: 'agent', content: NON_TEXT_HINT[msg.msgtype] ?? NON_TEXT_HINT_OTHER, at: Date.now() };
+          const sent: ChatMessage = { role: 'agent', content: hint, at: Date.now() };
           if (await this.push(id, sent.content, { kind: 'ai', message: sent })) {
             if (!stillCurrent()) return;
             s.messages.push(sent);

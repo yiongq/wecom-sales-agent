@@ -34,6 +34,16 @@ import { excludesRoundTripTransport, renderQuoteLine } from './quote-template.js
 import { travelQuickReplyDefaults } from './quick-reply-defaults.js';
 import { travelTemplates } from './templates.js';
 
+const nonTextHints: Record<string, string> = {
+  image: '图我收到了～不过我这边暂时看不了图片内容，您用文字说一下想去哪、几位出行，我马上给您找线路。',
+  voice: '语音我这边暂时听不了，您打几个字给我就行～想去哪儿、几位出行、大概什么时候走？',
+  video: '视频收到啦～您用文字说说想要什么样的行程，我这就帮您安排。',
+  file: '文件我这边暂时打不开，方便的话把关键需求打字发我：目的地、几位、大概日期。',
+  link: '链接收到～您想找类似的行程吗？跟我说下目的地和人数，我帮您对一条。',
+  location: '位置收到～您是想从这边出发，还是想去这附近玩？跟我说下大概日期和人数。',
+  other: '这条消息我这边暂时处理不了，您用文字说说想去哪儿、几位出行，我马上帮您安排～',
+};
+
 /** 一种渲染的上下文：品牌（null 是旧版）、渠道、联系方式的三种说法 */
 export interface ModeCtx {
   mode: FixedReplyMode;
@@ -111,6 +121,7 @@ const outside = (why: string): FixedReplyOrigin => ({ outside: why });
 const ORIGINS: readonly (readonly [string, FixedReplyOrigin])[] = Object.freeze([
   ['identity.answer', reply('identity')],
   ['identity.off-topic', reply('injection')],
+  ['non-text.', outside('非文字消息由企微适配器直发，不经模型回复管线')],
   ['welcome.', outside('欢迎语由渠道在进入会话时直发，不是回复管线的产物')],
   ['quick-reply.', outside('快捷回复由顾问挑选后人工发出，不经出口护栏')],
   ['handoff.custom-itinerary', reply('custom_promise-b')],
@@ -172,7 +183,14 @@ function isFixedReplyStep(origin: FixedReplyOrigin | undefined): boolean {
 }
 
 export function createTravelFixedReplies(world: World): readonly FixedReply[] {
-  const out: FixedReply[] = [];
+  const out: FixedReply[] = Object.entries(nonTextHints).map(([type, text]) =>
+    reg(
+      `non-text.${type}`,
+      'fixed-replies.ts',
+      'plain',
+      each(() => text),
+    ),
+  );
   const add = (...items: FixedReply[]): void => {
     out.push(...items);
   };

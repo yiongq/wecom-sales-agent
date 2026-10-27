@@ -4,7 +4,23 @@ import { followupTemplates } from './auxiliary.js';
 import { defaultIndustrialPolicy, taxInvoiceText } from './policy.js';
 import { FIXED } from './turn.js';
 import { INVENTORY_FALLBACK, SUBSTITUTE_FALLBACK, TRIM_FALLBACK, trimNote } from './guards.js';
+const nonTextHints: Record<string, string> = {
+  image: '图片收到了，我暂时看不了图片内容，请把型号和数量打字发来，型号铭牌上的文字也可以打给我。',
+  voice: '语音我暂时听不了，请把型号和数量打字发来，我帮您查询。',
+  video: '视频我暂时看不了，请把型号和数量打字发来，我帮您查询。',
+  file: '文件我暂时打不开，请把需要的型号和数量打字发来，我帮您查询。',
+  link: '链接收到了，请把需要的型号和数量打字发来，我帮您查询。',
+  location: '位置收到了，请把交货城市、型号和数量打字发来，我帮您查询。',
+  other: '这条消息我暂时处理不了，请把型号和数量打字发来，我帮您查询。',
+};
 export const fixedReplies: readonly FixedReply[] = [
+  ...Object.entries(nonTextHints).map(([type, text]): FixedReply => ({
+    id: `non-text.${type}`,
+    source: 'src/packs/industrial/fixed-replies.ts',
+    kind: 'plain',
+    producedBy: { outside: '非文字消息由企微适配器直发，不经模型回复管线' },
+    samples: () => FIXED_REPLY_MODES.map((mode) => ({ mode, text })),
+  })),
   ...Object.entries(FIXED).map(([key, text]): FixedReply => ({
     id: `industrial.${key}`,
     source: 'src/packs/industrial/turn.ts',
