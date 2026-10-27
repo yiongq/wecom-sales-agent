@@ -3,6 +3,7 @@
 // 由 engine.ts（新出现的类别、撤回同意）与 adapters/wecom.ts（企微菜单的点击回调）两处调用。
 // 只在发布过隐私说明时才会被调用（调用方先查 currentPrivacyNotice()，不变量 40）；demo（文件配置模式）永远不会走到这里。
 import { privacyLink } from '../privacy/privacy.js';
+import { currentPack } from '../config/source.js';
 import { queueConsents, type ConsentItem } from '../store.js';
 import type { Session } from '../types.js';
 import type { SensitiveCategory } from './triggers.js';
@@ -20,6 +21,11 @@ export const CONSENT_MAX_ASKS = 2;
 /** 企微菜单的问句（spec 原文，类别名代入）；没有发布隐私说明时不会调用这个函数（调用方已经先查过） */
 export function consentMenuText(category: SensitiveCategory): string {
   const link = privacyLink();
+  if (currentPack().runtime.id !== 'travel')
+    return (
+      `您提到了${SENSITIVE_CATEGORY_LABEL[category]}，这属于敏感个人信息。我们仅在您同意后按隐私说明处理这类信息，` +
+      `您可以随时撤回。不提供也能继续咨询。可以吗？隐私说明：${link ?? ''}`
+    );
   return (
     `您提到了${SENSITIVE_CATEGORY_LABEL[category]}，这属于敏感个人信息。我们只用它来推荐合适的线路、安排行程强度和住宿，` +
     `不做别的用途，按隐私说明保存，您可以随时撤回。不提供也能继续咨询，只是推荐可能没那么贴合。可以吗？隐私说明：${link ?? ''}`
