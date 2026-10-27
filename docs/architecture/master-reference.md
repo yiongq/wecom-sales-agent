@@ -362,7 +362,7 @@
 - 2026-10-25 implemented：线上 `demo-v9-rc1` 起生效（四个哈希与开工相同），发版 `demo-v9`；验收 13、14 按 owner 确认的偏离通过，见该 spec 末条 `Revisions:` 与 plan「验收记录」。
 - 2026-10-26 owner 定 09 `ready`，spec 见 [09 · 报价审批、报价单页与站内链接（核心）](./09-quote-approval/spec.md)（[docs/architecture/09-quote-approval/](./09-quote-approval/)）：第二个真实行业包所需的核心能力——报价审批、报价单页、站内链接按包登记，用证明包验证，旅游不变；[10](./10-industrial-rfq-pack/spec.md) 已为 `ready`，见下一条。
 - 2026-10-26 owner 定 10 `ready`，spec 见 [10 · 第二个行业包：工业品询价（与演示租户）](./10-industrial-rfq-pack/spec.md)：用工业品询价包与合成演示租户验证 08、09 的通用能力，公开参考包决定见 [ADR-005](../adr/adr-005-industrial-reference-pack.md)，pre-10 回滚按 R17 拒绝含工业数据的库退旧版本；09 与 10 一起验收、一次上线 `demo-v10-rc1`，各自经 owner 确认后翻 `implemented`。
-- 2026-10-27 implemented（09、10）：随 `demo-v10-rc1` 联合上线，`demo-v10-rc3` 起含终验修复；10 验收 10 的偏离「没有独立预发环境」由 owner 接受，见两份 spec 末条 `Revisions:` 与 plan「验收记录」。发版待 owner 授权。
+- 2026-10-27 implemented（09、10）：随 `demo-v10-rc1` 联合上线，`demo-v10-rc3` 起含终验修复；10 验收 10 的偏离「没有独立预发环境」由 owner 接受，见两份 spec 末条 `Revisions:` 与 plan「验收记录」。发版 `demo-v10`（`main` `1a3f1539`）。
 - 候选：
   - 第二个真实行业包：模板机制要靠它来验证。
   - 电商售后参考包。
