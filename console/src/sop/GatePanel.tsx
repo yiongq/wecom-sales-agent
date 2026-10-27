@@ -1,5 +1,5 @@
 import { Alert, Button, Input, Modal } from 'antd';
-import { useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { GateGoalResult, GateRunView } from '../../../src/shared/console-api.js';
 import { ErrorAlert } from '../parts/ErrorAlert.js';
 import { PrimaryButton } from '../parts/PrimaryButton.js';
@@ -71,10 +71,20 @@ function GoalResults({ run }: { run: GateRunView }) {
     ));
 }
 
+function WaitingTime() {
+  const [began] = useState(Date.now);
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setSeconds(Math.floor((Date.now() - began) / 1000)), 1000);
+    return () => clearInterval(timer);
+  }, [began]);
+  return <p>{cjk(`已等待${seconds}秒，结果会自动更新`)}</p>;
+}
+
 export function GatePanel({ gate, blocked, onStart }: { gate: GateController; blocked: string | null; onStart: () => void }) {
   const titleId = useId();
   const { run, error, starting } = gate;
-  const active = starting || gateActive(run) || (!!gate.id && !run && !error);
+  const active = starting || gateActive(run) || (!!gate.id && !run);
   const errorOnly = error !== null && !gate.id;
   let title = '发布前要先跑一次回归';
   let tone: 'info' | 'success' | 'warning' | 'error' = 'info';
@@ -97,10 +107,12 @@ export function GatePanel({ gate, blocked, onStart }: { gate: GateController; bl
       {active && (
         <p role="status">{cjk(run?.progress ? `已完成${run.progress.done} / 共${run.progress.total}个目标` : '正在等待回归进度')}</p>
       )}
+      {active && <WaitingTime key={gate.id} />}
       {run && <p>{cjk(`已花${(run.costMilli / 1000).toLocaleString('zh-CN', { maximumFractionDigits: 3 })}元`)}</p>}
       {active && <p>{cjk('线上结果能复用时约需4分钟，发版后第一次约需8分钟；重跑失败目标会更久')}</p>}
       {run?.status === 'error' && <p>{cjk(gateError(run.error))}</p>}
       {error !== null && <ErrorAlert error={error} />}
+      {error !== null && gate.id && <p role="status">{cjk('暂时没取到进度，正在自动重试')}</p>}
       {run?.status === 'done' && (
         <>
           {!gate.own && <p>{cjk('这次回归可能对应先前的草稿，请为当前草稿重新跑一次')}</p>}
@@ -110,7 +122,7 @@ export function GatePanel({ gate, blocked, onStart }: { gate: GateController; bl
       {run && <GoalResults run={run} />}
       {blocked && <p>{cjk(blocked)}</p>}
       <Button loading={starting} disabled={active || !!blocked} onClick={onStart}>
-        {run || error !== null ? '重新跑回归' : '跑回归'}
+        {active ? (run?.status === 'running' ? '回归运行中' : '回归已排队') : run || error !== null ? '重新跑回归' : '跑回归'}
       </Button>
     </section>
   );

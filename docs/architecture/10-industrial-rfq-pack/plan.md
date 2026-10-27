@@ -554,6 +554,74 @@ DB 模式：22 个请求的前缀哈希核对，0 个与 /healthz 不符
 
 ## 验收记录
 
+### 演示租户界面残留清单（2026-10-27）
+
+静态扫描覆盖 `public/`、`console/src/`、`src/`，检索旅行、旅游、行程、出行、目的地、方案书、云途、酒店、线路及图片 / og / favicon 引用；排除测试夹具与注释后按可达页面归并。下列位置是修复前 HEAD 的行号。共 13 项：按租户处理 5 项，工业入口 404 2 项，既有隔离 / 平台 / 兼容路径保留 6 项。
+
+| #   | 页面 / 位置                                                                                                                           | 现象与处理                                                                                                                                                            |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | `/w/rfq`，`public/web.html:18、25、31`；`src/packs/industrial/sop.ts:55`                                                              | 副标题、输入占位、隐藏快捷提问仍是旅游；工业页面槽为空。按 Host 绑定的包与品牌替换，缺少页面槽的非旅游包使用中性缺省；旅游原文件不改。                                |
+| 2   | `/w/rfq` 欢迎语，`src/packs/industrial/sop.ts:52`、`runtime.ts:103`                                                                   | 品牌名已有「虚构」，模板又追加「虚构品牌演示」。由品牌配置负责虚构标记，模板不再追加。                                                                                |
+| 3   | `/quote/:id` 与 `/quote.html`，`public/quote.html:6、7、29`                                                                           | 首帧与 og 仍是证明包「方盒核验社」；补工业品牌槽，缺少槽时按品牌通用渲染。                                                                                            |
+| 4   | `/console/` 登录，`src/console-api/entry.ts:27`、`console/src/pages/LoginPage.tsx:83`                                                 | ✔ 已完成。entry 按 Host 下发公开 brand(name/subtitle/image)，登录页显示名称与副标题；工业 image null、不继承旅游图，旅游空品牌不增加字段、响应原字节不变。            |
+| 5   | `/pay.html`，`src/server.ts:1166、1174`、`public/pay.html:7、274、279、296`                                                           | 核心 pay 登记使工业静态入口返回旅游收银台。工业包只有报价单、固定顾问收款，按 09 R4 / 10 R16 返回 404；不改变不带审批通用单的 pay 接口。                              |
+| 6   | `/web.html`，`src/server.ts:1171`                                                                                                     | 绕过账号路由直接返回原始旅游 HTML，且没有 web-config。非旅游包拒绝裸模板入口；正式 `/w/:key` 照常。                                                                   |
+| 7   | `/proposal.html`、`/proposal/...`，`src/server.ts:1019、1166`、`public/proposal.html:7、106`                                          | 原始旅游文案、封面与 og；工业未登记 proposal，运行时已 404，保留；旅游封面不变。                                                                                      |
+| 8   | `/chat.html`、`/admin.html`，`src/tenancy/hosts.ts:86`、`public/chat.html:353、642`、`public/admin.html:316、606`                     | 旧模拟器 / 作战室含旅游文字和封面，工业非宿主已 404，保留宿主兼容路径。                                                                                               |
+| 9   | `/privacy.html`、`/privacy`，`src/server.ts:1139、1171`                                                                               | 前者没有文件且未登记，工业已 404；后者读本租户已发布隐私说明，无硬编码旅游正文，保留。                                                                                |
+| 10  | `/`、`/try`、`/try.html`，`src/server.ts:350`、`public/try.html:56`                                                                   | 根路由去工作台；体验入口是平台沙箱（10 明确不做工业沙箱模板），HTML 没有旅游词，保留平台入口，不宣称工业体验。                                                        |
+| 11  | 共享部件 / 通知，`public/web.js:54`、`src/core/site-links.ts:56`、`console/src/conversations/workbench.ts:288`                        | proposal 部件缺省、旧订单卡和 need 画像是旅游兼容分支；工业 quote 部件有包标题、通用订单及 profileCard，保留。通知模块扫描无新增旅游文案；无 favicon / 旅游图标引用。 |
+| 12  | 企微兼容文案与诊断，`src/adapters/wecom.ts:1681、1738、2308`、`src/config/source.ts:960`、`console/src/_specimen/TypeSpecimen.tsx:43` | 非文字企微回复仍有旅游语义，工业本期只开网页、无此入口；诊断与样张非客户页面，保留并作为未来工业企微接入前检查项。                                                    |
+| 13  | 网页同意菜单，`src/handoff/consent.ts:24`、`src/core/engine/index.ts:242、252`                                                        | 补查发送链发现敏感信息用途「推荐线路、安排行程强度和住宿」也能经网页渠道送出，不能归为企微专用。非旅游包改用中性用途说明及本租户隐私链接，旅游原文保留。              |
+
+修复前运行时：一次性 PGlite 双 standard 租户，旅游品牌 null，工业使用参考品牌与 40 条合成产品，真实 Host 中间件 + app.request（无监听、无外部服务）。工业 `/w/rfq` 200 含「旅行」；`/pay.html` 200 含「云途、旅行、出行、行程、旅游」；`/web.html` 200 含「旅行」；`/api/console/entry` 200 含「云南、线路」并指向旅游图；`/api/console/pack` 200 无旅游词，`/me` 401。`/` 302 → `/console/`，`/try` 302 → 平台沙箱；`/quote/missing`、`/proposal.html`、`/privacy.html`、`/chat.html` 均 404。工作台尚未构建，`/console/` 与深链返回「后台前端还没有构建」404，构建后补验壳 HTML。
+
+实施记录：
+
+- `src/packs/industrial/sop.ts` 补网页副标题 / 输入占位 / 隐藏快捷提问与报价单的页面槽；欢迎模板不再追加虚构标记，AI 身份与人工入口保留。`src/core/brand.ts` 为缺槽的非旅游包提供中性网页文本与品牌报价单，保持旅游 null 品牌原样返回。
+- `src/server.ts` 对有报价审批能力的包关闭无有效普通订单的裸支付页；报价单带 orderId 也 404，不带审批的既有通用单仍可访问。非旅游裸网页模板 404；方案书、旧聊天和隐私静态入口的既有隔离不改。原始 `public/` 文件全部未改。
+- `src/console-api/entry.ts` / `app.ts` 按当前 Host 的已发布品牌，仅投影 `brand: { name, subtitle, image }`，工业 image null；shared / console 类型同步，viewer → Shell → LoginPage 传递公开投影，demo / prod 都显示名称与副标题，匿名返回登录保留品牌。品牌为空时不增加响应字段，原文案与图片回退保持不变。协调者已于本轮明确批准该接口成员，已写入 R16 Revisions；不读取待生效草稿、不下发任何内部配置。
+- `src/handoff/consent.ts` 对非旅游包返回中性同意文字，隐私链接仍读本租户；旅游逐字不变。
+- `GatePanel.tsx` 补按秒更新的等待时间与运行按钮状态。`gate.ts` 沿用既有三秒轮询；网络 / 5xx / 429 暂时错误保留 runId 自动重试，恢复后清错并显示目标进度，其他错误停止；草稿改变 / 离页 / 完成照旧停止。没有改闸目标、缓存键、后端接口或真实模型行为。离线未复现线上截图本身，不推断生产根因。
+- 新 `src/industrial-ui.selftest.ts` 注册到 `package.json` 的 test 末尾；CI 分片从该脚本自动导出，无第二份登记清单。覆盖实际 PGlite 双租户、18 个页面 / 接口、别名和 HEAD、未知 Host、报价支付边界、品牌转义、中性缺省、欢迎语、隐私菜单以及旅游 HTML / entry 原字节。`sop.selftest.tsx` 新增真实组件的计时、503 自动恢复、同一 runId 到结果、按钮防重复与结束停止验证；没有添加新测试框架。
+
+修复后结果（离线验收）：
+
+- 工业 `/w/rfq`、`/quote/:id`、`/quote.html` 为 200，无清单旅游词 / 证明包品牌；报价单首帧与 og 为工业品牌。`/pay.html`、`/web.html` 为 404；`/proposal.html`、`/privacy.html`、`/chat.html`、`/admin.html` 继续 404。构建后的真实 `/console/` 与登录深链 200，无旅游词 / 图片；entry 200、showcase null、brand 仅名称 / 副标题 / null 图片，pack 200、me 401。已发布工业 `/privacy` 200，内容与菜单链接均属本租户。
+- ✔ format、lint、typecheck、check-fonts、console build、check-console-dist。字体无需重建：730 个界面汉字全覆盖，913 个码位 / 191968 B；首屏 JS 357406 B、字体 preload 203852 B，均在既有预算内。
+- ✔ test:locked；`PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd`。
+- ✔ link-bytes：317 条字节基准 / 517 项断言；legacy-bytes：60 条出口字节 / 140 项断言；夹具未改。`eval/baselines/` 与锁定 8 文件 diff 为空。
+- ✔ 文件配置：`v2 回归评测：900/900 用例通过`；`v2 快照比对：900 条 case · 0 处差异`。
+- ✔ PGlite 配置：`v2 回归评测：900/900 用例通过`；`v2 快照比对：900 条 case · 0 处差异`；22 个前缀请求与 healthz 一致。
+- 相关自测按文件名与导入 / 页面关键词检索后选取下表；均使用合成数据、mock 或本机假服务。完整 `pnpm test` 按本次任务共同约定留 CI；真实 PG 子项未设置 PG_TEST_URL、照约定跳过；没有访问生产或真实模型，也没有费用。
+
+| 自测                                                    | Asia/Shanghai | UTC       |
+| ------------------------------------------------------- | ------------- | --------- |
+| `src/industrial-ui.selftest.ts`                         | ✔             | ✔         |
+| `src/console-api/entry.selftest.ts`                     | ✔             | ✔         |
+| `src/tenancy/public-routes.selftest.ts`                 | ✔             | ✔         |
+| `src/config/brand.selftest.ts`                          | ✔             | ✔         |
+| `src/config/template-derive.selftest.ts`                | ✔             | ✔         |
+| `src/web/web.selftest.ts`                               | ✔             | ✔         |
+| `src/quote-page.selftest.ts`                            | ✔             | ✔         |
+| `src/site-links.selftest.ts`                            | ✔             | ✔         |
+| `console/src/conversations/customer-pages.selftest.tsx` | ✔             | ✔         |
+| `src/industrial-replies.selftest.ts`                    | ✔             | ✔         |
+| `src/industrial-demo.selftest.ts`                       | ✔             | ✔         |
+| `src/quote-approval.selftest.ts`                        | ✔             | ✔         |
+| `src/quote-actions.selftest.ts`                         | ✔             | ✔         |
+| `src/quote-replies.selftest.ts`                         | ✔             | ✔         |
+| `src/config/gate.selftest.ts`                           | ✔（60）       | ✔（60）   |
+| `console/src/pages/login.selftest.tsx`                  | ✔（193）      | ✔（193）  |
+| `src/privacy/privacy.selftest.ts`                       | ✔（42）       | ✔（42）   |
+| `src/handoff/handoff.selftest.ts`                       | ✔（3233）     | ✔（3233） |
+| `src/console-api/console.selftest.ts`                   | ✔（465）      | ✔（465）  |
+| `console/src/sop/sop.selftest.tsx`                      | ✔（887）      | ✔（887）  |
+| `console/src/shell/shell.selftest.ts`                   | ✔（180）      | ✔（180）  |
+| `console/src/session.selftest.ts`                       | ✔（52）       | ✔（52）   |
+
+取舍：平台 `/try` 保持原先沙箱入口；工业无图片时不编造素材。界面验证使用既有 happy-dom 组件交互与进程内路由，不声称完成真实浏览器截图或生产走查。修订保持 ready，步骤 16–20 不代勾选。
+
 ### 第二次真实模型闸与四项修复（2026-10-26）
 
 - 第二次真实模型闸（上一轮提交 `72f0557`）：`acceptance-10` 的 pass^5 为 **11/20**，门槛仍为 **14/20**；10 个 safety 仍各要求至少 4/5，其中 below-moq 2/5、pending 0/5、seed-expired 0/5。费用 **¥0.49**。本轮不调用真实模型，费用 ¥0.00；不把离线通过记成第三次真实闸通过。
@@ -832,9 +900,15 @@ DB 模式：22 个请求的前缀哈希核对，0 个与 /healthz 不符
 | 2026-10-26 | 15   | 第二次真实模型 k=5，acceptance-10 pass^5 11/20（协调者执行） | ¥0.49 |
 | 2026-10-26 | 15   | 本轮四项修复与离线验证，无真实模型调用                       | ¥0.00 |
 
-## Open
+### 历史主线交接（原 Open，保留当时状态）
 
 无新增设计问题。R17 的 pre-10 guard 实现阻塞已解决；一次性容器隔离演练仍由协调者在上线前完成，真实 PG、预发 R16、真实模型修复后 k=5 重跑、联合上线补证仍待完成。首次真实闸 pass^5 10/28、safety 7/15 未达标；第二次真实闸按冻结集合得到 11/20，below-moq 2/5、pending 0/5、seed-expired 0/5，仍未达标。本轮四项修复后待协调者第三次重跑，仍为 20 个验收目标（10 safety），其余 8 个单列；本机 mock 通过不能视为真实闸达标。本批按六项修复范围打勾第 15 步，不将这些事项标作已通过。
+
+其中真实模型闸已由下文第 4 次记录更新为达标；其余部署 / PG / 容器事项仍按主线计划追踪，不属于本次 UI 修订的设计未决问题。
+
+## Open
+
+无。2026-10-27 协调者已确认 R16 公开品牌投影；本次实现与验收见「演示租户界面残留清单」。
 
 ## 已定
 
@@ -981,3 +1055,49 @@ DB 模式：22 个请求的前缀哈希核对，0 个与 /healthz 不符
 | 4   | e87da47（bargain 判定补「发我/发给我」，两次失败原话即为正确回复） | **15/20**      | **无**                                       | 21/28      | 1.1%    | ¥0.43 |
 
 第 4 次在最终代码上整套重跑：验收 9 达标（pass^5 ≥ 14/20，每个 safety ≥ 4/5）。合计 ¥1.67。未满 5/5 的验收目标：tier-before、ambiguous、bargain、tax、off-catalog 各 4/5。
+
+### 交接（2026-10-27，演示租户界面修订）
+
+- 已完成：13 项残留清单与双租户核对、网页与报价单品牌、裸支付 / 网页模板入口、欢迎语去重、非旅游敏感信息同意文字、回归计时与暂时读取失败自动恢复；协调者确认后补齐公开品牌登录页，清单第 4 项完成、Open 清空。
+- 接口边界：entry 只增加可选 `brand`（公开名称、副标题、图片），工业图片 null；旅游空品牌没有新字段、响应逐字节不变。新自测覆盖交错 Host、已发布品牌切换、prod 未登录投影、字段白名单、JSON / React 转义与匿名返回登录。
+- 验证：首轮 20 套相关自测两时区通过；公开投影补齐后重跑 industrial-ui、entry、public-routes、console-api、login、shell、session 七套，两时区共 14 次均通过（登录 193、后台 API 465、外壳 180、会话 52）。最终 format / lint / typecheck / test:locked / check-fonts / console build / check-console-dist 全通过；两种配置 v2 各 900/900、0 差异，link-bytes 317、legacy-bytes 60，PREFIX 与工具定义哈希不变。所有相关自测的最终结果见验收表。
+- 工作区：仅本次描述的源码、耐久自测、test 脚本追加与 10 的 spec / plan；不提交、不 push、不建 PR。锁定套件、字节夹具、v2 基线、public 原文件均未改。
+- 下一步：本次 UI 离线验收已完成，交 CI 全链与真实 PG 子项；生产部署、真实模型与 spec 翻 implemented 均不在本任务授权内。未来工业企微接入前另处理清单中的非文字兼容回复。
+
+### 交接（2026-10-27，863dd2b0 沙箱入口回归修复）
+
+- 已复现：未修改的 `src/tenancy/sandbox/http.selftest.ts:189` 在 GET `/try` 得到 503，沙箱日志为 `TenantScopeMissing`。原 UI 验收遗漏了沙箱准备页调用链；先前“全部任务门禁通过”的记录不代表沙箱入口未回归。
+- 根因：`sandboxTryDesign()` 复用 `loginShowcase()`，863dd2b0 使后者新增 `currentPack()` 读取。准备页按 05 R10 / R23 在开通前无租户，沙箱严格模式抛错，经错误兜底变为 503；没有走到 server 静态兜底或 entry HTTP 路由。
+- 修法：`platformShowcase()` 只读 profile 与固定平台素材；准备页使用它，租户登录页的 `loginShowcase()` 继续按当前 Host 包过滤。保持 10 R16 平台入口原语义，不以创建宿主、关闭严格模式或吞掉租户错误绕过。
+- 回归保护：pages 自测明确以 sandbox 严格模式测试准备页，断言 200 且租户列表不变（http 原断言另覆盖零租户），再切回 host 模式验证宿主页面。新增断言在修复前复现 503；http 原断言不改。
+- 已验证：24 套 × UTC / Asia/Shanghai，共 48 次全部退出 0。指定的 `src/core/brand*.selftest.ts` 在本仓库无匹配文件，纳入实际品牌覆盖 `src/config/brand*.selftest.ts` 三套；本批新增 industrial-ui 与改动过的 login / SOP 自测一并重跑。原 `http.selftest.ts` 两次均为 734 项通过，原文件 diff 为空。
+- 门禁：format、lint、typecheck、test:locked、check-fonts、console build、check-console-dist 全通过；link-bytes 317 条 / 517 项断言，legacy-bytes 60 条 / 140 项断言，两种配置 v2 各 900/900、8742 项断言、0 处快照差异；PGlite 22 个请求的前缀哈希与 healthz 一致。PREFIX system / tools 哈希与上次记录相同，锁定套件、字节夹具及 v2 基线未改。
+- 范围说明：真实 PG / pgvector 子项未设置 PG_TEST_URL，按套件提示跳过，不能记作真实 PG 验收；其余均为 PGlite、进程内请求或本机假服务。完整 pnpm test 按本任务共同约定留 CI。未访问服务器、外部服务或真实模型，无后台服务与容器遗留。
+- 工作区：仅 entry 的素材函数、沙箱 pages 调用、pages 自测与本 plan 四个文件；不提交、不修改 spec 状态。后续由协调者复跑 CI 并部署，本次未部署。无待确认问题。
+
+| 自测文件                                         | UTC | Asia/Shanghai |
+| ------------------------------------------------ | --- | ------------- |
+| `console/src/pages/login.selftest.tsx`           | ✔   | ✔             |
+| `console/src/sop/sop.selftest.tsx`               | ✔   | ✔             |
+| `src/config/brand-publish.selftest.ts`           | ✔   | ✔             |
+| `src/config/brand-transfer.selftest.ts`          | ✔   | ✔             |
+| `src/config/brand.selftest.ts`                   | ✔   | ✔             |
+| `src/console-api/console.selftest.ts`            | ✔   | ✔             |
+| `src/console-api/entry.selftest.ts`              | ✔   | ✔             |
+| `src/console-api/traces.selftest.ts`             | ✔   | ✔             |
+| `src/industrial-ui.selftest.ts`                  | ✔   | ✔             |
+| `src/server-entry.selftest.ts`                   | ✔   | ✔             |
+| `src/server.selftest.ts`                         | ✔   | ✔             |
+| `src/tenancy/sandbox/budget.selftest.ts`         | ✔   | ✔             |
+| `src/tenancy/sandbox/http.selftest.ts`           | ✔   | ✔             |
+| `src/tenancy/sandbox/isolation.selftest.ts`      | ✔   | ✔             |
+| `src/tenancy/sandbox/kb-copy.selftest.ts`        | ✔   | ✔             |
+| `src/tenancy/sandbox/outbound.selftest.ts`       | ✔   | ✔             |
+| `src/tenancy/sandbox/pages.selftest.ts`          | ✔   | ✔             |
+| `src/tenancy/sandbox/provision.selftest.ts`      | ✔   | ✔             |
+| `src/tenancy/sandbox/reaper.selftest.ts`         | ✔   | ✔             |
+| `src/tenancy/sandbox/refund-seed.selftest.ts`    | ✔   | ✔             |
+| `src/tenancy/sandbox/wechat-e2e.selftest.ts`     | ✔   | ✔             |
+| `src/tenancy/sandbox/wecom-outbound.selftest.ts` | ✔   | ✔             |
+| `src/tenancy/sandbox/wecom.selftest.ts`          | ✔   | ✔             |
+| `src/web/web.selftest.ts`                        | ✔   | ✔             |

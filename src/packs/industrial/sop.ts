@@ -49,8 +49,16 @@ export const templates: BrandTemplates = {
   offTopicReply: '我可以帮您核对工业品的型号、数量与报价。',
   welcomeText: '您好，我是{brandName}的{aiTitle}，请告诉我型号和数量。',
   welcomeBackText: '您好，型号或数量有变化可以告诉我。',
-  webWelcome: '欢迎来到{brandName}（虚构品牌演示），请提供型号和数量，需要人工时请告诉我。',
+  webWelcome: '欢迎来到{brandName}，我是{aiTitle}，请提供型号和数量，需要人工时请告诉我。',
   mockOpening: '请告诉我型号和数量。',
   quickReplies: industrialQuickReplies,
-  pages: {},
+  pages: {
+    web: [
+      { legacy: 'AI 旅行顾问 · 可转真人', template: '{aiTitle} · 可转真人', context: 'html-text' },
+      { legacy: '想去哪儿玩？聊聊您的旅行计划…', template: '请告诉我型号和数量…', context: 'html-attribute' },
+      { legacy: '想去西藏，两个人', template: '我想查询型号和数量', context: 'html-attribute' },
+      { legacy: '西藏两人游', template: '查询型号', context: 'html-text' },
+    ],
+    quote: [{ legacy: '方盒核验社', template: '{brandName}', context: 'html-text' }],
+  },
 };

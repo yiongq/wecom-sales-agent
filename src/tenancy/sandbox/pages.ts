@@ -1,7 +1,7 @@
 // R10 / 验收 11、17：只处理沙箱响应，hash 在租户品牌与页面头部渲染完成后生成。
 import { createHash } from 'node:crypto';
 import { SANDBOX_DATA_COPY, SHOWCASE_COPY } from '../../shared/entry-ui.js';
-import { loginShowcase } from '../../console-api/entry.js';
+import { platformShowcase } from '../../console-api/entry.js';
 
 export function sandboxPage(html: string): { html: string; csp: string } {
   const withUi = html.replace(/<\/body\s*>/i, '<script src="/sandbox-ui.js"></script>\n</body>');
@@ -49,7 +49,7 @@ export function sandboxTryDesign(html: string, consoleIndex: string): string {
   const styles = [...consoleIndex.matchAll(/<link\b[^>]*rel="stylesheet"[^>]*>/g)].map((m) => m[0]).join('\n');
   const escape = (value: string) =>
     value.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]!);
-  const showcase = loginShowcase();
+  const showcase = platformShowcase();
   return html
     .replace('<!-- console styles -->', styles)
     .replace('<!-- data copy -->', SANDBOX_DATA_COPY.map((line) => `<p>${escape(line)}</p>`).join(''))

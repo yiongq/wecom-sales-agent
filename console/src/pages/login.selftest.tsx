@@ -29,6 +29,7 @@ import { App as AntApp } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import { act, createElement, type ReactElement, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
+import type { PublicEntryBrand } from '../../../src/shared/entry-ui.js';
 import type { Me } from '../../../src/shared/console-api.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
 import { ToastHost } from '../parts/toast.js';
@@ -109,6 +110,8 @@ interface Server {
   loggedIn: boolean;
   tryUrl?: string | null;
   entryFailure?: boolean;
+  noShowcase?: boolean;
+  brand?: PublicEntryBrand;
   login: LoginMode;
   /** 给了就让 /me 回这个（启动出错的整页） */
   me?: { status: number; body: unknown };
@@ -135,7 +138,11 @@ async function respond(method: string, url: URL, body: unknown): Promise<Respons
   if (method === 'GET' && p === '/entry')
     return server.entryFailure
       ? json(500, { error: 'internal' })
-      : json(200, { tryUrl: server.tryUrl ?? null, showcase: server.demo ? { src: '/login-showcase.png', alt: '服务端示例画面' } : null });
+      : json(200, {
+          tryUrl: server.tryUrl ?? null,
+          showcase: server.demo && !server.noShowcase ? { src: '/login-showcase.png', alt: '服务端示例画面' } : null,
+          ...(server.brand ? { brand: server.brand } : {}),
+        });
   if (method === 'GET' && p === '/me')
     return server.me ? json(server.me.status, server.me.body) : server.loggedIn ? json(200, ME) : unauthorized();
   if (method === 'GET' && p === '/pack') return server.loggedIn || server.demo ? json(200, PACK) : unauthorized();
@@ -718,6 +725,40 @@ for (const [demo, tryUrl, entryFailure] of [
     eq('从匿名外壳登录保留返回演示', m.$('.login-back:last-child a')?.textContent, '返回演示');
     await m.click(m.$('.login-back:last-child a'));
     check('返回演示进入外壳', !!m.$('.sidebar'));
+  }
+  await m.unmount();
+}
+
+// 10 R16：其他行业 Host 没有产品图时不继承旅游素材，仍可登录或返回演示。
+{
+  server = { demo: true, noShowcase: true, loggedIn: false, login: 'check' };
+  const m = await mount('/console/');
+  check('无租户图片：不渲染图片与右栏', !m.$('img') && !m.$('.entry-showcase'));
+  check('无租户图片：保留登录与演示入口', m.text(m.$('.login-submit')) === '登录' && m.box.textContent!.includes('只看演示数据'));
+  await m.unmount();
+}
+
+// 10 R16：公开品牌适用于 demo / prod；null 图片不回退旧图，名称与副标题只作为文本。
+for (const demo of [true, false]) {
+  const brand: PublicEntryBrand = {
+    name: '合成<img src=x onerror="alert(1)">商家&',
+    subtitle: 'AI <script>alert(1)</script>顾问',
+    image: null,
+  };
+  server = { demo, brand, loggedIn: false, login: 'check' };
+  const m = await mount('/console/');
+  eq('公开品牌：名称来自entry', m.$('.entry-wordmark')?.textContent, brand.name);
+  eq('公开品牌：副标题来自entry', m.$('.login-lead')?.textContent, brand.subtitle);
+  eq('公开品牌：文档标题', document.title, brand.name);
+  check('公开品牌：HTML字符已转义，无标签注入', !m.$('img') && !m.$('script') && !m.$('[onerror]'));
+  check('公开品牌：image null不回退旧showcase', !m.$('.entry-showcase'));
+  eq('公开品牌：demo与prod仍遵循入口权限', !!m.$('.login-back a'), demo);
+  if (demo) {
+    await m.click(m.$('.login-back a'));
+    check('公开品牌：匿名只读入口仍可用', !!m.$('.sidebar'));
+    await m.click(m.$('.sb-login'));
+    eq('公开品牌：匿名返回登录保留名称', m.$('.entry-wordmark')?.textContent, brand.name);
+    eq('公开品牌：匿名返回登录保留副标题', m.$('.login-lead')?.textContent, brand.subtitle);
   }
   await m.unmount();
 }
