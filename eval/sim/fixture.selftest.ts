@@ -32,7 +32,7 @@ if (process.argv[2] !== 'worker') {
   };
   const fixtureDir = path.resolve('data/packs/__fixture');
   const goals = await loadGoals('eval/sim/goals/__fixture');
-  check('两个证明包目标', goals.length === 2);
+  check('两个证明包目标', goals.length === 5);
   check(
     '目标都是 __fixture 的',
     goals.every((g) => g.pack === '__fixture' && goalPack(g) === '__fixture'),
@@ -186,6 +186,22 @@ if (process.argv[2] !== 'worker') {
     const pendingBefore = run.initial.orders.find((o) => o.status === 'pending_payment')!;
     const pendingAfter = run.turns[0]!.state.orders.find((o) => o.status === 'pending_payment')!;
     check('同样的条目再下单复用种子里的待付单', report.summary[0]!.passK && pendingBefore.id === pendingAfter.id);
+
+    // 09：非标确定性转人工、待审报价与自动批准后的确认。
+    for (const goal of goals.slice(2)) {
+      if (goal.id === 'fixture-quote-pending')
+        sales.script.push(
+          { tools: [{ name: 'fixture_quote_order', args: { lines: [{ kind: 'widget', code: 'w-c', qty: 100 }] } }] },
+          { content: '报价单已提交。\n等顾问审核。' },
+        );
+      if (goal.id === 'fixture-auto-accepted')
+        sales.script.push(
+          { tools: [{ name: 'fixture_quote_order', args: { lines: [{ kind: 'widget', code: 'w-c', qty: 2 }] } }] },
+          { content: '已生成报价单，请核对。' },
+        );
+      const proof = await execute(goal);
+      check(`09目标通过：${goal.id} ${proof.runs[0]!.reasons.join('|')}`, proof.summary[0]!.passK);
+    }
 
     // ---- 目标的 pack 必须是运行时装载的包 ----
     const travelGoal = validateGoal(

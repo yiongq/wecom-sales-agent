@@ -56,7 +56,6 @@ import {
   BrandProfileSchema,
   type CatalogKindSpec,
   type PackBinding,
-  type PackPolicy,
   type PackRuntime,
   type PackSources,
   type BrandProfile,
@@ -69,6 +68,7 @@ import { checkSopContract } from '../sop/contract.js';
 import { decodeSopFile, joinSop, mergeWithImage, splitSop, type SectionSpec, type SopSection } from '../sop/sections.js';
 import { contractInputs, readImageSop, tenantImage, tenantRenderer, switchPreamble, preambleWarning } from './brand.js';
 import { readPackFile } from './pack-file.js';
+import { readFilePolicy } from './file-policy.js';
 import { promptHashes, renderInputsFor, sha256, publishedBrand, policySnapshot, publishedPolicy } from './hashes.js';
 
 export type { TenantLock } from '../db/client.js';
@@ -810,8 +810,24 @@ function assertGateAvailable(env: NodeJS.ProcessEnv): void {
   if (env.LLM_MOCK === '1' || !key) throw startup('gate_unavailable', '发布闸要求真实模型配置，不能使用 LLM_MOCK 或空模型密钥');
 }
 
+/** 首次导入与装载都按完整候选快照检查；不依赖磁盘顺序或当前已发布缓存。 */
+export function assertCatalogCrossItems(runtime: PackBinding['runtime'], snapshot: CatalogSnapshot): void {
+  for (const [kind, spec] of Object.entries(runtime.catalog)) {
+    if (!spec.crossItemCheck) continue;
+    for (const item of snapshot.items[kind] ?? []) {
+      const issues = spec.crossItemCheck(item as Readonly<Record<string, unknown>>, snapshot);
+      if (issues.length)
+        throw startup(
+          'catalog_startup',
+          `${kind}/${String((item as { id: string }).id)}：${issues.map((issue) => `${issue.path}：${issue.message}`).join('；')}`,
+        );
+    }
+  }
+}
+
 /** 08 R2：只按包与快照判定产品库能否启动，不依赖 SOP 装载或租户作用域。 */
 export function assertCatalogStartup(runtime: PackBinding['runtime'], snapshot: CatalogSnapshot, tenantSlug: string): void {
+  assertCatalogCrossItems(runtime, snapshot);
   const detail = runtime.catalogStartupCheck?.(snapshot);
   if (detail === undefined || detail === null) return;
   if (runtime.id === 'travel') throw startup('no_active_routes', `租户「${tenantSlug}」${detail}`);
@@ -1302,15 +1318,6 @@ export function currentPolicy(): ReturnType<typeof policySnapshot> {
   return readFilePolicy(currentPack().runtime.policy);
 }
 
-function readFilePolicy(pack: PackPolicy | undefined): ReturnType<typeof policySnapshot> {
-  const file = path.join(path.dirname(fileSopPath()), 'policy.json');
-  const value = fs.existsSync(file) ? JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(fs.readFileSync(file))) : pack?.defaults;
-  const snapshot = policySnapshot(pack, value);
-  const violations = pack?.lint?.(snapshot.policy) ?? [];
-  if (violations.length) throw new Error(`policy_invalid: ${violations.map((v) => v.detail).join('；')}`);
-  return deepFreeze(snapshot);
-}
-
 /** 与引擎共用有效路径，品牌不会误读 cwd/data 或产品库所在目录。 */
 export function fileSopPath(): string {
   return process.env.SOP_PATH ?? path.join(process.cwd(), 'data', 'sop.md');
@@ -1483,6 +1490,7 @@ function liveSources(): PackSources {
 }
 export function packSources(): PackSources {
   return {
+    currentPolicy,
     configMode,
     currentCatalog,
     catalogVersionKey,

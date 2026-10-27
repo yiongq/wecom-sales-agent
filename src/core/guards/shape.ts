@@ -1,6 +1,7 @@
 // 06 R10：出口形状检查（裁剪）。阈值与可删句由包给（thresholds.shape，ShapePolicy）；本文件只有数法、受保护句判定与裁剪顺序。
 // 不调模型（R11 重写推后，ReplyGuardContext.rewriteReply() 恒为 null，这里不调用）：裁完仍超限就发裁剪稿，形状里记 overLimit。
 import type { ReplyGuardContext, ReplyShape, ShapePolicy } from '../pack-api.js';
+import { registeredTextLinks } from '../site-links.js';
 import { sentenceUnits } from '../parse/sentences.js';
 import { stripMarkdown } from './text.js';
 import { replyStep } from './reply-step.js';
@@ -24,7 +25,6 @@ export function amountsOf(s: string): string[] {
   return (s.match(AMOUNT_RE) ?? []).map((a) => a.replace(/[¥,\s元]/g, ''));
 }
 const DATE_RE = /\d{4}[-/.年]\d{1,2}(?:[-/.月]\d{1,2}[日号]?)?|\d{1,2}月\d{1,2}[日号]?/;
-const LINK_RE = /https?:\/\/\S+|\/(?:proposal|pay|order)s?\/\S*/;
 const ORDER_RE = /ord_[0-9a-f]{6,}|(?:订单|单号)\s*[:：]?\s*[A-Za-z0-9_-]{5,}/;
 const HANDOFF_RE =
   /转(?:接)?人工|交(?:给|由).{0,6}(?:同事|顾问|人工)|真人|人工(?:客服|顾问)|同事.{0,8}(?:跟进|联系|对接)|顾问.{0,6}(?:接手|跟进|联系您|转接)|转接/;
@@ -138,7 +138,7 @@ export function trimToShape(input: {
       if (!(last3Amounts.has(a) && !askedPrice)) u.protectedBy ??= 'amount';
     }
     if (DATE_RE.test(u.text.replace(/\s+/g, ''))) u.protectedBy ??= 'date';
-    if (LINK_RE.test(u.text)) u.protectedBy ??= 'link';
+    if (/https?:\/\/\S+/.test(u.text) || registeredTextLinks(u.text).length > 0) u.protectedBy ??= 'link';
     if (ORDER_RE.test(u.text)) u.protectedBy ??= 'order';
     if (HANDOFF_RE.test(u.text)) u.protectedBy ??= 'handoff';
     if (IDENTITY_RE.test(u.text)) u.protectedBy ??= 'identity';

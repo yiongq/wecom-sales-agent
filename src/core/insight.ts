@@ -1,3 +1,4 @@
+import { registeredTextLinks } from './site-links.js';
 import { TenantLocal } from '../tenancy/local-state.js';
 import { registerTenantState } from '../tenancy/state.js';
 import { currentRuntime, type TenantRuntime } from '../tenancy/runtime.js';
@@ -183,7 +184,7 @@ async function draft(s: Session, key: string, rt: TenantRuntime, state: Caches):
   // （价格/订单只能来自工具，模型编的支付链接是钓鱼级风险）
   const cleaned = (out || '')
     .replace(/https?:\/\/\S+/g, '')
-    .replace(/\/pay\/\S+/g, '')
+    .replace(/\/[^\s]+/g, (raw) => (registeredTextLinks(raw).length ? '' : raw))
     .replace(/ord_[A-Za-z0-9]+/g, '')
     .replace(/[ \t]{2,}/g, ' ')
     .trim();

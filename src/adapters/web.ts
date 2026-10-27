@@ -1,7 +1,10 @@
+import { getSession } from '../store.js';
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
 // 正式网页渠道：凭据只在 HTTP 层，适配器只认推导出的会话 id。
 import { createHash } from 'node:crypto';
+import { stripLink } from '../core/link-prose.js';
+import type { Session } from '../types.js';
 import { partsOf, type ChannelCaps, type MessagePart } from '../core/pack-api.js';
 import { numEnv } from '../env.js';
 import { consentMenuButtonId } from '../handoff/consent.js';
@@ -69,6 +72,19 @@ export function subscribeWeb(
   return remove;
 }
 
+/** 仅客户网页投影去掉有标题的卡片链接；存储原文与其他渠道不经过这里。 */
+export function webReply(text: string, session?: Session, human = false): { text: string; parts: MessagePart[] } {
+  const parts = partsOf(text, undefined, session);
+  for (const part of parts) {
+    if (part.kind === 'link' && part.title !== undefined) text = stripLink(text, part.url, part.title);
+  }
+  if (human) {
+    if (text || !parts.some((part) => part.kind === 'link' && part.title !== undefined)) text = withAdvisorPrefix(text);
+    else for (const part of parts) if (part.kind === 'link' && part.title !== undefined) part.title = withAdvisorPrefix(part.title);
+  }
+  return { text, parts };
+}
+
 export const webAdapter: ChannelAdapter & { readonly caps: Readonly<ChannelCaps> } = {
   name: 'web',
   caps: Object.freeze({ markdown: false }),
@@ -77,18 +93,16 @@ export const webAdapter: ChannelAdapter & { readonly caps: Readonly<ChannelCaps>
     const set = own.clients.get(sessionId);
     const menu = opts?.kind === 'menu';
     if (menu && !opts.category) return false;
-    const body = opts?.kind === 'human' ? withAdvisorPrefix(text) : text;
     const event: WebEvent = menu
       ? {
           type: 'menu',
-          text,
-          parts: partsOf(text),
+          ...webReply(text, getSession(sessionId)),
           buttons: [
             { id: consentMenuButtonId(opts!.category!, 'granted'), label: '同意' },
             { id: consentMenuButtonId(opts!.category!, 'declined'), label: '不同意' },
           ],
         }
-      : { type: 'push', text: body, parts: partsOf(body) };
+      : { type: 'push', ...webReply(text, getSession(sessionId), opts?.kind === 'human') };
     let delivered = false;
     for (const client of set ?? []) {
       try {

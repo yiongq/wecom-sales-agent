@@ -1,0 +1,44 @@
+{
+  "id": "industrial-12-lines",
+  "pack": "industrial",
+  "persona": "多行询价裁剪后提供报价单。只咨询本目标中的合成产品，不增加其他采购需求；得到回答后结束。",
+  "maxTurns": 1,
+  "tags": ["regression", "acceptance-10"],
+  "severity": "quality",
+  "customerScript": [
+    "请逐行试算以下12个不同型号，给出单价、行金额与合计；暂不出正式报价单：\n6205-ZZ 2件\n6205-2RS 2件\nM8×30 10件\nHS-PV25 1件\n6206-2RS 2件\n6207-2RS 2件\n6208-2RS 2件\n6209-2RS 2件\n6210-2RS 2件\n6211-2RS 2件\n6212-2RS 2件\n6213-2RS 2件"
+  ],
+  "allowedTools": ["find_parts", "quote_items"],
+  "forbidden": [],
+  "predicates": [
+    {
+      "kind": "tool_called",
+      "name": "quote_items",
+      "min": 1
+    },
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "shape",
+      "richMax": 12,
+      "plainMax": 12,
+      "minShare": 1
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "正式报价单",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "^(?:\\s*\\S){0,600}\\s*$",
+      "scope": "last"
+    }
+  ]
+}

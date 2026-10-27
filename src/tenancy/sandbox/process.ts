@@ -1,5 +1,6 @@
+import { isSiteHtml } from '../../core/site-links.js';
 // 05 沙箱组合根：不启动渠道注册表、任务或宿主文件状态。
-import { Hono } from 'hono';
+import { Hono, type Context } from 'hono';
 import { assertSandboxWriteRate, validateSandboxLimits, SandboxLimitError } from './limits.js';
 import {
   initializeSandboxPool,
@@ -54,6 +55,7 @@ import { SessionStoreStartupError } from '../../store/backend.js';
 import { onShutdown } from '../../shutdown.js';
 import { normalizeHost } from '../hosts.js';
 import {
+  type TenantRuntime,
   configureTenancy,
   cancelTenantRuntime,
   createTenantRuntime,
@@ -297,10 +299,15 @@ export function sandboxApp(
   });
   app.use('/*', async (c, next) => {
     await next();
-    // 包住共用路由：品牌、租户存储键与分享头部全部替换之后再算脚本 hash。
+    // 路由结束后 ALS 已退出；从本请求已选定的租户读取，不能回落宿主包。
+    if (!c.res.headers.get('content-type')?.startsWith('text/html')) return;
+    const selected = (c as Context).get('publicHostRuntime') as TenantRuntime | undefined;
+    const runtime = selected?.pack?.runtime;
     if (
-      !/^\/(?:try|(?:chat|pay|proposal|try)\.html|pay\/[^/]+|proposal\/.*)$/i.test(c.req.path) ||
-      !c.res.headers.get('content-type')?.startsWith('text/html')
+      !(
+        /^\/(?:try|(?:chat|try)\.html)$/i.test(c.req.path) ||
+        (runtime && ((c.req.path.indexOf('/', 1) > 0 && wxPage(c.req.path, runtime)) || isSiteHtml(c.req.path, runtime)))
+      )
     )
       return;
     const { html, csp } = sandboxPage(await c.res.text());
@@ -321,7 +328,7 @@ export function sandboxApp(
       c.header('Set-Cookie', sandboxWechatCookie('', 0));
       return c.notFound();
     }
-    if (!wxPage(target)) return c.notFound();
+    if (!wxPage(target, rt.pack.runtime)) return c.notFound();
     c.header('Set-Cookie', sandboxWechatCookie(token, rt.expiresAt!));
     return c.redirect(target + new URL(c.req.url).search);
   });
@@ -343,16 +350,14 @@ export function sandboxApp(
     )
       return c.notFound();
     const token = getCookie(c, SANDBOX_COOKIE);
-    if (wxResource(c.req.path, c.req.method)) {
-      const linkToken = getCookie(c, SANDBOX_WECHAT_COOKIE);
-      const rt = linkToken && sandboxWechatIndex.forToken(linkToken);
-      if (rt) {
-        setSandboxWechatRuntime(c, rt);
-        return withTenantScope(rt, () => {
-          if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) assertSandboxWriteRate();
-          return next();
-        });
-      }
+    const linkToken = getCookie(c, SANDBOX_WECHAT_COOKIE);
+    const linkRuntime = linkToken && sandboxWechatIndex.forToken(linkToken);
+    if (linkRuntime && wxResource(c.req.path, c.req.method, linkRuntime.pack.runtime)) {
+      setSandboxWechatRuntime(c, linkRuntime);
+      return withTenantScope(linkRuntime, () => {
+        if (!['GET', 'HEAD', 'OPTIONS'].includes(c.req.method)) assertSandboxWriteRate();
+        return next();
+      });
     }
     // 与宿主共用限流：查库前同步占名额，只有无效 cookie 保留计数。
     const giveBack = token ? claimSessionLookup(clientKey(c), Date.now()) : undefined;

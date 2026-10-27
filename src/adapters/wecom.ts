@@ -1,3 +1,4 @@
+import { stripLink } from '../core/link-prose.js';
 import { TenantObservers } from '../tenancy/observers.js';
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
@@ -13,7 +14,7 @@ import {
   TenantScopeMissing,
   type TenantRuntime,
 } from '../tenancy/runtime.js';
-import { isLineOrder, orderDisplay } from '../core/order-view.js';
+import { cardLinks, coreSiteLinks, registeredTextLinks } from '../core/site-links.js';
 import { currentPack } from '../config/source.js';
 import { brandTexts } from '../core/brand.js';
 // 企业微信「微信客服」（kf）适配器：回调驱动 + 兜底轮询。
@@ -93,17 +94,7 @@ import {
 import { cleanText } from '../shared/text.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
 import { convLabel, logQuote, withConversationLog, withLogContext } from '../log.js';
-import {
-  getOrCreateSession,
-  getAnyOrder,
-  getSession,
-  onShutdown,
-  queueInboxState,
-  recentMsgids,
-  saveSession,
-  writeInboxStateNow,
-} from '../store.js';
-import { routeForProposal } from '../tools.js';
+import { getOrCreateSession, getSession, onShutdown, queueInboxState, recentMsgids, saveSession, writeInboxStateNow } from '../store.js';
 import { endTurn, startTurn, withTurnScope } from '../trace/recorder.js';
 import { DEFAULT_WECOM_PREFIX, ENV_ACCOUNT_ID, ENV_ACCOUNT_KEY, isEnabled, type ChannelAccount } from '../channels/accounts.js';
 import { AccountInbox, InboxRowGone, noteInboxAbandoned, type InboxRow } from '../channels/inbox.js';
@@ -583,7 +574,7 @@ function splitForWecom(text: string, size: (value: string) => number = (value) =
     const nl = rest.lastIndexOf('\n', cut);
     if (nl > cut / 2) cut = nl;
     // 切点若落在某条 URL 内部，前移到该 URL 起点，让整条 URL 进下一段
-    for (const m of rest.matchAll(/https?:\/\/\S+|\/(?:proposal|pay)\/\S+/g)) {
+    for (const m of [...rest.matchAll(/https?:\/\/\S+/g), ...registeredTextLinks(rest)]) {
       const start = m.index ?? 0;
       const end = start + m[0].length;
       if (cut > start && cut < end) {
@@ -653,58 +644,16 @@ async function uploadThumb(rt: SendRuntime, cfg: WecomConfig, target?: string): 
   return task;
 }
 
-/** 正文里出现的所有站内链接（方案书/支付）。方案书链接可能带版本后缀 ?v=（02「报价快照」），算在同一条里 */
-const ALL_LINKS_RE = /(?:https?:\/\/[^\s]*)?\/(?:proposal|pay)\/[A-Za-z0-9_-]+(?:\/[\d-]+)*(?:\?v=\d+)?/g;
-
-/** 卡片上的出发日期写成正文里的样子（「10月12日」），跨年才带年份。
- *  此前直接拼 YYYY-MM-DD：正文刚说完「10月12日出发」，紧跟着的卡片却是「2026-10-12 出发」，像系统单据 */
-function cnDate(iso: string, now = new Date()): string {
-  const m = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(iso);
-  if (!m) return iso;
-  const md = `${Number(m[2])}月${Number(m[3])}日`;
-  return Number(m[1]) === now.getFullYear() ? md : `${m[1]}年${md}`;
-}
-
-/** 从回复正文里认出方案书/支付链接，并取出用于卡片的标题与摘要。
- *  正文里出现多条链接时返回 null——卡片一次只能带一条 URL，硬做卡片会让第二条链接
- *  （尤其是支付链接）在剥离正文时被一起吞掉，客户永远拿不到付款入口。 */
-function extractCard(text: string, baseUrl: string): { title: string; desc: string; url: string; raw: string } | null {
-  if ((text.match(ALL_LINKS_RE) ?? []).length !== 1) return null;
-  const prop = text.match(/(?:https?:\/\/[^\s]*)?\/proposal\/([A-Za-z0-9_-]+)\/(\d+)(?:\/([\d-]+))?(?:\?v=(\d+))?/);
-  if (prop) {
-    if (!currentPack().runtime.documents?.proposal) return null;
-    // 卡片上的线路取链接指的那个版本（不带 v 是版本 1），与点开的方案书同一份；版本不存在就不做卡片，原样发纯文本
-    const route = routeForProposal(prop[1]!, prop[4]);
-    if (!route) return null;
-    const travelers = Number(prop[2]);
-    return {
-      title: `${route.title} · 行程方案书`,
-      desc: `${route.days} 天 · ${travelers} 位出行 · ${route.hotelLevel}｜含逐日行程与费用说明`,
-      url: `${baseUrl}/proposal/${route.id}/${travelers}${prop[3] ? '/' + prop[3] : ''}${prop[4] ? `?v=${prop[4]}` : ''}`,
-      raw: prop[0],
-    };
-  }
-  const pay = text.match(/(?:https?:\/\/[^\s]*)?\/pay\/([A-Za-z0-9_-]+)/);
-  if (pay) {
-    const o = getAnyOrder(pay[1]);
-    if (!o) return null;
-    if (isLineOrder(o)) {
-      const display = orderDisplay(o);
-      return {
-        title: `${display.title} · 待支付`,
-        desc: `${display.summary} · 合计 ${display.totalText}`,
-        url: `${baseUrl}/pay/${o.id}`,
-        raw: pay[0],
-      };
-    }
-    return {
-      title: `${o.routeTitle} · 待支付`,
-      desc: `${o.travelers} 位出行 · ${o.departDate ? cnDate(o.departDate) + '出发' : '日期待定'} · 合计 ¥${o.totalPrice.toLocaleString('zh-CN')}`,
-      url: `${baseUrl}/pay/${o.id}`,
-      raw: pay[0],
-    };
-  }
-  return null;
+/** 种类与卡片内容按当前租户登记；旧测试可省略会话，生产出口显式传入。 */
+function extractCard(text: string, baseUrl: string, session?: Session): { title: string; desc: string; url: string; raw: string } | null {
+  const links = cardLinks(text, currentPack().runtime);
+  if (links.length !== 1) return null;
+  const { raw, path, def } = links[0]!;
+  // 核心订单卡沿用旧消费行为（顾问可发已有订单）；新包文档还须满足当前会话的 allowed。
+  // 新包的 linkWhitelistStep 对核心订单同样执行 allowed，不改旅游自己的修补路径。
+  if (!coreSiteLinks.includes(def) && arguments.length >= 3 && (!session || !def.allowed(session, path))) return null;
+  const card = def.card!(path, session!);
+  return card ? { ...card, url: `${baseUrl}${path}`, raw } : null;
 }
 
 function recordRuntimeSend(rt: SendRuntime, sessionId: string, kind: OutboundKind, message: ChatMessage | null): SendHandle {
@@ -751,116 +700,6 @@ async function sendLinkCard(
   }
 }
 
-/** 挖掉链接后只剩的标签（「· 支付链接」「方案书」「2. 付款入口」「这是您的专属支付链接」「👉 立即支付」）。
- *  标签本是给链接起的名字，链接改走卡片后它独占一行、后面什么都没有——卡片要等整段正文发完才到，
- *  客户读到这里会以为链接漏发了。前面可以带列表序号和「这是您的专属」这类修饰 */
-const LINK_LABEL_RE = new RegExp(
-  '^(?:\\d{1,2}\\s*[.、．)）]\\s*|[①-⑩]\\s*)?(?:这是|这里是)?(?:您|你)?的?(?:专属)?的?(?:本单|订单)?的?' +
-    '(?:(?:支付|付款|订单|下单)(?:链接|入口|页面|地址)?|(?:立即|马上|去|点击)(?:支付|付款)' +
-    '|(?:详细|完整)?的?(?:行程)?(?:方案书?|计划书|行程单)(?:链接|地址)?|(?:详细|完整)?的?行程|(?:方案|行程)?链接)$',
-);
-/** 列表序号开头的：整行删掉会让「1. 2. 3.」断号，改成「2. 支付链接见下方卡片」 */
-const NUMBERED_RE = /^(?:\d{1,2}\s*[.、．)）]|[①-⑩])/;
-const linkLabelCore = (s: string): string => s.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
-/** 标签后面跟着的括注（「支付链接（名额以付款为准）」「方案书（含逐日行程）。」）：只是说明，不改变这一行是个标签。
- *  此前带括注的认不出是标签，链接改走卡片后留下一行「支付链接（名额以付款为准）。」，指向空气（A09/C03） */
-const LABEL_NOTE_RE = /\s*[（(][^（）()\n]{1,24}[）)][\s。.！!～~]*$/;
-const isLinkLabel = (s: string): boolean =>
-  LINK_LABEL_RE.test(linkLabelCore(s)) || LINK_LABEL_RE.test(linkLabelCore(s.replace(LABEL_NOTE_RE, '')));
-/** 标签带着括注：括注是要留给客户的话（「24 小时内有效」「名额以付款为准」），不能整行删，改成指着卡片 */
-const notedLabel = (s: string): boolean => LABEL_NOTE_RE.test(s) && !LINK_LABEL_RE.test(linkLabelCore(s)) && isLinkLabel(s);
-/** 标签改成指着卡片，括注挪到后面：「2. 支付链接（24 小时内有效）」→「2. 支付链接见下方卡片（24 小时内有效）」 */
-function labelToCard(s: string): string {
-  const note = LABEL_NOTE_RE.exec(s)?.[0] ?? '';
-  return `${s.slice(0, s.length - note.length)}见下方卡片${note.trim().replace(/[。.！!～~]+$/, '')}`;
-}
-/** 紧挨着链接、指着它的符号（「点这里付款 👉 <url>」「<url> 👈」）：链接挖走后一并拿掉，留着就是指向空气 */
-const POINTER_BEFORE_RE = /(?:\s*(?:👉|👈|👇|➡️?|⬇️?|→|↓))+\s*$/u;
-const POINTER_AFTER_RE = /^\s*(?:(?:👉|👈|👇|➡️?|⬇️?|→|↓)\s*)+/u;
-
-/** 把指着链接的说法改成指着卡片。「在这儿」「如下」「点这里」原本指的是紧跟着的那串网址，
- *  网址挖走后就指向了空气；「发您」「做好了」收尾的补一句「见下方卡片」，客户知道东西在后面 */
-function pointToCard(s: string): string {
-  if (!s || /下方|卡片/.test(s)) return s; // 模型已经这么写了，别再补一遍
-  // 「支付链接：<url>（24 小时内有效）」：标签后面还跟着话，整行删不得，标签改成指着卡片
-  if (isLinkLabel(s)) return labelToCard(s);
-  const tap = s.replace(/(?:点击|点|戳)(?:这里|这儿|此处)/, '点下方卡片');
-  if (tap !== s) return tap;
-  // 「付款请点：<url>」：只认付款/请 + 点，「景点」「重点」这类收尾不能接「下方卡片」
-  if (/(?:请|烦请|麻烦|支付|付款)点击?$/.test(s)) return `${s}下方卡片`;
-  // 只认「方案/链接…在这儿」这种名词带指代的说法：「我放在这里」这类动词短语换掉会变成病句
-  const here = s.replace(
-    /(方案书?|计划书?|行程单?|链接|入口|明细|详情)(?:就|都)?(?:在这里|在这儿|在这|如下)(?=$|[，,。！!～~；;])/,
-    '$1见下方卡片',
-  );
-  if (here !== s) return here;
-  if (/(?:发(?:给)?您|给您|(?:做|生成|准备|整理|出)好了?|已生成)(?:看看|过目)?(?:了|啦)?$/.test(s)) return `${s}，见下方卡片`;
-  return s;
-}
-
-/** 从正文里挖掉那条 URL，保留同一行的其余内容。
- *  不能按整行删——链接常和报价写在一起（「方案书在这 <url> 人均 15,800」），
- *  整行删会把报价一起删掉，客户只收到一张卡片、正文凭空少一句。 */
-function stripLink(body: string, raw: string): string {
-  const tidy = (s: string) => s.replace(/[ \t]{2,}/g, ' ').replace(/^[\s，,：:、]+|[\s，,：:、]+$/g, '');
-  const lines: (string | null)[] = body.split('\n'); // null = 整行拿掉（与原文里的空行区分开，段落间距照旧）
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    if (line === null || !line.includes(raw)) continue;
-    const at = line.indexOf(raw);
-    const beforeRaw = line.slice(0, at).replace(POINTER_BEFORE_RE, (m) => (/^\s/.test(m) ? ' ' : ''));
-    const afterRaw = line.slice(at + raw.length).replace(POINTER_AFTER_RE, (m) => (/\s$/.test(m) ? ' ' : ''));
-    // 冒号原本指着链接，后面紧跟逗号或括号时就悬空了（「总价：，30 分钟内有效」）
-    const rest = tidy(beforeRaw + afterRaw)
-      .replace(/[：:][ \t]*([，,、；;])/, '$1')
-      .replace(/[：:][ \t]*(?=[（(])/, '');
-    const core = linkLabelCore(rest);
-    // 「支付链接（名额以付款为准）：<url>」「· 支付链接：<url>（24 小时内有效）」：剩下的是标签加括注，标签改成指着卡片，括注留着
-    if (notedLabel(rest)) {
-      lines[i] = labelToCard(rest);
-      continue;
-    }
-    if (core && !isLinkLabel(rest)) {
-      const before = tidy(beforeRaw);
-      const after = tidy(afterRaw);
-      const pointed = pointToCard(before);
-      if (pointed === before) lines[i] = rest;
-      // 后面只剩表情（「😊」）不加逗号；句读、括号开头的直接接
-      else if (!after) lines[i] = pointed;
-      else if (!/[\p{L}\p{N}]/u.test(after)) lines[i] = `${pointed} ${after}`;
-      else lines[i] = pointed + (/^[。！!？?～~（(]/.test(after) ? '' : '，') + after;
-      continue;
-    }
-    if (core && NUMBERED_RE.test(core)) {
-      lines[i] = labelToCard(rest);
-      continue;
-    }
-    // 链接独占一行、或只剩「👉」「·」这类符号、或只剩「支付链接」这类标签：整行拿掉，再看上一行：
-    //  · 上一行也只是个标签（「· 支付链接：」换行接链接）：同样整行拿掉，此前留下「· 支付链接。」；
-    //    带序号、带括注的（「支付链接（名额以付款为准）：」）不删，改成指着卡片；
-    //  · 上一行以冒号收尾：冒号原本指着这条链接，链接改走卡片后就指向了空气（「费用明细：」后面接一句不相干的话），
-    //    换成句号，「详细方案书在这儿，…：」「方案给您做好了：」这种再改成指着卡片；
-    //  · 紧挨着的上一行没冒号、但在指着链接（「详细方案书发您」换行接链接）：同样改成指着卡片
-    lines[i] = null;
-    for (let j = i - 1; j >= 0; j--) {
-      const prev = lines[j];
-      if (prev === null || !prev.trim()) continue;
-      const colon = /[：:]\s*$/.test(prev);
-      const p = prev.replace(/[：:]?\s*$/, '');
-      if ((colon || j === i - 1) && isLinkLabel(p)) lines[j] = NUMBERED_RE.test(linkLabelCore(p)) || notedLabel(p) ? labelToCard(p) : null;
-      else if (colon) lines[j] = `${pointToCard(p)}。`;
-      else if (j === i - 1) lines[j] = pointToCard(p);
-      break;
-    }
-  }
-  return lines
-    .filter((l): l is string => l !== null)
-    .map((l) => (l.trim() ? l : ''))
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
 /** 发一条回复：含单条站内链接时走「正文 + 原生卡片」，否则纯文本。
  *  客户对话主链路与后台推送共用这一条路径——此前卡片逻辑只写在 push() 里，
  *  而客户消息的回复走的是 handleCustomerMessage → sendText，卡片代码对客户而言是死代码。 */
@@ -877,7 +716,7 @@ async function sendRich(rt: SendRuntime, cfg: WecomConfig, uid: string, body: st
   // 人工回复（kind='human'）的客户侧正文前加「【顾问】」（不变量 18）：加在拆完卡片之后，只加在客户读到的正文上——
   // 加在整条前面的话，只贴了一条链接时会单独发一条只有「【顾问】」的消息、多占一条额度，「方案书：<链接>」的标签也认不出来
   const advisor = ctx.kind === 'human' ? withAdvisorPrefix : (t: string): string => t;
-  const card = cfg.publicBaseUrl ? extractCard(body, cfg.publicBaseUrl) : null;
+  const card = cfg.publicBaseUrl ? extractCard(body, cfg.publicBaseUrl, getSession(rt.prefix + uid)) : null;
   if (!card) return sendText(rt, cfg, uid, advisor(body), ctx);
   // 先把缩略图备好再动正文。stripLink 会把「方案书在这儿」改成「见下方卡片」，
   // 此前先发了改过的正文才去传缩略图，缩略图一失败（接口报错、之后 60 秒冷却期内每一张都算），
@@ -1120,9 +959,10 @@ function payloadsFor(
   body: string,
   kind: OutboundKind,
   withCard: boolean,
+  session?: Session,
 ): { payloads: OutboundPayload[]; card: { title: string; url: string } | null } {
   const advisor = kind === 'human' ? withAdvisorPrefix : (t: string): string => t;
-  const card = withCard && cfg.publicBaseUrl ? extractCard(body, cfg.publicBaseUrl) : null;
+  const card = withCard && cfg.publicBaseUrl ? extractCard(body, cfg.publicBaseUrl, session) : null;
   if (!card) return { payloads: textPayloads(advisor(body)), card: null };
   const prose = stripLink(body, card.raw);
   // 只有卡片、没有正文的人工回复：前缀加在卡片标题上（客户仍看得出是顾问发的，也不多发一条）
@@ -1442,9 +1282,10 @@ function payloadsOf(
   body: string,
   opts: PushOpts | undefined,
   withCard: boolean,
+  session?: Session,
 ): { payloads: OutboundPayload[]; card: { title: string; url: string } | null } {
   if (opts?.kind === 'menu' && opts.category) return { payloads: [menuPayload(body, opts.category)], card: null };
-  return payloadsFor(cfg, body, opts?.kind ?? 'notice', withCard);
+  return payloadsFor(cfg, body, opts?.kind ?? 'notice', withCard, session);
 }
 
 /**
@@ -1453,7 +1294,7 @@ function payloadsOf(
  */
 function prepareDb(rt: WecomRuntime, cfg: WecomConfig, sessionId: string, text: string, opts: PushOpts): PreparedPush {
   const handle: PreparedPush = { sessionId, kind: opts.kind };
-  const { payloads, card } = payloadsOf(cfg, formatForWecom(cfg, text), opts, Date.now() >= rt.thumbFailUntil);
+  const { payloads, card } = payloadsOf(cfg, formatForWecom(cfg, text), opts, Date.now() >= rt.thumbFailUntil, getSession(sessionId));
   try {
     preparedGroups.set(handle, planGroup(rt, cfg, sessionId, opts.kind, opts.message ?? null, payloads, card, takeoverGen(sessionId)));
   } catch (e) {
@@ -1467,9 +1308,9 @@ function prepareDb(rt: WecomRuntime, cfg: WecomConfig, sessionId: string, text: 
 async function pushDb(rt: WecomRuntime, cfg: WecomConfig, sessionId: string, text: string, opts: PushOpts | undefined): Promise<boolean> {
   const kind = opts?.kind ?? 'notice';
   const body = formatForWecom(cfg, text);
-  const wantsCard = kind !== 'menu' && !!cfg.publicBaseUrl && extractCard(body, cfg.publicBaseUrl) !== null;
+  const wantsCard = kind !== 'menu' && !!cfg.publicBaseUrl && extractCard(body, cfg.publicBaseUrl, getSession(sessionId)) !== null;
   const thumb = wantsCard ? await uploadThumb(rt, cfg).catch(() => null) : null;
-  const { payloads, card } = payloadsOf(cfg, body, opts, thumb !== null);
+  const { payloads, card } = payloadsOf(cfg, body, opts, thumb !== null, getSession(sessionId));
   let g: OutGroup;
   try {
     g = planGroup(rt, cfg, sessionId, kind, opts?.message ?? null, payloads, card, takeoverGen(sessionId));
@@ -1550,15 +1391,18 @@ async function enrichCustomerProfile(rt: WecomRuntime, cfg: WecomConfig, externa
 
 /** 相对支付链接拼上公网前缀，企微里才是可点的完整 URL */
 function absolutizePayLinks(cfg: WecomConfig, text: string): string {
+  const links = registeredTextLinks(text);
   if (!cfg.publicBaseUrl) {
-    if (text.includes('/pay/') || text.includes('/proposal/')) {
-      console.error('[wecom] ⚠️ 回复含支付链接但 PUBLIC_BASE_URL 未配置，客户将收到不可点击的相对路径！');
-    }
+    if (links.length) console.error('[wecom] ⚠️ 回复含支付链接但 PUBLIC_BASE_URL 未配置，客户将收到不可点击的相对路径！');
     return text;
   }
-  return text
-    .replace(/(^|[^a-zA-Z0-9/])(\/pay\/[A-Za-z0-9_-]+)/g, `$1${cfg.publicBaseUrl}$2`)
-    .replace(/(^|[^a-zA-Z0-9/])(\/proposal\/[A-Za-z0-9_\-/]+)/g, `$1${cfg.publicBaseUrl}$2`);
+  let result = text;
+  for (const m of links.toReversed()) {
+    const at = m.index!;
+    if (at > 0 && /[a-zA-Z0-9/]/.test(text[at - 1]!)) continue;
+    result = result.slice(0, at) + cfg.publicBaseUrl + result.slice(at);
+  }
+  return result;
 }
 
 /**
@@ -1722,17 +1566,15 @@ function dedupeFor(rt: WecomRuntime, sessionId: string, msg: KfMessage, replay: 
   return sentOrSkip(reply);
 }
 
-// 小红书来的客户第一条常是笔记截图、行程截图或语音。一句「只能处理文字」是把
-// 首响这个唯一能碾压人工的环节浪费掉——收不到内容也要接住话头、把人拉回文字。
-const NON_TEXT_HINT: Record<string, string> = {
-  image: '图我收到了～不过我这边暂时看不了图片内容，您用文字说一下想去哪、几位出行，我马上给您找线路。',
-  voice: '语音我这边暂时听不了，您打几个字给我就行～想去哪儿、几位出行、大概什么时候走？',
-  video: '视频收到啦～您用文字说说想要什么样的行程，我这就帮您安排。',
-  file: '文件我这边暂时打不开，方便的话把关键需求打字发我：目的地、几位、大概日期。',
-  link: '链接收到～您想找类似的行程吗？跟我说下目的地和人数，我帮您对一条。',
-  location: '位置收到～您是想从这边出发，还是想去这附近玩？跟我说下大概日期和人数。',
-};
-const NON_TEXT_HINT_OTHER = '这条消息我这边暂时处理不了，您用文字说说想去哪儿、几位出行，我马上帮您安排～';
+// 复用包的固定句登记；每次按当前租户绑定取，不缓存跨租户文字。
+const NON_TEXT_HINT_OTHER = '这条消息我这边暂时处理不了，请用文字描述您的需求，我来帮您。';
+async function nonTextHint(msgtype: string): Promise<string> {
+  const { runtime, brand } = currentPack();
+  const replies = runtime.fixedReplies;
+  const fixed = replies?.find((reply) => reply.id === `non-text.${msgtype}`) ?? replies?.find((reply) => reply.id === 'non-text.other');
+  const samples = await fixed?.samples();
+  return samples?.find((sample) => sample.mode === (brand ? 'template' : 'legacy'))?.text || NON_TEXT_HINT_OTHER;
+}
 const NON_TEXT_PLACEHOLDER: Record<string, string> = {
   image: '[图片]',
   voice: '[语音]',
@@ -1758,6 +1600,7 @@ function handleCustomerMessage(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessag
 async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage, replay: boolean): Promise<'deferred' | void> {
   const sessionId = rt.prefix + msg.external_userid;
   if (msg.msgtype !== 'text' || !msg.text?.content) {
+    const hint = await nonTextHint(msg.msgtype);
     // 这一条不经引擎，同样是一轮（02 R16「每处理一条客户消息收集一条轮次记录」）：口径同引擎的确定性路径，
     // 回了固定提示记 deterministic、已转人工不回话记 silent；重放时提示已经发过、什么都不做的不算一轮（同重发已生成的回复）。
     // 只记轮次、关联提示消息的 turnId，客户收到的与会话里记下的都不变
@@ -1782,7 +1625,6 @@ async function handleCustomerMessageInner(rt: WecomRuntime, cfg: WecomConfig, ms
         endTurn('silent', '', stageBefore, session.stage);
         return; // 与文本消息一致：只入库，交给真人
       }
-      const hint = NON_TEXT_HINT[msg.msgtype] ?? NON_TEXT_HINT_OTHER;
       // 提示发成功才记进会话（同老客户欢迎语），所以重放时占位之后已经有这条提示，就是客户收到过了，不再发
       if (seen >= 0 && session.messages.slice(seen + 1).some((m) => m.role === 'agent' && m.content === hint)) return;
       // 消息对象先建好交给账本（发成功才写进会话，写进去的是同一个对象，账本行据它取 seq）
@@ -1912,9 +1754,9 @@ async function replyDb(
   inboxId: string,
 ): Promise<'deferred' | void> {
   const body = formatForWecom(cfg, reply.text);
-  const wantsCard = !!cfg.publicBaseUrl && extractCard(body, cfg.publicBaseUrl) !== null;
+  const wantsCard = !!cfg.publicBaseUrl && extractCard(body, cfg.publicBaseUrl, getSession(sessionId)) !== null;
   const thumb = wantsCard ? await uploadThumb(rt, cfg).catch(() => null) : null;
-  const { payloads, card } = payloadsFor(cfg, body, 'ai', thumb !== null);
+  const { payloads, card } = payloadsFor(cfg, body, 'ai', thumb !== null, getSession(sessionId));
   let g: OutGroup;
   try {
     g = planGroup(rt, cfg, sessionId, 'ai', reply.message, payloads, card, gen, inboxId);
@@ -2329,6 +2171,7 @@ function processNonTextRow(
   alreadyRecorded = false,
 ): Promise<void> {
   return withTurnScope(async () => {
+    const hint = await nonTextHint(msg.msgtype);
     const session = accountSession(rt, sessionId);
     startTurn(sessionId);
     const stageBefore = session.stage;
@@ -2352,7 +2195,6 @@ function processNonTextRow(
       await finishInboxRow(sessionId, row.id, 'done');
       return;
     }
-    const hint = NON_TEXT_HINT[msg.msgtype] ?? NON_TEXT_HINT_OTHER;
     // 消息对象先建好交给账本（发成功才写进会话，写进去的是同一个对象，账本行据它取 seq）
     const sent: ChatMessage = { role: 'agent', content: hint, at: Date.now() };
     const out = await sendTextDb(rt, cfg, sessionId, hint, 'ai', sent, takeoverGen(sessionId), row.id);
@@ -3526,6 +3368,7 @@ export class SandboxWecomRuntime {
         return;
       }
       if (msg.msgtype !== 'text' || !msg.text?.content) {
+        const hint = await nonTextHint(msg.msgtype);
         const s = getOrCreateSession(id, 'wecom');
         s.messages.push({
           role: 'customer',
@@ -3537,7 +3380,7 @@ export class SandboxWecomRuntime {
         trimSessionMessages(s);
         saveSession(s);
         if (!s.handedOver) {
-          const sent: ChatMessage = { role: 'agent', content: NON_TEXT_HINT[msg.msgtype] ?? NON_TEXT_HINT_OTHER, at: Date.now() };
+          const sent: ChatMessage = { role: 'agent', content: hint, at: Date.now() };
           if (await this.push(id, sent.content, { kind: 'ai', message: sent })) {
             if (!stillCurrent()) return;
             s.messages.push(sent);

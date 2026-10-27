@@ -12,7 +12,7 @@ import { insertCatalogVersion } from '../../src/db/repo/catalog-versions.js';
 import { insertPublishedSop } from '../../src/db/repo/sop.js';
 import { insertTenant } from '../../src/db/repo/tenants.js';
 import { contractInputs, tenantImage, tenantRenderer } from '../../src/config/brand.js';
-import { promptHashes, renderInputsFor, sha256 } from '../../src/config/hashes.js';
+import { promptHashes, renderInputsFor, policySnapshot } from '../../src/config/hashes.js';
 import { initConfig, packSources, type ConfigDeps } from '../../src/config/source.js';
 import { runtimeById } from '../../src/packs/registry.js';
 import { checkSopContract } from '../../src/sop/contract.js';
@@ -47,7 +47,9 @@ export async function installSeededPackConfig(
   await t.pg.exec('SET ROLE agent_app');
   const ctx = { tenantId: tenant.id, actor: ACTOR };
 
-  // 首次发布：与 importConfig 的 SOP 与条目部分同一组构件（没有 policy）
+  // 首次发布沿用 importConfig 的政策快照规则；无 policy 能力的证明包仍是 null。
+  const policyFile = path.join(dir, 'policy.json');
+  const policy = policySnapshot(runtime.policy, fs.existsSync(policyFile) ? JSON.parse(fs.readFileSync(policyFile, 'utf8')) : undefined);
   const image = tenantImage(runtime, imageSop, brand);
   const render = tenantRenderer(runtime, brand);
   const merged = mergeWithImage(image, image, runtime.sopSections);
@@ -61,7 +63,7 @@ export async function installSeededPackConfig(
     toolNames: runtime.tools.map((x) => x.def.function.name),
     knownFields: runtime.knownFields.names,
     baselineEditableChars: editableChars(merged, runtime.sopSections),
-    ...contractInputs(runtime, brand, null),
+    ...contractInputs(runtime, brand, policy.policy),
     hardRequirements: render(''),
   });
   if (violations.length) throw new Error(`pack: 参考配置过不了契约检查：${violations.map((v) => v.code).join('、')}`);
@@ -75,8 +77,8 @@ export async function installSeededPackConfig(
       basedOn: null,
       renderedPrompt: rendered,
       ...promptHashes(rendered, toolsJson, sop),
-      policy: null,
-      renderInputs: renderInputsFor(render, joinSop(image), toolsJson, runtime.sopSections, brand, sha256('null')),
+      policy: policy.policy,
+      renderInputs: renderInputsFor(render, joinSop(image), toolsJson, runtime.sopSections, brand, policy.policyHash),
       changeNote: '首次导入',
       createdBy: null,
       createdByName: BY,

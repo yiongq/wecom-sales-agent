@@ -1,14 +1,17 @@
 // 通用术语替换算法，词表由包提供。
 import type { DejargonVocab } from '../pack-api.js';
+import { registeredTextLinks } from '../site-links.js';
 import { convLabel } from '../../log.js';
 export function dejargon(text: string, sessionId: string, vocab: DejargonVocab): string {
   const { english: EN_JARGON, internal: INTERNAL_TERMS } = vocab;
   // 先把站内链接挖出来，避免路径里的英文被当成夹带词
   const links: string[] = [];
-  let masked = text.replace(/\/(?:proposal|pay)\/\S+/g, (m) => {
+  let masked = text;
+  for (const match of registeredTextLinks(text).toReversed()) {
+    const m = match[0];
     links.push(m);
-    return `\u0000${links.length - 1}\u0000`;
-  });
+    masked = masked.slice(0, match.index) + `\u0000${links.length - 1}\u0000` + masked.slice(match.index! + m.length);
+  }
   const hit: string[] = [];
   masked = masked.replace(/(^|[^A-Za-z])([A-Za-z]{2,})(?=[^A-Za-z]|$)/g, (full, pre: string, word: string) => {
     const zh = EN_JARGON[word.toLowerCase()];

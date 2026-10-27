@@ -21,6 +21,8 @@ export { ALWAYS_LOCKED, CATALOG_SCHEMAS, LOCKED_WHEN_ACTIVE, REPRICE_FIELDS, typ
 export { UNSTORABLE_TEXT, type CatalogItem } from '../shared/console-api.js';
 export {
   checkItem,
+  withItemRules,
+  type ItemRule,
   checkPack,
   ENTITY_ICONS,
   type CheckIssue,
@@ -30,7 +32,7 @@ export {
   type ItemCheck,
 } from '../shared/pack.js';
 export type { QuickReplyDefault } from '../shared/quick-reply-defaults.js';
-export { createLineOrder, orderDisplay, type LinePick } from './order-view.js';
+export { createLineOrder, orderDisplay, quoteState, quoteValidUntil, type LinePick, type QuoteApproval } from './order-view.js';
 export { yuanToFen } from '../shared/catalog-money.js';
 export type { SectionSpec, SectionSpec as SopSectionDef, SopSection } from '../shared/sop-sections.js';
 
@@ -256,6 +258,10 @@ export interface PrefetchResult {
 /** 核心继续负责身份补句、清理、消息追加、保存与结束 trace。 */
 export interface DeterministicReply {
   text: string;
+  fixedId?: string;
+  handoff?: { reason: string };
+  notify?: { reason: 'quote_accepted'; orderId: string };
+  statePatch?: Record<string, unknown>;
 }
 
 export interface TurnToolContext extends ToolContext {
@@ -655,6 +661,8 @@ export interface ProfileExtractionSources {
 }
 
 export { partsOf } from './message-parts.js';
+export { linkWhitelistStep, linkWhitelistFollowupStep } from './guards/link-whitelist.js';
+export { getAnyOrder, quoteLinkAllowed } from './site-links.js';
 
 /**
  * 第 18 步收口实际工具、主回复与跟进 context；第 20 步补齐客户出口品牌模板。
@@ -710,6 +718,7 @@ export interface CatalogKindSpec {
   /** 数组项用 []，如 tiers[].unitPrice。 */
   moneyFields: readonly { path: string; decimals: 0 | 2 }[];
   retrieval: boolean;
+  crossItemCheck?(item: Readonly<Record<string, unknown>>, snapshot: CatalogSnapshot): readonly { path: string; message: string }[];
 }
 
 /** 08 R4：包的画像字段声明；attrs 的键只有声明过的才进模型（核心再筛一次） */
@@ -746,9 +755,27 @@ export interface QuoteCard {
   quote?: ConversationQuote;
 }
 
+export interface SiteLinkDef {
+  linkKind: string;
+  pattern: RegExp;
+  card?(path: string, session: Session): { title: string; desc: string } | null;
+  partTitle?(path: string, session: Session): string | null;
+  allowed(session: Session, path: string): boolean;
+  resources?: readonly { pattern: RegExp; methods: readonly ('GET' | 'HEAD' | 'POST')[] }[];
+}
+
 export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   id: string;
   documents?: { proposal?: boolean };
+  quotes?: {
+    approval: true;
+    validDays(policy: unknown): number;
+    autoApprovable?(order: LineOrder, session: Session): boolean;
+    notes?(order: LineOrder, policy: unknown): readonly string[];
+  };
+  siteLinks?: readonly SiteLinkDef[];
+  onQuoteDecided?(session: Session, order: LineOrder, event: 'approved' | 'rejected' | 'withdrawn' | 'superseded'): SalesStage | null;
+  followupGate?(session: Session, stage: SalesStage): boolean;
   policy?: PackPolicy;
   defaultBrand: BrandProfile;
   legacy: T['LegacyTexts'];
@@ -830,6 +857,8 @@ export function boundPack(): PackBinding | null {
 
 /** 第 18 步：模型前安全网、重置与支付通知的行业能力，按旧调用位置注入。 */
 export interface EnginePackHooks {
+  quoteRejectedText?(order: LineOrder): string;
+  quoteWithdrawnText?(order: LineOrder): string;
   afterSales?(input: AfterSalesInput): AfterSalesStep | null;
   isComplaint(text: string): boolean;
   isHandoffIntent(text: string): boolean;
@@ -894,7 +923,7 @@ export interface BrandTexts {
   quickReplies: readonly import('../shared/quick-reply-defaults.js').QuickReplyDefault[];
 }
 
-export type BrandPage = 'pay' | 'proposal' | 'chat' | 'web';
+export type BrandPage = string;
 export interface BrandPageSlot {
   /** 页面中的完整原文片段；一次匹配，避免品牌值再次成为替换目标。 */
   legacy: string;
@@ -925,6 +954,8 @@ export interface FollowupGuardContext extends GuardContext {
 
 /** 包工厂的存储、配置与检索能力，组合根提供，包不引用运行时模块。 */
 export interface PackSources extends Omit<TravelToolSources, 'budgetVerdict'> {
+  /** 只读当前已发布政策；不访问草稿、不写状态。 */
+  readonly currentPolicy: typeof import('../config/source.js').currentPolicy;
   isConfigNotReadyError(error: unknown): boolean;
   isTerminalStage(stage: SalesStage): boolean;
   handoffReasons: typeof import('../handoff/record.js').HANDOFF_REASON;

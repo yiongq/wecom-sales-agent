@@ -1,0 +1,45 @@
+{
+  "id": "industrial-substitute-none",
+  "pack": "industrial",
+  "persona": "无替代不编造。只咨询本目标中的合成产品，不增加其他采购需求；得到回答后结束。",
+  "maxTurns": 2,
+  "tags": ["regression", "acceptance-10"],
+  "severity": "quality",
+  "customerScript": [
+    "请查询库内的合成六角螺栓，型号M8×30，螺纹M8、长度30mm；有没有产品库登记的替代型号？",
+    "就是目录里的M8×30合成六角螺栓，只核对登记替代，不要推测通用性。"
+  ],
+  "allowedTools": ["find_parts"],
+  "forbidden": [],
+  "predicates": [
+    {
+      "kind": "tool_called",
+      "name": "find_parts",
+      "min": 1
+    },
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "shape",
+      "richMax": 12,
+      "plainMax": 12,
+      "minShare": 1
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "没有登记替代|暂无|未(?:登记|列出|查到)|没有.*替代|(?:需|请|由).{0,6}顾问.{0,6}(?:核对|确认)",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "(?:^|[，,。；;！!？?\\n])(?:(?!(?:不能|无法|没法|不会|不保证|不承诺|不支持|不可以|没有|暂无|无现货|未|是否|有没有|以.{0,8}确认为准))[^，,。；;！!？?\\n])*(?:可以替代|可替代|通用|能互换)",
+      "scope": "all"
+    }
+  ]
+}

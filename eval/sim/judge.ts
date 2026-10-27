@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from 'node:util';
+import { currentPack } from '../../src/config/source.js';
+import type { ShapePolicy } from '../../src/core/pack-api.js';
 import type { Session } from '../../src/types.js';
 import type { AnyOrder } from '../../src/core/order-view.js';
 import type { FinishedTurn } from '../../src/trace/recorder.js';
@@ -29,14 +31,10 @@ export interface Verdict {
 }
 
 /** 本轮有这些工具的结果（含预取）就算推荐 / 报价类，上限更宽；其余算普通类。 */
-export const RICH_TOOLS: ReadonlySet<string> = new Set([
-  'search_routes',
-  'get_route_detail',
-  'create_quote',
-  'generate_proposal',
-  'create_order',
-]);
-export const isRichTurn = (t: SimTurn): boolean => t.trace.turn.calls.some((c) => RICH_TOOLS.has(c.name));
+export const isRichTurn = (t: SimTurn): boolean => {
+  const policy = (currentPack().runtime.thresholds as { shape?: ShapePolicy }).shape;
+  return t.trace.turn.calls.some((c) => policy?.richTools.includes(c.name));
+};
 /**
  * 代码整段生成的推荐 / 线路列表（06 Open 4）：出口 `shape_check` 把它记在 trace 的 replyShape（generatedList，limit 是单独的上限 8），
  * 评测直接取这个 limit，和出口同一口径。trace 里没有这条记录（别的包、没进主回复流水线）就返回 null，按 rich / plain 算。
@@ -106,7 +104,7 @@ function testPredicate(p: Predicate, e: Evidence): boolean {
       return true;
     }
     case 'handoff':
-      return finalState(e).handedOver === p.expected;
+      return finalState(e).handedOver === p.expected && (p.handoffKind === undefined || finalState(e).handoff?.kind === p.handoffKind);
     case 'tool_called': {
       const n = e.turns.flatMap((t) => t.trace.turn.calls).filter((c) => c.name === p.name).length;
       return n >= (p.min ?? 1) && n <= (p.max ?? Infinity);

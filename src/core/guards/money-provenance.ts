@@ -28,6 +28,7 @@ function dropUnbacked(
   for (const id of ctx.session.orderIds) {
     const order = sources.getOrder(id);
     if (!order || order.sessionId !== ctx.session.id || !isLineOrder(order)) continue;
+    if (order.approval && order.approval.state !== 'approved') continue;
     allowed.add(order.totalFen);
     for (const line of order.lines) {
       allowed.add(line.unitPriceFen);

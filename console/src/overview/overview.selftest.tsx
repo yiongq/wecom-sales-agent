@@ -1132,6 +1132,7 @@ interface Server {
   paidNeedsHuman?: ConversationRow[];
   /** 待付款订单（?status=pending_payment），默认空 */
   pendingOrders?: OrderView[];
+  quoteOrdersFail?: boolean;
   /** /orders 的 paymentMode（A2「等你确认价格」），默认 advisor */
   paymentMode?: 'online' | 'advisor';
   /** /orders/summary，默认 207,440 已付、85,600 待付（02 场景数） */
@@ -1174,6 +1175,7 @@ function respond(method: string, url: URL): Response {
     return json(200, { ok: true });
   }
   if (method === 'GET' && p === '/orders') {
+    if (server.quoteOrdersFail) return json(500, { error: 'internal' });
     const status = q.get('status');
     const all = (server.pendingOrders ?? []).filter((o) => !status || o.status === status);
     return json(200, { items: all, total: all.length, paymentMode: server.paymentMode ?? 'advisor' });
@@ -2250,6 +2252,59 @@ for (const w of BANNED) {
     AUDIT[0]!.actorName = originalActor;
     style.remove();
   }
+}
+
+// 09 D：总览报价待办的计数与加载/空/错误态，旅游场景继续沿用上面的断言。
+{
+  const quote: import('../../../src/shared/console-api.js').LineOrderView = {
+    id: 'ord_quote_overview',
+    status: 'pending_payment',
+    createdAt: new Date(NOW).toISOString(),
+    paidAt: null,
+    confirmed: null,
+    handoffBeforePaid: null,
+    conversation: { id: 'wecom:wmQuote', channel: 'wecom', needSummary: null },
+    display: { title: '合成报价', summary: '1项', totalFen: 133000, totalText: '1,330元', lines: [] },
+    totalFen: 133000,
+    totalText: '1,330元',
+    approval: { state: 'pending' },
+    quoteState: 'pending',
+  };
+  server = { pack: TRAVEL, lists: SCENE, waiting: [], pendingOrders: [quote] };
+  const m = await mountOverview(member('agent'));
+  check(
+    '报价总览：一条待审、审核文案、不显示确认价格',
+    m.texts('.ov-todo').length === 1 &&
+      m.texts('.ov-todo-context').some((s) => s.includes('报价单等你审核')) &&
+      !m.box.textContent!.includes('等你确认价格'),
+  );
+  server.hold = /^GET \/orders$/;
+  await act(async () => {
+    void m.qc.invalidateQueries({ queryKey: ['orders', 'pending'] });
+    await new Promise((r) => setTimeout(r, 20));
+  });
+  check('报价总览：重载不显示旧金额、旧动作', !m.box.textContent!.includes('1,330元') && !m.$('.ov-todo:not(.ov-todo-skeleton)').length);
+  server.quoteOrdersFail = true;
+  server.hold = undefined;
+  await act(async () => releaseHeld());
+  await settle(m.qc);
+  check(
+    '报价总览：错误隐藏旧金额、可重试',
+    !m.box.textContent!.includes('1,330元') && m.$('button').some((e) => e.textContent?.replace(/\s/g, '').includes('重试')),
+  );
+  server.quoteOrdersFail = false;
+  await m.click(m.$('button').find((e) => e.textContent?.replace(/\s/g, '').includes('重试')));
+  check(
+    '报价总览：重试恢复待审',
+    m.texts('.ov-todo-context').some((s) => s.includes('报价单等你审核')),
+  );
+  server.pendingOrders = [];
+  await act(async () => {
+    await m.qc.invalidateQueries({ queryKey: ['orders', 'pending'] });
+  });
+  await settle(m.qc);
+  check('报价总览：无记录空态', m.box.textContent!.includes('没有要处理的事'));
+  await m.unmount();
 }
 
 if (fails.length) {

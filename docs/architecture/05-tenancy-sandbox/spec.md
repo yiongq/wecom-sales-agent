@@ -1,6 +1,7 @@
 # 05 · 同部署多租户 + 一键体验沙箱
 
 Status: implemented
+Superseded in part by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md) — R21「微信里点开的链接」中固定三类公开页及其接口的白名单：改由核心登记与本租户包的 SiteLinkDef 登记合并生成，页面与 resources 的方法 / 路径按 09 R10；旅游白名单逐项相同，令牌、cookie 优先级、同源与限频规则不变。
 Amended by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md)（R14 写入上限里的「产品条目总数」按全部 kind 合计（第 87 行），见 08 R2）。
 Amended by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md)（只做新增，全文见该 spec 顶部 `Amends:`：R5 清单加闸的单槽与进度两项，R9 复制范围加 policy 与知识库行，R12 `sandbox_tenant_purge` 的删除清单加 `kb_chunks`、`kb_vectors`、`sop_gate_runs`，沙箱不跑发布闸，种子订单支持相对出发日，见 07 R7、R10、R13、R21）。
 Revisions: 2026-10-13 第 33 步对证后同步正文：R14 与验收 8 对齐写入速率 / 容量错误码；验收 1 明确双向模拟器 SSE 在同一沙箱进程的两个沙箱中验证；验收 14 收窄 python3 口径为 05 新增种子结构检查；开放问题 15 补已定入口。

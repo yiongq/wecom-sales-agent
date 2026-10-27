@@ -148,6 +148,16 @@ assert.deepEqual(
   ),
   [`order:${order.id}`, 'order:ord_small'],
 );
+for (const mode of ['online', 'advisor'] as const) {
+  const pending = { ...order, approval: { state: 'pending' as const }, quoteState: 'pending' as const };
+  const quoteTodos = attentionTodos([], [], [pending], mode, pack, now);
+  assert.equal(quoteTodos.length, 1);
+  assert.ok(quoteTodos[0]!.context?.some((segment) => segment.text === '报价单等你审核'));
+  assert.ok(!JSON.stringify(quoteTodos).includes('等你确认价格'));
+  for (const state of ['expired', 'invalid', 'superseded', 'paid'] as const)
+    assert.equal(attentionTodos([], [], [{ ...pending, quoteState: state }], mode, pack, now).length, 0);
+}
+console.log('QUOTE OVERVIEW PASS：两种付款模式待审计数1、审批文案、过期/无效/取代/已付不计待付款');
 console.log('PACK CARDS PASS：通用订单两行、画像卡、报价卡（有金额/零/null）、A2；旅游正文与原 JSX 一致，动态文字转义');
 
 // 真挂载 trace，验证非旅游入口隐藏、旅游入口保留；不以函数返回值替代按钮可见性。

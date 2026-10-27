@@ -130,6 +130,7 @@
             { "id": "identity", "action": "pass" },
             { "id": "shape_check", "action": "pass" },
             { "id": "money_provenance", "action": "pass" },
+            { "id": "link_whitelist", "action": "pass" },
             { "id": "takeover_check:post", "action": "pass" },
             { "id": "turn_failure", "action": "pass" },
             { "id": "final_clean", "action": "pass" }
@@ -153,6 +154,7 @@
             { "id": "identity", "action": "pass" },
             { "id": "shape_check", "action": "pass" },
             { "id": "money_provenance", "action": "drop_sentence" },
+            { "id": "link_whitelist", "action": "pass" },
             { "id": "takeover_check:post", "action": "pass" },
             { "id": "turn_failure", "action": "pass" },
             { "id": "final_clean", "action": "pass" }
@@ -177,6 +179,7 @@
             { "id": "identity", "action": "pass" },
             { "id": "shape_check", "action": "pass" },
             { "id": "money_provenance", "action": "replace" },
+            { "id": "link_whitelist", "action": "pass" },
             { "id": "takeover_check:post", "action": "pass" },
             { "id": "turn_failure", "action": "pass" },
             { "id": "final_clean", "action": "pass" }
@@ -201,6 +204,7 @@
             { "id": "identity", "action": "pass" },
             { "id": "shape_check", "action": "pass" },
             { "id": "money_provenance", "action": "pass" },
+            { "id": "link_whitelist", "action": "pass" },
             { "id": "takeover_check:post", "action": "pass" },
             { "id": "turn_failure", "action": "pass" },
             { "id": "final_clean", "action": "pass" }
@@ -224,6 +228,7 @@
             { "id": "identity", "action": "pass" },
             { "id": "shape_check", "action": "pass" },
             { "id": "money_provenance", "action": "drop_sentence" },
+            { "id": "link_whitelist", "action": "pass" },
             { "id": "takeover_check:post", "action": "pass" },
             { "id": "turn_failure", "action": "pass" },
             { "id": "final_clean", "action": "pass" }

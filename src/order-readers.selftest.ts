@@ -94,7 +94,7 @@ if (process.argv[2] !== 'worker') {
     async function makeOrder(id: string) {
       const session = store.getOrCreateSession(id, 'simulator');
       store.saveSession(session);
-      const made = await createLineOrder(session, picks);
+      const made = await createLineOrder(session, picks, { approval: false });
       assert.ok('order' in made);
       await store.flushSession(id);
       return { session, order: made.order };
@@ -386,7 +386,7 @@ if (process.argv[2] !== 'worker') {
     assert.equal((await app.request(`/api/orders/${cancelled.order.id}/pay`, { method: 'POST' })).status, 409);
     assert.equal((await (await get(`/api/orders/${cancelled.order.id}`)).json()).payable, false);
     const replaced = await makeOrder('readers-replaced');
-    const replacement = await createLineOrder(replaced.session, [{ ...picks[0]!, qty: 201 }, picks[1]!]);
+    const replacement = await createLineOrder(replaced.session, [{ ...picks[0]!, qty: 201 }, picks[1]!], { approval: false });
     assert.ok('order' in replacement);
     assert.equal((await app.request(`/api/orders/${replaced.order.id}/pay`, { method: 'POST' })).status, 409);
     assert.ok((await (await get(`/pay/${replaced.order.id}`)).text()).includes('订单已被替代'));

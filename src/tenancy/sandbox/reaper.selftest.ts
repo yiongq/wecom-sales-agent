@@ -70,6 +70,19 @@ async function clean(): Promise<void> {
     unregisterRuntime(rt.id);
   }
 }
+/**
+ * 自测的屏障只有 15ms：慢机器上在途的到期事务或收尾写没来得及落定，这一拍按设计只推进到 ② 就返回，
+ * 剩下的留给下一拍（生产里隔一分钟再试）。要求「删净」的地方按同样的节奏补拍到运行时摘掉为止（有上限）；
+ * 随后 zero 的逐表断言不变。要求「保留」的地方不用它，仍是一拍。
+ */
+async function tickUntilGone(reaper: SandboxReaper, id: string): Promise<void> {
+  for (let n = 0; n < 400; n++) {
+    await reaper.tick();
+    if (!runtimeOf(id)) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, 25));
+  }
+  assert.fail(`补拍 400 次后运行时 ${id} 仍在`);
+}
 async function zero(q: Query, id: string, slug: string): Promise<void> {
   const tables = await q<{ name: string }>(`select c.relname as name from pg_class c
     join pg_namespace n on n.oid=c.relnamespace join pg_attribute a on a.attrelid=c.oid
@@ -185,7 +198,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   check((await resolveSandboxSession(db, a.token)).status === 'expired', '过期未删 cookie 为 expired');
   failClose = false;
   off();
-  await reaper.tick();
+  await tickUntilGone(reaper, a.rt.id);
   check(consoleClosed > 0 && simulatorClosed > 0 && webClosed === 1 && otherClosed === 0, '只关闭所属 SSE，网页订阅随 drop 释放');
   await zero(q, a.rt.id, a.slug);
   check((await resolveSandboxSession(db, a.token)).status === 'invalid', '删除后 cookie 为 invalid');
@@ -234,7 +247,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   check(!entered && blocked.rt.inflight.size === 1, '② 封口后新事务和新任务不执行、不登记');
   gate.reject(new Error('rolled_back'));
   await blocked.rt.inflight.drain();
-  await reaper.tick();
+  await tickUntilGone(reaper, blocked.rt.id);
   await zero(q, blocked.rt.id, blocked.slug);
 
   // ② 后排队请求拿到名额也不得发起 fetch；normal closing 单独覆盖。
@@ -277,10 +290,10 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
         withTenantScope(holder.rt, () => result.settleUsage(null));
         await result.res.body?.cancel();
       }
-      await reaper.tick();
+      await tickUntilGone(reaper, queued.rt.id);
       await zero(q, queued.rt.id, queued.slug);
       await expire(holder);
-      await reaper.tick();
+      await tickUntilGone(reaper, holder.rt.id);
       await zero(q, holder.rt.id, holder.slug);
     } finally {
       globalThis.fetch = beforeFetch;
@@ -333,7 +346,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   searchResult.resolve(null);
   check((await searchTurn).silent && JSON.stringify(searchSession) === searchBefore, '搜索返回后预算、已看线路、报价及消息均不改');
   check(quoteRejected, '搜索取消后 mock 继续请求 create_quote 也被拒绝');
-  await reaper.tick();
+  await tickUntilGone(reaper, searching.rt.id);
   await zero(q, searching.rt.id, searching.slug);
 
   // 实际引擎缓存重放：A 已预取，B 在飞时删除②，同一模型响应又调用 A。
@@ -400,7 +413,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     check(JSON.stringify(cachedSession) === before, 'B 续体和 A 缓存重放均不改会话');
     check(cachedUnhandled.length === 0, '实际引擎取消重放没有 unhandledRejection，进程继续运行');
     check(cachedWarnings.filter((line) => line.includes('工具缓存重放已取消或失败')).length === 1, '实际取消重放仅记一行');
-    await reaper.tick();
+    await tickUntilGone(reaper, cachedSearch.rt.id);
     await zero(q, cachedSearch.rt.id, cachedSearch.slug);
   } finally {
     cachedResult.resolve(null);
@@ -433,7 +446,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     response.resolve(new Response(JSON.stringify({ choices: [{ message: { content: '迟到的草稿' } }] }), { status: 200 }));
     check((await draft) === '', '迟到草稿不采纳');
     check(tenantKeys(late.rt.id)['insight.draftCache'] === 0, '迟到草稿没有写缓存');
-    await longReaper.tick();
+    await tickUntilGone(longReaper, late.rt.id);
     await zero(q, late.rt.id, late.slug);
     longReaper.stop();
   } finally {
@@ -459,7 +472,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     await reaper.tick();
     mainResponse.resolve(new Response(JSON.stringify({ choices: [{ message: { content: '迟到主对话' } }] }), { status: 200 }));
     check((await turn).silent && JSON.stringify(session) === before, '迟到主对话无消息、画像或阶段改动');
-    await reaper.tick();
+    await tickUntilGone(reaper, main.rt.id);
     await zero(q, main.rt.id, main.slug);
   } finally {
     globalThis.fetch = fetchBefore;
@@ -486,7 +499,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     embedResponse.resolve(new Response(JSON.stringify({ data: [] }), { status: 200 }));
     await Promise.allSettled([building]);
     check(!withTenantScope(embedding.rt, indexReady), '迟到 embedding 不发布索引');
-    await reaper.tick();
+    await tickUntilGone(reaper, embedding.rt.id);
     await zero(q, embedding.rt.id, embedding.slug);
   } finally {
     globalThis.fetch = fetchBefore;
@@ -522,7 +535,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     'select coalesce(sum(calls),0)::int as calls, coalesce(sum(cost_milli),0)::int as cost, coalesce(sum(purged),0)::int as purged from sandbox_pool_daily',
   );
   writerFails = false;
-  await reaper.tick();
+  await tickUntilGone(reaper, usage.rt.id);
   check(order.at(-1) === 'close', '③ 落库先于 ④ 关闭');
   const [poolAfter] = await q<{ calls: number; cost: number; purged: number }>(
     'select coalesce(sum(calls),0)::int as calls, coalesce(sum(cost_milli),0)::int as cost, coalesce(sum(purged),0)::int as purged from sandbox_pool_daily',
@@ -547,7 +560,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     '④ 失败不 purge',
   );
   failBackend = false;
-  await reaper.tick();
+  await tickUntilGone(reaper, closeFault.rt.id);
   await zero(q, closeFault.rt.id, closeFault.slug);
 
   // ⑥ drop 失败可重试，已成功的 purge 不再重复记池。
@@ -566,7 +579,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   check(runtimeOf(dropFault.rt.id) === dropFault.rt, '⑥ 失败保留待释放运行时');
   failDrop = false;
   // 库行已删：下一拍仍必须处理未完成的 ⑥。
-  await reaper.tick();
+  await tickUntilGone(reaper, dropFault.rt.id);
   await zero(q, dropFault.rt.id, dropFault.slug);
 
   // ⑤ 连续五次失败的告警；事务回滚后池计数没有重复。
@@ -582,7 +595,9 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     alerts.push(args.map(String).join(' '));
   };
   try {
-    for (let n = 0; n < 5; n++) await reaper.tick();
+    // 第一次 purge 失败后运行时即释放；先补拍到走完这一次，再凑够连续五次。
+    await tickUntilGone(reaper, failing.rt.id);
+    for (let n = 1; n < 5; n++) await reaper.tick();
   } finally {
     console.warn = warn;
   }
@@ -596,7 +611,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   );
   await q('drop trigger selftest_purge_failure on tenants');
   await q('drop function selftest_purge_failure()');
-  await reaper.tick();
+  await tickUntilGone(reaper, failing.rt.id);
   await zero(q, failing.rt.id, failing.slug);
 
   // ⑥ 租户锁释放失败也可重试，不重复 purge。
@@ -609,10 +624,10 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     await releaseLock();
   };
   await expire(releaseFault);
-  await reaper.tick();
+  await tickUntilGone(reaper, releaseFault.rt.id);
   check(!runtimeOf(releaseFault.rt.id), '⑥ 放锁失败前内存已摘');
   failRelease = false;
-  await reaper.tick();
+  await tickUntilGone(reaper, releaseFault.rt.id);
   await zero(q, releaseFault.rt.id, releaseFault.slug);
 
   // 结束体验与 idle，cookie 请求更新活动时间。
@@ -624,12 +639,12 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     (await q("select id from audit_log where tenant_id=$1 and action='sandbox.end'", [ended.rt.id])).length === 1,
     '结束体验原子写入本租户审计',
   );
-  await reaper.tick();
+  await tickUntilGone(reaper, ended.rt.id);
   await zero(q, ended.rt.id, ended.slug);
   const idle = await box();
   reaper.touch(idle.rt, Date.now() - 121 * 60_000);
   reaper.touch(survivor.rt);
-  await reaper.tick();
+  await tickUntilGone(reaper, idle.rt.id);
   await zero(q, idle.rt.id, idle.slug);
   check(survivor.rt.state === 'serving', '活动租户不回收');
 
@@ -643,12 +658,12 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   check((await resolveSandboxSession(db, activeRestart.token)).status === 'ok', 'resolve 持久更新访问时间');
   const restartedIdle = new SandboxReaper({ db, acquireTenant: acquire, idleMs: 120 * 60_000, barrierMs: 15 });
   await restartedIdle.start();
-  await restartedIdle.tick();
+  await tickUntilGone(restartedIdle, idleRestart.rt.id);
   await zero(q, idleRestart.rt.id, idleRestart.slug);
   check(activeRestart.rt.state === 'serving', '重启不清零闲置时间，刚访问的继续服务');
   restartedIdle.stop();
   await expire(activeRestart);
-  await reaper.tick();
+  await tickUntilGone(reaper, activeRestart.rt.id);
   await zero(q, activeRestart.rt.id, activeRestart.slug);
 
   if (realUrl) {
@@ -757,7 +772,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
       await shutdownExited;
     }
     await expire(shutdownBox);
-    await reaper.tick();
+    await tickUntilGone(reaper, shutdownBox.rt.id);
     await zero(q, shutdownBox.rt.id, shutdownBox.slug);
 
     // 被另一连接行锁挡住的真实配置事务，30 秒后仍停 ②。
@@ -795,7 +810,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     await blocker.close();
     await pending;
     check(withTenantScope(config.rt, () => currentCatalog().routes[0]!.priceFrom) === item.priceFrom, '配置迟到提交不换缓存');
-    await slow.tick();
+    await tickUntilGone(slow, config.rt.id);
     await zero(q, config.rt.id, config.slug);
     slow.stop();
 
@@ -805,7 +820,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     const lockConn = await connectSuperQuery(realUrl);
     await lockConn.query('begin');
     await lockConn.query('select id from tenants where id=$1 for update', [purge.rt.id]);
-    await reaper.tick();
+    await tickUntilGone(reaper, purge.rt.id);
     check(!runtimeOf(purge.rt.id) && Object.values(tenantKeys(purge.rt.id)).every((n) => n === 0), '⑤ 锁超时后 ⑥ 清内存');
     check(
       (await listSandboxes(db)).some((r) => r.id === purge.rt.id),
@@ -814,7 +829,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     const closeCount = purge.closed();
     await lockConn.query('rollback');
     await lockConn.close();
-    await reaper.tick();
+    await tickUntilGone(reaper, purge.rt.id);
     check(purge.closed() === closeCount, '⑤ 重试不再刷用量、关后端');
     await zero(q, purge.rt.id, purge.slug);
 
@@ -874,7 +889,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     await q('drop trigger selftest_purge_sleep on tenants');
     await q('drop function selftest_purge_sleep()');
     const restarted = new SandboxReaper({ db, acquireTenant: acquire, idleMs: 120 * 60_000 });
-    await restarted.tick();
+    await tickUntilGone(restarted, crash.rt.id);
     await zero(q, crash.rt.id, crash.slug);
     restarted.stop();
     check(!runtimeOf(crash.rt.id), '启动删除不装载到期租户');
@@ -921,7 +936,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
     overdueGate.resolve();
   }
   await expire(overdue);
-  await reaper.tick();
+  await tickUntilGone(reaper, overdue.rt.id);
   await zero(q, overdue.rt.id, overdue.slug);
 
   // CLI list/end 真实数据库；进程锁 / 租户锁失败必须退出 3，不能改到期。
@@ -941,7 +956,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<TenantLo
   check((await runSandbox(['purge', '--all'], { ...cli, lock: async () => noTenant })) === 3, 'purge 租户锁拒绝');
   check(String((await listSandboxes(db)).find((r) => r.id === survivor.rt.id)!.expiresAt) === String(expires), '锁拒绝未改寿命');
   check((await runSandbox(['end', survivor.slug], cli)) === 0, 'sandbox end slug');
-  await reaper.tick();
+  await tickUntilGone(reaper, survivor.rt.id);
   await zero(q, survivor.rt.id, survivor.slug);
   const startup = await box();
   await clean(); // 模拟重启：无运行时，未过期行仍在。

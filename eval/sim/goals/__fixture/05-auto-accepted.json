@@ -1,0 +1,28 @@
+{
+  "id": "fixture-auto-accepted",
+  "persona": "合成客户要2件方盒丙并确认报价",
+  "maxTurns": 2,
+  "customerScript": ["丙方盒2件正式报价", "确认报价"],
+  "allowedTools": ["fixture_quote_order"],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 1,
+      "fields": {
+        "totalFen": 730
+      }
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "已记下您的报价确认",
+      "scope": "last"
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    }
+  ],
+  "pack": "__fixture",
+  "forbidden": ["<tool_call>", "【硬性要求】"],
+  "tags": ["fixture", "regression", "q09"]
+}

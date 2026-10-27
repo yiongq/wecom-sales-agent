@@ -1,3 +1,5 @@
+import { noteGuard } from '../trace/recorder.js';
+import { recordQuoteStates } from './message-parts.js';
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
 import {
@@ -22,6 +24,7 @@ import {
 // 调度两种存储不同（02 spec R17）：文件存储是这里的扫描器（锁定的 llm.selftest F1 测它）；db 存储由任务表驱动（src/jobs/followup.ts），
 // 那里排程、到点重判都调这里的 shouldFollowUp，话术同样经 followUpText
 import { flushStoreNow, getSession, isDemoClassId, listSessions, onShutdown, saveSession, sessionStoreMode } from '../store.js';
+import { recheckFollowupLinks, usesLinkWhitelist } from './guards/link-whitelist.js';
 import { completeText } from './llm/client.js';
 import { pinCatalogForTurn, currentPack } from '../config/source.js';
 import { guardOutbound } from './engine/index.js';
@@ -112,6 +115,7 @@ export type SessionWithFollowup = Session & { followup?: FollowupMeta };
  */
 export function followupStage(s: SessionWithFollowup): { stage: SalesStage; idleMs: number } | null {
   if (!followupEnabled()) return null;
+  if (currentPack().runtime.followupGate?.(s, s.stage) === false) return null;
   if (s.handedOver) return null; // 人工在跟，别插嘴
   if (s.channel !== 'wecom') return null; // 只追真实客户，不骚扰网页访客
   if (isDemoClassId(s.id)) return null; // 种子演示数据与网页访客，发不出去也不该发
@@ -146,7 +150,7 @@ async function composeFollowUp(s: Session): Promise<string> {
   const out = cleanText((await completeText(sys, user, { purpose: 'followup' })).trim().split('\n')[0]);
   // 订单号先抹掉（跟进消息是主动外发，风险更高）：支付链接随之成了半截，白名单按假支付链接抹成空位。网址不在这里清：
   // 原文交给 guardOutbound，它的链接白名单才看得见「说了给链接」的地方，连同承诺那句一起删（此前先抹成空串，「方案链接： 」照发）
-  const cleaned = out.replace(/ord_[A-Za-z0-9]+/g, '').trim();
+  const cleaned = usesLinkWhitelist(currentPack().runtime.replySteps) ? out : out.replace(/ord_[A-Za-z0-9]+/g, '').trim();
   return cleaned || templateFor(s.stage);
 }
 
@@ -159,7 +163,7 @@ const templateFor = (stage: SalesStage): string => templates().byStage[stage] ||
 export function followUpText(s: Session): Promise<string> {
   return pinCatalogForTurn(async () => {
     const guarded = await guardOutbound(s, await composeFollowUp(s), { kind: 'followup' });
-    return guarded || templateFor(s.stage);
+    return usesLinkWhitelist(currentPack().runtime.replySteps) ? guarded.trim() : guarded || templateFor(s.stage);
   });
 }
 
@@ -239,11 +243,12 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
     if (own.stopping) break;
     if (!shouldFollowUp(s, Date.now())) continue;
     try {
-      const text = await composeUnlessStopping(s);
+      let text = await composeUnlessStopping(s);
       if (text === null || own.stopping) {
         console.log(`[followup] 停机中，放弃尚未发出的跟进 ${convLabel(s.id)}（下次启动再追）`);
         break;
       }
+      if (!text.trim()) continue;
       // 生成话术要几秒到几十秒，这期间客户很可能已经回消息了——那就不是跟进而是打断。
       // 用最新的会话对象重新判一次，避免发出「您之前的顾虑…」跟在客户刚说完的话后面。
       const fresh = getSession(s.id) as SessionWithFollowup | undefined;
@@ -251,6 +256,8 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
         console.log(`[followup] ${convLabel(s.id)} 在生成话术期间已有新动静，本轮跳过`);
         continue;
       }
+      text = recheckFollowupLinks({ session: fresh, text, recordGuard: noteGuard }, currentPack().runtime.replySteps);
+      if (!text.trim()) continue;
       // 先记账、同步落盘，再推送（at-most-once，见上面「停机」）。
       // touch=false：不刷新 updatedAt。它代表「客户最后活跃时间」，跟进不该把沉默时长
       // 清零，否则后台「N 小时未回应」失真，介入队列也会漏掉真正该救的客户
@@ -265,6 +272,7 @@ async function scanOnce(push: (sessionId: string, text: string, opts?: PushOpts)
       flushStoreNow();
       // 消息对象先建好交给发送账本（送达才写进会话，写进去的是同一个对象）
       const message: ChatMessage = { role: 'agent', content: text, at: Date.now(), author: 'followup' };
+      recordQuoteStates(message, fresh);
       let ok: boolean;
       try {
         ok = await push(s.id, text, { kind: 'followup', message });

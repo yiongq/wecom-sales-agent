@@ -957,6 +957,20 @@ for (const [, e, items] of SAMPLES) {
     '两位小数金额：表单不截成整数，角分步长',
     form(decimalMoney, 3.65).includes('value="3.65"') && form(decimalMoney, 3.65).includes('step="0.01"'),
   );
+  for (const [value, expected] of [
+    [12, '12.00'],
+    [12.5, '12.50'],
+    [1234, '1,234.00'],
+  ] as const) {
+    check(
+      `两位小数金额：列表与只读固定角分 ${value}`,
+      cell(decimalMoney, value, { unit: '件' }).includes(`${expected}元/件`) &&
+        view(decimalMoney, value, { unit: '件' }).includes(`${expected}元/件`),
+    );
+    check(`两位小数金额：编辑初值固定角分 ${value}`, form(decimalMoney, value).includes(`value="${expected}"`));
+  }
+  check('两位小数金额：空初值不变为零', !form(decimalMoney, undefined).includes('value="0.00"'));
+  eq('两位小数金额：12.00 写回仍是数值12', CODECS.money.write(12.0, decimalMoney), 12);
   check('两位小数金额：非法值显示为空', view(decimalMoney, 3.655).includes('>—<'));
   eq('两位小数金额：控件往返保留元值', CODECS.money.write(CODECS.money.read(3.65, decimalMoney), decimalMoney), 3.65);
   // intUnit
@@ -1328,7 +1342,7 @@ async function press(el: Element | null | undefined, key: string): Promise<boole
   const field: FieldDef = { key: 'unitPrice', type: 'money', decimals: 2, label: '单价', group: '' };
   const writes: unknown[] = [];
   function DecimalHarness() {
-    const [value, setValue] = useState<unknown>(3.65);
+    const [value, setValue] = useState<unknown>(12);
     const Form = RENDERERS.money.Form;
     return (
       <Form
@@ -1348,6 +1362,11 @@ async function press(el: Element | null | undefined, key: string): Promise<boole
   try {
     const input = m.box.querySelector('input');
     eq('两位小数表单：挂载不写值', writes, []);
+    eq('两位小数表单：整数初值补角分', input?.value, '12.00');
+    check('两位小数表单：改成13.00', await typeInto(input, '13.00'));
+    eq('两位小数表单：13.00 仍存13', writes.at(-1), 13);
+    check('两位小数表单：输入12.00', await typeInto(input, '12.00'));
+    eq('两位小数表单：12.00 仍存12', writes.at(-1), 12);
     check('两位小数表单：敲角分', await typeInto(input, '12.50'));
     eq('两位小数表单：写回元值', writes.at(-1), 12.5);
     check('两位小数表单：清空', await typeInto(input, ''));
@@ -2538,6 +2557,36 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
   );
   await pk.unmount();
 
+  // 10 R14：工业包直接驱动同一个通用产品页，使用一条合成小夹具。
+  const industrialPack = packById('industrial')!;
+  const industrialPart: Payload = {
+    id: 'part-ui',
+    partNo: 'HS1000',
+    name: '合成轴承',
+    brand: '合成品牌',
+    category: '轴承',
+    specs: ['内径25mm'],
+    unit: '件',
+    unitPrice: 3.65,
+    moq: 1,
+    stock: 20,
+    leadDays: 7,
+  };
+  const industrialPage = await mountPage('/catalog/part', owner(industrialPack), { part: [asRow(industrialPart)] });
+  eq(
+    '工业包正常页：实体、建单入口与列按part配置',
+    [header(industrialPage.box).title, header(industrialPage.box).actions],
+    ['工业品', ['导入CSV', '新建工业品']],
+  );
+  check(
+    '工业包正常页：型号和小数单价可见',
+    !!industrialPage.box.textContent?.includes('HS1000') && !!industrialPage.box.textContent?.includes('3.65'),
+  );
+  await industrialPage.unmount();
+  const industrialEmpty = await mountPage('/catalog/part', owner(industrialPack), { part: [] });
+  eq('工业包空页：导入与新建入口保留', texts(industrialEmpty.box, '.state-empty-actions button'), ['导入CSV', '新建工业品']);
+  await industrialEmpty.unmount();
+
   // 加载、出错：状态句还没有，先占一行（取到以后下面不跳）；fetch 换成不回来的、连不上的
   const realFetch = globalThis.fetch;
   globalThis.fetch = () => new Promise<Response>(() => undefined);
@@ -2548,6 +2597,13 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     [1, 1],
   );
   await ld.unmount();
+  const industrialLoading = await mountPage('/catalog/part', owner(industrialPack), {});
+  eq(
+    '工业包加载：页头保留且显示骨架',
+    [header(industrialLoading.box).title, industrialLoading.box.querySelectorAll('.state-skeleton').length],
+    ['工业品', 1],
+  );
+  await industrialLoading.unmount();
   globalThis.fetch = () => Promise.reject(new TypeError('Failed to fetch'));
   const er = await mountPage('/catalog/route', owner(travel), {});
   eq(
@@ -2556,6 +2612,13 @@ const cellsOf = (tr: Element): string[] => all<HTMLElement>(tr, 'td').map((td) =
     [1, ['没取到']],
   );
   await er.unmount();
+  const industrialError = await mountPage('/catalog/part', owner(industrialPack), {});
+  eq(
+    '工业包错误：页头保留且显示没取到',
+    [header(industrialError.box).title, texts(industrialError.box, '.list-tabs .ant-alert-title')],
+    ['工业品', ['没取到']],
+  );
+  await industrialError.unmount();
   globalThis.fetch = realFetch;
 }
 
@@ -6918,6 +6981,17 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     check(
       '两位小数 CSV：前端预检保留元值',
       result.kind === 'rows' && result.table.rows[0]!.payload.nightlyFrom === 3.65 && result.table.rows[0]!.issues.length === 0,
+    );
+    const integerResult = checkCsv(decimalEntity, csv.replace('3.65', '12.00'));
+    check(
+      '两位小数 CSV：导入预览整数也有角分',
+      integerResult.kind === 'rows' &&
+        cellText(fieldOf(decimalEntity, 'nightlyFrom'), integerResult.table.rows[0]!, integerResult.table.keys) === '12.00',
+    );
+    eq(
+      '两位小数上架预览：整数保留角分',
+      valueText(fieldOf(decimalEntity, 'nightlyFrom'), 12, {}, (_f, value) => value),
+      '12.00元/晚',
     );
     for (const value of ['3.655', '0', '-1']) {
       const bad = checkCsv(decimalEntity, csv.replace('3.65', value));

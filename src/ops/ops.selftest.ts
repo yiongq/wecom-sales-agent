@@ -4135,6 +4135,7 @@ function sandboxDeploySelftest(): void {
     `case "$1" in
     show-ref) exit 0 ;;
     cat-file) case "$3" in *runtime.ts) [ "\${NEW_PHASE:-5}" = 5 ] ;; *) exit 0 ;; esac ;;
+    ls-tree) case "$*" in *src/packs/industrial/runtime.ts*) echo src/packs/industrial/runtime.ts ;; *) echo src/core/site-links.ts ;; esac ;;
     archive) tar -cf - package.json Dockerfile deploy src ;;
     *) exit 98 ;;
   esac`,
@@ -4193,6 +4194,7 @@ fs.readFileSync(0);
 fs.appendFileSync(process.env.CALLS, 'docker ' + text + ' image=' + (process.env.APP_IMAGE || '') + '\n');
 const mark = (key) => fs.writeFileSync(f + '/' + key, '1');
 const marked = (key) => fs.existsSync(f + '/' + key);
+if (text.includes('src/packs/industrial/runtime.ts')) { process.exit(1); }
 if (text.includes('src/tenancy/runtime.ts') && !text.includes('resolveRole')) {
   process.exit(process.env.PREV_PHASE === 'error' ? 125 : Number(process.env.PREV_PHASE || 5) >= 5 ? 0 : 1);
 }

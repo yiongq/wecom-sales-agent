@@ -1,6 +1,8 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
+import { isHandoffKind, type HandoffKind } from '../../src/shared/conversation-types.js';
+import { FIXTURE_CLOCK } from './runtime.js';
 
 const count = z.number().int().nonnegative();
 const regex = z.string().refine((s) => {
@@ -14,7 +16,13 @@ const regex = z.string().refine((s) => {
 export const predicateSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('order'), count, fields: z.record(z.string(), z.unknown()).optional() }).strict(),
   z.object({ kind: z.literal('no_order_before'), turnMatches: regex }).strict(),
-  z.object({ kind: z.literal('handoff'), expected: z.boolean() }).strict(),
+  z
+    .object({
+      kind: z.literal('handoff'),
+      expected: z.boolean(),
+      handoffKind: z.custom<HandoffKind>((value) => typeof value === 'string' && isHandoffKind(value), '无效转人工类型').optional(),
+    })
+    .strict(),
   z
     .object({ kind: z.literal('tool_called'), name: z.string().min(1), min: count.optional(), max: count.optional() })
     .strict()
@@ -91,6 +99,12 @@ export const goalSchema = z
 
 // ---- 08 R11：非旅游包（pack 不是 travel） ----
 // 画像只收 { attrs, notes }；订单只给条目和数量，单价与金额由包的 priceLine 算（不变量 7），通用单没有退款的两种状态
+const timestamp = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const approvalSeed = z.discriminatedUnion('state', [
+  z.object({ state: z.literal('pending'), requestedAt: timestamp }).strict(),
+  z.object({ state: z.literal('approved'), requestedAt: timestamp, decidedAt: timestamp }).strict(),
+]);
+export type SimQuoteApprovalSeed = z.infer<typeof approvalSeed>;
 const packInitialSchema = z
   .object({
     stage: stage.optional(),
@@ -103,11 +117,17 @@ const packInitialSchema = z
         z
           .object({
             status: z.enum(['pending_payment', 'paid', 'cancelled', 'superseded']),
+            approval: approvalSeed.optional(),
             lines: z
               .array(z.object({ kind: z.string().min(1), code: z.string().min(1), qty: z.number().int().positive() }).strict())
               .min(1),
           })
-          .strict(),
+          .strict()
+          .refine((o) => o.approval?.state !== 'pending' || o.status === 'pending_payment', 'pending 审批只能搭配 pending_payment')
+          .refine(
+            (o) => o.approval?.state !== 'approved' || o.approval.requestedAt <= o.approval.decidedAt,
+            'requestedAt 不能晚于 decidedAt',
+          ),
       )
       // 同一会话最多一张待付的通用单（R3）：种子按顺序建单，后建的单会把先建的待付单作废，所以 pending_payment 只能是最后一张
       .refine((orders) => orders.every((o, i) => o.status !== 'pending_payment' || i === orders.length - 1), {
@@ -135,11 +155,27 @@ export type Predicate = z.infer<typeof predicateSchema>;
 /** 目标所属的包 id（缺省 travel） */
 export const goalPack = (g: SimGoal): string => g.pack ?? 'travel';
 
+/** 10 R15：在建任何种子订单之前整体验证，避免后面的非法种子留下半初始化状态。 */
+export function validatePackInitial(value: unknown, now: number, quotes: boolean = true): z.infer<typeof packInitialSchema> {
+  const initial = packInitialSchema.parse(value);
+  for (const order of initial.orders ?? []) {
+    const a = order.approval;
+    if (!a) continue;
+    if (!quotes) throw new Error('approval 种子只供声明 quotes 的包使用');
+    if (a.requestedAt > now || (a.state === 'approved' && a.decidedAt > now)) throw new Error('approval 时间不能超前于模拟当前时间');
+  }
+  return initial;
+}
+
 export function validateGoal(value: unknown, file: string): SimGoal {
   // 按 pack 分支：没写或写 travel 走旅游（与以前相同），写了别的字符串走非旅游包；写成非字符串由旅游 schema 报错
   const pack = value && typeof value === 'object' && 'pack' in value ? value.pack : undefined;
   const result = (typeof pack === 'string' && pack !== 'travel' ? packGoalSchema : goalSchema).safeParse(value);
-  if (result.success) return result.data;
+  if (result.success) {
+    if (typeof pack === 'string' && pack !== 'travel' && result.data.initial)
+      validatePackInitial(result.data.initial, Date.parse(FIXTURE_CLOCK));
+    return result.data;
+  }
   const id = value && typeof value === 'object' && 'id' in value ? String(value.id) : '<无 id>';
   throw new Error(`${file} (${id}): ${result.error.issues.map((e) => `${e.path.join('.') || '<root>'}: ${e.message}`).join('; ')}`);
 }

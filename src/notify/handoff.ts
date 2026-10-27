@@ -1,5 +1,6 @@
 import { currentRuntime, tenantCallback, withoutTenantScope } from '../tenancy/runtime.js';
 
+import { publicBase } from '../tenancy/hosts.js';
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
 // handoff_notify 任务的执行体，与库写不进去时的 unsaved 通知（docs/architecture/02-conversations-workbench/spec.md「通知」
@@ -21,6 +22,7 @@ import { registerTenantState } from '../tenancy/state.js';
 // unsaved: true 的提醒，其余在失败持续 30 秒之后（30 秒内提交了就不发，照常由任务提醒）；同一次转人工（会话 id 与时刻）只发一次。
 // 发出之后：给还没提交的那个立即的 handoff_notify 标上 unsavedSent（停机写进 spill、重启回放之后也认得），并在内存里记下，
 // 之后提交成功、任务执行到它时不补发。发送失败在内存里退避重试，最后也没发出去就忘掉它，提交之后由任务照常提醒。
+import { isLineOrder, quoteState } from '../core/order-view.js';
 import type { JobOutcome, JobRow } from '../jobs/runner.js';
 import { activePack, isTerminalStage } from '../handoff/record.js';
 import { startedNotifyKey, WINDOW_NOTICE_MS, type HandoffNotifyPayload, type HandoffNotifyReason } from '../jobs/notify.js';
@@ -48,7 +50,14 @@ registerTenantState({ name: 'notify.unsaved', ...tenantState.registration('unsav
 registerTenantState({ name: 'notify.waiting', ...tenantState.registration('waiting') });
 registerTenantState({ name: 'notify.installed', ...tenantState.registration('installed') });
 
-const REASONS: ReadonlySet<HandoffNotifyReason> = new Set(['started', 'unclaimed', 'window', 'order_unconfirmed']);
+const REASONS: ReadonlySet<HandoffNotifyReason> = new Set([
+  'started',
+  'unclaimed',
+  'window',
+  'order_unconfirmed',
+  'quote_pending',
+  'quote_accepted',
+]);
 
 function payloadOf(raw: unknown): HandoffNotifyPayload | null {
   if (!raw || typeof raw !== 'object') return null;
@@ -103,10 +112,30 @@ export async function runHandoffNotifyJob(job: JobRow, now: number): Promise<Job
   const own = state();
   const p = payloadOf(job.payload);
   if (!p) return done('bad_payload');
+  if (p.reason === 'quote_pending' || p.reason === 'quote_accepted') {
+    const o = p.orderId ? getAnyOrder(p.orderId) : undefined;
+    const s = getSession(p.sessionId);
+    if (!s) return done('no_session');
+    if (!o || !isLineOrder(o) || o.sessionId !== s.id || !o.approval) return done('order_settled');
+    const state = quoteState(o, now);
+    if (p.reason === 'quote_pending' ? state !== 'pending' : state !== 'approved' || o.approval.acceptedAt == null)
+      return done('order_settled');
+    const notice = noticeFor(
+      s.id,
+      s.channel,
+      p.reason,
+      p.reason === 'quote_pending' ? o.approval.requestedAt : o.approval.acceptedAt!,
+      false,
+    );
+    // 报价单可能仍由 AI 接待，提醒打开含报价待办的总览。
+    notice.link = `${publicBase()}/console`;
+    return deliver(notice);
+  }
   if (p.reason === 'order_unconfirmed') {
     const o = p.orderId ? getAnyOrder(p.orderId) : undefined;
     const s = getSession(p.sessionId);
-    if (!o || o.sessionId !== p.sessionId || o.status !== 'pending_payment' || o.confirmedAt != null) return done('order_settled');
+    if (!o || (isLineOrder(o) && o.approval) || o.sessionId !== p.sessionId || o.status !== 'pending_payment' || o.confirmedAt != null)
+      return done('order_settled');
     if (!s) return done('no_session');
     return deliver(noticeFor(s.id, s.channel, 'order_unconfirmed', o.createdAt, isTerminalStage(s.stage)));
   }

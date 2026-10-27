@@ -79,6 +79,8 @@ async function parentMain(): Promise<never> {
     '标题：两样都是时紧急在前',
     handoffNoticeTitle({ ...base, kind: 'emergency', paidCustomer: true }) === '紧急 · 已成交客户要人工 · 企微客户 · 7F3A',
   );
+  check('标题：报价单待审', handoffNoticeTitle({ ...base, kind: 'quote_pending' }) === '企微客户 · 7F3A 报价单等你审核');
+  check('标题：客户确认报价单', handoffNoticeTitle({ ...base, kind: 'quote_accepted' }) === '企微客户 · 7F3A 客户确认了报价单');
   check('标题：待确认的订单', handoffNoticeTitle({ ...base, kind: 'order_unconfirmed' }) === '企微客户 · 7F3A 等你确认价格');
   check(
     '会话标签：渠道短名加客户的叫法',
@@ -88,7 +90,7 @@ async function parentMain(): Promise<never> {
   const texts = Object.values(HANDOFF_NOTICE_TEXT);
   check(
     '类型的中文：每一类都有，不用禁用的状态词',
-    texts.length === 14 && texts.every((t) => t && !forbidden.some((w) => t.includes(w))),
+    texts.length === 17 && texts.every((t) => t && !forbidden.some((w) => t.includes(w))),
     json(HANDOFF_NOTICE_TEXT),
   );
 

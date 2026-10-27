@@ -4,7 +4,8 @@
     "title": "合成基础方盒",
     "unitPrice": 12.5,
     "unit": "件",
-    "tags": ["合成", "基础"]
+    "tags": ["合成", "基础"],
+    "inStock": true
   },
   {
     "id": "w-tiered",
@@ -14,16 +15,24 @@
     "tags": ["合成", "阶梯价"],
     "moq": 5,
     "tiers": [
-      { "minQty": 10, "unitPrice": 8.8 },
-      { "minQty": 50, "unitPrice": 7.65 }
-    ]
+      {
+        "minQty": 10,
+        "unitPrice": 8.8
+      },
+      {
+        "minQty": 50,
+        "unitPrice": 7.65
+      }
+    ],
+    "inStock": true
   },
   {
     "id": "w-gift-box",
     "title": "合成礼盒方盒",
     "unitPrice": 88,
     "unit": "盒",
-    "tags": ["合成", "礼盒"]
+    "tags": ["合成", "礼盒"],
+    "inStock": false
   },
   {
     "id": "w-a",
@@ -33,9 +42,16 @@
     "tags": ["合成", "评测", "阶梯价"],
     "moq": 10,
     "tiers": [
-      { "minQty": 100, "unitPrice": 3.65 },
-      { "minQty": 500, "unitPrice": 3.5 }
-    ]
+      {
+        "minQty": 100,
+        "unitPrice": 3.65
+      },
+      {
+        "minQty": 500,
+        "unitPrice": 3.5
+      }
+    ],
+    "inStock": true
   },
   {
     "id": "w-b",
@@ -43,13 +59,15 @@
     "unitPrice": 12,
     "unit": "件",
     "tags": ["合成", "评测"],
-    "moq": 5
+    "moq": 5,
+    "inStock": true
   },
   {
     "id": "w-c",
     "title": "合成方盒丙",
     "unitPrice": 3.65,
     "unit": "件",
-    "tags": ["合成", "评测"]
+    "tags": ["合成", "评测"],
+    "inStock": true
   }
 ]

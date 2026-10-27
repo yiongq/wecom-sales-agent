@@ -121,8 +121,8 @@ export function stripAdvisorPrefix(text: string): string {
 // 外部通道（企微群机器人，src/notify/）与浏览器通知（第 19 步）同一个写法：标题是会话标签、短码与状态，紧急情况与已成交客户要人工
 // 在标题上标出来；正文是类型的中文。只按类型写死，不带转人工记录里的原因（model、claimed 的原因是模型写的，可能带着客户原话）
 
-/** 提醒的类型：转人工的类型，加上只在提醒里有的三种（待确认的订单、企微窗口快关了、10 分钟仍没人接手） */
-export type HandoffNoticeKind = HandoffKind | 'order_unconfirmed' | 'window_closing' | 'still_waiting';
+/** 提醒的类型：转人工的类型，加上提醒专用类型（订单待确认、报价单待审/已确认、窗口快关、仍没人接手） */
+export type HandoffNoticeKind = HandoffKind | 'order_unconfirmed' | 'window_closing' | 'still_waiting' | 'quote_pending' | 'quote_accepted';
 
 /** 类型的中文。不用「待人工」「已转人工」「待接管」「需要介入」这类状态词（设计系统 §11） */
 export const HANDOFF_NOTICE_TEXT: Readonly<Record<HandoffNoticeKind, string>> = {
@@ -137,7 +137,10 @@ export const HANDOFF_NOTICE_TEXT: Readonly<Record<HandoffNoticeKind, string>> = 
   claimed: 'AI 答应了转接顾问',
   consent: '客户不同意处理敏感信息，或要求撤回、删除',
   agent: '工作台转给了顾问',
+  pack: '行业规则需要顾问处理',
   order_unconfirmed: '有订单等你确认价格',
+  quote_pending: '有报价单等你审核',
+  quote_accepted: '客户确认了报价单，等你安排付款发货',
   window_closing: '企微 48 小时窗口剩不到 4 小时，过了就发不出去',
   still_waiting: '转人工 10 分钟了，还没人接手',
 };
@@ -156,6 +159,8 @@ export function channelCustomerLabel(channel: string, customer: string): string 
  */
 export function handoffNoticeTitle(n: { label: string; shortId: string; kind: HandoffNoticeKind; paidCustomer: boolean }): string {
   const tag = `${n.label} · ${n.shortId || '····'}`;
+  if (n.kind === 'quote_pending') return `${tag} 报价单等你审核`;
+  if (n.kind === 'quote_accepted') return `${tag} 客户确认了报价单`;
   const marks = [...(n.kind === 'emergency' ? ['紧急'] : []), ...(n.paidCustomer ? ['已成交客户要人工'] : [])];
   if (marks.length) return `${marks.join(' · ')} · ${tag}`;
   return `${tag} ${n.kind === 'order_unconfirmed' ? '等你确认价格' : '等人接手'}`;

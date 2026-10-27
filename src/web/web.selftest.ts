@@ -427,7 +427,7 @@ const { openTestDb, installPgSessionStore, createRealPgFixture, testConfigDeps }
   () => import('../db/testing.js'),
 );
 const { importConfig } = await withoutTenantScope(() => import('../config/transfer.js'));
-const { initConfig, closeConfig, __configTest } = await withoutTenantScope(() => import('../config/source.js'));
+const { currentPack, initConfig, closeConfig, __configTest } = await withoutTenantScope(() => import('../config/source.js'));
 const { openDb } = await withoutTenantScope(() => import('../db/client.js'));
 const { installAccounts } = await withoutTenantScope(() => import('../channels/accounts.js'));
 const { partsOf } = await withoutTenantScope(() => import('../core/pack-api.js'));
@@ -1226,6 +1226,8 @@ const { randomUUID } = await withoutTenantScope(() => import('node:crypto'));
 const webHtml = fs.readFileSync('public/web.html', 'utf8');
 const webJs = fs.readFileSync('public/web.js', 'utf8');
 const webCss = fs.readFileSync('public/web.css', 'utf8');
+// 上段关闭配置并清除了绑定；按新的按包登记契约为独立投影断言重新绑定文件包。
+currentPack();
 const clickable = (text: string, base = ''): string[] => partsOf(text, base).map((p) => p.url);
 assert.deepEqual(partsOf('订单 /pay/order_1，方案 /proposal/route-1/2/2026-12-10?v=3', ''), [
   { kind: 'link', linkKind: 'order', url: '/pay/order_1' },
@@ -1496,6 +1498,18 @@ assert.ok(ui.nodes.get('msgs')!.textContent.includes('【顾问】您好'));
 assert.equal(ui.nodes.get('msgs')!.querySelectorAll('a').at(-1)!.href, '/pay/advisor', 'SSE 顾问部件渲染卡片');
 await source.emit('push', { data: JSON.stringify({ text: '纯文本 /pay/unlisted 和 https://evil.test/pay/id', parts: [] }) });
 assert.equal(ui.nodes.get('msgs')!.querySelectorAll('a').length, 3, '服务端没有给部件时浏览器不从正文找链接');
+// 执行真实页面脚本：卡片独占的 SSE 与刷新历史都不能生成空气泡。
+const quotePart = { kind: 'link', linkKind: 'quote', url: '/quote/ord_0123456789abcdef01234567', title: '合成报价单' };
+await source.emit('push', { data: JSON.stringify({ text: '', parts: [quotePart] }) });
+const cardRow = ui.nodes.get('msgs')!.children.at(-1)!;
+assert.equal(cardRow.querySelectorAll('div').filter((n) => n.className === 'bubble').length, 0);
+assert.equal(cardRow.querySelectorAll('a')[0]!.href, quotePart.url);
+const cardHistory = pageFixture([{ role: 'agent', text: '', at: Date.now(), parts: [quotePart] as MessagePart[] }]);
+await settle();
+const restoredCard = cardHistory.nodes.get('msgs')!.children.at(-1)!;
+assert.equal(restoredCard.querySelectorAll('div').filter((n) => n.className === 'bubble').length, 0);
+assert.equal(restoredCard.querySelectorAll('a')[0]!.href, quotePart.url);
+await cardHistory.win.emit('pagehide');
 await source.emit('menu', {
   data: JSON.stringify({
     text: '是否同意？',

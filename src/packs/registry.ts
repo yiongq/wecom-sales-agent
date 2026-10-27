@@ -10,9 +10,13 @@ import {
   type PackRuntime,
   type PackSources,
 } from '../core/pack-api.js';
+import { industrialQuickReplies } from './industrial/quick-reply-defaults.js';
+import { sopConsistencyViolations as industrialSopConsistency } from './industrial/consistency.js';
+import { industrial } from './industrial/console-pack.js';
+import { createIndustrialRuntime } from './industrial/runtime.js';
 import { createTravelRuntime } from './travel/runtime.js';
 import { sopConsistencyViolations } from './travel/consistency-sop.js';
-import { fixture, createFixtureRuntime } from './__fixture/runtime.js';
+import { fixture, createFixtureProofRuntime } from './__fixture/runtime.js';
 import { travel } from './travel/console-pack.js';
 import { travelQuickReplyDefaults } from './travel/quick-reply-defaults.js';
 
@@ -32,7 +36,13 @@ const REGISTRY: Readonly<Record<string, PackRegistration>> = deepFreeze({
     quickReplies: travelQuickReplyDefaults,
     sopConsistency: sopConsistencyViolations,
   },
-  ...(process.env.PACK_FIXTURES === '1' ? { [fixture.id]: { pack: fixture, runtime: createFixtureRuntime, quickReplies: [] } } : {}),
+  [industrial.id]: {
+    pack: industrial,
+    runtime: createIndustrialRuntime,
+    quickReplies: industrialQuickReplies,
+    sopConsistency: industrialSopConsistency,
+  },
+  ...(process.env.PACK_FIXTURES === '1' ? { [fixture.id]: { pack: fixture, runtime: createFixtureProofRuntime, quickReplies: [] } } : {}),
 });
 
 function registrationOf(id: string): PackRegistration | null {

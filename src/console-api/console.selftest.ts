@@ -2235,8 +2235,11 @@ check(
     __profileTest.reset();
   }
   check(
-    '注册表：只有 travel；查不到的包名和原型上的名字都返回 null',
-    PACK_IDS.join() === 'travel' && packById('renovation') === null && packById('toString') === null && packById('__proto__') === null,
+    '注册表：travel 与 industrial；查不到的包名和原型上的名字都返回 null',
+    PACK_IDS.join() === 'travel,industrial' &&
+      packById('renovation') === null &&
+      packById('toString') === null &&
+      packById('__proto__') === null,
   );
 
   // 包不在注册表里时拒绝启动：配置归运行时，另建启动作用域，不动本进程已装好的这份
@@ -3368,6 +3371,9 @@ async function workbenchSuite(): Promise<void> {
     { route: 'POST /orders/:id/confirm', url: '/orders/ord_nosuch13/confirm', allowed: HANDLE },
     { route: 'POST /orders/:id/mark-paid', url: '/orders/ord_nosuch13/mark-paid', allowed: HANDLE },
     { route: 'POST /orders/:id/cancel', url: '/orders/ord_nosuch13/cancel', json: { reason: '矩阵' }, allowed: HANDLE },
+    { route: 'POST /orders/:id/quote/approve', url: '/orders/ord_nosuch13/quote/approve', allowed: HANDLE },
+    { route: 'POST /orders/:id/quote/reject', url: '/orders/ord_nosuch13/quote/reject', json: { reason: '矩阵' }, allowed: HANDLE },
+    { route: 'POST /orders/:id/quote/withdraw', url: '/orders/ord_nosuch13/quote/withdraw', json: {}, allowed: HANDLE },
     { route: 'POST /orders/:id/refund/approve', url: '/orders/ord_nosuch13/refund/approve', allowed: REPLIES },
     { route: 'POST /orders/:id/refund/reject', url: '/orders/ord_nosuch13/refund/reject', json: { reason: '矩阵' }, allowed: REPLIES },
     { route: 'POST /orders/:id/refund/settle', url: '/orders/ord_nosuch13/refund/settle', allowed: HANDLE },

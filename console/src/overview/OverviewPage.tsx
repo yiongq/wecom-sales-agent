@@ -403,7 +403,9 @@ function TodoBlock({
   const base = [waiting, paidNeedsHuman, pendingOrders];
   const counted = sourcesState([...base, ...(editor ? [sop, ...lists] : [])]);
   const { loading, error, retry } = sourcesState([...base, ...(editor ? [sop, ...(draft ? [check] : []), ...lists] : [])]);
-  const known = !counted.loading && counted.error === null;
+  const quoteOrders = pendingOrders.data?.items.some((o) => 'approval' in o && o.approval) ?? false;
+  const quoteLoading = quoteOrders && pendingOrders.isFetching;
+  const known = !counted.loading && !quoteLoading && counted.error === null;
   // 行数定了（或整块落定、出错）在画出来之前告诉页面，下面的块这一帧出现；还在等检查的话，骨架按真实的行数画，检查回来不挪位
   useLayoutEffect(() => {
     if (known || !loading) onSettled();
@@ -413,7 +415,7 @@ function TodoBlock({
     attentionTodos(
       waiting.data?.items ?? [],
       paidNeedsHuman.data?.items ?? [],
-      pendingOrders.data?.items ?? [],
+      quoteOrders && pendingOrders.isError ? [] : (pendingOrders.data?.items ?? []),
       pendingOrders.data?.paymentMode ?? 'online',
       pack,
       now,
@@ -432,7 +434,7 @@ function TodoBlock({
           <BlockHead
             id="ov-todos"
             title="需要你处理"
-            count={loading ? null : `${todoCount(rows)}项`}
+            count={loading || quoteLoading ? null : `${todoCount(rows)}项`}
             link={<ConversationsLink>全部会话</ConversationsLink>}
           />
           {orphanedErrors.length > 0 && (
@@ -442,7 +444,7 @@ function TodoBlock({
               ))}
             </div>
           )}
-          {loading ? (
+          {loading || quoteLoading ? (
             <TodoSkeleton rows={known ? Math.max(rows.length, 1) : undefined} />
           ) : (
             <>

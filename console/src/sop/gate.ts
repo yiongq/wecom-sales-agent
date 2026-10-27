@@ -36,13 +36,15 @@ export function useGate(key: string | null, rev: number | null) {
       try {
         const run = await unwrap(api.sop['gate-runs'][':id'].$get({ param: { id } }, { init: { signal: abort.signal } }));
         if (stopped) return;
-        setSaved((s) =>
-          s.key === key && s.state.id === id ? { ...s, state: { ...s.state, run, error: gateActive(run) ? s.state.error : null } } : s,
-        );
+        setSaved((s) => (s.key === key && s.state.id === id ? { ...s, state: { ...s.state, run, error: null } } : s));
         if (gateActive(run)) timer = setTimeout(() => void poll(), GATE_POLL_MS);
       } catch (error) {
-        if (!stopped)
-          setSaved((s) => (s.key === key && s.state.id === id ? { ...s, state: { ...s.state, error, id: null, run: null } } : s));
+        if (stopped) return;
+        const retry = !(error instanceof HttpError) || error.status >= 500 || error.status === 429;
+        setSaved((s) =>
+          s.key === key && s.state.id === id ? { ...s, state: { ...s.state, error, ...(retry ? {} : { id: null, run: null }) } } : s,
+        );
+        if (retry) timer = setTimeout(() => void poll(), GATE_POLL_MS);
       }
     };
     void poll();
@@ -53,7 +55,7 @@ export function useGate(key: string | null, rev: number | null) {
     };
   }, [key, id]);
   const start = async (): Promise<void> => {
-    if (!key || rev === null || state.starting || gateActive(state.run)) return;
+    if (!key || rev === null || state.starting || (state.id && !state.run) || gateActive(state.run)) return;
     update(() => ({ ...empty(), starting: true }));
     try {
       // 此接口是 202，不能用只接受 200 的 unwrap。

@@ -118,15 +118,27 @@ import { readMetricsView } from '../ops/metrics.js';
 import { defaultQuickRepliesOf } from '../packs/registry.js';
 import { paymentMode } from '../payment/mode.js';
 import { approveRefund, rejectRefund, settleRefund } from '../payment/refunds.js';
-import { cancelOrder, confirmOrder, markPaidByAdvisor, OrderNotFoundError, OrderStateError } from '../payment/orders.js';
+import {
+  cancelOrderAndNotify,
+  approveQuote,
+  rejectQuote,
+  withdrawQuote,
+  confirmOrder,
+  markPaidByAdvisor,
+  OrderNotFoundError,
+  OrderStateError,
+  QuoteStateError,
+} from '../payment/orders.js';
 import { profile } from '../profile.js';
-import { loginShowcase, sandboxTryUrl } from './entry.js';
+import { loginBrand, loginShowcase, sandboxTryUrl } from './entry.js';
 import { indexHealth } from '../retrieval.js';
 import { csvLabelsOf } from '../shared/catalog-csv.js';
 import {
   AuditQuery,
   CancelOrderBody,
   RejectRefundBody,
+  RejectQuoteBody,
+  WithdrawQuoteBody,
   CatalogItemParam,
   CatalogKindParam,
   ConvQuery,
@@ -418,6 +430,7 @@ function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503
     const error = e.reason === 'window_closed' ? 'send_window_closed' : 'send_quota_exhausted';
     return { status: 409, body: { error, detail: e.message, closesAt: e.closesAt, remaining: e.remaining } };
   }
+  if (e instanceof QuoteStateError) return { status: 409, body: { error: e.code } };
   if (e instanceof OrderStateError) return { status: 409, body: { error: 'order_state', detail: e.message, status: e.status } };
   if (e instanceof StoreLaggingError)
     return {
@@ -461,7 +474,10 @@ export const consoleApi = new Hono<ConsoleEnv>()
   .basePath('/api/console')
   // requestLogContext：req 与 x-request-id（02 spec R24）；挂在 server.ts 下时沿用外层生成的那个
   .use('*', requestLogContext, publicHostMiddleware, securityHeaders)
-  .get('/entry', (c) => c.json({ tryUrl: sandboxTryUrl() ? '/try' : null, showcase: loginShowcase() }))
+  .get('/entry', (c) => {
+    const brand = loginBrand();
+    return c.json({ tryUrl: sandboxTryUrl() ? '/try' : null, showcase: loginShowcase(), ...(brand ? { brand } : {}) });
+  })
   .use('*', requireDbMode, loadSession, guardWrites)
 
   // ---------------- 登录 ----------------
@@ -916,7 +932,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
     }
     const all = listAnyOrders().filter((o) => !status || o.status === status);
     const body: OrderPage = {
-      items: all.slice(0, limit).map((order) => orderView(order, c.var.user!.role === 'viewer')),
+      items: all.slice(0, limit).map((order) => orderView(order, c.var.user!.role === 'viewer', clock())),
       total: all.length,
       paymentMode: paymentMode(),
     };
@@ -949,6 +965,18 @@ export const consoleApi = new Hono<ConsoleEnv>()
     const body: OrderView = orderView(order);
     return c.json(body, 200);
   })
+  .post('/orders/:id/quote/approve', canHandle, async (c) => {
+    const order = await approveQuote(c.req.param('id'), actorOf(c.var.user!, dbIp(c)));
+    return c.json(orderView(order), 200);
+  })
+  .post('/orders/:id/quote/reject', canHandle, zValidator('json', RejectQuoteBody, badRequest), async (c) => {
+    const order = await rejectQuote(c.req.param('id'), actorOf(c.var.user!, dbIp(c)), c.req.valid('json').reason);
+    return c.json(orderView(order), 200);
+  })
+  .post('/orders/:id/quote/withdraw', canHandle, zValidator('json', WithdrawQuoteBody, badRequest), async (c) => {
+    const order = await withdrawQuote(c.req.param('id'), actorOf(c.var.user!, dbIp(c)), c.req.valid('json').reason);
+    return c.json(orderView(order), 200);
+  })
   .post('/orders/:id/refund/approve', canApproveRefund, async (c) => {
     const { order, persisted } = await approveRefund(c.req.param('id'), actorOf(c.var.user!, dbIp(c)));
     if (!persisted) throw new StoreLaggingError(order.sessionId);
@@ -965,7 +993,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
     return c.json(orderView(order), 200);
   })
   .post('/orders/:id/cancel', canHandle, zValidator('json', CancelOrderBody, badRequest), async (c) => {
-    const o = cancelOrder(c.req.param('id'), actorOf(c.var.user!, dbIp(c)), c.req.valid('json').reason);
+    const o = await cancelOrderAndNotify(c.req.param('id'), actorOf(c.var.user!, dbIp(c)), c.req.valid('json').reason);
     await committed(o.sessionId);
     const body: OrderView = orderView(o);
     return c.json(body, 200);

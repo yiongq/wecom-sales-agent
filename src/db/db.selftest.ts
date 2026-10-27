@@ -3672,6 +3672,8 @@ await t.close();
   fake('docker', [
     // 模拟 compose exec 转发 stdin；run / inspect 也主动读，守住 bash -s 后续脚本的边界。
     'case "$1" in exec|compose|run|inspect|image|container) cat >/dev/null ;; esac',
+    // 10 的探测独立记账，旧库夹具无工业数据；目标标记不存在，查询仍走真实脚本。
+    'case "$*" in *src/packs/industrial/runtime.ts*) echo "docker10 $PWD|$*" >> "$FAKE_LOG"; exit 1 ;; *"select to_regclass(\'public.tenants\') is not null"|*"select to_regclass(\'public.catalog_items\') is not null") echo "docker10 $PWD|$*" >> "$FAKE_LOG"; echo f; exit 0 ;; esac',
     // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
     // 只认 rollback-guard.sh 自己的两条渠道查询：backup.sh 的探测里也有 channel_accounts（'public.' || t 的写法），不能被截走
     'case "$*" in *order-view.ts*|*"pack_id <>"*|*"data->>"*|*"kind not in"*|*"source <>"*|*to_regclass*public.kb_chunks*) echo "docker08 $PWD|$*" >> "$FAKE_LOG" ;; *0015_order_refund_status.sql*|*public.orders*) echo "docker07 $PWD|$*" >> "$FAKE_LOG" ;; *information_schema.columns*"column_name = \'kind\'"*) echo "docker05 $PWD|$*" >> "$FAKE_LOG" ;; *pack-api.ts*|*information_schema.columns*|*"from public.tenants"*|*"from public.sop_versions"*) echo "docker04 $PWD|$*" >> "$FAKE_LOG" ;; *registry.ts*|*public.channel_accounts*|*"from channel_accounts where"*) echo "docker03 $PWD|$*" >> "$FAKE_LOG" ;; *) echo "docker $PWD|$*" >> "$FAKE_LOG" ;; esac',
@@ -4133,9 +4135,10 @@ await t.close();
     };
   };
   const pre05Probes = (commands: string[]): boolean =>
-    commands.length === 2 &&
+    commands.length === 3 &&
     commands[0]!.includes('run --rm --entrypoint /bin/sh side1:prev -c test -e /app/src/tenancy/runtime.ts') &&
-    commands[1]!.includes('container ls -aq --filter name=^/side1-sandbox$');
+    commands[1]!.includes('run --rm --entrypoint /bin/sh side1:prev -c test -e /app/src/core/site-links.ts') &&
+    commands[2]!.includes('container ls -aq --filter name=^/side1-sandbox$');
   const dcOf = (project: string, port: string): string =>
     `APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f deploy/compose.yml`;
   /** 拒绝时打印的步骤。pre-02（部署旧 tag）：stop → export → 去掉 SESSION_STORE=db 再起、按端口确认 → 部署旧 tag */
@@ -4177,15 +4180,15 @@ await t.close();
   };
   const g1 = guard('side1:prev', false);
   check(
-    '回滚前检查：没有标记文件、.env 也不是 db 存储时照常回滚，不看 02 镜像，补查 pre-05 镜像与容器',
+    '回滚前检查：没有标记文件、.env 也不是 db 存储时照常回滚，不看 02 镜像，补查 pre-05 / pre-09 镜像与容器',
     g1.code === 0 && pre05Probes(g1.docker),
     `${g1.code} ${g1.out} ${g1.docker.join()}`,
   );
   const g2 = guard('side1:prev', true, 0);
   check(
-    '回滚前检查：有标记文件、目标镜像里有 pg-backend.ts（两个都是 02 之后的）时照常回滚，补查 pre-05 镜像与容器',
+    '回滚前检查：有标记文件、目标镜像里有 pg-backend.ts（两个都是 02 之后的）时照常回滚，补查 pre-05 / pre-09 镜像与容器',
     g2.code === 0 &&
-      g2.docker.length === 3 &&
+      g2.docker.length === 4 &&
       g2.docker[0]!.includes('run --rm --entrypoint /bin/sh side1:prev -c test -e /app/src/store/pg-backend.ts') &&
       pre05Probes(g2.docker.slice(1)),
     `${g2.code} ${g2.out} ${g2.docker.join()}`,

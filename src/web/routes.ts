@@ -10,9 +10,9 @@ import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { subscribeWeb, webAdapter, webConversationId, type WebEvent } from '../adapters/web.js';
+import { subscribeWeb, webAdapter, webConversationId, webReply, type WebEvent } from '../adapters/web.js';
 import { accountByKey, type ChannelAccount } from '../channels/accounts.js';
-import { partsOf, type MessagePart } from '../core/pack-api.js';
+import { partsOf } from '../core/pack-api.js';
 import { handleMessage, inboundText, trimSessionMessages } from '../engine.js';
 import { numEnv } from '../env.js';
 import { applyConsentDecision, CONSENT_DECLINED_REPLY, consentMenuButtonId, parseConsentMenuId } from '../handoff/consent.js';
@@ -106,10 +106,6 @@ function reserveNew(account: ChannelAccount, ip: string): boolean {
   return true;
 }
 
-function webReply(text: string): { text: string; parts: MessagePart[] } {
-  return { text, parts: partsOf(text) };
-}
-
 function limitedReply(s: WebSession, text: string, msgid: string | undefined, recorded: boolean): ReturnType<typeof webReply> {
   if (!recorded) s.messages.push({ role: 'customer', content: inboundText(text), at: Date.now(), ...(msgid ? { msgid } : {}) });
   if (!s.webTurnLimited) {
@@ -193,7 +189,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
     // 不越过下一条客户消息，避免把另一个轮次的回复误配给崩溃留下的消息。
     for (const m of s.messages.slice(at + 1)) {
       if (m.role === 'customer') break;
-      if (m.role === 'agent' && (!m.author || m.author === 'ai')) return c.json({ reply: webReply(m.content) });
+      if (m.role === 'agent' && (!m.author || m.author === 'ai')) return c.json({ reply: webReply(m.content, s) });
     }
     if (s.handedOver && !s.webTurnLimited) return c.json({ reply: null });
   } else if (body.cid && recentMsgids(s.id).has(body.cid)) return c.json({ reply: null });
@@ -225,7 +221,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
       ...(body.cid ? { msgid: body.cid } : {}),
       ...(at >= 0 ? { alreadyRecorded: true } : {}),
     });
-    return c.json({ reply: s.handedOver || !reply.text ? null : webReply(reply.text) });
+    return c.json({ reply: s.handedOver || !reply.text ? null : webReply(reply.text, s) });
   } catch (e) {
     if (e instanceof TenantScopeMissing) throw e;
     // 不序列化异常（上游异常可能含输入），客户端重试同 cid 可从已记录状态恢复。
@@ -244,7 +240,13 @@ webRoutes.get('/api/web/:key/history', lookupLimit, (c) => {
   const messages: WebMessage[] = (s?.messages ?? []).flatMap((m) => {
     if (m.role === 'system') return [];
     const text = m.author === 'human' ? withAdvisorPrefix(m.content) : m.content;
-    return [{ role: m.role, ...webReply(text), at: m.at }];
+    return [
+      {
+        role: m.role,
+        ...(m.role === 'customer' ? { text, parts: partsOf(text, undefined, s) } : webReply(m.content, s, m.author === 'human')),
+        at: m.at,
+      },
+    ];
   });
   return c.json({ messages });
 });

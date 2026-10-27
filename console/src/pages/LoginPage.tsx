@@ -7,7 +7,7 @@ import { useRouterState } from '@tanstack/react-router';
 import { type MouseEvent, useEffect, useRef } from 'react';
 import { LoginForm } from '../LoginForm.js';
 import { useDocumentTitle } from '../shell/hooks.js';
-import { SHOWCASE_COPY, type Showcase } from '../../../src/shared/entry-ui.js';
+import { SHOWCASE_COPY, type PublicEntryBrand, type Showcase } from '../../../src/shared/entry-ui.js';
 import { cjk } from '../typography.js';
 import { type AnonViewer, type Viewer, VIEWER_KEY } from '../viewer.js';
 
@@ -15,16 +15,19 @@ export function LoginPage({
   demo,
   tryUrl,
   showcase,
+  entryBrand: brand,
   returning: back = false,
 }: {
   demo?: AnonViewer;
   tryUrl?: string | null;
   showcase?: Showcase | null;
+  entryBrand?: PublicEntryBrand;
   returning?: boolean;
 }) {
   const qc = useQueryClient();
   const href = useRouterState({ select: (s) => s.location.publicHref });
-  useDocumentTitle('AI销售工作台');
+  useDocumentTitle(brand?.name ?? 'AI销售工作台');
+  const image = brand ? brand.image : showcase;
   // 进入匿名视图时链接随登录页卸载，焦点放到已挂载的外壳 main。
   const returning = useRef(false);
   useEffect(
@@ -45,13 +48,19 @@ export function LoginPage({
   return (
     <div className={`login-page ${demo ? 'login-demo' : 'login-prod'}`}>
       <main id="main" className="login-panel">
-        <div className="entry-wordmark">AI销售工作台</div>
+        <div className="entry-wordmark">{brand?.name ?? 'AI销售工作台'}</div>
         <div className="login-column">
           <h1 className="login-title">登录</h1>
           <p className="login-lead">
-            {cjk('AI在企业微信里接待客户，')}
-            <br />
-            {cjk('你在这里管话术、产品和会话。')}
+            {brand ? (
+              cjk(brand.subtitle)
+            ) : (
+              <>
+                {cjk('AI在企业微信里接待客户，')}
+                <br />
+                {cjk('你在这里管话术、产品和会话。')}
+              </>
+            )}
           </p>
           <LoginForm autoFocus onSuccess={() => void qc.resetQueries({ queryKey: VIEWER_KEY })} />
           {demo && (
@@ -77,12 +86,12 @@ export function LoginPage({
           )}
         </div>
       </main>
-      {demo && showcase && (
+      {demo && image && (
         <aside className="entry-showcase" aria-label="产品画面">
           <div className="entry-showcase-content">
-            <img src={showcase.src} alt={showcase.alt} width="460" />
-            <h2>{SHOWCASE_COPY.title}</h2>
-            <p>{SHOWCASE_COPY.description}</p>
+            <img src={image.src} alt={image.alt} width="460" />
+            <h2>{brand?.name ?? SHOWCASE_COPY.title}</h2>
+            <p>{brand?.subtitle ?? SHOWCASE_COPY.description}</p>
           </div>
         </aside>
       )}

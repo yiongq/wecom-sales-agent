@@ -1,0 +1,22 @@
+{
+  "id": "fixture-pack-nonstandard",
+  "persona": "合成客户需要非标方盒",
+  "maxTurns": 1,
+  "customerScript": ["需要非标方盒"],
+  "allowedTools": [],
+  "predicates": [
+    {
+      "kind": "handoff",
+      "expected": true,
+      "handoffKind": "pack"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "非标需求由顾问继续确认",
+      "scope": "all"
+    }
+  ],
+  "pack": "__fixture",
+  "forbidden": ["<tool_call>", "【硬性要求】"],
+  "tags": ["fixture", "regression", "q09"]
+}
