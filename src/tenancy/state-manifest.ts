@@ -64,7 +64,7 @@ export const STATE_MANIFEST: Record<
   'src/adapters/wecom-state.ts:VAR_DIR': { kind: 'instance', why: '进程部署路径快照；租户文件读写由所属运行时的后端控制。' },
   'src/adapters/wecom.ts:ATTEMPT_RETRY_MS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/adapters/wecom.ts:LEGACY_WELCOME_TEXTS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
-  'src/adapters/wecom.ts:LINK_LABEL_RE': { kind: 'instance', why: '固定解析规则；lastIndex 仅在同步解析调用中使用，不存租户数据' },
+  'src/core/link-prose.ts:LINK_LABEL_RE': { kind: 'instance', why: '固定解析规则；lastIndex 仅在同步解析调用中使用，不存租户数据' },
   'src/packs/travel/fixed-replies.ts:nonTextHints': { kind: 'instance', why: '旅游非文字固定句；不含租户数据或运行时快照。' },
   'src/packs/industrial/fixed-replies.ts:nonTextHints': { kind: 'instance', why: '工业非文字固定句；不含租户数据或运行时快照。' },
   'src/adapters/wecom.ts:NON_TEXT_PLACEHOLDER': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },

@@ -68,14 +68,16 @@ function startWebChat() {
     }
     lastTs = at;
     const me = role === 'customer';
-    const human = !me && text.startsWith('【顾问】');
+    const human = !me && (text.startsWith('【顾问】') || (!text && parts.some((part) => part.title?.startsWith('【顾问】'))));
     const row = node('div', `row ${me ? 'me' : 'ai'}`);
     const wrap = node('div', 'bubble-wrap');
     row.append(node('div', 'avatar', me ? '我' : human ? '顾' : 'AI'), wrap);
     if (!me) wrap.append(node('div', 'nick', human ? '真人顾问' : `${config.title} · AI`));
-    const bubble = node('div', 'bubble');
-    bubble.textContent = text;
-    wrap.append(bubble);
+    if (text) {
+      const bubble = node('div', 'bubble');
+      bubble.textContent = text;
+      wrap.append(bubble);
+    }
     renderParts(wrap, parts);
     msgs.append(row);
     scrollBottom();

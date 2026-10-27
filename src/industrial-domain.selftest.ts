@@ -6,7 +6,7 @@ import { csvLabelsOf, prepareCatalogCsv, entityCsvShape, checkCsvRows, parseCata
 import { PartSchema, partCatalog, priceLine, type Part } from './packs/industrial/catalog.js';
 import { industrial, partEntity } from './packs/industrial/console-pack.js';
 import { normalizePartNo } from './packs/industrial/normalize.js';
-import { matchInMemory } from './packs/industrial/match.js';
+import { createMatcher, matchInMemory } from './packs/industrial/match.js';
 import { StateSchema, writeState, draftParts } from './packs/industrial/state.js';
 import { createIndustrialTools, projectRejections } from './packs/industrial/tools.js';
 
@@ -72,6 +72,37 @@ assert.equal(matchInMemory('620', parts).match, 'none');
 assert.equal(matchInMemory('zzzz', parts).match, 'none');
 const many = Array.from({ length: 7 }, (_, i) => ({ ...part, id: `b${i}`, partNo: `6205-${i}`, aliases: [] }));
 assert.equal(matchInMemory('6205', many).parts.length, 5);
+// R3 终验：整串优先，去两端汉字只重试型号 / 别名全等，不扩大同系列范围。
+const bolt = { ...part, id: 'bolt', partNo: 'M8×30', aliases: ['BOLT8'] };
+const namedParts = [...parts, bolt];
+for (const [input, id] of [
+  ['M8×30 螺栓', bolt.id],
+  ['螺栓 M8×30', bolt.id],
+  ['6205-2RS轴承', part.id],
+  ['型号6205-2RS的轴承', part.id],
+  ['轴承6205RS', part.id],
+  ['6205RS轴承', part.id],
+  ['螺栓 BOLT8', bolt.id],
+]) {
+  const found = matchInMemory(input!, namedParts);
+  assert.equal(found.match, 'exact', input);
+  assert.equal(found.parts[0]!.id, id, input);
+}
+for (const input of ['M9×30 螺栓', '轴承6205', '轴承', '25 内径的深沟球轴承', '6205轴承2RS'])
+  assert.equal(matchInMemory(input, namedParts).match, 'none', input);
+const whole = { ...part, id: 'whole', partNo: '合成型号', aliases: ['M8×30螺栓'] };
+assert.equal(matchInMemory('M8×30 螺栓', [...namedParts, whole]).parts[0]!.id, whole.id, '整串别名优先于去品名后的型号');
+const aliasConflict = { ...part, id: 'alias-conflict', partNo: 'OTHER', aliases: ['M8×30'] };
+assert.equal(matchInMemory('M8×30 螺栓', [...namedParts, aliasConflict]).parts[0]!.id, bolt.id, '去品名后型号优先于别名');
+const recalledQueries: string[] = [];
+const matcher = createMatcher({
+  currentCatalog: () => ({ ...snapshot, items: { part: namedParts } }),
+  indexReady: () => true,
+  semanticRecall: async (query) => {
+    recalledQueries.push(query);
+    return [{ id: part.id }] as Awaited<ReturnType<PackSources['semanticRecall']>>;
+  },
+});
 const snapshot: ReturnType<PackSources['currentCatalog']> = {
   tenantId: 'synthetic',
   generation: 0,
@@ -80,6 +111,14 @@ const snapshot: ReturnType<PackSources['currentCatalog']> = {
   hotels: [],
   versions: Object.fromEntries(parts.map((p) => [`part:${p.id}`, 1])),
 };
+assert.equal((await matcher('M8×30 螺栓')).match, 'exact');
+assert.deepEqual(recalledQueries, [], '精确匹配不调知识库');
+for (const query of ['25 内径的深沟球轴承', 'M9×30 螺栓', '轴承6205']) {
+  const found = await matcher(query);
+  assert.equal(found.match, 'ambiguous', '原有语义候选仍不能变为精确匹配');
+  assert.equal(recalledQueries.at(-1), query, '知识库收到整串原文');
+}
+assert.equal((await matcher('M9×30')).match, 'none', '不存在的纯型号仍不得换成邻近型号');
 assert.deepEqual(partCatalog.crossItemCheck!(part, snapshot), []);
 for (const [payload, field] of [
   [{ ...part, id: 'other', partNo: '6205 2rs' }, 'partNo'],

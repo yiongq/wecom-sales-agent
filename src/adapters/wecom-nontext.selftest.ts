@@ -5,11 +5,19 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import type { AnyOrder, LineOrder } from '../core/order-view.js';
 import type { KfMessage } from './wecom-state.js';
 import type { ReplyGuardContext } from '../core/pack-api.js';
 
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wecom-nontext-'));
-Object.assign(process.env, { VAR_DIR: dir, CONFIG_SOURCE: 'file', LLM_MOCK: '1', PACK_FIXTURES: '1', TENANCY_STRICT: '1' });
+Object.assign(process.env, {
+  VAR_DIR: dir,
+  CONFIG_SOURCE: 'file',
+  LLM_MOCK: '1',
+  PACK_FIXTURES: '1',
+  TENANCY_STRICT: '1',
+  PUBLIC_BASE_URL: 'https://host.example.invalid',
+});
 const tenancy = await import('../tenancy/runtime.js');
 const state = await import('../tenancy/state.js');
 const store = await import('../store.js');
@@ -29,7 +37,7 @@ const tenants = ['travel', 'industrial', '__fixture'].map((pack, i) => ({
     id: `nontext-${i}`,
     slug: `nontext-${i}`,
     isHost: i === 0,
-    publicBase: 'https://nontext.example.invalid',
+    publicBase: `https://nontext-${i}.example.invalid`,
   }),
   account: randomUUID(),
 }));
@@ -37,11 +45,13 @@ const key = Buffer.alloc(32, 5);
 const ring = { current: { id: 'fixture', key }, all: new Map([['fixture', key]]) };
 const originalFetch = globalThis.fetch;
 const incoming = new Map<string, KfMessage[]>();
-const sent: { open_kfid: string; touser: string; text: { content: string } }[] = [];
+const sent: { open_kfid: string; touser: string; msgtype: string; text: { content: string }; link?: { title: string; url: string } }[] = [];
 let cursor = 0;
+let rejectCard = false;
 globalThis.fetch = async (input, init) => {
   const url = String(input);
   if (url.includes('/gettoken')) return Response.json({ errcode: 0, access_token: 'fixture-token', expires_in: 7200 });
+  if (url.includes('/media/upload')) return Response.json({ errcode: 0, media_id: 'fixture-media' });
   const body = JSON.parse(String(init?.body ?? '{}'));
   if (url.includes('/kf/sync_msg')) {
     const messages = incoming.get(body.open_kfid) ?? [];
@@ -50,6 +60,7 @@ globalThis.fetch = async (input, init) => {
   }
   if (url.includes('/kf/send_msg')) {
     sent.push(body);
+    if (rejectCard && body.msgtype === 'link') return Response.json({ errcode: 40013 });
     return Response.json({ errcode: 0, msgid: body.msgid });
   }
   if (url.includes('/kf/customer/batchget')) return Response.json({ errcode: 0, customer_list: [] });
@@ -100,7 +111,11 @@ try {
       bindPack(runtime, pack === 'travel' ? null : runtime.defaultBrand);
       rt.config.loaded = {
         ...rt.config.loaded!,
-        sop: { ...rt.config.loaded!.sop, brand: pack === 'travel' ? null : runtime.defaultBrand },
+        sop: {
+          ...rt.config.loaded!.sop,
+          brand: pack === 'travel' ? null : runtime.defaultBrand,
+          ...(pack === 'industrial' ? { policy: defaultIndustrialPolicy } : {}),
+        },
       };
       const sealed = sealSecrets(
         ring,
@@ -178,6 +193,49 @@ try {
       assert.equal(sent.length, before, '重放同一消息不重发');
     }
   }
+  // 终验 1：实际非宿主数据库账号发卡片与卡片失败的文字兜底，不能使用宿主 env 地址。
+  const industrialTenant = tenants.find((tenant) => tenant.pack === 'industrial')!;
+  await tenancy.withTenantScope(industrialTenant.rt, async () => {
+    const session = store.getSession('wecom:wmNT0')!;
+    const order: LineOrder = {
+      v: 2,
+      id: 'ord_0123456789abcdef01234567',
+      sessionId: session.id,
+      status: 'pending_payment',
+      lines: [{ kind: 'part', code: 'synthetic', title: '合成零件', qty: 1, unit: '件', unitPriceFen: 1000, amountFen: 1000 }],
+      totalFen: 1000,
+      createdAt: Date.now(),
+      approval: { state: 'approved', requestedAt: Date.now(), decidedAt: Date.now() },
+    };
+    (industrialTenant.rt.store.orders as Map<string, AnyOrder>).set(order.id, order);
+    session.orderIds.push(order.id);
+    const raw = `/quote/${order.id}`;
+    const url = `https://nontext-1.example.invalid${raw}`;
+    let before = sent.length;
+    assert.equal(await wecom.wecomAdapter.push(session.id, raw, { kind: 'notice' }), true);
+    assert.equal(sent.length, before + 1);
+    assert.equal(sent.at(-1)!.msgtype, 'link');
+    assert.equal(sent.at(-1)!.link!.url, url);
+    const title = sent.at(-1)!.link!.title;
+    rejectCard = true;
+    before = sent.length;
+    assert.equal(await wecom.wecomAdapter.push(session.id, raw, { kind: 'notice' }), true);
+    assert.equal(sent.length, before + 2);
+    assert.equal(sent[before]!.link!.url, url);
+    assert.equal(sent.at(-1)!.text.content, `${title}\n${url}`);
+    assert.ok(sent.slice(before).every((payload) => !JSON.stringify(payload).includes(process.env.PUBLIC_BASE_URL!)));
+    rejectCard = false;
+    // 多链接不出卡片；现有格式化会补全租户地址，本次不改变该路径。
+    const another = { ...order, id: 'ord_1123456789abcdef01234567' };
+    (industrialTenant.rt.store.orders as Map<string, AnyOrder>).set(another.id, another);
+    const multi = `${raw}\n/quote/${another.id}`;
+    before = sent.length;
+    assert.equal(await wecom.wecomAdapter.push(session.id, multi, { kind: 'notice' }), true);
+    assert.equal(sent.length, before + 1);
+    assert.equal(sent.at(-1)!.text.content, `${url}\nhttps://nontext-1.example.invalid/quote/${another.id}`);
+    assert.deepEqual((await store.drainStore(5000)).undrained, []);
+  });
+  console.log('WECOM TENANT QUOTE PASS: 非宿主卡片与失败兜底使用租户完整地址、多链接无卡片仍沿用原有地址补全');
   for (const { rt, account } of tenants) {
     await tenancy.withTenantScope(rt, async () => {
       const session = store.getSession('wecom:wmNT0')!;

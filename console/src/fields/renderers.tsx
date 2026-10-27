@@ -259,7 +259,7 @@ const withoutCommas = (s: string | undefined): string => (s ?? '').replace(/,/g,
 function NumberForm(p: FormProps & { unit: string; min?: number; max?: number; kind: 'money' | 'intUnit' }) {
   const { field, value, onChange, id, invalid, unit, min, max, kind } = p;
   return (
-    <InputNumber
+    <InputNumber<number | string>
       id={id}
       className="field-number"
       value={CODECS[kind].read(value, field)}
@@ -268,7 +268,11 @@ function NumberForm(p: FormProps & { unit: string; min?: number; max?: number; k
       precision={kind === 'money' ? (field.decimals ?? 0) : 0}
       step={kind === 'money' && field.decimals === 2 ? 0.01 : undefined}
       controls={false}
-      formatter={withCommas}
+      formatter={(v, info) =>
+        kind === 'money' && field.decimals === 2 && !info.userTyping && v !== undefined && v !== ''
+          ? withCommas(Number(v).toFixed(2))
+          : withCommas(v)
+      }
       parser={withoutCommas}
       suffix={unit ? <span className="field-unit">{unit}</span> : undefined}
       status={invalid ? 'error' : undefined}

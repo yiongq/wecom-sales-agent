@@ -10,9 +10,9 @@ import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { Hono, type Context } from 'hono';
 import { z } from 'zod';
-import { subscribeWeb, webAdapter, webConversationId, type WebEvent } from '../adapters/web.js';
+import { subscribeWeb, webAdapter, webConversationId, webReply, type WebEvent } from '../adapters/web.js';
 import { accountByKey, type ChannelAccount } from '../channels/accounts.js';
-import { partsOf, type MessagePart } from '../core/pack-api.js';
+import { partsOf } from '../core/pack-api.js';
 import { handleMessage, inboundText, trimSessionMessages } from '../engine.js';
 import { numEnv } from '../env.js';
 import { applyConsentDecision, CONSENT_DECLINED_REPLY, consentMenuButtonId, parseConsentMenuId } from '../handoff/consent.js';
@@ -104,10 +104,6 @@ function reserveNew(account: ChannelAccount, ip: string): boolean {
   newIpHits.set(key, hits);
   count.newConversations++;
   return true;
-}
-
-function webReply(text: string, session?: Session): { text: string; parts: MessagePart[] } {
-  return { text, parts: partsOf(text, undefined, session) };
 }
 
 function limitedReply(s: WebSession, text: string, msgid: string | undefined, recorded: boolean): ReturnType<typeof webReply> {
@@ -244,7 +240,13 @@ webRoutes.get('/api/web/:key/history', lookupLimit, (c) => {
   const messages: WebMessage[] = (s?.messages ?? []).flatMap((m) => {
     if (m.role === 'system') return [];
     const text = m.author === 'human' ? withAdvisorPrefix(m.content) : m.content;
-    return [{ role: m.role, ...webReply(text, s), at: m.at }];
+    return [
+      {
+        role: m.role,
+        ...(m.role === 'customer' ? { text, parts: partsOf(text, undefined, s) } : webReply(m.content, s, m.author === 'human')),
+        at: m.at,
+      },
+    ];
   });
   return c.json({ messages });
 });
