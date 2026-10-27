@@ -1127,3 +1127,41 @@ DB 模式：22 个请求的前缀哈希核对，0 个与 /healthz 不符
 - 验证：首轮 20 套相关自测两时区通过；公开投影补齐后重跑 industrial-ui、entry、public-routes、console-api、login、shell、session 七套，两时区共 14 次均通过（登录 193、后台 API 465、外壳 180、会话 52）。最终 format / lint / typecheck / test:locked / check-fonts / console build / check-console-dist 全通过；两种配置 v2 各 900/900、0 差异，link-bytes 317、legacy-bytes 60，PREFIX 与工具定义哈希不变。所有相关自测的最终结果见验收表。
 - 工作区：仅本次描述的源码、耐久自测、test 脚本追加与 10 的 spec / plan；不提交、不 push、不建 PR。锁定套件、字节夹具、v2 基线、public 原文件均未改。
 - 下一步：本次 UI 离线验收已完成，交 CI 全链与真实 PG 子项；生产部署、真实模型与 spec 翻 implemented 均不在本任务授权内。未来工业企微接入前另处理清单中的非文字兼容回复。
+
+### 交接（2026-10-27，863dd2b0 沙箱入口回归修复）
+
+- 已复现：未修改的 `src/tenancy/sandbox/http.selftest.ts:189` 在 GET `/try` 得到 503，沙箱日志为 `TenantScopeMissing`。原 UI 验收遗漏了沙箱准备页调用链；先前“全部任务门禁通过”的记录不代表沙箱入口未回归。
+- 根因：`sandboxTryDesign()` 复用 `loginShowcase()`，863dd2b0 使后者新增 `currentPack()` 读取。准备页按 05 R10 / R23 在开通前无租户，沙箱严格模式抛错，经错误兜底变为 503；没有走到 server 静态兜底或 entry HTTP 路由。
+- 修法：`platformShowcase()` 只读 profile 与固定平台素材；准备页使用它，租户登录页的 `loginShowcase()` 继续按当前 Host 包过滤。保持 10 R16 平台入口原语义，不以创建宿主、关闭严格模式或吞掉租户错误绕过。
+- 回归保护：pages 自测明确以 sandbox 严格模式测试准备页，断言 200 且租户列表不变（http 原断言另覆盖零租户），再切回 host 模式验证宿主页面。新增断言在修复前复现 503；http 原断言不改。
+- 已验证：24 套 × UTC / Asia/Shanghai，共 48 次全部退出 0。指定的 `src/core/brand*.selftest.ts` 在本仓库无匹配文件，纳入实际品牌覆盖 `src/config/brand*.selftest.ts` 三套；本批新增 industrial-ui 与改动过的 login / SOP 自测一并重跑。原 `http.selftest.ts` 两次均为 734 项通过，原文件 diff 为空。
+- 门禁：format、lint、typecheck、test:locked、check-fonts、console build、check-console-dist 全通过；link-bytes 317 条 / 517 项断言，legacy-bytes 60 条 / 140 项断言，两种配置 v2 各 900/900、8742 项断言、0 处快照差异；PGlite 22 个请求的前缀哈希与 healthz 一致。PREFIX system / tools 哈希与上次记录相同，锁定套件、字节夹具及 v2 基线未改。
+- 范围说明：真实 PG / pgvector 子项未设置 PG_TEST_URL，按套件提示跳过，不能记作真实 PG 验收；其余均为 PGlite、进程内请求或本机假服务。完整 pnpm test 按本任务共同约定留 CI。未访问服务器、外部服务或真实模型，无后台服务与容器遗留。
+- 工作区：仅 entry 的素材函数、沙箱 pages 调用、pages 自测与本 plan 四个文件；不提交、不修改 spec 状态。后续由协调者复跑 CI 并部署，本次未部署。无待确认问题。
+
+| 自测文件                                         | UTC | Asia/Shanghai |
+| ------------------------------------------------ | --- | ------------- |
+| `console/src/pages/login.selftest.tsx`           | ✔   | ✔             |
+| `console/src/sop/sop.selftest.tsx`               | ✔   | ✔             |
+| `src/config/brand-publish.selftest.ts`           | ✔   | ✔             |
+| `src/config/brand-transfer.selftest.ts`          | ✔   | ✔             |
+| `src/config/brand.selftest.ts`                   | ✔   | ✔             |
+| `src/console-api/console.selftest.ts`            | ✔   | ✔             |
+| `src/console-api/entry.selftest.ts`              | ✔   | ✔             |
+| `src/console-api/traces.selftest.ts`             | ✔   | ✔             |
+| `src/industrial-ui.selftest.ts`                  | ✔   | ✔             |
+| `src/server-entry.selftest.ts`                   | ✔   | ✔             |
+| `src/server.selftest.ts`                         | ✔   | ✔             |
+| `src/tenancy/sandbox/budget.selftest.ts`         | ✔   | ✔             |
+| `src/tenancy/sandbox/http.selftest.ts`           | ✔   | ✔             |
+| `src/tenancy/sandbox/isolation.selftest.ts`      | ✔   | ✔             |
+| `src/tenancy/sandbox/kb-copy.selftest.ts`        | ✔   | ✔             |
+| `src/tenancy/sandbox/outbound.selftest.ts`       | ✔   | ✔             |
+| `src/tenancy/sandbox/pages.selftest.ts`          | ✔   | ✔             |
+| `src/tenancy/sandbox/provision.selftest.ts`      | ✔   | ✔             |
+| `src/tenancy/sandbox/reaper.selftest.ts`         | ✔   | ✔             |
+| `src/tenancy/sandbox/refund-seed.selftest.ts`    | ✔   | ✔             |
+| `src/tenancy/sandbox/wechat-e2e.selftest.ts`     | ✔   | ✔             |
+| `src/tenancy/sandbox/wecom-outbound.selftest.ts` | ✔   | ✔             |
+| `src/tenancy/sandbox/wecom.selftest.ts`          | ✔   | ✔             |
+| `src/web/web.selftest.ts`                        | ✔   | ✔             |

@@ -25,14 +25,20 @@ export function sandboxTryUrl(): string | null {
   }
 }
 
-/** 行业示例只由服务端下发，前端保持行业无关。 */
-export function loginShowcase() {
-  return profile().name === 'demo' && currentPack().runtime.id === 'travel'
+/** 平台准备页在开通租户前也可访问；固定示例素材不读取任何租户状态。 */
+export function platformShowcase() {
+  return profile().name === 'demo'
     ? {
         src: '/login-showcase.png',
         alt: '企业微信会话示例：客户问云南6日游，AI推荐线路并报价；另一位客户在等人接手',
       }
     : null;
+}
+
+/** 租户登录页只向旅游包下发旅游示例；调用时须已解析 Host。 */
+export function loginShowcase() {
+  const showcase = platformShowcase();
+  return showcase && currentPack().runtime.id === 'travel' ? showcase : null;
 }
 
 /** 只投影当前 Host 已发布的公开名称与副标题；空品牌不增加响应字段。 */

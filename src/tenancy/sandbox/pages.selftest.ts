@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
-import { createTenantRuntime } from '../runtime.js';
+import { configureTenancy, createTenantRuntime, tenantRuntimes } from '../runtime.js';
 import type { SandboxSession } from './session.js';
 import { createHash } from 'node:crypto';
 import { sandboxTryDesign, sandboxTryLinks } from './pages.js';
@@ -22,6 +22,8 @@ if (!process.env.CONSOLE_DIST && !fs.existsSync('console/dist/index.html')) {
   process.env.CONSOLE_DIST = dist;
 }
 process.env.VAR_DIR = temp;
+// 准备页在首次开通前没有租户，不能依赖宿主回退或读取行业包。
+configureTenancy({ role: 'sandbox', standardCount: 0 });
 const { sandboxApp } = await import('./process.js');
 const { SandboxProvisionError } = await import('./provision.js');
 const savedBase = process.env.PUBLIC_BASE_URL;
@@ -158,6 +160,7 @@ function cspMatches(response: Response, html: string): void {
 }
 
 try {
+  const runtimesBefore = tenantRuntimes();
   let provisions = 0;
   let failure: 'limited' | 'unavailable' = 'limited';
   let scope: 'pool' | 'ip' = 'pool';
@@ -247,6 +250,8 @@ try {
   const fetch = fetchFrom(app);
   const response = await fetch('/try?ended=1');
   const html = await response.text();
+  check(() => assert.equal(response.status, 200));
+  check(() => assert.deepEqual(tenantRuntimes(), runtimesBefore, '准备页不创建租户'));
   cspMatches(response, html);
   check(() => assert.match(html, /\.try-start:disabled[^}]+background:var\(--primary\)/));
   check(() => assert.doesNotMatch(html, /\.try-start:disabled[^}]+opacity/));
@@ -435,6 +440,7 @@ try {
     check(() => assert.equal(sandboxTryLinks(missing, base), missing));
   }
   // 宿主经过真实共用路由，既不加载沙箱脚本，也不接沙箱 CSP。
+  configureTenancy({ role: 'host', standardCount: 1 });
   process.env.SERVER_SELFTEST = '1';
   process.env.CONFIG_SOURCE = 'file';
   const { app: hostRoutes } = await import('../../server.js');
