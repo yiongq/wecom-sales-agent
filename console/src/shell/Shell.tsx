@@ -104,7 +104,8 @@ export function Shell() {
     );
   }
   if (v.kind === 'redirect') return <BootSkeleton />;
-  if (v.kind === 'login') return <LoginPage demo={v.demo} tryUrl={v.tryUrl} showcase={v.showcase} returning={v.returning} />;
+  if (v.kind === 'login')
+    return <LoginPage entryBrand={v.entryBrand} demo={v.demo} tryUrl={v.tryUrl} showcase={v.showcase} returning={v.returning} />;
   return <Frame viewer={v} />;
 }
 

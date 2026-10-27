@@ -12,3 +12,10 @@ export interface Showcase {
   src: string;
   alt: string;
 }
+
+/** 10 R16：未登录入口按 Host 下发的公开品牌，不携带租户内部配置。 */
+export interface PublicEntryBrand {
+  name: string;
+  subtitle: string;
+  image: Showcase | null;
+}

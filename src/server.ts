@@ -1164,6 +1164,13 @@ app.use('/*', async (c, next) => (profile().flags.visitor_simulator || !SIMULATO
 app.use('/*', async (c, next) => {
   if (!['GET', 'HEAD'].includes(c.req.method)) return next();
   const binding = currentPack();
+  // 报价单只走 /quote；裸支付模板无订单可判定，不能显示旅游收银台。
+  if (binding.runtime.quotes && /^\/pay\.html\/?$/i.test(c.req.path)) {
+    const order = getAnyOrder(c.req.query('orderId') ?? '');
+    if (!order || (isLineOrder(order) && order.approval)) return c.notFound();
+  }
+  // 网页渠道必须经账号路由注入配置；旧旅游静态入口保留原样。
+  if (binding.runtime.id !== 'travel' && /^\/web\.html\/?$/i.test(c.req.path)) return c.notFound();
   const page =
     isSiteHtml(c.req.path, binding.runtime) || /^\/chat\.html$/i.test(c.req.path) ? c.req.path.slice(1, -5).toLowerCase() : undefined;
   if (!page) {
@@ -1171,7 +1178,7 @@ app.use('/*', async (c, next) => {
     if (/^\/[^/]+\.html$/i.test(c.req.path) && !/^\/(?:admin|try|web)\.html$/i.test(c.req.path)) return c.notFound();
     return next();
   }
-  if (binding.brand === null && !sandboxSessionOf(c)) return next();
+  if (binding.runtime.id === 'travel' && binding.brand === null && !sandboxSessionOf(c)) return next();
   let html = await readFile(path.resolve(`public/${page}.html`), 'utf8').catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT') return null;
     throw error;

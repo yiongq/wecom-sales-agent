@@ -8666,6 +8666,51 @@ for (const [status, verdict, title] of [
   await m.unmount();
 }
 
+// 10 R16：没有目标报告时也有动态反馈；临时读取失败继续查询同一次运行，自动显示最终结果。
+{
+  const clock = fakeClock();
+  const nativeSet = globalThis.setTimeout;
+  const nativeClear = globalThis.clearTimeout;
+  globalThis.setTimeout = ((fn: () => void, ms: number, ...args: unknown[]) =>
+    ms === GATE_POLL_MS ? clock.set(fn, ms) : nativeSet(fn, ms, ...args)) as typeof setTimeout;
+  globalThis.clearTimeout = ((id: ReturnType<typeof setTimeout>) =>
+    typeof id === 'number' ? clock.clear(id) : nativeClear(id)) as typeof clearTimeout;
+  const { gate } = gateServer(gateView({ status: 'running', verdict: null, progress: null }));
+  const fallback = respond!;
+  let unavailable = false;
+  respond = (call) =>
+    unavailable && call.path.startsWith('/api/console/sop/gate-runs/')
+      ? Promise.resolve(json(503, { error: 'not_ready' }))
+      : fallback(call);
+  const m = await mountPage('/console/sop?section=tone', travelOwner, { ...CLEAN_SOP, gateRequired: true });
+  try {
+    await clickEv(gateButton(m)!);
+    await waitFor(() => gateTitle(m) === '回归运行中');
+    check('运行按钮说明状态且不可重复提交', text(gateButton(m)).includes('回归运行中') && gateButton(m)!.disabled);
+    check('无目标进度时显示等待状态', text(m.box).includes('正在等待回归进度'));
+    await rest(1100);
+    check('等待计时持续更新', /已等待[1-9][0-9]*秒，结果会自动更新/.test(text(m.box)));
+    unavailable = true;
+    await act(() => clock.advance(GATE_POLL_MS));
+    check('503 展示局部错误并继续原运行', text(m.box).includes('暂时没取到进度，正在自动重试') && gateButton(m)!.disabled);
+    eq('暂时错误保留轮询', clock.timers(), 1);
+    unavailable = false;
+    gate.view = gateView({ status: 'running', verdict: null, progress: { done: 5, total: 28 } });
+    await act(() => clock.advance(GATE_POLL_MS));
+    check('恢复后更新目标计数并清掉错误', text(m.box).includes('已完成5 / 共28个目标') && !text(m.box).includes('暂时没取到进度'));
+    gate.view = gateView();
+    await act(() => clock.advance(GATE_POLL_MS));
+    eq('无需手工刷新自动显示结果', gateTitle(m), '回归通过，可以发布');
+    eq('结束后停止轮询', clock.timers(), 0);
+    check('结束后移除等待提示', !text(m.box).includes('结果会自动更新'));
+    eq('恢复未新建回归', posted('/draft/gate').length, 1);
+  } finally {
+    await m.unmount();
+    globalThis.setTimeout = nativeSet;
+    globalThis.clearTimeout = nativeClear;
+  }
+}
+
 // 两边结果、失败原因与三类不拦发布的目标。
 {
   const goal = (id: string, result: GateGoalResult['result']): GateGoalResult => ({
