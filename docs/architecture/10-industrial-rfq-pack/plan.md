@@ -65,6 +65,70 @@
 
 ## 实施记录
 
+### R16 非文字消息提示按包取（2026-10-27）
+
+- 已完成任务 1–4：企微旧账号、数据库账号、沙箱三条路径按当前租户的 `PackRuntime.fixedReplies` 取 `non-text.<消息类型>`，缺类型取 `non-text.other`，整个包未提供时回中性通用文字。复用既有 legacy / template 样例渲染，不新增接口、依赖、配置或缓存；异步取句在读取会话接管状态之前完成。旅游六类提示与 other 原文逐字节搬到旅游包；工业七句引导把型号与数量打字发来，图片句允许抄写铭牌文字，不承诺识图。两包固定句登记注明适配器直发；词表搬动同步 state-manifest。
+- 已完成任务 5：新增 `src/adapters/wecom-nontext.selftest.ts`，三租户（旅游 / 工业 / 无固定句的证明包）使用相同客户 ID 与消息 ID，真实 PGlite 入站、出站账本与消息记录，只替换企微网络。覆盖图片、语音、视频、文件、链接、位置、未知类型与空文本；发送与记录一致、占位不变、旅游 UTF-8 原文不变、工业提示穿过工业护栏不变、固定句三种样例一致、重放不重发、转人工后只记占位。旅游使用 legacy，工业使用 template；本机 Asia/Shanghai 与 UTC 都通过。`package.json` 仅在 test 末尾追加新自测，CI 分片由既有脚本自动导出，分片自测双时区通过。
+- 已完成任务 6：本分支尚无 #339 的 R16 界面修订行，因此在 spec 顶部追加「非文字消息提示按包取」的 R16 Revisions，协调者合并时可并入界面修订；未修改其页面文件。spec 保持 ready，不替代未来图片 / 文件读取能力，也未启用工业租户企微配置。
+- 最终门禁：format:check、lint、typecheck、test:locked、check-fonts 均退出 0；一致性 480 项、状态登记 32 项通过；字体 730 个界面汉字 / 913 码位 / 191968 B 全覆盖，无需重建。首轮 lint 发现词表搬家后清单未同步，已修复并通过；新增自测补 template 覆盖时错误修改冻结的夹具属性，已改为替换夹具快照并在两时区重跑通过，不改产品契约。
+- 两种 v2（`CONFIG_SOURCE=file`；再加 `CONFIG_TEST_DB=pglite`，均 `LLM_MOCK=1`）各 900/900、8742 项断言、`v2 快照比对：900 条 case · 0 处差异`；PGlite 22 个请求的前缀哈希与 healthz 全一致。`link-bytes` 317 条 / 517 项断言、`legacy-bytes` 60 条 / 140 项断言通过；09 的 quote-approval、quote-actions、quote-page、quote-replies、site-links 双时区全通过。
+- `test:locked` 原始输出：`PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900 tools=59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd`。锁定八文件与全部 eval 基线 diff 为空；独立比较七句旅游原文、占位实现均逐字节相同，package 其他键与命令不变。
+- 按受影响文件名及代码引用搜索，以下 25 套均在 UTC / Asia/Shanghai 各跑一次，最终 50 次退出 0；另外 19 套间接依赖在本机时区通过。原始输出与逐套退出码保留在 gitignored 的 `var/10-nontext/`（`acceptance.json` 汇总最终结果，首轮失败日志保留）。
+
+| 自测                                             | UTC | Asia/Shanghai |
+| ------------------------------------------------ | --- | ------------- |
+| `src/adapters/wecom-nontext.selftest.ts`         | ✔   | ✔             |
+| `src/adapters/wecom-02.selftest.ts`              | ✔   | ✔             |
+| `src/adapters/wecom-03.selftest.ts`              | ✔   | ✔             |
+| `src/adapters/wecom-outbound-host.selftest.ts`   | ✔   | ✔             |
+| `src/tenancy/events-channels.selftest.ts`        | ✔   | ✔             |
+| `src/tenancy/sandbox/wecom.selftest.ts`          | ✔   | ✔             |
+| `src/tenancy/sandbox/wecom-outbound.selftest.ts` | ✔   | ✔             |
+| `src/tenancy/sandbox/wechat-e2e.selftest.ts`     | ✔   | ✔             |
+| `src/channels/recovery.selftest.ts`              | ✔   | ✔             |
+| `src/channels/channels.selftest.ts`              | ✔   | ✔             |
+| `src/quota/quota.selftest.ts`                    | ✔   | ✔             |
+| `src/core/consistency.selftest.ts`               | ✔   | ✔             |
+| `src/config/consistency.selftest.ts`             | ✔   | ✔             |
+| `src/config/pack-runtime.selftest.ts`            | ✔   | ✔             |
+| `src/config/registry-binding.selftest.ts`        | ✔   | ✔             |
+| `src/industrial-replies.selftest.ts`             | ✔   | ✔             |
+| `src/industrial-review.selftest.ts`              | ✔   | ✔             |
+| `src/industrial-followup.selftest.ts`            | ✔   | ✔             |
+| `src/industrial-quotes.selftest.ts`              | ✔   | ✔             |
+| `src/quote-approval.selftest.ts`                 | ✔   | ✔             |
+| `src/quote-actions.selftest.ts`                  | ✔   | ✔             |
+| `src/quote-page.selftest.ts`                     | ✔   | ✔             |
+| `src/quote-replies.selftest.ts`                  | ✔   | ✔             |
+| `src/site-links.selftest.ts`                     | ✔   | ✔             |
+| `scripts/ci-shard.selftest.ts`                   | ✔   | ✔             |
+
+其余 19 套（Asia/Shanghai，均退出 0）：
+
+- `src/industrial-catalog.selftest.ts`
+- `src/handoff/handoff.selftest.ts`
+- `src/industrial-demo.selftest.ts`
+- `src/config/template-derive.selftest.ts`
+- `src/order-readers.selftest.ts`
+- `src/store/parity.selftest.ts`
+- `src/trace/trace.selftest.ts`
+- `src/tenancy/fixture-tenant.selftest.ts`
+- `src/tenancy/runtime.selftest.ts`
+- `src/packs/travel/refund-words.selftest.ts`
+- `src/config/sop-per-pack.selftest.ts`
+- `src/industrial-import.selftest.ts`
+- `src/packs/travel/policy-claims.selftest.ts`
+- `src/quota/shutdown.selftest.ts`
+- `src/config/brand.selftest.ts`
+- `src/config/config.selftest.ts`
+- `src/ops/ops.selftest.ts`
+- `src/tenancy/sandbox/outbound.selftest.ts`
+- `src/db/sandbox-binding.selftest.ts`
+
+- 另跑 `scripts/check-tenant-state.selftest.ts`（32 项通过）；locked 包含的原始企微套件、固定时钟下的 link-bytes / legacy-bytes 与上表无重复替代。真实 Postgres 分支按本批约定未跑，PGlite 结果不冒充真实 PG 验证。
+- 公共边界：整个 origin/dev diff 与新增自测没有本机绝对路径或过长假企微 ID；gitleaks 扫提交范围无新增提交、扫完整未提交 diff（含新增自测）零泄露；`git diff --check` 通过。未改旅游 SOP / PREFIX / 工具定义、评测基线或锁定八文件；未调用外部服务或真实模型。
+- 交接：本任务完整实现与验证均完成，工作区留下可审阅未提交 diff，无半成品或调试打印；测试进程均已退出，失败测试的临时目录已清理，本轮未创建浏览器或容器。完整 `pnpm test` 按任务约定留 CI；不提交、不 push、不开 PR、不碰服务器。下一步由协调者合并 #339 的文档记录并执行原计划联合验收 / 上线；本任务无需新增决定。需要确认的问题：无。
+
 ### R17 回滚检查
 
 - 已补 `pre-10` 工业风险检查与手动 tag 树判定；自动回滚复用 guard 并探测工业 runtime。三项全库只读 OR 判断、未知从严、查询时限与含 10 的恢复提示已落地，检查先于 pre-09，既有检查独立保留。
