@@ -123,6 +123,12 @@
 ## 已定
 
 - 2026-10-29 owner 定原开放问题 1：第一期只读，写回整段移出 11、另起 spec（spec 第二条 `Revisions:`）。
+- 2026-10-29 owner 定开放问题 1–5，全部照推荐（spec 第三条 `Revisions:`）：
+  - 只支持 Odoo 19、20 的 JSON-2；
+  - 料号对照不放进 11；
+  - 演示租户不接 Odoo，验收在本机一次性容器上做；
+  - 连接器凭据共用 `CHANNEL_SECRETS_KEY`；
+  - 取不到新鲜值时退回产品库的值，不自动批准，给顾问留系统消息。
 
 ## 交接记录
 
@@ -138,3 +144,9 @@
   - 出站防护补 IP 字面量；交期只用产品库；新鲜值一个定义四处共用；每轮截止时间、预热、单路限速与保活；key 到期与 scope；不加 pre-11 回滚档；头部改部分取代；集成脚本进程内注入；工业包的 `erp` 声明挪到第 4 步；补 `package.json` 与 `sandbox_tenant_purge`。
 - 行号已按 `origin/dev` `c5cda19a` 复核。
 - 下一步：向 owner 讲通俗版，定开放问题 1–5；是否翻 `ready` 由 owner 决定。
+
+### 交接（2026-10-29，owner 定开放问题）
+
+- 已向 owner 讲通俗版；开放问题 1–5 全部照推荐（spec 第三条 `Revisions:`）。
+- spec 仍为 `draft`，随本 docs PR 进 `dev`；是否翻 `ready` 由 owner 决定。翻 `ready` 的 PR 同时改 AGENTS.md（R3、R4 两条原文），给 ADR-003 与 10 加反向的 `Superseded in part by:`，给 03、04、05、08 加 `Amended by:`，主参考「阶段 8」加一条。
+- 开工要等 12 implemented（R7 改的工业包文件与 12 重叠）。
