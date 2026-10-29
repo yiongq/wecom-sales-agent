@@ -500,6 +500,38 @@ export const guardEvents = pgTable(
   ],
 );
 
+export const attachments = pgTable(
+  'attachments',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    id: text('id').notNull(),
+    conversationId: text('conversation_id').notNull(),
+    channel: text('channel', { enum: ['wecom', 'web'] }).notNull(),
+    sourceKey: text('source_key').notNull(),
+    cls: text('cls', { enum: ['image', 'sheet', 'legacy_sheet', 'locked_sheet', 'drawing', 'video', 'other'] }).notNull(),
+    mime: text('mime').notNull(),
+    name: text('name'),
+    size: bigint('size', { mode: 'number' }).notNull(),
+    sha256: text('sha256'),
+    bytes: bytea('bytes'),
+    intakeId: text('intake_id'),
+    result: json('result').$type<unknown>(),
+    createdAt: tstz('created_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.id] }),
+    unique().on(t.tenantId, t.channel, t.sourceKey),
+    foreignKey({ columns: [t.tenantId, t.conversationId], foreignColumns: [conversations.tenantId, conversations.id] }).onDelete('cascade'),
+    check('attachments_channel_check', sql`${t.channel} IN ('wecom', 'web')`),
+    check('attachments_cls_check', sql`${t.cls} IN ('image', 'sheet', 'legacy_sheet', 'locked_sheet', 'drawing', 'video', 'other')`),
+    check('attachments_size_check', sql`${t.size} >= 0`),
+    index('attachments_conversation_idx').on(t.tenantId, t.conversationId),
+    index('attachments_created_idx').on(t.tenantId, t.createdAt),
+  ],
+);
+
 export const usageDaily = pgTable(
   'usage_daily',
   {
@@ -509,7 +541,7 @@ export const usageDaily = pgTable(
     /** 服务器时区（TZ）的日期，'YYYY-MM-DD' */
     day: date('day', { mode: 'string' }).notNull(),
     model: text('model').notNull(),
-    purpose: text('purpose', { enum: ['chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate'] }).notNull(),
+    purpose: text('purpose', { enum: ['chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate', 'vision'] }).notNull(),
     calls: integer('calls').notNull().default(0),
     promptTokens: bigint('prompt_tokens', { mode: 'number' }).notNull().default(0),
     completionTokens: bigint('completion_tokens', { mode: 'number' }).notNull().default(0),
@@ -520,7 +552,10 @@ export const usageDaily = pgTable(
   },
   (t) => [
     primaryKey({ columns: [t.tenantId, t.day, t.model, t.purpose] }),
-    check('usage_daily_purpose_check', sql`${t.purpose} IN ('chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate')`),
+    check(
+      'usage_daily_purpose_check',
+      sql`${t.purpose} IN ('chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate', 'vision')`,
+    ),
   ],
 );
 

@@ -4,6 +4,15 @@ import { currentRuntime, withoutTenantScope, tenantCallback, type TenantRuntime 
 // db 存储下它只管 demo 类会话及其订单（R6），由 owns / ownsOrder 过滤。
 import fs from 'node:fs';
 import path from 'node:path';
+import {
+  attachmentDayBounds,
+  attachmentDailyBytesLimit,
+  type AttachmentItem,
+  type AttachmentRow,
+  type AttachmentMetadata,
+  type AttachmentUsage,
+  type AttachmentResultWrite,
+} from '../db/repo/attachments.js';
 import { logError } from '../log.js';
 import type { Order, Session } from '../types.js';
 import { StoreLaggingError, type StoreBackend, type StoreHealth } from './backend.js';
@@ -26,6 +35,11 @@ export interface FileBackendDeps {
 }
 
 export interface FileBackend extends StoreBackend {
+  queueAttachment(sessionId: string, item: AttachmentItem): boolean;
+  queueAttachmentResult(sessionId: string, write: AttachmentResultWrite): boolean;
+  readAttachment(id: string, withBytes: boolean): AttachmentRow | AttachmentMetadata | null;
+  listAttachmentMetadata(conversationId: string): AttachmentMetadata[];
+  readAttachmentUsage(now?: Date): AttachmentUsage;
   reset(): void;
   keyCount(): number;
   /** 启动时恢复上次落盘的数据，并给每个会话的消息按顺序记上 seq（只在本进程有效） */
@@ -51,6 +65,55 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
 
   /** 有没落盘改动的会话 → 最早一次改动的时刻 */
   const dirty = new Map<string, number>();
+  const pendingAttachments: { sessionId: string; item: AttachmentItem }[] = [];
+  const pendingAttachmentResults: { sessionId: string; write: AttachmentResultWrite }[] = [];
+  const attachmentDir = path.join(d.varDir, 'attachments');
+  function attachmentPath(id: string): string {
+    if (!/^att_[0-9a-f]{24}$/.test(id)) throw new Error('附件 id 格式错误');
+    return path.join(attachmentDir, id);
+  }
+  function attachmentMetadata(id: string): AttachmentMetadata | null {
+    const file = attachmentPath(id);
+    try {
+      const data = JSON.parse(fs.readFileSync(`${file}.json`, 'utf8')) as Omit<AttachmentMetadata, 'createdAt'> & { createdAt: string };
+      return { ...data, createdAt: new Date(data.createdAt), stored: fs.existsSync(file) };
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return null;
+      throw e;
+    }
+  }
+  function allAttachmentMetadata(): AttachmentMetadata[] {
+    if (!fs.existsSync(attachmentDir)) return [];
+    return fs
+      .readdirSync(attachmentDir)
+      .filter((f) => /^att_[0-9a-f]{24}\.json$/.test(f))
+      .map((f) => attachmentMetadata(f.slice(0, -5))!)
+      .filter(Boolean);
+  }
+  function attachmentUsage(now = new Date()): AttachmentUsage {
+    const [start, end] = attachmentDayBounds(now);
+    const rows = allAttachmentMetadata().filter((a) => a.createdAt >= start && a.createdAt < end);
+    return { count: rows.length, bytes: rows.reduce((n, a) => n + (a.stored ? fs.statSync(attachmentPath(a.id)).size : 0), 0) };
+  }
+  function persistAttachments(): void {
+    if (!pendingAttachments.length && !pendingAttachmentResults.length) return;
+    fs.mkdirSync(attachmentDir, { recursive: true });
+    for (const { sessionId, item } of pendingAttachments) {
+      if (!d.sessions.has(sessionId) || !d.owns(sessionId)) continue;
+      const file = attachmentPath(item.id);
+      if (allAttachmentMetadata().some((a) => a.id === item.id || (a.channel === item.channel && a.sourceKey === item.sourceKey))) continue;
+      const { bytes, ...meta } = item;
+      const createdAt = new Date(item.createdAt);
+      const stored = bytes !== null && attachmentUsage(createdAt).bytes + bytes.byteLength <= attachmentDailyBytesLimit();
+      if (stored) writeAtomic(file, bytes);
+      else fs.rmSync(file, { force: true });
+      writeAtomic(`${file}.json`, JSON.stringify({ ...meta, conversationId: sessionId, createdAt, stored }));
+    }
+    for (const { sessionId, write } of pendingAttachmentResults) {
+      const meta = attachmentMetadata(write.id);
+      if (meta?.conversationId === sessionId) writeAtomic(`${attachmentPath(write.id)}.json`, JSON.stringify({ ...meta, ...write }));
+    }
+  }
   let pendingEvents: DomainEvent[] = [];
   const waiters = new Set<{ sessionId: string; resolve(): void }>();
   let lastError: string | null = null;
@@ -80,7 +143,7 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
   }
 
   // 原子写：先写 .tmp 再 rename（同一文件系统内 rename 原子），崩溃不会留半截文件
-  function writeAtomic(file: string, data: string): void {
+  function writeAtomic(file: string, data: string | Uint8Array): void {
     const tmp = `${file}.tmp`;
     fs.writeFileSync(tmp, data);
     fs.renameSync(tmp, file);
@@ -111,12 +174,20 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
           2,
         ),
       );
+      try {
+        persistAttachments();
+      } catch (e) {
+        // 外层沿用会话落盘日志；附件解析/文件系统错误可能含原文件名或内容，只交出固定错误与 errno。
+        throw Object.assign(new Error('附件落盘失败'), { code: (e as NodeJS.ErrnoException).code ?? 'attachment_write' });
+      }
     } catch (e) {
       lastError = (e as NodeJS.ErrnoException).code ?? (e instanceof Error ? e.name : 'unknown');
       console.error('[store] 落盘失败:', e);
       return false;
     }
     dirty.clear();
+    pendingAttachments.length = 0;
+    pendingAttachmentResults.length = 0;
     const events = pendingEvents;
     pendingEvents = [];
     for (const w of waiters) w.resolve();
@@ -143,10 +214,54 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
 
   return {
     mode: 'file',
-    keyCount: () => dirty.size + pendingEvents.length + waiters.size + Number(saveTimer !== null) + Number(lastError !== null),
+    queueAttachment(sessionId, item) {
+      assertHost();
+      if (!d.sessions.has(sessionId) || !d.owns(sessionId)) return false;
+      attachmentPath(item.id);
+      pendingAttachments.push({ sessionId, item: structuredClone(item) });
+      markDirty(sessionId);
+      schedulePersist();
+      return true;
+    },
+    queueAttachmentResult(sessionId, write) {
+      assertHost();
+      if (!d.sessions.has(sessionId) || !d.owns(sessionId)) return false;
+      attachmentPath(write.id);
+      pendingAttachmentResults.push({ sessionId, write: structuredClone(write) });
+      markDirty(sessionId);
+      schedulePersist();
+      return true;
+    },
+    readAttachment(id, withBytes) {
+      assertHost();
+      const meta = attachmentMetadata(id);
+      if (!meta || !withBytes) return meta;
+      const { stored, ...row } = meta;
+      return { ...row, bytes: stored ? fs.readFileSync(attachmentPath(id)) : null };
+    },
+    listAttachmentMetadata(conversationId) {
+      assertHost();
+      return allAttachmentMetadata()
+        .filter((a) => a.conversationId === conversationId)
+        .toSorted((a, b) => a.createdAt.getTime() - b.createdAt.getTime() || a.id.localeCompare(b.id));
+    },
+    readAttachmentUsage(now) {
+      assertHost();
+      return attachmentUsage(now);
+    },
+    keyCount: () =>
+      dirty.size +
+      pendingAttachments.length +
+      pendingAttachmentResults.length +
+      pendingEvents.length +
+      waiters.size +
+      Number(saveTimer !== null) +
+      Number(lastError !== null),
     reset() {
       cancelTimer();
       dirty.clear();
+      pendingAttachments.length = 0;
+      pendingAttachmentResults.length = 0;
       pendingEvents = [];
       for (const w of waiters) w.resolve();
       waiters.clear();

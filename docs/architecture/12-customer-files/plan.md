@@ -29,7 +29,7 @@
     - 真实模型（owner 授权、给预算）在合成样本上测 `glm-5.3-flashx` 的接图格式、时延与逐行准确率。
   - 验：结果记进实施记录；与 spec 假设不符的，先修订 spec。
   - 依赖：无。
-- [ ] 1. 附件存储与迁移 0021（R4、R7）。
+- [x] 1. 附件存储与迁移 0021（R4、R7）。2026-10-29 完成，见「实施记录 · 第 1、2 步」。
   - 做：
     - `attachments` 表：RLS、唯一键、外键级联；
     - `purpose` 加 `vision`；
@@ -39,7 +39,7 @@
     - 文件模式后端。
   - 验：在真实 PG 上，RLS、级联删除与唯一键通过；沙箱回收、行权删除计入附件；迁移检查通过。
   - 依赖：0。
-- [ ] 2. 判类、去 EXIF 与表格读取器（R1、R4、R6）。
+- [x] 2. 判类、去 EXIF 与表格读取器（R1、R4、R6）。2026-10-29 完成，见「实施记录 · 第 1、2 步」。
   - 做：魔数判类、CFB 目录判别、JPEG / PNG 元数据剥离、CSV 编码、XLSX 最小读取器及全部上限。
   - 验：
     - 合法样本逐格正确；
@@ -129,6 +129,38 @@
 - 按 03–10 的实际速度折算，日历时间约一周，不含等 owner 实测与授权的时间。
 
 ## 实施记录
+
+### 第 1、2 步 · 附件存储、判类与表格读取（2026-10-29，Codex 实现，协调者审查）
+
+- **分工**：两路 Codex 在各自的 worktree 里并行实现（第 1 步约 20 分钟，第 2 步约 11 分钟），协调者审查 diff，合进同一分支后补跑门禁。
+- **第 1 步**（存储与迁移）：
+  - 迁移 0021：
+    - `attachments` 表：FORCE RLS；主键 `(tenant_id, id)`；唯一键 `(tenant_id, channel, source_key)`；外键级联到会话；`cls`、`channel`、`size` 的 CHECK。
+    - 授权：`agent_app` 只有 SELECT、INSERT，以及 `intake_id`、`result` 两列的 UPDATE，没有 DELETE。
+    - `usage_daily` 的 purpose 加 `vision`。
+    - `erase_conversation` 的返回加 `attachments`；`sandbox_tenant_purge` 加附件的删除与核对。两个重写的函数与上一版（0005、0017）逐字比对，只多了附件那几行。
+    - 新函数 `purge_attachment_bytes`。
+  - `src/db/repo/attachments.ts`：读原件（默认不带原件）、按会话列元数据、当日用量、写识别结果、清字节。
+  - 会话事务：`queueAttachment` / `queueAttachmentResult` 排进会话的下一次保存，与审计、同意记录用同一套快照与 spill 机制；spill 时原件置空。当日原件 1 GB（`ATTACHMENT_DAILY_BYTES`，按 1024³）在同一事务里判，按租户加 advisory 锁，超出的那份只记元数据。「日」按服务器本地日历日，与 `usage_daily` 一致。
+  - 文件存储模式：`VAR_DIR/attachments/<id>` 与同名 `.json`，id 按 `att_<24 hex>` 校验。
+  - 每日清理：`purgeOnce` 调 `purge_attachment_bytes`，条数进 `system.purge` 审计。
+- **第 2 步**（判类、去元数据、表格读取）：
+  - `src/core/attachments.ts`：`AttachmentClass`、`sniffAttachment`（凭前 64 KB 早判）、`classifyAttachment`、`stripImageMetadata`。
+  - `src/core/sheet-read.ts`：CSV（UTF-8、BOM、GB18030）与 XLSX 最小读取器，上限全部照 R6。
+  - 协调者审查后改了三处，都补了断言：
+    1. 早判时图纸与 CFB 原按 2 MiB 判超限。大于 2 MB 的 PDF 图纸、加密文件会在下载时被截成 `other`，只回「请打字」，不转顾问。改按企微单文件上限 20 MiB。
+    2. 超过 2 MiB 的 ZIP，早判与完整判类结论不一（含宏的会判 `locked_sheet`），统一为 `other`。
+    3. CRC 改用 `zlib.crc32`，原来是逐位计算。
+  - 最坏情况实测：200 行 × 50 列满格、解压后 4.58 MiB 的工作表，解析 147 毫秒，临时多占约 118 MB；超过 5 MiB 的在解压时就判 `too_large`。
+- **合并时补的**：
+  - 自测断言库里的 `cls` 取值与 `ATTACHMENT_CLASSES` 一致。
+  - spec 缺口：超限当场中断的下载算不出 `sha256`，改为可空（spec 第七条 `Revisions:`，同时写定早判的分类上限），补了断言。
+- **验证**（集成分支，基于 dev `afc6023d`，一次性 `pgvector:pg17` 容器）：
+  - `format:check`、`lint`（迁移检查 22 个迁移对 22 条 journal、包边界、`check-tenant-state`）、`typecheck` 通过；`test:locked` 通过，`PREFIX sha256 system=cf3b163c… tools=59e07156…` 不变；锁定 8 个文件无改动。
+  - 新增三套自测通过：`src/core/attachments.selftest.ts`、`src/core/sheet-read.selftest.ts`、`src/db/attachments.selftest.ts`（PGlite 与真实 PG：RLS、去重、级联、列权限、30 天清字节、同事务与回滚、spill、并发预算、升级路径）。
+  - 受影响套件通过：`db`、`sandbox`、`jobs`、`store`、`spill-channel`、`privacy`、`rollback-guard`、`tenancy/sandbox/reaper`、`console`、`ci-shard`、`check-tenant-state`，碰库的都跑了真实 PG。
+  - v2 文件与 PGlite 两条路径各 900/900，对 `v2-10-step21.json` 0 差异；DB 模式 22 个请求的前缀哈希与 `/healthz` 一致。
+  - 全量 `pnpm test` 交 CI。
 
 ### 第 0 步 · 开工核对与实测（2026-10-29，协调者）
 
@@ -236,3 +268,11 @@
 - 第 0 步完成，结果见「实施记录 · 第 0 步」。spec 按实测就地修订（第五条 `Revisions:`），与本记录同一 docs PR。
 - owner 随后定等待句改为慢时才发（spec 第六条 `Revisions:`），同一 PR 改了 R2、R11、验收 4 与第 5 步；Open 已清空。
 - 下一步：第 1、2 步可并行开工。
+
+### 交接（2026-10-29，第 1、2 步）
+
+- 第 1、2 步完成，见「实施记录 · 第 1、2 步」。spec 第七条 `Revisions:` 随同一 PR。
+- 留给后面的：
+  - 第 5 步按 `sniffAttachment` 的上限中断下载，中断的那份 `sha256` 记 null。
+  - 第 9 步注意：去 EXIF 会一并去掉照片的方向信息，原图在工作台里可能显示为横的。微信发图默认会压缩，可能已经转正，用真机照片核一次再定要不要处理。
+- 下一步：第 3 步（视觉请求）；第 9、11 步只依赖第 1 步，也可以开工。
