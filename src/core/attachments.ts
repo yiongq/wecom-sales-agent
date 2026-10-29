@@ -278,6 +278,37 @@ export function attachmentCrc32(bytes: Uint8Array): number {
   return crc32(bytes);
 }
 
+/** 只读 IFD0 的单个方向值；不遍历或保留设备、GPS、缩略图等元数据。 */
+function exifOrientation(payload: Buffer): number | undefined {
+  if (!starts(payload, '457869660000')) return undefined;
+  const tiff = payload.subarray(6);
+  if (tiff.length < 8) return undefined;
+  const endian = tiff.toString('latin1', 0, 2);
+  if (endian !== 'II' && endian !== 'MM') return undefined;
+  const u16 = (at: number) => (endian === 'II' ? tiff.readUInt16LE(at) : tiff.readUInt16BE(at));
+  const u32 = (at: number) => (endian === 'II' ? tiff.readUInt32LE(at) : tiff.readUInt32BE(at));
+  if (u16(2) !== 42) return undefined;
+  const ifd = u32(4);
+  if (ifd < 8 || ifd + 2 > tiff.length) return undefined;
+  const count = u16(ifd);
+  if (ifd + 2 + count * 12 + 4 > tiff.length) return undefined;
+  let orientation: number | undefined;
+  for (let i = 0; i < count; i++) {
+    const at = ifd + 2 + i * 12;
+    if (u16(at) !== 0x0112) continue;
+    if (orientation !== undefined || u16(at + 2) !== 3 || u32(at + 4) !== 1) return undefined;
+    orientation = u16(at + 8);
+    if (orientation < 1 || orientation > 8) return undefined;
+  }
+  return orientation;
+}
+
+function orientationApp1(orientation: number): Buffer {
+  const segment = Buffer.from('ffe100224578696600004d4d002a00000008000101120003000000010000000000000000', 'hex');
+  segment.writeUInt16BE(orientation, 28);
+  return segment;
+}
+
 export type StrippedImage = { ok: true; bytes: Uint8Array } | { ok: false };
 export function stripImageMetadata(bytes: Uint8Array): StrippedImage {
   const b = buffer(bytes);
@@ -311,6 +342,8 @@ export function stripImageMetadata(bytes: Uint8Array): StrippedImage {
     parts.push(b.subarray(0, 2));
     let at = 2;
     let scanSeen = false;
+    let firstApp1: number | undefined;
+    let orientation: number | undefined;
     while (at < b.length) {
       const start = at;
       requireFormat(b[at++] === 0xff);
@@ -320,6 +353,8 @@ export function stripImageMetadata(bytes: Uint8Array): StrippedImage {
       if (marker === 0xd9) {
         requireFormat(scanSeen && at === b.length);
         parts.push(b.subarray(start, at));
+        if (firstApp1 !== undefined && orientation !== undefined && orientation > 1)
+          parts.splice(firstApp1, 0, orientationApp1(orientation));
         return { ok: true, bytes: Buffer.concat(parts) };
       }
       requireFormat(marker < 0xd0 || marker > 0xd7);
@@ -330,8 +365,13 @@ export function stripImageMetadata(bytes: Uint8Array): StrippedImage {
       requireFormat(at + 2 <= b.length);
       const length = b.readUInt16BE(at);
       requireFormat(length >= 2 && at + length <= b.length);
+      if (marker === 0xe1) {
+        firstApp1 ??= parts.length;
+        orientation ??= exifOrientation(b.subarray(at + 2, at + length));
+      }
       at += length;
-      if (marker !== 0xe1) parts.push(b.subarray(start, at));
+      const app = marker >= 0xe0 && marker <= 0xef;
+      if (marker !== 0xfe && (!app || marker === 0xe0 || marker === 0xe2 || marker === 0xee)) parts.push(b.subarray(start, at));
       if (marker === 0xda) {
         scanSeen = true;
         const scan = at;

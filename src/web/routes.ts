@@ -253,7 +253,7 @@ async function processMessage(c: Context, body: z.infer<typeof bodySchema>, file
         bytes: new Uint8Array(await file.arrayBuffer()),
         name: file.name,
         channel: 'web',
-        sourceKey: body.cid!,
+        sourceKey: `${s.id}:${body.cid!}`,
       });
       body.text = (intake.ok ? intake.value.attachment.cls : intake.cls) === 'image' ? '[图片]' : '[文件]';
       if (!intake.ok) {
