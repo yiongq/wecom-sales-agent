@@ -1,6 +1,7 @@
 # 08 · 核心去旅游化：产品种类、通用订单与金额
 
 Status: implemented
+Amended by: [11 · 外部业务系统连接器：Odoo 实时库存（只读）](../11-erp-connector/spec.md)（只做新增：`PackRuntime` 加可选声明 `erp`，`PackSources` 加 `erp`；见 11 R2）
 Superseded in part by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md) — R3「复用与作废」中「同一会话最多一张待付的通用单」及对应的复用、取代规则：带审批的报价单改按 09 R6，待审与已批准各至多一张；不带审批的通用单不变。
 Amended by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md)（只做新增或收紧，全文见该 spec 顶部 Amends：R3 的 createLineOrder 加 approval 选项；R8 放行集合第 (2) 项限于已批准或不需审批的订单；R12 的公开订单接口与支付入口对报价单返回 404，见 09 R1、R2、R4）。
 Amended by: [10 · 第二个行业包：工业品询价（与演示租户）](../10-industrial-rfq-pack/spec.md) — R2 的 `CatalogKindSpec` 加可选跨条目检查 `crossItemCheck`（10 R2）；R11 的 `SimGoal.initial.orders` 通用单夹具加可选审批数据，仅模拟目标、沿用模拟时钟（10 R15）；R13 在既有检查之外增加独立的 pre-10 检查，既有 pre-08 / pre-09 拒绝条件不变（10 R17）。

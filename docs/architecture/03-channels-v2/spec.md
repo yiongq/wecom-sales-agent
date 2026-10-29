@@ -1,6 +1,7 @@
 # 03 · 渠道层 v2
 
 Status: implemented
+Amended by: [11 · 外部业务系统连接器：Odoo 实时库存（只读）](../11-erp-connector/spec.md)（只做新增：R9 的密钥环兼管 ERP 连接器凭据，附加数据另起 `erp_connectors:v1` 一域，轮换多一步 `erp-connector rekey`；见 11 R3）
 Superseded in part by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md) — 开放问题 1 已定 A 中 guide.html 指向 chat.html 的一句（05 R23）。
 Amended by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md)（R20 公开路由按 Host 解析且 key 在租户内唯一，R22 脱敏正则新增 sbx-，见 05 R4、R10）。
 Phase: 3 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」（2026-10-09 重排之后的编号）
