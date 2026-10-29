@@ -275,7 +275,8 @@ async function processMessage(c: Context, body: z.infer<typeof bodySchema>, file
       return c.json({ reply: limitedReply(s, body.text, body.cid, at >= 0, prepared) });
     }
     // 开始前同步预留，挡并发超支；trace 在成功与异常出口都通知，只给真正调过模型的轮次计数。
-    if (!s.handedOver) {
+    const handedOverBefore = s.handedOver;
+    if (!handedOverBefore) {
       count.turns++;
       reservation = count;
     }
@@ -285,7 +286,8 @@ async function processMessage(c: Context, body: z.infer<typeof bodySchema>, file
       ...(body.cid ? { msgid: body.cid } : {}),
       ...(at >= 0 ? { alreadyRecorded: true } : {}),
     });
-    return c.json({ reply: s.handedOver || !reply.text ? null : webReply(reply.text, s) });
+    // 转人工之后的轮次回 null；这一轮刚转人工的那句（如图纸的固定句）照常给客户，与企微一致（12 R3）。
+    return c.json({ reply: handedOverBefore || !reply.text ? null : webReply(reply.text, s) });
   } catch (e) {
     if (e instanceof TenantScopeMissing) throw e;
     // 不序列化异常（上游异常可能含输入），客户端重试同 cid 可从已记录状态恢复。

@@ -95,6 +95,7 @@ let received = 0;
 let blocked: Promise<void> | undefined;
 let started: (() => void) | undefined;
 let invalidReply = false;
+let handoffReply = false;
 const runtime = withFixtureIntake(base, async (ctx, kit) => {
   received++;
   started?.();
@@ -123,7 +124,11 @@ const runtime = withFixtureIntake(base, async (ctx, kit) => {
     assert.deepEqual(result, { code: 'A1' });
   }
   kit.saveResult(result, 'int_123456789abc');
-  return { text: invalidReply ? '未登记的文字' : '附件已核验。', fixedId: 'fixture.intake' };
+  return {
+    text: invalidReply ? '未登记的文字' : '附件已核验。',
+    fixedId: 'fixture.intake',
+    ...(handoffReply ? { handoff: { reason: '附件已核验。' } } : {}),
+  };
 });
 bindPack(runtime, runtime.defaultBrand);
 const jpeg = Buffer.from('ffd8ffe10008457869664750ffda000273ffd9', 'hex');
@@ -370,6 +375,16 @@ try {
   await store.flushSession(b.s.id);
   assert.equal((await store.listAttachmentMetadata(b.s.id)).length, 4, '预算转人工也保留原件');
   console.log('PASS web attachments: 表格退还 dailyTurns、视觉保留预占、预算转人工保存附件');
+
+  // 12 R3：这一轮刚转人工（如图纸的固定句），那句照常回给客户；之后的轮次才回 null。
+  handoffReply = true;
+  const referred = await upload();
+  assert.equal((await json(referred)).reply?.text, '附件已核验。', '转人工那一轮的固定句照常回给网页客户');
+  const r = own(referred);
+  assert.equal(r.s.handedOver, true);
+  handoffReply = false;
+  assert.equal((await json(await upload(form(), { cookie: r.cookie }))).reply, null, '已转人工之后的轮次回 null');
+  console.log('PASS web attachments: 转人工那一轮回固定句、之后回 null');
 
   visitor.s.handedOver = true;
   const callsBeforeHuman = received;
