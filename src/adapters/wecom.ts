@@ -2391,7 +2391,6 @@ async function processAttachmentRow(
       prepared = result.value;
     }
     if (prepared.attachment.cls === 'image') armAttachmentWait(rt, cfg, sessionId, batch);
-    const moreQueued = queuedAttachment(rt, row);
     // 引擎串行链真正开始时才建新会话，避免空会话先被 microtask 写入。
     const reply = await handleMessage(sessionId, placeholderOf(msg.msgtype), 'wecom', {
       ...prepared,
@@ -2400,13 +2399,13 @@ async function processAttachmentRow(
       sentAt: msg.send_time * 1000,
       inboxId: row.id,
       alreadyRecorded,
-      moreQueued,
+      moreQueued: () => queuedAttachment(rt, row),
     });
     if (!reply.silent && reply.text.trim()) {
       await finishAttachmentBatch(rt, sessionId);
       await replyDb(rt, cfg, sessionId, { text: reply.text, stage: reply.stage, message: replyMessageOf(reply) ?? null }, gen, t0, row.id);
     } else {
-      if (!moreQueued || getSession(sessionId)?.handedOver) await finishAttachmentBatch(rt, sessionId);
+      if (!queuedAttachment(rt, row) || getSession(sessionId)?.handedOver) await finishAttachmentBatch(rt, sessionId);
       await finishInboxRow(sessionId, row.id, 'done');
     }
   } catch (err) {

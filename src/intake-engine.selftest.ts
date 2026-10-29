@@ -69,7 +69,11 @@ async function attachment(cls: AttachmentRef['cls'] = 'sheet', stored = true) {
   });
   store.saveSession(s);
   await store.flushSession(s.id);
-  return { s, ref, send: (moreQueued = false) => handleMessage(s.id, '投诉.xlsx', 'web', { attachment: ref, moreQueued }) };
+  return {
+    s,
+    ref,
+    send: (moreQueued: boolean | (() => boolean) = false) => handleMessage(s.id, '投诉.xlsx', 'web', { attachment: ref, moreQueued }),
+  };
 }
 const fixed = { text: '附件已核验。', fixedId: 'fixture.intake' };
 try {
@@ -90,6 +94,36 @@ try {
   assert.equal((await store.readAttachment(queued.ref.id))?.intakeId, 'int_123456789abc');
   assert.equal(modelCalls, 0);
   console.log('INTAKE PASS: 正常回复、null 保存状态与识别结果、占位无文件名、跳过 preModel/模型');
+
+  let moreQueued = false;
+  let reads = 0;
+  bind(
+    withFixtureIntake(base, async (ctx, kit) => {
+      assert.equal(reads, 0, '包读取前不求值');
+      assert.equal(ctx.moreQueued, false);
+      await kit.sheet();
+      moreQueued = true;
+      assert.equal(ctx.moreQueued, true, '识别期间入队的附件在读取时可见');
+      await Promise.resolve();
+      moreQueued = false;
+      assert.equal(ctx.moreQueued, false, '每次读取都取当前值');
+      moreQueued = true;
+      return ctx.moreQueued ? null : fixed;
+    }),
+  );
+  const dynamic = await attachment();
+  assert.equal(
+    (
+      await dynamic.send(() => {
+        reads++;
+        return moreQueued;
+      })
+    ).silent,
+    true,
+  );
+  assert.equal(reads, 4);
+  assert.equal(dynamic.s.messages.filter((m) => m.role === 'agent').length, 0);
+  console.log('INTAKE PASS: moreQueued 函数在包每次读取时求值，跨异步识别保持动态');
 
   for (const runtime of [
     base,

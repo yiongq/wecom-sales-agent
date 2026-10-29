@@ -22,6 +22,9 @@ export async function receiveAttachment(
   const results: { result: unknown; intakeId: string }[] = [];
   // 包只能把本轮的状态交回；超时后继续跑的脚本拿不到正在接待的会话对象。
   const session = structuredClone(ctx.session);
+  // 保留 moreQueued 的 getter；对象展开会在识别前把队列状态固化成快照。
+  const intakeContext = Object.defineProperties({} as typeof ctx, Object.getOwnPropertyDescriptors(ctx));
+  intakeContext.session = session;
   const bytes = async () => {
     signal.throwIfAborted();
     if (attachmentBytes !== undefined) return { ...ctx.attachment, bytes: attachmentBytes };
@@ -64,7 +67,7 @@ export async function receiveAttachment(
   try {
     signal.throwIfAborted();
     if (!runtime.intake?.classes.includes(ctx.attachment.cls)) throw new Error('intake_unsupported');
-    reply = await Promise.race([runtime.intake.receive({ ...ctx, session }, kit), cancelled]);
+    reply = await Promise.race([runtime.intake.receive(intakeContext, kit), cancelled]);
     if (limited) {
       reply = { text: INTAKE_LIMIT };
       coreReply = true;
