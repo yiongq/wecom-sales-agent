@@ -9,6 +9,7 @@ Revisions: 2026-10-29 第 0 步实测后就地修订，尚无代码依赖（结�
 Revisions: 2026-10-29 owner 改开放问题 2：等待句从「识别前先发」改为「一批图片 5 秒还没发出清单才发」（第 0 步实测识别 1.3–4.0 秒，每次都发会让客户几秒内连收两条，还多占一条窗口）。R2、R11、验收 4 随之修改，尚无代码依赖。
 Revisions: 2026-10-29 第 1、2 步实现时就地修订，尚无已上线的代码依赖：下载早判的上限按类别写定——图片 8 MB，ZIP 与文本 2 MB，图纸与 CFB 不设类别上限、读完为止（企微单文件至多 20 MB），这样大图纸照样转顾问、加密文件照样判 `locked_sheet`；超过 2 MB 的 ZIP 一律 `other`，早判与完整判类结论一致；超限当场中断的那份算不出 `sha256`，记 null。R1、R2、R4 随之修改。
 Revisions: 2026-10-29 第 4 步实现时就地修订，尚无已上线的代码依赖：`HandleOpts` 加只在内存里的 `attachmentBytes`（去过元数据的原件字节），由渠道下载后、或恢复路径从库里读出后交给引擎，`IntakeKit` 优先用它，这样刚收到、超出每日字节上限或进了 spill 的那份照常识别（附件行随会话排队，识别时还没落库）；`intake_unmatched` 的去重写定为「核心只做在途去重，同一 `intakeId` 只通知一次由包的状态保证」，与 `quote_*` 相同。R2、R5、R10 随之写明。
+Revisions: 2026-10-29 第 6 步实现时就地修订，尚无已上线的代码依赖：网页的「发文件」按钮与上传接口只对声明了 `intake` 的包开放；没声明的包（旅游）页面与改动前逐项相同，上传接口在读请求体之前回 404。R3 随之写明（R15「没声明的包不变」的网页一侧）。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8「按信号再定」；[10](../10-industrial-rfq-pack/spec.md)「后续」第 2 条。
 Depends on: [10 · 工业品询价包](../10-industrial-rfq-pack/spec.md) 已 implemented（`demo-v10`）；10 第 21 步（工业预取）已合入 `dev`，还没有随 tag 上线，12 的第一个 rc 一并带上。
 Supersedes in part: [10](../10-industrial-rfq-pack/spec.md) 的四处，理由都是「客户发来的附件要变成可确认的清单」。（1）R16 修订里工业包的 `non-text.image` / `non-text.file` / `non-text.video` 三句提示：图片、表格改由识别流程接管，视频改为转顾问（R1）。（2）R11：「确认下单」的候选判定，有更新的待确认清单时不接受更早的报价（R9）。（3）R7：`packState` 上限从 8,192 字节放宽到 10,240 字节，必留摘要加 `rfqIntake`、`resetKeys` 加 `rfqIntake`（R8）。（4）不变量 5：只约束经模型回复管线的回复；确定性的识别清单至多 30 行，另由本 spec 不变量 8 约束。10 在本 spec 翻 `ready` 时加反向的 `Superseded in part by:` 行。
@@ -122,7 +123,7 @@ Amends: 只新增，原有成员与行为不变。[04](../04-industry-packs/spec
 - 限流：沿用每 IP 每分钟消息数；另加每 IP 每分钟 5 个附件（`WEB_UPLOAD_PER_MIN`）。
 - 回复：与普通消息相同（同步返回加 SSE）。同一会话处理中照旧回 409；`cid` 重试取回同一回复，同时是附件的唯一键（R4）。
 - 页面：
-  - 输入框旁加「发文件」按钮，`accept` 为 `image/jpeg,image/png,.xlsx,.csv,.xls,.pdf`，服务端仍按内容判类；
+  - 只对声明了 `intake` 的包：输入框旁加「发文件」按钮（次要样式，「发送」仍是唯一的主按钮），`accept` 为 `image/jpeg,image/png,.xlsx,.csv,.xls,.pdf`，服务端仍按内容判类；没声明的包页面与改动前逐项相同，上传接口在读请求体之前回 404；
   - 上传中显示「正在上传…」并禁用按钮；
   - 失败时显示「没发出去，请重试」，按状态码区分「文件太大（图片最大 8 MB，表格最大 2 MB）」与「太频繁，稍后再试」；
   - 客户气泡只显示占位文字，不做本地预览，不改页面 CSP 的 `img-src`；
