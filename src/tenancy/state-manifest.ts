@@ -194,6 +194,7 @@ export const STATE_MANIFEST: Record<
   'src/db/repo/quick-replies.ts:columns': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/db/repo/quick-replies.ts:live': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/db/repo/sop.ts:columns': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
+  'src/db/schema.ts:attachments': { kind: 'instance', why: '静态附件表定义，不保存行或租户快照。' },
   'src/db/schema.ts:auditLog': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/db/schema.ts:authSessions': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/db/schema.ts:bytea': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },

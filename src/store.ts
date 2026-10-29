@@ -29,6 +29,16 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { EventEmitter } from 'node:events';
 import { configMode, configRuntime, tenantLockTaken } from './config/source.js';
 import { withTenant, type Db, type Tx } from './db/client.js';
+import {
+  readAttachment as readAttachmentRow,
+  listAttachmentMetadata as listAttachmentRows,
+  readAttachmentUsage as readAttachmentUsageRows,
+  type AttachmentItem,
+  type AttachmentMetadata,
+  type AttachmentRow,
+  type AttachmentUsage,
+  type AttachmentResultWrite,
+} from './db/repo/attachments.js';
 import type { InboxStateWrite } from './db/repo/channel-inbox.js';
 import { writeAuditAs, type AuditEntry } from './db/repo/audit.js';
 import { numEnv } from './env.js';
@@ -646,6 +656,34 @@ export function markOutboundFailedInDb(
   return state.pgBackend
     ? state.pgBackend.markOutboundFailed(channelMsgid, failType, inboxId, full)
     : Promise.resolve({ ok: true, sessionId: null });
+}
+
+// 12 R4：附件与识别结果排进会话下一次保存；不另开写事务。
+export function queueAttachment(sessionId: string, item: AttachmentItem): boolean {
+  const state = storeState();
+  return (state.pgBackend && !isDemoClassId(sessionId) ? state.pgBackend : fileBackendOf(state)).queueAttachment(sessionId, item);
+}
+export function queueAttachmentResult(sessionId: string, write: AttachmentResultWrite): boolean {
+  const state = storeState();
+  return (state.pgBackend && !isDemoClassId(sessionId) ? state.pgBackend : fileBackendOf(state)).queueAttachmentResult(sessionId, write);
+}
+/** 原件读取仅供后续后台鉴权路由使用；默认只返回元数据。 */
+export async function readAttachment(id: string, withBytes = false): Promise<AttachmentRow | AttachmentMetadata | null> {
+  const state = storeState();
+  if (!state.pgBackend) return fileBackendOf(state).readAttachment(id, withBytes);
+  const row = await state.pgBackend.jobsTx<AttachmentRow | AttachmentMetadata | null>((tx) =>
+    withBytes ? readAttachmentRow(tx, id, true) : readAttachmentRow(tx, id),
+  );
+  return row ?? state.fileBackend?.readAttachment(id, withBytes) ?? null;
+}
+export async function listAttachmentMetadata(sessionId: string): Promise<AttachmentMetadata[]> {
+  const state = storeState();
+  const pg = state.pgBackend && !isDemoClassId(sessionId) ? state.pgBackend : null;
+  return pg ? pg.jobsTx((tx) => listAttachmentRows(tx, sessionId)) : fileBackendOf(state).listAttachmentMetadata(sessionId);
+}
+export async function readAttachmentUsage(now = new Date()): Promise<AttachmentUsage> {
+  const state = storeState();
+  return state.pgBackend ? state.pgBackend.jobsTx((tx) => readAttachmentUsageRows(tx, now)) : fileBackendOf(state).readAttachmentUsage(now);
 }
 
 // ---------------- 03 入站：channel_inbox 的状态变化（src/channels/inbox.ts 与企微适配器、引擎） ----------------

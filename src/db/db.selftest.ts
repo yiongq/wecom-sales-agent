@@ -151,9 +151,10 @@ const CHANNEL_ACCOUNT_UPDATABLE = [
   'settings',
   'updated_at',
 ];
-/** 02 的清除与删除函数（03 加 purge_channel_inbox）各自只授权给谁 */
+/** 02 的清除与删除函数（03 加入站清理，12 加附件清理）各自只授权给谁 */
 const PURGE_FNS: Record<string, 'agent_app' | 'agent_platform'> = {
   erase_conversation: 'agent_platform',
+  purge_attachment_bytes: 'agent_app',
   purge_channel_inbox: 'agent_app',
   purge_conversation: 'agent_app',
   purge_expired_traces: 'agent_app',
@@ -181,9 +182,10 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
   const names = tables.map((r) => r.relname).join(',');
   // 07 R12：kb_chunks 两边都有；kb_vectors 要 vector 扩展，只在装了扩展的真实 PG 上建，PGlite 上没有（迁移 0016 的 DO 块）
   check(
-    `${label}迁移：01 的七张表加 02 的十二张、03 的两张、05 的四张、07 的${vector ? '两张（kb_chunks、kb_vectors）' : '一张（kb_chunks；PGlite 没有 vector 扩展，没有 kb_vectors）'}`,
+    `${label}迁移：01 的七张表加 02 的十二张、03 的两张、05 的四张、07 的${vector ? '两张（kb_chunks、kb_vectors）' : '一张（kb_chunks；PGlite 没有 vector 扩展，没有 kb_vectors）'}，以及 12 的 attachments`,
     names ===
       [
+        'attachments',
         'audit_log',
         'auth_sessions',
         'catalog_item_versions',
@@ -288,7 +290,7 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
       order by 1`,
   );
   check(
-    `${label}授权：列级授权仅为 tenants 保留期/品牌/Host/预算 UPDATE、channel_accounts 九列 UPDATE 与 guard_verdicts SELECT/INSERT`,
+    `${label}授权：列级授权仅为 tenants 保留期/品牌/Host/预算 UPDATE、channel_accounts 九列 UPDATE、附件结果两列 UPDATE 与 guard_verdicts SELECT/INSERT`,
     colAcl
       .map((r) => r.acl)
       .toSorted()
@@ -298,6 +300,8 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
           (c) => `tenants.${c} agent_platform UPDATE`,
         ),
         ...CHANNEL_ACCOUNT_UPDATABLE.map((c) => `channel_accounts.${c} agent_app UPDATE`),
+        'attachments.intake_id agent_app UPDATE',
+        'attachments.result agent_app UPDATE',
         'turn_traces.guard_verdicts agent_app INSERT',
         'turn_traces.guard_verdicts agent_app SELECT',
       ]
@@ -329,7 +333,7 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
   check(`${label}认证函数：五个`, auth.length === 5, auth.map((f) => f.proname).join(','));
   const purge = fns.filter((f) => Object.hasOwn(PURGE_FNS, f.proname)).map((f) => f.proname);
   check(
-    `${label}清除与删除函数：五个（02 的四个加 03 的 purge_channel_inbox）`,
+    `${label}清除与删除函数：六个（02 的四个、03 的入站清理、12 的附件清理）`,
     purge.toSorted().join(',') === Object.keys(PURGE_FNS).toSorted().join(','),
     purge.join(','),
   );
@@ -880,9 +884,10 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
     orders: 1,
     jobs: 3,
     inbox: 2,
+    attachments: 0,
   };
   check(
-    `${L}删除：保留期内的会话也删，返回各类条数（03 加 inbox）`,
+    `${L}删除：保留期内的会话也删，返回各类条数（03 加 inbox，12 加 attachments）`,
     JSON.stringify(counts) === JSON.stringify(wantCounts),
     JSON.stringify(counts),
   );
@@ -4852,6 +4857,7 @@ async function realPostgres(superUrl: string): Promise<void> {
       catalog_items: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       audit_log: { agent_app: 'SELECT,INSERT', agent_platform: 'SELECT,INSERT' },
       // 02 spec「数据库」的授权表：没有任何角色对新表有 DELETE 或 TRUNCATE
+      attachments: { agent_app: 'SELECT,INSERT', agent_platform: '' },
       conversations: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       orders: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       messages: { agent_app: 'SELECT,INSERT', agent_platform: '' },

@@ -13,6 +13,7 @@
 // 真的来一笔新写的极窄窗口会被墓碑悄悄吞掉并记一行日志，这是 spec 墓碑设计认可的结果，见「实施记录 · 第 16 步」）。
 // 最后 purge_expired_traces、purge_finished_jobs、purge_channel_inbox（03 R2：入站行的 7 天），写一行 system.purge 审计（diff 只有各类条数）。不属于某个会话的候选分页、
 // trace／任务清理与审计都走 withJobsTx（与会话写队列无关的独立短事务）。
+import { purgeAttachmentBytes } from '../db/repo/attachments.js';
 import { writeAudit } from '../db/repo/audit.js';
 import type { JobRow } from '../db/repo/jobs.js';
 import {
@@ -104,6 +105,7 @@ export interface PurgeResult {
   preFiltered: number;
   /** 03：purge_channel_inbox 删掉的与记成 abandoned 的入站行之和 */
   inbox?: number;
+  attachments?: number;
 }
 
 /** 执行一次清理：候选分页、逐个清理、trace 与任务清理、写审计。供执行体与自测共用 */
@@ -165,14 +167,15 @@ export async function purgeOnce(now: number): Promise<PurgeResult> {
     }
     if (page.length < PAGE) break;
   }
+  const attachments = await withJobsTx((tx) => purgeAttachmentBytes(tx, new Date(now)));
   const traces = await withJobsTx((tx) => purgeExpiredTraces(tx, new Date(now)));
   const jobsDeleted = await withJobsTx((tx) => purgeFinishedJobs(tx, new Date(now)));
   const inbox = await withJobsTx((tx) => purgeChannelInbox(tx, new Date(now)));
   // writeAudit 取事务里的 ctx.actor（withJobsTx 内部的 systemCtx：kind='system'、name=null）
   await withJobsTx((tx) =>
-    writeAudit(tx, { action: 'system.purge', diff: { conversations: conversationsPurged, traces, jobs: jobsDeleted, inbox } }),
+    writeAudit(tx, { action: 'system.purge', diff: { conversations: conversationsPurged, traces, jobs: jobsDeleted, inbox, attachments } }),
   );
-  return { conversations: conversationsPurged, traces, jobs: jobsDeleted, skipped, preFiltered, inbox };
+  return { conversations: conversationsPurged, traces, jobs: jobsDeleted, skipped, preFiltered, inbox, attachments };
 }
 
 /**
