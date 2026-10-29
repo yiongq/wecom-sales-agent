@@ -166,9 +166,22 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
     await buildIndex();
     for (let i = 0; i < c.turns.length; i++) {
       const t = c.turns[i];
-      fake.begin(i + 1, t.script);
+      fake.begin(i + 1, t.script, t.vision);
       observation.finished = undefined;
-      const reply = await handleMessage(sid, t.say, 'simulator');
+      let reply: Awaited<ReturnType<typeof handleMessage>>;
+      if (t.attach) {
+        // 12 R13：附件轮走与渠道同一个入口（prepareAttachment），再由引擎收下；客户消息只有占位，没有文字
+        const { prepareFixture } = await import('../sim/attachment-fixtures.js');
+        const prepared = await prepareFixture(t.attach.file, `v2-${c.id}-${i + 1}`, t.attach.name);
+        // 没写 vision 的图片轮：LLM_MOCK=1 只覆盖这一轮，视觉走包给的缺省 mock（本轮不会调主对话，用不到别的）
+        const mock = prepared.cls === 'image' && t.vision === undefined;
+        process.env.LLM_MOCK = mock ? '1' : '0';
+        try {
+          reply = await handleMessage(sid, prepared.text, 'simulator', prepared.opts);
+        } finally {
+          process.env.LLM_MOCK = '0';
+        }
+      } else reply = await handleMessage(sid, t.say!, 'simulator');
       const finished = observedTurn();
       fake.finish();
       if (!finished) throw new Error(`第${i + 1}轮缺少 onTurnEnd 观测`);

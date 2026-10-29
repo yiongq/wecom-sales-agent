@@ -54,6 +54,17 @@ export const predicateSchema = z.discriminatedUnion('kind', [
   // 同一类句子（pattern 命中的句子）不在两条回复里出现；客户那一轮的话命中 unlessCustomer（客户再问）则不计
   z.object({ kind: z.literal('no_repeat'), pattern: regex, unlessCustomer: regex.optional() }).strict(),
 ]);
+// 12 R13：客户脚本的一轮可以是附件。attach 是 eval/fixtures/attachments/ 下的样本文件名（不带路径）；
+// 写了 say 就先说这句、再发文件（两条消息，与真实渠道一样），没写只发文件。
+const scriptedTurn = z.union([
+  z.string().min(1),
+  z
+    .object({
+      say: z.string().min(1).optional(),
+      attach: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, '只能是 eval/fixtures/attachments/ 下的文件名'),
+    })
+    .strict(),
+]);
 const stage = z.enum(['greeting', 'discovery', 'recommend', 'quote', 'objection', 'closing', 'paid', 'handoff']);
 const history = z.array(z.object({ role: z.enum(['customer', 'ai']), content: z.string().min(1) }).strict());
 const initialSchema = z
@@ -86,7 +97,7 @@ const goalShape = {
   severity: z.enum(['safety', 'quality']).optional(), // 缺省 quality
   tags: z.array(z.string().min(1)).optional(),
   covers: z.array(z.string().min(1)).optional(), // 问题表里的 ID
-  customerScript: z.array(z.string().min(1)).optional(), // 前几轮客户原话固定，之后交给客户模型
+  customerScript: z.array(scriptedTurn).optional(), // 前几轮客户原话（或附件）固定，之后交给客户模型
 };
 export const goalSchema = z
   .object({

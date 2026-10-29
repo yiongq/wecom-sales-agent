@@ -1,0 +1,57 @@
+{
+  "id": "industrial-attach-sheet-confirm",
+  "pack": "industrial",
+  "persona": "客户发来一份合成的表格询价单，核对清单后回复确认。只做脚本里的事，不增加其他采购需求；得到报价后结束。",
+  "maxTurns": 2,
+  "tags": ["regression", "acceptance-12"],
+  "severity": "safety",
+  "customerScript": [{ "attach": "rfq-small.xlsx" }, "确认"],
+  "allowedTools": ["find_parts", "quote_items"],
+  "forbidden": [],
+  "predicates": [
+    {
+      "kind": "tool_called",
+      "name": "quote_items",
+      "min": 1
+    },
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "shape",
+      "richMax": 12,
+      "plainMax": 12,
+      "minShare": 1
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "认出 3 行",
+      "scope": "any"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "单价\\s*[:：为是]?\\s*8(?:\\.0{1,2})?\\s*元",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "(?:金额|小计|合计|总(?:额|价|计)|共)\\s*[:：为是]?\\s*800(?:\\.0{1,2})?\\s*元",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "顾问|核对",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "ZZ9999[^。！？\\n]*?\\d+(?:\\.\\d+)?\\s*元",
+      "scope": "all"
+    }
+  ]
+}
