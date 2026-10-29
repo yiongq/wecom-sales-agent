@@ -284,7 +284,7 @@ async function maybeAskConsent(sessionId: string, text: string, stillCurrent?: (
  * 同意菜单在同一段串行链里、这一轮的回复之后处理（R23）：失败只打日志，不影响这一轮已经算出的回复
  */
 export function handleMessage(sessionId: string, text: string, channel: string, opts: HandleOpts = {}): Promise<AgentReply> {
-  if (opts.attachment) text = opts.attachment.cls === 'image' ? '[图片]' : '[文件]';
+  if (opts.attachment) text = opts.attachment.cls === 'image' ? '[图片]' : opts.attachment.cls === 'video' ? '[视频]' : '[文件]';
   const rt = currentRuntime();
   const receivedAt = Date.now();
   const work = () =>

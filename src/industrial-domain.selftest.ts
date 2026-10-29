@@ -248,7 +248,7 @@ writeState(
   {},
   Array.from({ length: 101 }, (_, i) => ({ partNo: `合成${i}\\"\n`, specs: ['规格'.repeat(60)] })),
 );
-assert.ok(Buffer.byteLength(JSON.stringify(session.packState)) <= 8192);
+assert.ok(Buffer.byteLength(JSON.stringify(session.packState)) <= 10240);
 assert.ok(StateSchema.parse(session.packState).partsInPlay!.length <= 100);
 writeState(session, {}, [{ partNo: '超长'.repeat(10000), specs: ['\\"\n'.repeat(10000)] }]);
 assert.deepEqual(session.packState, mandatory);

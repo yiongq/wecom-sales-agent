@@ -1,6 +1,7 @@
 # 04 · 行业包抽取
 
 Status: implemented
+Amended by: [11 · 外部业务系统连接器：Odoo 实时库存（只读）](../11-erp-connector/spec.md)（只做新增：`PackRuntime` 加可选声明 `erp`，`PackSources` 加 `erp`；见 11 R2）
 Amended by: [12 · 客户发来的图片与文件：询价单识别与确认](../12-customer-files/spec.md)（只做新增：`PackRuntime` 加可选能力 `intake`，`PrefetchResult` 加可选 `effects`；全文见该 spec 顶部 `Amends:`）
 Superseded in part by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md) — R16 假包的能力范围（第 76 行；升级为证明包，08 R14）；「`PackRuntime`」一节 `extractProfile` 注释里的「字段仍是现有 8 个」（第 116 行；画像加 `attrs`，08 R4）。按 08 的 plan 落地。
 Amended by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md)（只做新增或收紧，全文见该 spec 顶部 `Amends:`：R2 的 `check-boundaries` 加两条规则（第 62 行，08 R5）；R10、R11 与「评测」的 `CaseV2`、`SimGoal` 加可选的 `pack`，非旅游包的订单夹具用通用单（第 70、71、201、235 行，08 R11）；R12 的 `MoneyParseOptions` 加可选的 `decimals`（第 72 行，08 R6）；R14 的回滚检查加 pre-08 与退出码 9（第 74 行，08 R13）；「配置导出与文件模式」的配置目录加 `pack.json` 与 `catalog/*.json`（第 193 行，08 R11））。

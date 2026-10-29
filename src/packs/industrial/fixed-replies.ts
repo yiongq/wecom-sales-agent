@@ -2,6 +2,7 @@ import { renderBrandTemplate, FIXED_REPLY_MODES, type FixedReply, type Consisten
 import { templates } from './sop.js';
 import { followupTemplates } from './auxiliary.js';
 import { defaultIndustrialPolicy, taxInvoiceText } from './policy.js';
+import { INTAKE_FIXED, renderIntake } from './intake.js';
 import { FIXED } from './turn.js';
 import { INVENTORY_FALLBACK, SUBSTITUTE_FALLBACK, TRIM_FALLBACK, trimNote } from './guards.js';
 const nonTextHints: Record<string, string> = {
@@ -14,6 +15,26 @@ const nonTextHints: Record<string, string> = {
   other: '这条消息我暂时处理不了，请把型号和数量打字发来，我帮您查询。',
 };
 export const fixedReplies: readonly FixedReply[] = [
+  ...Object.entries(INTAKE_FIXED).map(([key, text]): FixedReply => ({
+    id: `industrial.intake.${key}`,
+    source: 'src/packs/industrial/intake.ts',
+    kind: 'plain',
+    producedBy: { outside: '附件识别的确定性出口，核心校验全文及副作用' },
+    samples: () => FIXED_REPLY_MODES.map((mode) => ({ mode, text })),
+  })),
+  {
+    id: 'industrial.intake.list',
+    source: 'src/packs/industrial/intake.ts',
+    kind: 'plain',
+    producedBy: { outside: '附件识别清单由代码整段渲染，不经模型回复管线' },
+    pattern:
+      /^从您发来的询价单里认出 (?:[1-9]|[12]\d|30) 行，请核对：\n(?:(?:[1-9]|[12]\d|30)\. [A-Za-z0-9 ×_/-]{1,32}，(?:[1-9]\d{0,6}件|数量没认出)，(?:已匹配|库里没找到，顾问会核对|待确认：数量没认出，请补数量|待确认：库里有 [A-Za-z0-9 ×_/-]{1,32}(?:、[A-Za-z0-9 ×_/-]{1,32}){0,2}，回「第(?:[1-9]|[12]\d|30)行 [A-Za-z0-9 ×_/-]{1,32}」选一个)\n){1,30}回「确认」我按已匹配的行算价；要改哪行，回「第几行 型号 数量」；不要哪行，回「删第几行」。$/,
+    samples: () =>
+      FIXED_REPLY_MODES.map((mode) => ({
+        mode,
+        text: renderIntake({ id: 'int_000000000000', at: 0, status: 'pending', lines: [{ q: '6205-2RS', qty: 100, m: 'exact' }] }, []),
+      })),
+  },
   ...Object.entries(nonTextHints).map(([type, text]): FixedReply => ({
     id: `non-text.${type}`,
     source: 'src/packs/industrial/fixed-replies.ts',
