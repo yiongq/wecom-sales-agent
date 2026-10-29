@@ -1,0 +1,8 @@
+# 样本按字节比较：CSV 故意是 GB18030 且用 CRLF，不能被换行转换或当文本比对
+*.png binary
+*.jpg binary
+*.pdf binary
+*.xls binary
+*.xlsx binary
+*.xlsm binary
+*.csv binary

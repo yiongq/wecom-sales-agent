@@ -124,7 +124,19 @@ try {
       assert.notEqual(endAt, -1, `${page} R12 display 分支终点必须存在`);
       baselineHtml = baselineHtml.slice(0, startAt) + baselineHtml.slice(endAt + end.length);
     }
-    assert.equal(sha256(baselineHtml), hash, `${page} 除授权页脚、R20 退款分支与 R12 display 分支外必须与开工时逐字节相同`);
+    if (page === 'web') {
+      // 12 R3 给网页加「发文件」：默认 hidden + disabled，只有声明了 intake 的包由脚本打开；只剔除这两行，其余字节继续锁住。
+      const fileControls =
+        '        <input id="fileInput" type="file" accept="image/jpeg,image/png,.xlsx,.csv,.xls,.pdf" hidden disabled>\n' +
+        '        <button id="fileBtn" type="button" hidden disabled>发文件</button>\n';
+      assert.ok(baselineHtml.includes(fileControls), '12 R3 只允许这两行发文件控件');
+      baselineHtml = baselineHtml.replace(fileControls, '');
+    }
+    assert.equal(
+      sha256(baselineHtml),
+      hash,
+      `${page} 除授权页脚、R20 退款分支、R12 display 分支与 12 R3 发文件控件外必须与开工时逐字节相同`,
+    );
     assert.equal(renderBrandPage(html, name, runtime, null), html);
     const next = renderBrandPage(html, name, runtime, shanhaiBrand);
     // 检查全部客户文案（含 JS 中的动态文案）；技术注释不属于客户文案，支付产品名保留。

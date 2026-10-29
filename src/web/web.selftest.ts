@@ -1276,6 +1276,9 @@ assert.ok(scripts.every((s) => /type="application\/json"/.test(s[1]!) || (/src="
 assert.match(webHtml, /<link rel="stylesheet" href="\/web.css">/);
 assert.match(webCss, /white-space: pre-wrap/);
 assert.match(webCss, /prefers-reduced-motion/);
+assert.match(webHtml, /id="fileBtn" type="button" hidden disabled>发文件<\/button>/);
+assert.match(webHtml, /id="fileInput" type="file" accept="image\/jpeg,image\/png,\.xlsx,\.csv,\.xls,\.pdf" hidden/);
+assert.ok(!/createObjectURL|FileReader|data:image/.test(webJs), '无本地预览');
 
 const pageAccount: Account = { ...primary, key: 'web-page', web: { ...primary.web!, title: '</script><img src=x onerror=alert(1)>$&' } };
 const previousBase = process.env.PUBLIC_BASE_URL;
@@ -1303,7 +1306,53 @@ try {
     privacyLink: string | null;
     caps: import('../core/pack-api.js').ChannelCaps;
     welcomeParts: MessagePart[];
+    attachments: boolean;
   };
+  assert.equal(config.attachments, false, '旅游包未声明 intake');
+  assert.match(rendered, /id="fileBtn" type="button" hidden disabled>/, '旅游没有可见或可聚焦的附件按钮');
+  assert.match(rendered, /id="fileInput"[^>]* hidden disabled>/, '旅游文件输入框隐藏且禁用');
+  assert.doesNotMatch(rendered, /has-file|cols="1"/);
+  let bodyRead = false;
+  const deniedBody = new ReadableStream<Uint8Array>(
+    {
+      pull() {
+        bodyRead = true;
+        throw new Error('无 intake 不应读请求体');
+      },
+    },
+    { highWaterMark: 0 },
+  );
+  const deniedUpload = await app.request(
+    new Request('http://localhost/api/web/web-page/attachments', {
+      method: 'POST',
+      headers: { 'x-web-chat': '1', 'content-type': 'multipart/form-data; boundary=test', 'content-length': '99999999' },
+      body: deniedBody,
+      duplex: 'half',
+    } as RequestInit),
+  );
+  assert.equal(deniedUpload.status, 404);
+  assert.equal(deniedUpload.headers.get('cache-control'), 'no-store');
+  assert.equal(deniedUpload.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(bodyRead, false, '能力检查早于 body 读取与大小检查');
+  await deniedBody.cancel();
+  const travelBinding = currentPack();
+  const { bindPack } = await withoutTenantScope(() => import('../core/pack-api.js'));
+  const { createFixtureRuntime } = await withoutTenantScope(() => import('../packs/__fixture/runtime.js'));
+  const { withFixtureIntake } = await withoutTenantScope(() => import('../packs/__fixture/intake.js'));
+  try {
+    const proof = withFixtureIntake(createFixtureRuntime());
+    bindPack(proof, proof.defaultBrand);
+    const proofPage = await app.request('/w/web-page');
+    assert.equal(proofPage.status, 200);
+    const proofHtml = await proofPage.text();
+    assert.equal(JSON.parse(/id="web-config">([\s\S]*?)<\/script>/.exec(proofHtml)![1]!).attachments, true);
+    assert.match(proofHtml, /class="inputbar has-file"/);
+    assert.match(proofHtml, /id="fileBtn" type="button">发文件<\/button>/);
+    assert.match(proofHtml, /id="fileInput" type="file"/);
+  } finally {
+    bindPack(travelBinding.runtime, travelBinding.brand);
+  }
+  console.log('PASS web 页面附件能力：旅游无按钮/配置 false/上传读 body 前 404；证明包配置 true/显示按钮');
   assert.equal(config.key, pageAccount.key);
   assert.equal(config.title, pageAccount.web!.title, '恶意标题与 $& 原样往返，不执行 HTML 或 replace 的替换元字符');
   assert.deepEqual(config.caps, { markdown: false });
@@ -1351,6 +1400,10 @@ class PageNode {
   hidden = false;
   disabled = false;
   value = '';
+  files: File[] = [];
+  click(): void {
+    void this.emit('click');
+  }
   href = '';
   target = '';
   rel = '';
@@ -1393,11 +1446,32 @@ class PageNode {
     for (const fn of this.listeners.get(name) ?? []) await fn(event);
   }
 }
-function pageFixture(history: { role: string; text: string; at: number; parts?: MessagePart[] }[] = []) {
+function pageFixture(history: { role: string; text: string; at: number; parts?: MessagePart[] }[] = [], attachments = false) {
   const nodes = new Map<string, PageNode>();
-  for (const id of ['web-config', 'title', 'msgs', 'input', 'sendBtn', 'endBtn', 'retryBtn', 'chips', 'notice', 'privacy', 'composer'])
+  for (const id of [
+    'web-config',
+    'title',
+    'msgs',
+    'input',
+    'sendBtn',
+    'fileBtn',
+    'fileInput',
+    'endBtn',
+    'retryBtn',
+    'chips',
+    'notice',
+    'privacy',
+    'composer',
+  ])
     nodes.set(id, new PageNode('div'));
+  if (!attachments) {
+    for (const id of ['fileBtn', 'fileInput']) {
+      nodes.get(id)!.hidden = true;
+      nodes.get(id)!.disabled = true;
+    }
+  }
   nodes.get('web-config')!.textContent = JSON.stringify({
+    attachments,
     key: 'web-page',
     title: '<img src=x onerror=alert(1)>',
     welcome: '我是 AI 顾问。可转真人。',
@@ -1437,6 +1511,7 @@ function pageFixture(history: { role: string; text: string; at: number; parts?: 
     URL,
     Date,
     AbortSignal,
+    FormData,
     crypto: { randomUUID },
     EventSource: FakeSource,
     fetch: async (url: string, init?: RequestInit) => {
@@ -1463,6 +1538,10 @@ assert.equal(ui.nodes.get('title')!.textContent, ui.document.title);
 assert.ok(ui.nodes.get('msgs')!.textContent.includes('我是 AI 顾问'));
 assert.equal(ui.nodes.get('privacy')!.href, '/privacy');
 assert.equal(ui.sources.length, 0, '无会话时不反复连接未授权 SSE');
+assert.equal(ui.nodes.get('fileBtn')!.hidden, true);
+assert.equal(ui.nodes.get('fileBtn')!.disabled, true);
+assert.equal(ui.nodes.get('fileInput')!.hidden, true);
+assert.equal(ui.nodes.get('fileInput')!.disabled, true);
 ui.nodes.get('input')!.value = '<img src=x onerror=alert(1)> https://evil.test/pay/id /pay/customer_link';
 ui.results.push(new Error('断网'));
 await ui.nodes.get('composer')!.emit('submit', { preventDefault() {} });
@@ -1572,3 +1651,46 @@ assert.deepEqual(
 );
 await refreshed.win.emit('pagehide');
 console.log('PASS web 页面：textContent、欢迎语、历史恢复、发消息/cid 重试、SSE 人工/同意菜单、退避、结束与关闭清理');
+
+// 上传也执行真实脚本：上传态、状态码文案、同一 File/cid 重试、占位而非预览。
+for (const status of [413, 429, 409, 503, 0]) {
+  const uploadUi = pageFixture([], true);
+  await settle();
+  const file = new File(['synthetic'], status ? '投诉.png' : '投诉.csv', { type: status ? 'image/png' : 'text/csv' });
+  uploadUi.nodes.get('fileInput')!.files = [file];
+  uploadUi.results.push(status ? new Response('{}', { status }) : new Error('断网'));
+  const changing = uploadUi.nodes.get('fileInput')!.emit('change');
+  assert.equal(uploadUi.nodes.get('fileBtn')!.disabled, true);
+  assert.equal(uploadUi.nodes.get('fileBtn')!.textContent, '正在上传…');
+  assert.ok(
+    uploadUi.nodes
+      .get('msgs')!
+      .querySelectorAll('div')
+      .some((n) => n.className.includes('typing')),
+  );
+  await changing;
+  await settle();
+  assert.match(uploadUi.nodes.get('notice')!.textContent, /没发出去，请重试/);
+  if (status === 413) assert.match(uploadUi.nodes.get('notice')!.textContent, /文件太大（图片最大 8 MB，表格最大 2 MB）/);
+  if (status === 429) assert.match(uploadUi.nodes.get('notice')!.textContent, /太频繁，稍后再试/);
+  const sentUpload = uploadUi.requests[1]!;
+  assert.equal(sentUpload.url, '/api/web/web-page/attachments');
+  assert.ok(sentUpload.init!.body instanceof FormData);
+  const sentForm = sentUpload.init!.body;
+  assert.equal(sentForm.get('file'), file);
+  assert.equal((sentUpload.init!.headers as Record<string, string>)['Content-Type'], undefined);
+  assert.equal((sentUpload.init!.headers as Record<string, string>)['x-web-chat'], '1');
+  uploadUi.results.push(Response.json({ reply: { text: '附件已核验。', parts: [] } }));
+  await uploadUi.nodes.get('retryBtn')!.emit('click');
+  await settle();
+  const retriedForm = uploadUi.requests[2]!.init!.body as FormData;
+  assert.equal(retriedForm.get('cid'), sentForm.get('cid'));
+  assert.equal(retriedForm.get('file'), file);
+  assert.equal(uploadUi.nodes.get('msgs')!.textContent.split(status ? '[图片]' : '[文件]').length, 2);
+  assert.ok(!uploadUi.nodes.get('msgs')!.textContent.includes(file.name));
+  assert.equal(uploadUi.nodes.get('msgs')!.querySelectorAll('img').length, 0);
+  assert.equal(uploadUi.nodes.get('fileBtn')!.disabled, false);
+  assert.equal(uploadUi.nodes.get('fileBtn')!.textContent, '发文件');
+  await uploadUi.win.emit('pagehide');
+}
+console.log('PASS web 页面附件：按钮/accept、上传态、413/429/409/503 提示、同 cid/File 重试、无预览占位、原 CSP');

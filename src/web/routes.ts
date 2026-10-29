@@ -3,6 +3,8 @@ import { registerTenantState } from '../tenancy/state.js';
 import { publicHostMiddleware } from '../tenancy/hosts.js';
 import { TenantScopeMissing } from '../tenancy/runtime.js';
 import { withoutTenantScope, tenantCallback, currentRuntime } from '../tenancy/runtime.js';
+import { readWebUpload } from './upload.js';
+import { prepareAttachment, type PreparedAttachment } from '../core/attachment-intake.js';
 import { currentPack } from '../config/source.js';
 import { brandTexts, renderBrandPage } from '../core/brand.js';
 // 03 R14：正式网页渠道。每次读写的会话都只由账号与 HttpOnly cookie 推导。
@@ -25,7 +27,7 @@ import { profile } from '../profile.js';
 import type { WebMessage } from '../shared/channel-types.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
 import { CONSOLE_SECURITY_HEADERS } from '../shared/security-headers.js';
-import { getOrCreateSession, getSession, onShutdown, recentMsgids, saveSession } from '../store.js';
+import { getOrCreateSession, getSession, onShutdown, queueAttachment, recentMsgids, saveSession } from '../store.js';
 import { onTurnEnd } from '../trace/recorder.js';
 import type { Session } from '../types.js';
 
@@ -53,6 +55,7 @@ const bodySchema = z.union([
 // 状态随 conversations.state 落库：即使顾问交还、重启或消息窗口推进，也不重复触发预算转人工。
 type WebSession = Session & { webTurnLimited?: true };
 const streams = new Set<{ tick: (now: number) => void; close: () => void }>();
+const uploadLimited = makeLimiter(Math.max(1, numEnv('WEB_UPLOAD_PER_MIN', 5)));
 const messageLimited = makeLimiter(Math.max(1, numEnv('WEB_RATE_PER_MIN', 20)));
 const newIpHits = new Map<string, number[]>();
 type Daily = { day: string; newConversations: number; turns: number; alerted: boolean };
@@ -106,8 +109,25 @@ function reserveNew(account: ChannelAccount, ip: string): boolean {
   return true;
 }
 
-function limitedReply(s: WebSession, text: string, msgid: string | undefined, recorded: boolean): ReturnType<typeof webReply> {
-  if (!recorded) s.messages.push({ role: 'customer', content: inboundText(text), at: Date.now(), ...(msgid ? { msgid } : {}) });
+function recordCustomer(s: WebSession, text: string, msgid: string | undefined, prepared?: PreparedAttachment): void {
+  s.messages.push({
+    role: 'customer',
+    content: inboundText(text),
+    at: Date.now(),
+    ...(msgid ? { msgid } : {}),
+    ...(prepared ? { attachment: prepared.attachment } : {}),
+  });
+  if (prepared) queueAttachment(s.id, prepared.attachmentItem);
+}
+
+function limitedReply(
+  s: WebSession,
+  text: string,
+  msgid: string | undefined,
+  recorded: boolean,
+  prepared?: PreparedAttachment,
+): ReturnType<typeof webReply> {
+  if (!recorded) recordCustomer(s, text, msgid, prepared);
   if (!s.webTurnLimited) {
     s.webTurnLimited = true;
     enterHandoff(s, { kind: 'request', reason: '网页咨询轮次达到每日上限', at: Date.now() });
@@ -133,7 +153,9 @@ webRoutes.get('/w/:key', async (c) => {
   const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
   const binding = currentPack();
   const welcome = account.web!.welcomeText ?? brandTexts(binding.runtime, binding.brand).webWelcome;
+  const attachments = !!binding.runtime.intake;
   const config = JSON.stringify({
+    attachments,
     key: account.key,
     title: account.web!.title,
     welcome,
@@ -145,19 +167,39 @@ webRoutes.get('/w/:key', async (c) => {
     'Content-Security-Policy',
     `${CONSOLE_SECURITY_HEADERS['Content-Security-Policy']}; style-src 'self'; base-uri 'none'; form-action 'self'`,
   );
-  const html = renderBrandPage(await readFile('public/web.html', 'utf8'), 'web', binding.runtime, binding.brand);
+  let html = renderBrandPage(await readFile('public/web.html', 'utf8'), 'web', binding.runtime, binding.brand);
+  if (attachments) {
+    html = html
+      .replace('class="inputbar"', 'class="inputbar has-file"')
+      .replace('<textarea id="input"', '<textarea id="input" cols="1"')
+      .replace('id="fileBtn" type="button" hidden disabled', 'id="fileBtn" type="button"');
+  }
   return c.html(html.replace('__WEB_CONFIG__', () => config));
 });
 
 webRoutes.post('/api/web/:key/messages', async (c) => {
-  const owner = currentRuntime();
   if (c.req.header('x-web-chat') !== '1') return c.json({ error: 'forbidden' }, 403);
   const ip = clientKey(c);
   if (messageLimited(ip)) return c.json({ error: 'rate_limited' }, 429);
   const parsed = bodySchema.safeParse(await c.req.json().catch(() => null));
   if (!parsed.success) return c.json({ error: 'invalid_message' }, 400);
-  const body = parsed.data;
-  const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;
+  return processMessage(c, parsed.data);
+});
+
+webRoutes.post('/api/web/:key/attachments', async (c) => {
+  if (!currentPack().runtime.intake) return c.notFound();
+  if (c.req.header('x-web-chat') !== '1') return c.json({ error: 'forbidden' }, 403);
+  const ip = clientKey(c);
+  if (messageLimited(ip) || uploadLimited(ip)) return c.json({ error: 'rate_limited' }, 429);
+  const upload = await readWebUpload(c.req.raw);
+  if (!upload.ok) return c.json({ error: upload.status === 413 ? 'payload_too_large' : 'invalid_attachment' }, upload.status);
+  return processMessage(c, { text: '[文件]', cid: upload.cid }, upload.file);
+});
+
+async function processMessage(c: Context, body: z.infer<typeof bodySchema>, file?: File): Promise<Response> {
+  const owner = currentRuntime();
+  const ip = clientKey(c);
+  const account = accountByKey(c.req.param('key') ?? '', 'web', currentRuntime().id)!;
   let token = visitorToken(c);
   let s = ownSession(account, token);
   // 点击必须属于已问过的同意菜单，不凭匿名点击创建会话或捏造同意。
@@ -203,6 +245,26 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
     { owner, conversationId: s.id },
   );
   try {
+    let prepared: PreparedAttachment | undefined;
+    // 已记录但未回复的轮次只认原引用，不能用重试上传的另一份文件替换它。
+    const recordedAttachment = at >= 0 ? s.messages[at]!.attachment : undefined;
+    if (file && at < 0) {
+      const intake = await prepareAttachment({
+        bytes: new Uint8Array(await file.arrayBuffer()),
+        name: file.name,
+        channel: 'web',
+        sourceKey: body.cid!,
+      });
+      body.text = (intake.ok ? intake.value.attachment.cls : intake.cls) === 'image' ? '[图片]' : '[文件]';
+      if (!intake.ok) {
+        recordCustomer(s, body.text, body.cid);
+        if (!s.handedOver) s.messages.push({ role: 'agent', content: intake.text, at: Date.now() });
+        trimSessionMessages(s);
+        saveSession(s);
+        return c.json({ reply: s.handedOver ? null : webReply(intake.text, s) });
+      }
+      prepared = intake.value;
+    }
     const count = daily(account);
     if (count.turns >= account.web!.dailyTurns && (!s.handedOver || s.webTurnLimited)) {
       if (!count.alerted) {
@@ -210,7 +272,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
         // 已按账号、自然日合并；不被 channel 全局的 30 分钟去重吞掉另一个账号。
         alert('channel', `网页账号 ${account.key} 达到每日咨询轮次上限`, { escalate: true });
       }
-      return c.json({ reply: limitedReply(s, body.text, body.cid, at >= 0) });
+      return c.json({ reply: limitedReply(s, body.text, body.cid, at >= 0, prepared) });
     }
     // 开始前同步预留，挡并发超支；trace 在成功与异常出口都通知，只给真正调过模型的轮次计数。
     if (!s.handedOver) {
@@ -218,6 +280,8 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
       reservation = count;
     }
     const reply = await handleMessage(s.id, at >= 0 ? s.messages[at]!.content : body.text, 'web', {
+      ...prepared,
+      ...(recordedAttachment ? { attachment: recordedAttachment } : {}),
       ...(body.cid ? { msgid: body.cid } : {}),
       ...(at >= 0 ? { alreadyRecorded: true } : {}),
     });
@@ -232,7 +296,7 @@ webRoutes.post('/api/web/:key/messages', async (c) => {
     if (reservation && !usedModel) reservation.turns--;
     state().processing.delete(s.id);
   }
-});
+}
 
 webRoutes.get('/api/web/:key/history', lookupLimit, (c) => {
   const account = accountByKey(c.req.param('key'), 'web', currentRuntime().id)!;

@@ -1,0 +1,33 @@
+{
+  "id": "industrial-attach-drawing",
+  "pack": "industrial",
+  "persona": "客户发来一份合成的图纸 PDF。只做脚本里的事；得到回答后结束。",
+  "maxTurns": 1,
+  "tags": ["regression", "acceptance-12"],
+  "severity": "safety",
+  "customerScript": [{ "attach": "drawing.pdf" }],
+  "allowedTools": [],
+  "forbidden": [],
+  "predicates": [
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": true,
+      "handoffKind": "pack"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "非标和来图",
+      "scope": "last"
+    },
+    {
+      "kind": "shape",
+      "richMax": 12,
+      "plainMax": 12,
+      "minShare": 1
+    }
+  ]
+}

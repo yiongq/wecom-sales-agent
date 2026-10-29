@@ -96,12 +96,23 @@ const packSession = sessionBase
   .partial();
 
 const nonNegativeInt = z.number().int().nonnegative();
+// 12 R13：附件轮。file 是 eval/fixtures/attachments/ 下的文件名（不带路径）；name 是渠道给的显示名，缺省取文件名，
+// 只进附件元数据（测「文件名叫投诉.xlsx」不因文件名转人工）
+const attach = z.strictObject({
+  file: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/, '只能是 eval/fixtures/attachments/ 下的文件名'),
+  name: z.string().min(1).max(100).optional(),
+});
 /** 本轮脚本与断言；orders.last 的形状由旅游（Record）和非旅游包（通用单）各给一份。 */
 const turns = <L extends z.ZodType<Record<string, unknown>>>(last: L) =>
   z
     .array(
       z.strictObject({
-        say: z.string(),
+        // say 与 attach 有且只有一个：附件轮没有客户文字，引擎收到的是渠道写的占位（[图片] / [文件]）
+        say: z.string().optional(),
+        attach: attach.optional(),
+        // 本轮图片的视觉输出：假模型认出带图片的请求后原样回这份 JSON（可以故意写进多余或坏的字段，测清洗与 schema）；
+        // 没写时图片轮走包给的缺省 mock。只能与 attach 一起写
+        vision: z.record(z.string(), z.unknown()).optional(),
         script: z
           .array(
             z.strictObject({
@@ -125,7 +136,15 @@ const turns = <L extends z.ZodType<Record<string, unknown>>>(last: L) =>
         }),
       }),
     )
-    .min(1);
+    .min(1)
+    .superRefine((all, ctx) => {
+      all.forEach((t, i) => {
+        if ((t.say === undefined) === (t.attach === undefined))
+          ctx.addIssue({ code: 'custom', path: [i], message: 'say 与 attach 有且只有一个' });
+        if (t.vision !== undefined && t.attach === undefined)
+          ctx.addIssue({ code: 'custom', path: [i, 'vision'], message: 'vision 只能写在 attach 的轮里' });
+      });
+    });
 
 export const caseSchema = z.strictObject({
   version: z.literal(2),

@@ -55,7 +55,8 @@ export interface SimDeps {
   start(initial?: SimGoal['initial']): { id: string; initial: Snapshot } | Promise<{ id: string; initial: Snapshot }>;
   /** 运行时装载的包 id（08 R11）；给了就核对目标的 pack，假依赖不填就不核对 */
   pack?: string;
-  sales(id: string, customer: { say: string; done: boolean }): Promise<SimTurn>;
+  /** attach（12 R13）：eval/fixtures/attachments/ 下的样本名；有它时这条消息是文件，say 不进引擎（渠道写占位），返回的 SimTurn.customer.say 是占位 */
+  sales(id: string, customer: { say: string; done: boolean; attach?: string }): Promise<SimTurn>;
   end(id: string): Promise<void>;
 }
 export type RunStatus = 'passed' | 'failed' | 'customer_protocol' | 'budget_stop';
@@ -134,9 +135,11 @@ async function executeRun(goal: SimGoal, repetition: number, meter: Meter, deps:
   }));
   try {
     for (let turn = 1; turn <= (goal.maxTurns ?? 12); turn++) {
-      let customer: ReturnType<typeof customerMessage> = null;
+      let customer: ReturnType<typeof customerMessage> | { say: string; done: boolean; attach: string } = null;
       const scripted = goal.customerScript?.[turn - 1];
-      if (scripted !== undefined) customer = { say: scripted, done: false };
+      if (scripted !== undefined)
+        customer =
+          typeof scripted === 'string' ? { say: scripted, done: false } : { say: scripted.say ?? '', done: false, attach: scripted.attach };
       else
         for (let attempt = 0; attempt < 2; attempt++) {
           if (meter.stopped) break;
@@ -159,11 +162,18 @@ async function executeRun(goal: SimGoal, repetition: number, meter: Meter, deps:
         break;
       }
       // done=true 的非空 say 仍是最后一条客户消息；空 say 只表达结束，不调引擎。
-      if (customer.say.trim()) {
-        const result = await deps.sales(id, customer);
+      // 附件轮（12 R13）：有 say 就先发这句文字，再发文件，各是一轮；客户模型的历史里记引擎收到的占位
+      const attach = 'attach' in customer ? customer.attach : undefined;
+      const messages: { say: string; done: boolean; attach?: string }[] = attach
+        ? [...(customer.say.trim() ? [{ say: customer.say, done: false }] : []), { say: '', done: customer.done, attach }]
+        : customer.say.trim()
+          ? [customer]
+          : [];
+      for (const message of messages) {
+        const result = await deps.sales(id, message);
         run.turns.push(result);
         run.turnMetrics.push(turnMetric(result));
-        history.push({ role: 'assistant', content: customer.say });
+        history.push({ role: 'assistant', content: result.customer.say });
         if (!result.silent) history.push({ role: 'user', content: result.reply });
       }
       if (meter.stopped) break;

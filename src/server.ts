@@ -454,6 +454,8 @@ const chatRateLimited = makeLimiter(CHAT_RATE_PER_MIN);
 // 就能把容器内存吃满（docker run 未设 -m）。企微回调和聊天请求都只有几 KB 量级。
 const MAX_BODY_BYTES = Math.max(1024, numEnv('MAX_BODY_BYTES', 64 * 1024));
 app.use('/*', async (c, next) => {
+  // 12 R3：上传在 webOnly 之后自行流式限长；其他路由仍用全站上限。
+  if (c.req.method === 'POST' && /^\/api\/web\/[^/]+\/attachments$/.test(c.req.path)) return next();
   const declared = c.req.header('content-length');
   // 后台（/console/*、/api/console/*）的响应都要带安全头（01 spec「安全头」），这两种拒绝发生在后台子应用之前，得在这里带上；
   // 后台接口回 { error, detail }，前端按它显示

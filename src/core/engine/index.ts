@@ -1,4 +1,6 @@
 import { receiveAttachment } from './intake.js';
+import type { AttachmentItem } from '../../db/repo/attachments.js';
+import { queueAttachment } from '../../store.js';
 import type { AttachmentRef } from '../../shared/channel-types.js';
 import { TenantObservers } from '../../tenancy/observers.js';
 import { TenantLocal } from '../../tenancy/local-state.js';
@@ -202,6 +204,10 @@ export function trimSessionMessages(session: Session): void {
 
 /** handleMessage 的可选参数（02 spec「消息只追加」） */
 export interface HandleOpts {
+  /** 核心内部待提交行；与客户消息一起保存，不进入包上下文。 */
+  attachmentItem?: AttachmentItem;
+  /** 附件首轮的渠道归属随新会话保存，适配器不用提前建立空会话。 */
+  attachmentAccountId?: string;
   attachment?: AttachmentRef;
   /**
    * 去除元数据后的原件字节，仅供核心内部在内存中识别，不进入 TurnContext、pack-api、消息、trace 或日志。
@@ -278,7 +284,7 @@ async function maybeAskConsent(sessionId: string, text: string, stillCurrent?: (
  * 同意菜单在同一段串行链里、这一轮的回复之后处理（R23）：失败只打日志，不影响这一轮已经算出的回复
  */
 export function handleMessage(sessionId: string, text: string, channel: string, opts: HandleOpts = {}): Promise<AgentReply> {
-  if (opts.attachment) text = opts.attachment.cls === 'image' ? '[图片]' : '[文件]';
+  if (opts.attachment) text = opts.attachment.cls === 'image' ? '[图片]' : opts.attachment.cls === 'video' ? '[视频]' : '[文件]';
   const rt = currentRuntime();
   const receivedAt = Date.now();
   const work = () =>
@@ -480,6 +486,7 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
 
 async function preflight(state: TurnState): Promise<AgentReply | null> {
   const { text, opts, session, runtime, triggers, answerIdentity, done } = state;
+  if (opts.attachmentItem && opts.attachmentAccountId) session.channelAccountId = opts.attachmentAccountId;
   const { isComplaint, isHandoffIntent, departNoteForHandoff, safetyNetKind, handoffReply } = runtime.engineHooks;
   const { negativeLevel, pushWindow, SENTIMENT_WINDOW, emergencyOf, consentWithdrawalOf, sentimentThresholdReached } = triggers;
   // 06 R16：转人工话术按品牌快照渲染联系方式；客户同时在问身份时合并成一句
@@ -505,6 +512,7 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
       saveSession(session);
       // 03：入站行记 recorded，与这句同一次落库（saveSession 刚给它分了 seq）
       if (opts.inboxId) queueInboxState(session.id, { inboxId: opts.inboxId, state: 'recorded', message: customerMsg });
+      if (opts.attachmentItem) queueAttachment(session.id, opts.attachmentItem);
     }
     session.stage = runtime.stages[0]!.id;
     session.profile = {};
@@ -571,6 +579,7 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
   saveSession(session);
   // 03：入站行记 recorded，与这句同一次落库（与上面 push 是同一段同步代码，saveSession 刚给它分了 seq）
   if (customerMsg && opts.inboxId) queueInboxState(session.id, { inboxId: opts.inboxId, state: 'recorded', message: customerMsg });
+  if (customerMsg && opts.attachmentItem) queueAttachment(session.id, opts.attachmentItem);
 
   // 紧急情况（02 spec「确定性转人工触发」、R15、不变量 29）：客户消息入库之后、「已转人工」判断之前判，本轮不调模型。
   // 已转人工：不回话（00 不变量 14），只把记录升级为 emergency，enterHandoff 再发一次 handoff.started（升级）、db 存储下再排一个

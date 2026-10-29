@@ -357,6 +357,24 @@ body {
   cursor: pointer;
   transition: opacity 0.15s;
 }
+.inputbar.has-file {
+  gap: 6px;
+}
+.inputbar.has-file textarea {
+  min-width: 0;
+}
+.inputbar.has-file button {
+  min-width: 44px;
+  min-height: 44px;
+  border: 1px solid transparent;
+  padding: 9px 10px;
+  white-space: nowrap;
+}
+.inputbar.has-file #fileBtn {
+  background: #fff;
+  border-color: var(--wx-btn);
+  color: var(--wx-btn);
+}
 .inputbar button:disabled {
   opacity: 0.45;
   cursor: default;

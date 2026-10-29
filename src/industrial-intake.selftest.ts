@@ -492,7 +492,87 @@ await test('型号护栏认可 rfqIntake.q；不扩大库存承诺；重置后�
   resetPackState(runtime, s);
   assert.doesNotMatch(await guard('请确认型号 ZZ9999。'), /ZZ9999/);
 });
-await test('同批合并：中间静默、最后整份回复、同一 ID、重载与同毫秒边界', async () => {
+await test('10 分钟窗口：窗口内合并并重新编号，窗口外新建，旧清单不再待确认', async () => {
+  const realNow = Date.now;
+  let now = Date.parse('2026-10-29T04:00:00Z');
+  Date.now = () => now;
+  try {
+    const s = session();
+    const first = await run({ s });
+    const initial = readState(s).rfqIntake!;
+    assert.equal(initial.at, now);
+    assert.match(first.reply!.text, /^从您发来的询价单里认出 1 行/);
+    // 回复、系统消息、等待句、夹在中间的文字都不打断窗口。
+    s.messages.push(
+      { role: 'agent', content: first.reply!.text, at: now },
+      { role: 'system', content: 'AI 等待句', at: now },
+      { role: 'customer', content: '另一张也一起看下', at: now },
+    );
+    now += 3 * 60_000;
+    const second = await run({ s, cls: 'image', image: { kind: 'list', lines: [{ partNo: 'M8*30', qty: 3 }] } });
+    const merged = readState(s).rfqIntake!;
+    assert.equal(merged.id, initial.id, '窗口内沿用同一份清单');
+    assert.equal(merged.at, initial.at, '窗口按清单创建时间算，不顺延');
+    assert.equal(merged.status, 'pending');
+    assert.deepEqual(
+      merged.lines.map((line) => line.q),
+      ['6205-2RS', 'M8×30'],
+    );
+    assert.match(second.reply!.text, /^从您发来的询价单里认出 2 行/);
+    assert.match(second.reply!.text, /2\. M8×30，3件，已匹配/);
+    assert.equal(second.saved[0]!.id, initial.id, '识别结果归到同一份清单');
+    // 正好 10 分钟仍在窗口内。
+    now = initial.at + 10 * 60_000;
+    await run({
+      s,
+      sheet: sheet([
+        ['型号', '数量'],
+        ['6205-ZZ', '5'],
+      ]),
+    });
+    assert.deepEqual(
+      readState(s).rfqIntake!.lines.map((line) => line.q),
+      ['6205-2RS', 'M8×30', '6205-ZZ'],
+    );
+    assert.equal(readState(s).rfqIntake!.id, initial.id);
+    // 多 1 毫秒就新建：旧清单被取代，状态里只剩新的这一份。
+    now = initial.at + 10 * 60_000 + 1;
+    const fresh = await run({
+      s,
+      sheet: sheet([
+        ['型号', '数量'],
+        ['6205-OPEN', '7'],
+      ]),
+    });
+    const next = readState(s).rfqIntake!;
+    assert.notEqual(next.id, initial.id);
+    assert.equal(next.status, 'pending');
+    assert.equal(next.at, now);
+    assert.deepEqual(
+      next.lines.map((line) => line.q),
+      ['6205-OPEN'],
+    );
+    assert.match(fresh.reply!.text, /^从您发来的询价单里认出 1 行/);
+    assert.equal(fresh.saved[0]!.id, next.id);
+    // 已确认或已取代的清单不接新行。
+    for (const status of ['confirmed', 'superseded'] as const) {
+      const done = session();
+      writeState(done, { rfqIntake: { ...initial, status } });
+      await run({ s: done });
+      assert.notEqual(readState(done).rfqIntake!.id, initial.id);
+      assert.equal(readState(done).rfqIntake!.lines.length, 1);
+    }
+    // 时钟回拨（清单比现在新）不合并。
+    now = initial.at - 1;
+    const skewed = session();
+    writeState(skewed, { rfqIntake: initial });
+    await run({ s: skewed });
+    assert.notEqual(readState(skewed).rfqIntake!.id, initial.id);
+  } finally {
+    Date.now = realNow;
+  }
+});
+await test('连发：中间的只入库识别，最后一份统一回复整份清单；同毫秒也一样', async () => {
   let s = session();
   const first = await run({ s, moreQueued: true });
   assert.equal(first.reply, null);
@@ -509,22 +589,19 @@ await test('同批合并：中间静默、最后整份回复、同一 ID、重�
   assert.match(last.reply!.text, /^从您发来的询价单里认出 3 行/);
   assert.match(last.reply!.text, /2\. M8×30，3件，已匹配/);
   assert.deepEqual([first.saved[0]!.id, second.saved[0]!.id, last.saved[0]!.id], [initial.id, initial.id, initial.id]);
-  // 所有消息即便同毫秒也能以消息顺序识别已结束的批次。
+  // 最后一份回复之后、同一窗口里再发一份：接在后面，整份重发。
   s.messages.push({ role: 'agent', content: last.reply!.text, at: initial.at });
-  s.messages.forEach((message) => {
-    message.at = initial.at;
+  const extra = await run({
+    s,
+    sheet: sheet([
+      ['型号', '数量'],
+      ['6205-ZZ', '9'],
+    ]),
   });
-  const next = await run({ s, moreQueued: true });
-  assert.equal(next.reply, null);
-  const nextId = readState(s).rfqIntake!.id;
-  assert.notEqual(nextId, initial.id);
-  assert.equal(readState(s).rfqIntake!.lines.length, 1, '已回复的上一批不跨批合并');
-  s.messages.push({ role: 'customer', content: '另一份需求', at: initial.at });
-  await run({ s });
-  assert.notEqual(readState(s).rfqIntake!.id, nextId, '普通文字隔开连续附件');
-  assert.equal(readState(s).rfqIntake!.lines.length, 1);
+  assert.equal(readState(s).rfqIntake!.id, initial.id);
+  assert.match(extra.reply!.text, /^从您发来的询价单里认出 4 行/);
 });
-await test('同批 30 / 31 行边界，不静默截断、不覆盖先前行', async () => {
+await test('合计 30 / 31 行边界：窗口内合计超限走 FIXED.long，不静默截断、不覆盖先前行', async () => {
   for (const n of [29, 30]) {
     const s = session();
     assert.equal(
@@ -542,6 +619,20 @@ await test('同批 30 / 31 行边界，不静默截断、不覆盖先前行', as
       assert.deepEqual(readState(s).rfqIntake, before);
     }
     assert.equal(last.saved[0]!.id, before!.id);
+  }
+  // 超出窗口后合计不再累加：30 行之后隔 10 分钟再发 1 行，是一份新的清单。
+  const realNow = Date.now;
+  let now = Date.parse('2026-10-29T04:00:00Z');
+  Date.now = () => now;
+  try {
+    const s = session();
+    await run({ s, sheet: sheet([['型号', '数量'], ...Array.from({ length: 30 }, () => ['6205-2RS', '2'])]) });
+    now += 10 * 60_000 + 1;
+    const next = await run({ s });
+    assert.equal(next.reply!.handoff, undefined);
+    assert.equal(readState(s).rfqIntake!.lines.length, 1);
+  } finally {
+    Date.now = realNow;
   }
 });
 await test('取消信号阻止状态与识别结果写入', async () => {

@@ -163,7 +163,15 @@ try {
         assert.equal(sent.at(-1)?.touser, uid);
         assert.equal(sent.at(-1)?.text.content, reply.content, '发送与占位后的记录一致');
         if (pack === 'travel') assert.equal(reply.content, Object.hasOwn(travel, type) ? travel[type] : travel.other);
-        else if (pack === 'industrial') {
+        else if (pack === 'industrial' && (type === 'image' || type === 'file' || type === 'video')) {
+          // 12 部分取代 10 R16：工业包声明了 intake，这三类走附件识别。夹具消息没有 media_id，
+          // 图片与文件下载失败回 R2 的兜底句；视频不下载，按 R1 回固定句并转顾问。
+          if (type === 'video') {
+            assert.equal(reply.content, '视频需要顾问确认，我请顾问跟您核对');
+            assert.equal(session.handedOver, true);
+          } else assert.equal(reply.content, '这份附件没读出来，请把型号和数量打字发来');
+          assert.doesNotMatch(reply.content, /\*\*|^#{1,6}\s/m);
+        } else if (pack === 'industrial') {
           assert.match(reply.content, /型号.*数量.*打字/);
           assert.doesNotMatch(reply.content, /旅行|行程|出行|目的地|线路/);
           const registered =
