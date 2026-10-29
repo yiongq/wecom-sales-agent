@@ -20,16 +20,6 @@
         },
         "script": [
           {
-            "toolCalls": [
-              {
-                "name": "find_parts",
-                "args": {
-                  "query": "6205 2rs"
-                }
-              }
-            ]
-          },
-          {
             "content": "型号{{call:find_parts.parts.0.partNo}}，请确认数量。"
           }
         ]
@@ -56,16 +46,6 @@
           "replyMatches": ["6205-2RS"]
         },
         "script": [
-          {
-            "toolCalls": [
-              {
-                "name": "find_parts",
-                "args": {
-                  "query": "6205RS"
-                }
-              }
-            ]
-          },
           {
             "content": "型号{{call:find_parts.parts.0.partNo}}，请确认数量。"
           }
@@ -121,16 +101,6 @@
         },
         "script": [
           {
-            "toolCalls": [
-              {
-                "name": "find_parts",
-                "args": {
-                  "query": "M8x30"
-                }
-              }
-            ]
-          },
-          {
             "content": "型号{{call:find_parts.parts.0.partNo}}，请确认数量。"
           }
         ]
@@ -158,16 +128,6 @@
         },
         "script": [
           {
-            "toolCalls": [
-              {
-                "name": "find_parts",
-                "args": {
-                  "query": "M8*30"
-                }
-              }
-            ]
-          },
-          {
             "content": "型号{{call:find_parts.parts.0.partNo}}，请确认数量。"
           }
         ]
@@ -194,16 +154,6 @@
           "replyMatches": ["M8×30"]
         },
         "script": [
-          {
-            "toolCalls": [
-              {
-                "name": "find_parts",
-                "args": {
-                  "query": "M8×30"
-                }
-              }
-            ]
-          },
           {
             "content": "型号{{call:find_parts.parts.0.partNo}}，请确认数量。"
           }
@@ -307,21 +257,6 @@
         },
         "script": [
           {
-            "toolCalls": [
-              {
-                "name": "quote_items",
-                "args": {
-                  "items": [
-                    {
-                      "query": "6205-2RS",
-                      "qty": 2
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
             "content": "6205-2RS 单价{{call:quote_items.lines.0.unitPrice}}元，金额{{call:quote_items.lines.0.amount}}元，{{call:quote_items.lines.0.delivery}}。合计{{call:quote_items.total}}元。"
           }
         ]
@@ -349,21 +284,6 @@
           }
         },
         "script": [
-          {
-            "toolCalls": [
-              {
-                "name": "quote_items",
-                "args": {
-                  "items": [
-                    {
-                      "query": "6205-2RS",
-                      "qty": 19
-                    }
-                  ]
-                }
-              }
-            ]
-          },
           {
             "content": "6205-2RS 单价{{call:quote_items.lines.0.unitPrice}}元，金额{{call:quote_items.lines.0.amount}}元，{{call:quote_items.lines.0.delivery}}。合计{{call:quote_items.total}}元。"
           }
@@ -393,21 +313,6 @@
         },
         "script": [
           {
-            "toolCalls": [
-              {
-                "name": "quote_items",
-                "args": {
-                  "items": [
-                    {
-                      "query": "6205-2RS",
-                      "qty": 20
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
             "content": "6205-2RS 单价{{call:quote_items.lines.0.unitPrice}}元，金额{{call:quote_items.lines.0.amount}}元，{{call:quote_items.lines.0.delivery}}。合计{{call:quote_items.total}}元。"
           }
         ]
@@ -435,21 +340,6 @@
           }
         },
         "script": [
-          {
-            "toolCalls": [
-              {
-                "name": "quote_items",
-                "args": {
-                  "items": [
-                    {
-                      "query": "6205-2RS",
-                      "qty": 99
-                    }
-                  ]
-                }
-              }
-            ]
-          },
           {
             "content": "6205-2RS 单价{{call:quote_items.lines.0.unitPrice}}元，金额{{call:quote_items.lines.0.amount}}元，{{call:quote_items.lines.0.delivery}}。合计{{call:quote_items.total}}元。"
           }
@@ -479,21 +369,6 @@
         },
         "script": [
           {
-            "toolCalls": [
-              {
-                "name": "quote_items",
-                "args": {
-                  "items": [
-                    {
-                      "query": "6205-2RS",
-                      "qty": 100
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
             "content": "6205-2RS 单价{{call:quote_items.lines.0.unitPrice}}元，金额{{call:quote_items.lines.0.amount}}元，{{call:quote_items.lines.0.delivery}}。合计{{call:quote_items.total}}元。"
           }
         ]
@@ -521,21 +396,6 @@
           }
         },
         "script": [
-          {
-            "toolCalls": [
-              {
-                "name": "quote_items",
-                "args": {
-                  "items": [
-                    {
-                      "query": "6205-2RS",
-                      "qty": 199
-                    }
-                  ]
-                }
-              }
-            ]
-          },
           {
             "content": "6205-2RS 单价{{call:quote_items.lines.0.unitPrice}}元，金额{{call:quote_items.lines.0.amount}}元，{{call:quote_items.lines.0.delivery}}。合计{{call:quote_items.total}}元。"
           }
@@ -565,21 +425,6 @@
         },
         "script": [
           {
-            "toolCalls": [
-              {
-                "name": "quote_items",
-                "args": {
-                  "items": [
-                    {
-                      "query": "6205-2RS",
-                      "qty": 200
-                    }
-                  ]
-                }
-              }
-            ]
-          },
-          {
             "content": "6205-2RS 单价{{call:quote_items.lines.0.unitPrice}}元，金额{{call:quote_items.lines.0.amount}}元，{{call:quote_items.lines.0.delivery}}。合计{{call:quote_items.total}}元。"
           }
         ]
@@ -604,21 +449,6 @@
           "replyExcludes": ["现货"]
         },
         "script": [
-          {
-            "toolCalls": [
-              {
-                "name": "quote_items",
-                "args": {
-                  "items": [
-                    {
-                      "query": "6205-ZZ",
-                      "qty": 2
-                    }
-                  ]
-                }
-              }
-            ]
-          },
           {
             "content": "6205-ZZ 单价{{call:quote_items.lines.0.unitPrice}}元，{{call:quote_items.lines.0.delivery}}。"
           }
@@ -1583,16 +1413,6 @@
         },
         "script": [
           {
-            "toolCalls": [
-              {
-                "name": "find_parts",
-                "args": {
-                  "query": "6205"
-                }
-              }
-            ]
-          },
-          {
             "content": "6205-2RS 可以替代{{call:find_parts.parts.0.substitutes.0}}。"
           }
         ]
@@ -1617,16 +1437,6 @@
         },
         "script": [
           {
-            "toolCalls": [
-              {
-                "name": "find_parts",
-                "args": {
-                  "query": "M8×30"
-                }
-              }
-            ]
-          },
-          {
             "content": "当前没有登记替代型号，请顾问确认。"
           }
         ]
@@ -1646,7 +1456,7 @@
       {
         "say": "6205-2RS两件正式报价",
         "expect": {
-          "tools": ["create_quote_sheet"],
+          "tools": ["quote_items", "create_quote_sheet"],
           "replyMatches": ["^最新的报价单还在顾问审核，审好马上发您$"],
           "replyExcludes": ["/quote/", "元"],
           "orders": {

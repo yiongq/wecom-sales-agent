@@ -87,8 +87,14 @@ export function mentionedParts(text: string, sources: PackSources) {
       break;
     }
     if (found.match === 'none') continue;
-    const qtyText = /^\s*([0-9]+|两|二|一)\s*(?:件|个|套|米|千克|盒|pcs)/i.exec(text.slice(end));
-    const qty = qtyText ? ({ 一: 1, 二: 2, 两: 2 }[qtyText[1]!] ?? Number(qtyText[1])) : undefined;
+    // 型号与数量之间可夹品名（「6205-2RS轴承100个」）；隔了逗号只认「数量 / 要 / 共」（「6205-2RS，数量19件」），免得把别处的数量算到它头上；
+    // 不带单位时数量须在行尾或标点前（「6205-2RS 100」）；夹着否定词不算
+    const qtyText =
+      /^(?:\s*(\p{Script=Han}{0,6})|\s*[，,]\s*((?:数量|一共|总共|共|要)?[为是]?))\s*[:：]?\s*(?:[×*xX]\s*)?(?:([0-9]+|两|二|一)\s*(?:件|个|套|米|千克|盒|pcs)|([0-9]+)(?=\s*(?:$|[，,。；;、\n])))/iu.exec(
+        text.slice(end),
+      );
+    const raw = qtyText && !/[不别没无]/.test(qtyText[1] ?? qtyText[2] ?? '') ? (qtyText[3] ?? qtyText[4]) : undefined;
+    const qty = raw ? ({ 一: 1, 二: 2, 两: 2 }[raw] ?? Number(raw)) : undefined;
     mentions.push({ query, ...found, qty });
   }
   return mentions;
@@ -100,6 +106,21 @@ export function unresolvedParts(text: string, sources: PackSources) {
       mention.match === 'ambiguous' &&
       !mentions.some((other) => other.match === 'exact' && mention.parts.some((part) => part.id === other.parts[0]?.id)),
   );
+}
+/** quote_items 整份替换 rfqDraft：只在没有进行中的询价，或这句把进行中的各行都重说了一遍时，才替模型试算。 */
+function restatesDraft(session: TurnContext['session'], ids: ReadonlySet<string>): boolean {
+  const candidate = latestQuoteCandidate(session, Date.now());
+  if (!candidate) return true;
+  const lines = candidate.kind === 'draft' ? candidate.draft.lines : candidate.order.lines;
+  return lines.every((line) => 'code' in line && ids.has(line.code));
+}
+/** 同一条目只查一次，至多 5 个。 */
+function lookups(mentions: ReturnType<typeof mentionedParts>): string[] {
+  const seen = new Set<string>();
+  return mentions
+    .filter((m) => !seen.has(m.parts[0]!.id) && seen.add(m.parts[0]!.id))
+    .slice(0, 5)
+    .map((m) => m.query);
 }
 export async function prefetch(ctx: TurnContext, sources: PackSources): Promise<PrefetchResult | null> {
   const candidate = latestQuoteCandidate(ctx.session, Date.now());
@@ -113,6 +134,22 @@ export async function prefetch(ctx: TurnContext, sources: PackSources): Promise<
   }
   const calls: PrefetchResult['calls'] = [];
   const mentions = mentionedParts(ctx.text, sources);
+  // 发现 4：型号精确时引擎先替模型查或试算，模型一次往返就能答（原先查、算、答三次串行往返，整轮十余秒）。
+  // 有未决候选时照下面的旧路，由模型列候选让客户选。
+  if (!unresolvedParts(ctx.text, sources).length) {
+    const exact = mentions.filter((m) => m.match === 'exact');
+    const priced = exact.filter((m) => m.qty !== undefined && m.qty > 0);
+    const ids = new Set(priced.map((m) => m.parts[0]!.id));
+    if (priced.length && ids.size === priced.length && restatesDraft(ctx.session, ids)) {
+      calls.push(await ctx.callTool('quote_items', { items: priced.map(({ query, qty }) => ({ query, qty })) }));
+      for (const query of lookups(exact.filter((m) => !ids.has(m.parts[0]!.id)))) calls.push(await ctx.callTool('find_parts', { query }));
+      return { calls, timings: [] };
+    }
+    if (!priced.length && exact.length) {
+      for (const query of lookups(exact)) calls.push(await ctx.callTool('find_parts', { query }));
+      return { calls, timings: [] };
+    }
+  }
   const below = mentions.filter((m) => m.match === 'exact' && m.qty !== undefined && m.qty > 0 && m.qty < m.parts[0]!.moq);
   if (below.length) calls.push(await ctx.callTool('quote_items', { items: below.map(({ query, qty }) => ({ query, qty })) }));
   for (const { query } of unresolvedParts(ctx.text, sources)) calls.push(await ctx.callTool('find_parts', { query }));
