@@ -6,7 +6,7 @@ import { MAX_QTY, PartSchema, type Part } from './catalog.js';
 import { matchInMemory } from './match.js';
 import { normalizePartNo } from './normalize.js';
 import { readState, writeState, type RfqIntake } from './state.js';
-import { FIXED, inquiryLines } from './turn.js';
+import { FIXED, inquiryLines } from './inquiry.js';
 
 const MODEL_HEADERS = [
   '型号',
@@ -38,8 +38,15 @@ export const INTAKE_FIXED = {
   locked: '这份附件已加密或含宏，我请顾问跟您核对',
   video: '视频需要顾问确认，我请顾问跟您核对',
   multiple: '有好几个工作表，我请顾问跟您核对',
+  oversized: '文件太大没收到（企微最大 20 MB），请把型号和数量打字发来，或拆小后再发',
+  cleared: '清单已清空，请重新发询价单，或把型号数量打字发来',
 } as const;
 export const INTAKE_FOOTER = '回「确认」我按已匹配的行算价；要改哪行，回「第几行 型号 数量」；不要哪行，回「删第几行」。';
+/** 改行没生效时放在清单前的一句提示；行号只会是清单里存在的 1–30。 */
+export const INTAKE_RANGE_NOTE = '没有这一行，请按下面清单里的行号修改';
+export const intakeUnreadNote = (n: number) => `第${n}行没改成，请回「第${n}行 型号 数量」或「删第${n}行」`;
+/** R9：上一份清单建于这个时间内仍待确认的，新附件的行接在后面。 */
+export const MERGE_WINDOW_MS = 10 * 60_000;
 
 export function cleanIntakePartNo(raw: string): string {
   const clean = raw
@@ -49,7 +56,7 @@ export function cleanIntakePartNo(raw: string): string {
     .replace(/[^A-Za-z0-9 ×\-_/]/g, '');
   return clean.includes('//') ? '' : clean.replace(/ +/g, ' ').trim().slice(0, 32);
 }
-function quantity(raw: string | number | null): number | null {
+export function intakeQuantity(raw: string | number | null): number | null {
   const n =
     typeof raw === 'number'
       ? raw
@@ -98,8 +105,9 @@ function refer(key: 'long' | 'nonstandard'): DeterministicReply {
 function candidates(q: string, parts: readonly Part[]): Part[] {
   return matchInMemory(normalizePartNo(q), parts).parts.slice(0, 3);
 }
-export function renderIntake(intake: RfqIntake, parts: readonly Part[]): string {
+export function renderIntake(intake: RfqIntake, parts: readonly Part[], note?: string): string {
   return [
+    ...(note ? [note] : []),
     `从您发来的询价单里认出 ${intake.lines.length} 行，请核对：`,
     ...intake.lines.map((line, i) => {
       const options =
@@ -108,10 +116,11 @@ export function renderIntake(intake: RfqIntake, parts: readonly Part[]): string 
               .map((part) => cleanIntakePartNo(part.partNo))
               .filter(Boolean)
           : [];
+      // 产品库在清单发出后变过、候选没了：改按没找到渲染，免得选项为空。
       const status =
         line.m === 'exact'
           ? '已匹配'
-          : line.m === 'none'
+          : line.m === 'none' || (line.m === 'ambiguous' && !options.length)
             ? '库里没找到，顾问会核对'
             : line.m === 'bad_qty'
               ? '待确认：数量没认出，请补数量'
@@ -121,7 +130,7 @@ export function renderIntake(intake: RfqIntake, parts: readonly Part[]): string 
     INTAKE_FOOTER,
   ].join('\n');
 }
-// 用首份附件的稳定标识定位消息中的批次起点；不增加持久状态位，也不依赖同毫秒消息的时间顺序。
+// 首份附件决定稳定 ID；窗口内的后续附件沿用它。
 function intakeId(attachmentId: string): string {
   return `int_${createHash('sha256').update(attachmentId).digest('hex').slice(0, 12)}`;
 }
@@ -137,16 +146,10 @@ export function createIntake(sources: Pick<PackSources, 'currentCatalog'>): NonN
       if (cls === 'video') return fixed('video', true);
       if (cls === 'other') return fixed('typing');
       const previous = readState(ctx.session).rfqIntake;
-      const start =
-        previous?.status === 'pending'
-          ? ctx.session.messages.findLastIndex(
-              (message) => message.role === 'customer' && message.attachment && intakeId(message.attachment.id) === previous.id,
-            )
-          : -1;
-      const collecting =
-        start >= 0 && ctx.session.messages.slice(start + 1).every((message) => message.role === 'customer' && !!message.attachment)
-          ? previous
-          : undefined;
+      // R9：只看上一份是否仍待确认、是否建于窗口内；回复、系统消息、等待句和夹在中间的文字都不打断。
+      // 超出窗口新建时，状态里只有一个清单槽，旧的随之被取代（不再 pending）。
+      const age = Date.now() - (previous?.at ?? 0);
+      const collecting = previous?.status === 'pending' && age >= 0 && age <= MERGE_WINDOW_MS ? previous : undefined;
       const id = collecting?.id ?? intakeId(ctx.attachment.id);
       let raw: RawLine[];
       let original: unknown;
@@ -180,7 +183,7 @@ export function createIntake(sources: Pick<PackSources, 'currentCatalog'>): NonN
       const parts = (sources.currentCatalog().items.part ?? []).map((part) => PartSchema.parse(part));
       const results = raw.map((line) => {
         const q = cleanIntakePartNo(line.partNo);
-        const qty = quantity(line.qty);
+        const qty = intakeQuantity(line.qty);
         const matched = matchInMemory(normalizePartNo(q), parts);
         return { source: line, q, qty, m: qty === null ? ('bad_qty' as const) : matched.match, candidates: matched.parts.slice(0, 3) };
       });
