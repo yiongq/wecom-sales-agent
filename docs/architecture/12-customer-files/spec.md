@@ -11,9 +11,11 @@ Revisions: 2026-10-29 第 1、2 步实现时就地修订，尚无已上线的代
 Revisions: 2026-10-29 第 4 步实现时就地修订，尚无已上线的代码依赖：`HandleOpts` 加只在内存里的 `attachmentBytes`（去过元数据的原件字节），由渠道下载后、或恢复路径从库里读出后交给引擎，`IntakeKit` 优先用它，这样刚收到、超出每日字节上限或进了 spill 的那份照常识别（附件行随会话排队，识别时还没落库）；`intake_unmatched` 的去重写定为「核心只做在途去重，同一 `intakeId` 只通知一次由包的状态保证」，与 `quote_*` 相同。R2、R5、R10 随之写明。
 Revisions: 2026-10-29 第 6 步实现时就地修订，尚无已上线的代码依赖：网页的「发文件」按钮与上传接口只对声明了 `intake` 的包开放；没声明的包（旅游）页面与改动前逐项相同，上传接口在读请求体之前回 404。R3 随之写明（R15「没声明的包不变」的网页一侧）。
 Revisions: 2026-10-29 第 8 步实现时就地修订，尚无已上线的代码依赖：清单 `pending` 的其他轮次，`quote_items` 除了型号要是客户本句写出的精确型号，数量也须等于本句写的数量（防止模型借用清单里还没确认的数量去试算，守不变量 1）；确认那一轮除入参恰好等于确认行的 `quote_items` 外，其他工具一律拒绝；客户把清单的行删光时回固定句 `industrial.intake.cleared`、清单标 `superseded`；超限提示认的「已知扩展名」写定为常见表格、文档、压缩包、图纸与图片扩展名，文件名里带句内标点的不算；合并窗口按清单创建时刻计，合并后不顺延。R9、R10 随之写明。
+Revisions: 2026-10-30 第 12 步中期审查后就地修订，尚无已上线的代码依赖（审查与修复见 plan「实施记录 · 第 12 步」）：R6 一个工作表部件只能被一张可见表引用、可见表至多 20 张（同一部件重复引用几百次能撑爆内存）；R4 JPEG 只留 APP0、APP2、APP14，并按 owner 当日所定写回只含方向的最小 APP1，不变量 10 与验收 8 随之改为「除方向标记外」；R4 附件份数改为进程内预占；R3 网页附件唯一键改为 `<会话 id>:<cid>`，转人工那一轮的那句照常返回给网页客户（同时部分取代 03，见下）；R5 `moreQueued` 改为读到时求值；R9 清单记已并入的附件，恢复时不重复追加；R10 清单确认之后，确认时没报价的行不能被模型自己补数量。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8「按信号再定」；[10](../10-industrial-rfq-pack/spec.md)「后续」第 2 条。
 Depends on: [10 · 工业品询价包](../10-industrial-rfq-pack/spec.md) 已 implemented（`demo-v10`）；10 第 21 步（工业预取）已合入 `dev`，还没有随 tag 上线，12 的第一个 rc 一并带上。
 Supersedes in part: [10](../10-industrial-rfq-pack/spec.md) 的四处，理由都是「客户发来的附件要变成可确认的清单」。（1）R16 修订里工业包的 `non-text.image` / `non-text.file` / `non-text.video` 三句提示：图片、表格改由识别流程接管，视频改为转顾问（R1）。（2）R11：「确认下单」的候选判定，有更新的待确认清单时不接受更早的报价（R9）。（3）R7：`packState` 上限从 8,192 字节放宽到 10,240 字节，必留摘要加 `rfqIntake`、`resetKeys` 加 `rfqIntake`（R8）。（4）不变量 5：只约束经模型回复管线的回复；确定性的识别清单至多 30 行，另由本 spec 不变量 8 约束。10 在本 spec 翻 `ready` 时加反向的 `Superseded in part by:` 行。
+Supersedes in part: [03](../03-channels-v2/spec.md) 网页消息接口的一处（2026-10-30 第 12 步加入）：返回值「转人工后为 null」只指转人工之后的轮次；这一轮刚转人工的，那句（文字触发或附件固定句）照常返回给客户，与企微一致（R3）。原实现把这一轮也回 null，网页客户发图纸或要人工时页面上什么都看不到。03 同步加反向的 `Superseded in part by:` 行。
 Amends: 只新增，原有成员与行为不变。[04](../04-industry-packs/spec.md) 的 `PackRuntime` 加可选能力 `intake`，`PrefetchResult` 加可选 `effects`（R5）。[09](../09-quote-approval/spec.md) 的 `DeterministicReply.notify` 原因加 `intake_unmatched`（R10）。[02](../02-conversations-workbench/spec.md) 的 `MessageView` 加可选 `attachment`（R12），`handoff_notify` 的原因加 `intake_unmatched`（R10）。[05](../05-tenancy-sandbox/spec.md) 的 `sandbox_tenant_purge` 加附件表，用量 `purpose` 加 `vision`（R4、R7）。
 
 **一句话：** 工业询价的客户常常直接甩来一张 Excel 询价单、一张清单截图或一张铭牌照片。本 spec 让企微与网页渠道接住这些附件：表格由代码读，图片由主模型抽出「型号 + 数量」；每一行再走 10 的确定性匹配，由代码渲染一份编号清单，标明「已匹配 / 待确认 / 未找到」。客户回「确认」或改某一行之后，才按已匹配的行试算；未找到的行不报价，转给顾问。
@@ -122,7 +124,8 @@ Amends: 只新增，原有成员与行为不变。[04](../04-industry-packs/spec
   - `multipart/form-data`，只收一个 `file` 字段和 `cid`；要 `x-web-chat: 1`；
   - 在全站 `MAX_BODY_BYTES`（64 KB，`src/server.ts:455-476`）之前单独放行，自己的上限 8.1 MB，超限回 413。
 - 限流：沿用每 IP 每分钟消息数；另加每 IP 每分钟 5 个附件（`WEB_UPLOAD_PER_MIN`）。
-- 回复：与普通消息相同（同步返回加 SSE）。同一会话处理中照旧回 409；`cid` 重试取回同一回复，同时是附件的唯一键（R4）。
+- 回复：与普通消息相同（同步返回加 SSE）。同一会话处理中照旧回 409；`cid` 重试取回同一回复。附件的唯一键用 `<会话 id>:<cid>`（R4），不同会话复用同一个 `cid` 互不吞掉。
+- 这一轮转人工的（图纸、加密文件、31 行等的固定句）：那句照常返回给客户，与企微一致；之后的轮次才回 `null`。03 的消息接口同样照此处理（文字触发的转人工那一轮也返回那句）。
 - 页面：
   - 只对声明了 `intake` 的包：输入框旁加「发文件」按钮（次要样式，「发送」仍是唯一的主按钮），`accept` 为 `image/jpeg,image/png,.xlsx,.csv,.xls,.pdf`，服务端仍按内容判类；没声明的包页面与改动前逐项相同，上传接口在读请求体之前回 404；
   - 上传中显示「正在上传…」并禁用按钮；
@@ -162,13 +165,19 @@ attachments: {
 - `IntakeKit.saveResult` 同样排进本轮最后那次会话保存。
 - 会话落库失败、进了 spill（`src/store.ts:359`）时，附件只留元数据（`bytes=null`），不进 spill 文件。识别照常：内存里的字节读完即弃。
 
-**去位置信息。** 存库与送模型之前，按字节剥掉 JPEG 的 APP1（Exif / XMP）段与 PNG 的 `eXIf`、`tEXt`、`iTXt`、`zTXt` 块，不加依赖。sha256 按剥离后的字节算。
+**去位置信息。** 存库与送模型之前按字节剥元数据，不加依赖。sha256 按剥离后的字节算。
+
+- JPEG：APPn 只留 APP0（JFIF）、APP2（ICC 色彩配置）、APP14（Adobe，CMYK 解码要用）；APP1（Exif / XMP）、APP3–APP13、APP15 与 COM 注释一律丢弃，其他段不动。
+- 方向例外：原图 Exif 的 IFD0 里方向（Orientation）是 2–8 时，在原来第一个 APP1 的位置写回一个只含这一项的最小 APP1（36 字节，不含时间、机型、位置）；方向是 1、缺失或 Exif 结构不可信时不写。手机竖拍的照片是横向像素加方向标记，全丢会让工作台与模型看到横图。
+- PNG：剥掉 `eXIf`、`tEXt`、`iTXt`、`zTXt` 块。
 
 **上限。** 每个租户每天：
 
 - 附件 300 份（`ATTACHMENT_DAILY_PER_TENANT`），原件合计 1 GB（`ATTACHMENT_DAILY_BYTES`；超出时这一份只记元数据，识别照常）；
 - 视觉调用 200 次（`VISION_DAILY_PER_TENANT`）；
 - 单个会话每天视觉调用 20 次。
+
+附件份数照视觉次数的做法在进程内预占：每租户每天首次读库里的基数，之后进程内计数，并发不超过上限；只在准备附件本身出错时退还，之后没落库的那一份不回退（成本护栏，不是计费依据，重启按库里的基数重来）。
 
 超出时回「请把型号和数量打字发来」，告警一次。
 
@@ -196,7 +205,8 @@ export interface AttachmentRef {
 // 客户消息：ChatMessage 的额外键 attachment: AttachmentRef，经 messages.extra 原样往返（src/store/project.ts:207-265）
 // HandleOpts（src/core/engine/index.ts:200-215）与 TurnContext（src/core/pack-api.ts:238-251）各加：
 attachment?: AttachmentRef;
-/** 适配器告诉引擎：这个会话后面已排着别的附件（R2 合并），本轮只入库识别、不回复 */
+/** 适配器告诉引擎：这个会话后面已排着别的附件（R2 合并），本轮只入库识别、不回复。
+ *  读到时求值：HandleOpts 可传 () => boolean，TurnContext 用 getter 暴露成 boolean；识别那几秒里才到的附件也算 */
 moreQueued?: boolean;
 // 只加在 HandleOpts：去过元数据的原件字节，只在内存里，由渠道下载后或恢复时从库里读出后交来（R2）；
 // IntakeKit 的 sheet() / vision() 优先用它。不进 TurnContext、消息、trace 与日志
@@ -241,6 +251,7 @@ notify?: { reason: 'quote_accepted'; orderId: string } | { reason: 'intake_unmat
   - 条目数据用 `node:zlib` 的 `inflateRawSync`，带 `maxOutputLength`；
   - 以实际解压出的字节为准，不信文件头声明的大小；
   - 条目 ≤ 200，单条解压 ≤ 5 MB，合计 ≤ 10 MB，超了判 `too_large`。
+  - 一个工作表部件只能被一张可见表引用，重复引用判 `corrupt`；可见工作表至多 20 张，超出判 `too_large`。两项都在铺开任何一张表之前判：解压有缓存，同一部件被引用几百次不占解压额度，却会各铺一张 200×50 的表。
 - **读哪些部件。**
   - 只读 `xl/workbook.xml`、`xl/_rels/workbook.xml.rels`、`xl/sharedStrings.xml` 与可见的工作表；
   - XML 只认五个预定义实体与数字字符引用，遇到 `<!DOCTYPE` 或 `<!ENTITY` 判 `corrupt`。
@@ -383,6 +394,7 @@ rfqIntake: {
 
 - 上一份清单还是 `pending`，且建于 10 分钟内（开放问题 4 已定；按清单创建时刻计，合并后不顺延），新附件识别出的行接在后面，重新编号。
 - 合计超过 30 行，走 `FIXED.long`。
+- 清单记下已并入的附件（附件 id 的短哈希，至多 30 个）。恢复时同一份附件再进来，不再识别、不再追加，照当前清单回复（`moreQueued` 时不回）。
 - 其他情况新建一份，旧的标 `superseded`。
 - 连发时由最后一份统一回复（R2）。
 
@@ -426,6 +438,7 @@ rfqIntake: {
   - `quote_items` 只放行客户本句写出的精确型号（`mentionedParts`），数量也须等于本句写的数量；
   - `create_quote_sheet` 一律拒绝。
   - 拒绝时的说明：「识别清单还没确认：请客户回复确认或指出要改的行」。
+- 清单 `confirmed` 之后、被取代之前：`quote_items` 里精确匹配到确认时没报价的那几行的型号（库里没找到的行在目录后来上架后匹配到的型号，以及待确认行列出的候选），数量须是客户本句写的；否则拒绝，说明「这一行顾问还在核对：请客户直接写出型号和数量」。已报价的行与清单之外的型号照 09、10 原样。客户打出带精确型号和数量的新询价时，清单标 `superseded`。
 
 **通知。**
 
@@ -503,7 +516,7 @@ rfqIntake: {
 7. 没声明 `intake` 的包，非文字消息的处理与回复逐字节不变。
 8. 一份识别清单至多 30 行；超出转顾问，从不静默截断。
 9. 视觉请求不对冲、不重试，不进主对话前缀与会话历史。
-10. 存库与送模型的照片，不带 EXIF / XMP 等元数据。
+10. 存库与送模型的照片，除方向标记外不带 EXIF / XMP 等元数据（R4）。
 
 ## 兼容与迁移
 
@@ -550,7 +563,7 @@ rfqIntake: {
    - 图片超过 8 MB、表格超过 2 MB：请打字的固定句；
    - 超过 20 MB 的文件（企微改发一条原文件名文字）：文件太大的固定句，不转顾问。
 7. 网页渠道（demo）上传同样的样本，流程与企微相同；上传中、超限、限流有对应提示。prod profile 下网页渠道照旧关闭。
-8. 可处理会话的成员能下载原件，每次下载有审计；只读成员看不到下载入口，直接请求回 403。下载到的照片不含 EXIF。
+8. 可处理会话的成员能下载原件，每次下载有审计；只读成员看不到下载入口，直接请求回 403。下载到的照片除方向标记外不含 EXIF。
 9. 会话经保留清理或行权删除后，附件一并删除；沙箱回收照常完成。建档超过 30 天的附件，原件不可下载，元数据与识别结果仍在。
 10. 旅游：企微非文字提示逐字节不变、锁定文件不变、四个哈希不变、v2 旅游用例逐条不变。
 11. 库里有附件数据时，退到 12 之前的镜像被拒绝（退出 9）；本机一次性容器演练通过。
