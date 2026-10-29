@@ -1,4 +1,5 @@
 // 全项目共享契约。构建各模块时以此为准，不要私自改动已有字段。
+import type { AttachmentRef } from './shared/channel-types.js';
 import type { SalesSegment } from './shared/catalog-types.js';
 import type { Assignee, HandoffLogEntry, HandoffRecord, OrderStatus, OutboundKind, RefundRecord } from './shared/conversation-types.js';
 import type { SensitiveCategory } from './handoff/triggers.js';
@@ -32,6 +33,7 @@ export type SalesStage =
   | 'handoff'; // 已转人工
 
 export interface ChatMessage {
+  attachment?: AttachmentRef;
   role: 'customer' | 'agent' | 'system';
   content: string;
   at: number;

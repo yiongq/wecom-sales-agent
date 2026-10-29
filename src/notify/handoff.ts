@@ -57,6 +57,7 @@ const REASONS: ReadonlySet<HandoffNotifyReason> = new Set([
   'order_unconfirmed',
   'quote_pending',
   'quote_accepted',
+  'intake_unmatched',
 ]);
 
 function payloadOf(raw: unknown): HandoffNotifyPayload | null {
@@ -112,6 +113,24 @@ export async function runHandoffNotifyJob(job: JobRow, now: number): Promise<Job
   const own = state();
   const p = payloadOf(job.payload);
   if (!p) return done('bad_payload');
+  if (p.reason === 'intake_unmatched') {
+    if (
+      typeof p.intakeId !== 'string' ||
+      !/^int_[a-f0-9]{12}$/.test(p.intakeId) ||
+      !Array.isArray(p.lines) ||
+      !p.lines.length ||
+      p.lines.length > 30 ||
+      p.lines.some((line) => !Number.isInteger(line) || line < 1 || line > 30) ||
+      new Set(p.lines).size !== p.lines.length
+    )
+      return done('bad_payload');
+    const s = getSession(p.sessionId);
+    if (!s) return done('no_session');
+    const notice = noticeFor(s.id, s.channel, p.reason, job.runAt.getTime(), false);
+    notice.lines = p.lines;
+    notice.link = `${publicBase()}/console`;
+    return deliver(notice);
+  }
   if (p.reason === 'quote_pending' || p.reason === 'quote_accepted') {
     const o = p.orderId ? getAnyOrder(p.orderId) : undefined;
     const s = getSession(p.sessionId);

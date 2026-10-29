@@ -163,7 +163,7 @@ eq(
 check('结果的中文互不相同', new Set(OUTCOME_OPTIONS.map((o) => o.label)).size === TRACE_OUTCOMES.length);
 // 取值表由提醒用的那张中文表（HANDOFF_NOTICE_TEXT）去掉「只在提醒里有」的类型得到：以后转人工的类型多一种（它要给中文，否则那张表编译不过），
 // 筛选里自动多一项；这里核对的是「全是转人工的类型、没有重复、不含提醒专用的、每个都有中文」，不写死有几种
-const NOTICE_ONLY = ['order_unconfirmed', 'window_closing', 'still_waiting', 'quote_pending', 'quote_accepted'];
+const NOTICE_ONLY = ['order_unconfirmed', 'window_closing', 'still_waiting', 'quote_pending', 'quote_accepted', 'intake_unmatched'];
 check(
   '转人工原因的取值表：都是转人工的类型、不重复、不含提醒专用类型、每个都有中文，也不漏（提醒表里去掉提醒专用类型就是它）',
   HANDOFF_OPTIONS.every((o) => isHandoffKind(o.value) && o.label.length > 0 && !NOTICE_ONLY.includes(o.value)) &&
