@@ -669,6 +669,34 @@ for (const [action, verb] of [
   );
 }
 
+// 12 R12：工作台每下载一次客户发来的附件原件记一行 attachment.download；target 是附件 id，diff 只有附件 id、类别、大小，不含文件名
+{
+  const downloaded = describeAudit(
+    entry({
+      action: 'attachment.download',
+      targetType: 'attachment',
+      targetId: 'att_0123456789abcdef01234567',
+      diff: { id: 'att_0123456789abcdef01234567', cls: 'image', size: 2048 },
+    }),
+    TRAVEL,
+  );
+  eq('attachment.download：句子', downloaded.text, '小林 下载了附件');
+  eq(
+    'attachment.download：归在「会话与订单」一类，有中文名与图标',
+    [downloaded.group, auditAction('attachment.download')?.label, downloaded.icon],
+    ['conversation', '下载附件', 'file-down'],
+  );
+  eq(
+    'attachment.download：没有 diff 也是同一句',
+    describeAudit(entry({ action: 'attachment.download', diff: null }), TRAVEL).text,
+    '小林 下载了附件',
+  );
+  check(
+    'attachment.download：在「会话与订单」的 actions 里（审计页的类别过滤读得到）',
+    (auditActionsParam('conversation', false) ?? '').split(',').includes('attachment.download'),
+  );
+}
+
 if (fails.length) {
   console.error(`AUDIT TEXT SELFTEST FAIL: ${fails.length} 项\n  ${fails.join('\n  ')}`);
   process.exit(1);

@@ -170,6 +170,11 @@ export interface MessageViewOpts {
   /** turnId 只在 db 存储的真实会话上给（库里才有 trace） */
   withTurns: boolean;
   guarded: ReadonlyMap<string, { removed: number; added: number }>;
+  /**
+   * 12 R12：这个会话附件行的元数据（按附件 id）。消息上附件引用的 stored 是排队时的判断，超出每日字节上限的、30 天后清掉字节的
+   * 库里已经没有原件，所以界面的 stored 以这里为准；没给、或者查不到附件行都当没有原件
+   */
+  attachments?: ReadonlyMap<string, { stored: boolean }>;
 }
 
 /** 一条消息的投影。seq 由调用方给（内存里的取 seqOf，更早的取库里的列）；delivery 同样由调用方给 */
@@ -192,6 +197,18 @@ export function messageView(
     turnId: tid,
     guarded: tid ? (o.guarded.get(tid) ?? null) : null,
     delivery,
+    ...(m.role === 'customer' && m.attachment
+      ? {
+          attachment: {
+            id: m.attachment.id,
+            cls: m.attachment.cls,
+            // 文件名是客户给的，按正文同一口径打码（只读成员）
+            name: typeof m.attachment.name === 'string' ? maskFor(o.viewer)(m.attachment.name) : null,
+            size: m.attachment.size,
+            stored: o.attachments?.get(m.attachment.id)?.stored ?? false,
+          },
+        }
+      : {}),
   };
 }
 
@@ -298,17 +315,18 @@ function quoteOf(s: Session, viewer: boolean): { quote: ConversationDetail['quot
   return { quote: null, quoteCard: { title: mask(card.title), amountFen: card.amountFen, lines: card.lines.map(mask) } };
 }
 
-/** GET /conversations/:id 的主体（guarded 由调用方在 db 存储下一次读好这一屏的） */
+/** GET /conversations/:id 的主体（guarded 由调用方在 db 存储下一次读好这一屏的；窗口里有带附件的消息时，attachments 同样由调用方读好） */
 export function conversationDetail(
   s: Session,
   user: AuthedUser,
   guarded: ReadonlyMap<string, { removed: number; added: number }>,
   now: number,
+  attachments?: MessageViewOpts['attachments'],
 ): ConversationDetail {
   const viewer = user.role === 'viewer';
   const withTurns = tracedInDb(s);
   const mask = (t: string | undefined | null): string | null => (t == null ? null : viewer ? maskNumbers(t) : t);
-  const opts: MessageViewOpts = { viewer, withTurns, guarded };
+  const opts: MessageViewOpts = { viewer, withTurns, guarded, attachments };
   const messages = windowMessages(s).map(({ m, seq }) =>
     messageView(m, seq, turnIdOf(m) ?? null, s.channel === 'wecom' && m.role === 'agent' ? deliveryOf(s.id, m) : null, opts),
   );

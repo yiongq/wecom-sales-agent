@@ -3355,6 +3355,12 @@ async function workbenchSuite(): Promise<void> {
       allowed: MONEY,
     },
     { route: 'GET /traces', url: '/traces', allowed: MONEY },
+    // 12 R12：下载附件原件，只给能处理会话的成员（只读成员 403）；这里的附件不存在，过了权限的回 404
+    {
+      route: 'GET /conversations/:id/attachments/:attId',
+      url: `/conversations/${enc(S0)}/attachments/att_000000000000000000000000`,
+      allowed: HANDLE,
+    },
     // 写接口拿不存在的会话、订单与不合规的请求体测：过了权限这一层的回 404 / 400，不动任何东西
     { route: 'POST /conversations/:id/takeover', url: '/conversations/wecom%3AwmNOSUCH13/takeover', json: {}, allowed: HANDLE },
     { route: 'POST /conversations/:id/release', url: '/conversations/wecom%3AwmNOSUCH13/release', allowed: HANDLE },
