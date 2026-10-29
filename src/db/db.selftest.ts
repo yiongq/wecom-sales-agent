@@ -3677,6 +3677,8 @@ await t.close();
   fake('docker', [
     // 模拟 compose exec 转发 stdin；run / inspect 也主动读，守住 bash -s 后续脚本的边界。
     'case "$1" in exec|compose|run|inspect|image|container) cat >/dev/null ;; esac',
+    // 12 的探测独立记账：这组旧部署夹具三项均无数据；每类查询显式响应，不走通用 psql 输出。
+    'case "$*" in *src/core/attachments.ts*) echo "docker12 $PWD|$*" >> "$FAKE_LOG"; exit 1 ;; *"select to_regclass(\'public.attachments\') is not null"|*"select to_regclass(\'public.usage_daily\') is not null"|*"select to_regclass(\'public.conversations\') is not null") echo "docker12 $PWD|$*" >> "$FAKE_LOG"; echo t; exit 0 ;; *"from public.attachments where"*|*"from public.usage_daily where"*|*"from public.conversations where"*) echo "docker12 $PWD|$*" >> "$FAKE_LOG"; echo f; exit 0 ;; esac',
     // 10 的探测独立记账，旧库夹具无工业数据；目标标记不存在，查询仍走真实脚本。
     'case "$*" in *src/packs/industrial/runtime.ts*) echo "docker10 $PWD|$*" >> "$FAKE_LOG"; exit 1 ;; *"select to_regclass(\'public.tenants\') is not null"|*"select to_regclass(\'public.catalog_items\') is not null") echo "docker10 $PWD|$*" >> "$FAKE_LOG"; echo f; exit 0 ;; esac',
     // 03 的新增探测单独记账，02 原有断言继续只数它负责的探测；新断言同时检查 docker03 的调用。
