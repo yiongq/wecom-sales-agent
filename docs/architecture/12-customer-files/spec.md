@@ -7,6 +7,7 @@ Revisions: 2026-10-29 owner 定开放问题 1–4，全部照推荐：原件保�
 Revisions: 2026-10-29 owner 定 `ready`。同一 docs PR 给 10 加反向的 `Superseded in part by:`，给 04、09、02、05 加 `Amended by:`，主参考「阶段 8」加一条。
 Revisions: 2026-10-29 第 0 步实测后就地修订，尚无代码依赖（结果见 plan「实施记录 · 第 0 步」）：图片上限 2 MB → 8 MB（企微实测没有按 2 MB 拦图片，模型实测接受 7 MB 的图）；文件名来源写定（文件消息有原文件名，图片消息的名字由企微生成，记为 null）；超过 20 MB 的文件以「原文件名」文字消息到达及其处理；视觉请求格式写定为 data URL；图片那一轮 P90 目标从 20 秒收紧到 10 秒；加每日原件字节上限 1 GB；视觉预占估算改为每张图 4,000 token。
 Revisions: 2026-10-29 owner 改开放问题 2：等待句从「识别前先发」改为「一批图片 5 秒还没发出清单才发」（第 0 步实测识别 1.3–4.0 秒，每次都发会让客户几秒内连收两条，还多占一条窗口）。R2、R11、验收 4 随之修改，尚无代码依赖。
+Revisions: 2026-10-29 第 1、2 步实现时就地修订，尚无已上线的代码依赖：下载早判的上限按类别写定——图片 8 MB，ZIP 与文本 2 MB，图纸与 CFB 不设类别上限、读完为止（企微单文件至多 20 MB），这样大图纸照样转顾问、加密文件照样判 `locked_sheet`；超过 2 MB 的 ZIP 一律 `other`，早判与完整判类结论一致；超限当场中断的那份算不出 `sha256`，记 null。R1、R2、R4 随之修改。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8「按信号再定」；[10](../10-industrial-rfq-pack/spec.md)「后续」第 2 条。
 Depends on: [10 · 工业品询价包](../10-industrial-rfq-pack/spec.md) 已 implemented（`demo-v10`）；10 第 21 步（工业预取）已合入 `dev`，还没有随 tag 上线，12 的第一个 rc 一并带上。
 Supersedes in part: [10](../10-industrial-rfq-pack/spec.md) 的四处，理由都是「客户发来的附件要变成可确认的清单」。（1）R16 修订里工业包的 `non-text.image` / `non-text.file` / `non-text.video` 三句提示：图片、表格改由识别流程接管，视频改为转顾问（R1）。（2）R11：「确认下单」的候选判定，有更新的待确认清单时不接受更早的报价（R9）。（3）R7：`packState` 上限从 8,192 字节放宽到 10,240 字节，必留摘要加 `rfqIntake`、`resetKeys` 加 `rfqIntake`（R8）。（4）不变量 5：只约束经模型回复管线的回复；确定性的识别清单至多 30 行，另由本 spec 不变量 8 约束。10 在本 spec 翻 `ready` 时加反向的 `Superseded in part by:` 行。
@@ -67,7 +68,7 @@ Amends: 只新增，原有成员与行为不变。[04](../04-industry-packs/spec
 | `locked_sheet`         | CFB 容器里有 `EncryptedPackage`（加密的 Office 文件），或 ZIP 里有 `xl/vbaProject.bin`（含宏）                | 否     | 固定句并转顾问                                               |
 | `drawing`              | PDF（`%PDF`）、DWG（`AC10`）、DXF（文本以 `0\nSECTION` 开头）、STEP（`ISO-10303-21`）、IGES（第 73 列为 `S`） | 否     | 固定句并转顾问：与 10 的「来图加工」同一句                   |
 | `video`                | 企微 `msgtype=video`                                                                                          | 否     | 固定句并转顾问                                               |
-| `other`                | 其余，包括其他 CFB（.doc / .ppt）、超过上限的图片（8 MB）与表格（2 MB）                                       | 否     | 固定句：请把型号数量打字发来；不转顾问                       |
+| `other`                | 其余，包括其他 CFB（.doc / .ppt）、超过上限的图片（8 MB）与表格（2 MB）、超过 2 MB 的任何 ZIP（含带宏的）     | 否     | 固定句：请把型号数量打字发来；不转顾问                       |
 
 - 第 0 步实测：企微文件消息的 `Content-Type` 一律是 `application/octet-stream`，图片消息是 `image/png` / `image/jpeg`；GB18030 的 CSV 没有 BOM，靠扩展名加严格解码判类。
 - 不存原件的类别只记元数据：类别、大小、名称、sha256。
@@ -82,7 +83,7 @@ Amends: 只新增，原有成员与行为不变。[04](../04-industry-packs/spec
 - 从 `sync_msg` 的 `image` / `file` 消息里取 `media_id`，经 `GET /cgi-bin/media/get` 下载：
   - 用该账号自己的 access_token（`getAccessToken`，`src/adapters/wecom.ts:459-484`），遇 42001 / 40014 刷新一次后重试；
   - 超时 20 秒；
-  - 拿到响应头与前 64 KB 时就判类、判限额，超限当场中断，不读完；
+  - 拿到响应头与前 64 KB 时就判类、判限额，超限当场中断，不读完。早判的上限：图片 8 MB，ZIP 与文本 2 MB，图纸与 CFB 读完（企微单文件至多 20 MB）；中断的那份 `sha256` 记 null；
   - 日志只记 errcode、类别与字节数，不记文件名、`media_id`、URL。
 - 文件名：文件消息取 `Content-Disposition` 里的原文件名（先认 `filename*`，再认 `filename`），第 0 步实测与原文件名一致；图片消息的名字由企微生成（91 字），一律记为 null。只保留可显示字符，截到 100 字，只存进附件与消息的 `extra`，不进日志。
 - 超过 20 MB 的文件不会以文件消息到达：第 0 步实测，企微改发一条客户文字消息，内容就是原文件名（如「询价单.pdf」）。声明了 `intake` 的包把「整条消息只有一个带已知扩展名的文件名」认作超限提示（R9 判定的第 0 条），回固定句「文件太大没收到（企微最大 20 MB），请把型号和数量打字发来，或拆小后再发」，不转顾问。这条消息仍是普通文字，照常先过 `preflight`。
@@ -143,7 +144,7 @@ attachments: {
   mime: string;
   name: string | null;
   size: number;
-  sha256: string;
+  sha256: string | null; // 超限当场中断下载时为 null（R2）
   bytes: Uint8Array | null; // bytea；R1 不存的类别、超出日上限、会话进 spill 时为 null
   intakeId: string | null; // 并入的识别清单（R8）
   result: unknown | null; // 包写入的识别结果（R8），json
