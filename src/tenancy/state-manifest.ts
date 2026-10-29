@@ -157,6 +157,7 @@ export const STATE_MANIFEST: Record<
   'src/core/followup.ts:tenantState': { kind: 'tenant', state: 'followup.scan.stopping' },
   'src/core/guards/text.ts:IDENTITY_QUESTION': { kind: 'instance', why: '固定解析规则；lastIndex 仅在同步解析调用中使用，不存租户数据' },
   'src/core/insight.ts:caches': { kind: 'tenant', state: 'insight.insightCache' },
+  'src/core/llm/vision-limit.ts:counts': { kind: 'tenant', state: 'vision.daily' },
   'src/core/llm/client.ts:CHEAP_TIER_MODELS': { kind: 'instance', why: '按模型的事实、总量统计或观测接线；不作为租户数据缓存' },
   'src/core/llm/client.ts:REASONING_EFFORTS': { kind: 'instance', why: '按模型的事实、总量统计或观测接线；不作为租户数据缓存' },
   'src/core/llm/client.ts:__llmTest': { kind: 'instance', why: '自测能力出口；本对象不另存租户数据，所读写状态按各自条目归类' },
