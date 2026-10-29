@@ -118,6 +118,8 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'quote.approve': { label: '批准报价单', group: 'conversation', icon: 'badge-check' },
   'quote.reject': { label: '驳回报价单', group: 'conversation', icon: 'circle-x' },
   'quote.withdraw': { label: '撤回报价单', group: 'conversation', icon: 'circle-x' },
+  // 12 R12：工作台每下载一次客户发来的附件原件记一行，target 是附件 id，diff 只有附件 id、类别、大小
+  'attachment.download': { label: '下载附件', group: 'conversation', icon: 'file-down' },
   // 07 R24：AI 记录里「存为回归用例」每下载一次草稿记一行，target 是会话行的 ref，diff 带短码与轮次 id
   'trace.export': { label: '下载回归用例草稿', group: 'conversation', icon: 'file-down' },
   // 快捷回复（J 页右栏插进输入框的模板）随会话工作台归在「会话与订单」一类。第 13 步先写「常用回复」（那时「快捷」两字

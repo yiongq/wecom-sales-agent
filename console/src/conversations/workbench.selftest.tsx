@@ -33,6 +33,7 @@ import type { IndustryPack } from '../../../src/shared/pack.js';
 import type { Viewer } from '../shell/boot.js';
 import { useViewer, VIEWER_KEY } from '../viewer.js';
 import { SandboxChecklist } from '../sandbox/Sandbox.js';
+import { abandonRelogin, beginMemberSession, endMemberSession, isSessionExpired, resumeSession } from '../session.js';
 import { OrderRow, WorkbenchPage } from './WorkbenchPage.js';
 import {
   CAN_HANDLE_ROLES,
@@ -369,6 +370,9 @@ eq('能处理会话的角色：owner/admin/supervisor/agent，不含 viewer', [.
 const realNow = Date.now;
 Date.now = () => NOW;
 
+/** 假接口按附件 id 回的文件名（响应头里，按 RFC 5987 编码）；没有登记的回「附件-<id 后 6 位>.jpg」 */
+const ATT_NAMES: Record<string, string> = { att_000000000000000000000002: '询价单.xlsx' };
+
 interface MockServer {
   list?: ConversationRow[];
   cur: ConversationDetail | null;
@@ -388,6 +392,10 @@ interface MockServer {
   seenClientIds: string[];
   /** 记进账本里的消息（reply 成功时追加，供下一次 GET /conversations/:id 返回） */
   extraMessages: MessageView[];
+  /** 附件下载（GET /conversations/:id/attachments/:attId）的响应：缺省 200 回一段合成字节，文件名在响应头里 */
+  attachment?: { status: number; body?: unknown };
+  /** 设了就让附件下载的响应先等它：看「下载中…」 */
+  attachmentHold?: Promise<void>;
 }
 let server: MockServer = { cur: null, seenClientIds: [], extraMessages: [] };
 const json = (status: number, b: unknown): Response =>
@@ -412,6 +420,19 @@ function respond(method: string, url: URL, bodyText: string): Response {
     const next = server.quoteNext;
     if (next) return json(next.status, next.body);
     return json(200, server.cur?.orders[0]);
+  }
+  const attMatch = /^\/conversations\/([^/]+)\/attachments\/([^/]+)$/.exec(p);
+  if (attMatch && method === 'GET') {
+    const r = server.attachment ?? { status: 200 };
+    if (r.status !== 200) return json(r.status, r.body ?? { error: 'internal' });
+    const name = ATT_NAMES[attMatch[2]!] ?? `附件-${attMatch[2]!.slice(-6)}.jpg`;
+    return new Response('合成的原件字节', {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/octet-stream',
+        'Content-Disposition': `attachment; filename="attachment-${attMatch[2]!.slice(-6)}.bin"; filename*=UTF-8''${encodeURIComponent(name)}`,
+      },
+    });
   }
   const idMatch = /^\/conversations\/([^/]+)(\/.*)?$/.exec(p);
   if (idMatch && method === 'GET' && !idMatch[2]) {
@@ -508,11 +529,35 @@ function respond(method: string, url: URL, bodyText: string): Response {
   return json(404, { error: 'not_found' });
 }
 
+/** 发出过的请求（方法加解码后的路径），看附件下载有没有发 */
+const requests: string[] = [];
 globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost');
   const method = (init?.method ?? 'GET').toUpperCase();
+  requests.push(`${method} ${decodeURIComponent(url.pathname)}`);
+  if (/\/attachments\/[^/]+$/.test(url.pathname) && server.attachmentHold) await server.attachmentHold;
   return respond(method, url, typeof init?.body === 'string' ? init.body : '{}');
 }) as typeof fetch;
+
+// 附件下载：saveBlob 用 Blob 加 <a download>；这里接住 Blob 和文件名，不真的触发浏览器下载
+const downloads: { name: string; text: Promise<string> }[] = [];
+const urlApi = URL as unknown as { createObjectURL: (b: Blob) => string; revokeObjectURL: (u: string) => void };
+let lastBlob: Blob | null = null;
+urlApi.createObjectURL = (b: Blob) => {
+  lastBlob = b;
+  return 'blob:selftest';
+};
+urlApi.revokeObjectURL = () => {};
+const anchorProto = win.HTMLAnchorElement.prototype as unknown as { click: () => void };
+const realAnchorClick = anchorProto.click;
+// 带 download 的链接是 saveBlob 在点：接住它；别的链接照常点（路由的 Link 靠它）
+anchorProto.click = function click(this: HTMLAnchorElement) {
+  if (this.download) {
+    if (lastBlob) downloads.push({ name: this.download, text: lastBlob.text() });
+    return;
+  }
+  realAnchorClick.call(this);
+};
 
 const me = (role: Role): Me => ({
   userId: 'u1',
@@ -1895,6 +1940,180 @@ Date.now = realNow;
   );
   await act(async () => root.unmount());
   box.remove();
+}
+
+// 2.17 附件行（12 R12）：客户气泡下「附件：名称」，下载按钮只给能处理会话的成员，三种状态：下载中…、原件不可下载、下载失败
+{
+  const A1 = 'att_000000000000000000000001';
+  const A2 = 'att_000000000000000000000002';
+  const A3 = 'att_000000000000000000000003';
+  const custMsg = (seq: number, text: string, attachment: NonNullable<MessageView['attachment']>): MessageView => ({
+    seq,
+    role: 'customer',
+    author: 'customer',
+    authorName: null,
+    text,
+    kind: 'message',
+    at: atIso('2026-09-26T14:05:00'),
+    turnId: null,
+    guarded: null,
+    delivery: null,
+    attachment,
+  });
+  const attDetail = (): ConversationDetail =>
+    detail({
+      messages: [
+        ...detail().messages,
+        custMsg(3, '[图片]', { id: A1, cls: 'image', name: null, size: 2048, stored: true }),
+        custMsg(4, '[文件]', { id: A2, cls: 'sheet', name: '询价单.xlsx', size: 4096, stored: true }),
+        custMsg(5, '[文件]', { id: A3, cls: 'sheet', name: '旧单.xlsx', size: 4096, stored: false }),
+      ],
+    });
+  const fresh = (over: Partial<MockServer> = {}): MockServer => ({ cur: attDetail(), seenClientIds: [], extraMessages: [], ...over });
+  const rowOf = (m: Awaited<ReturnType<typeof mount>>, i: number): HTMLElement => m.$('.wb-attachment')[i]!;
+  const buttonText = (el: HTMLElement): string[] => [...el.querySelectorAll('button')].map((b) => (b.textContent ?? '').trim());
+  const attRequests = (): string[] => requests.filter((r) => r.includes('/attachments/'));
+
+  // 能处理会话的成员：名称、按钮、原件不可下载
+  server = fresh();
+  requests.length = 0;
+  let m = await mount(member('owner'));
+  eq(
+    '附件：三条客户消息各一行，在客户气泡里；没带附件的消息没有',
+    [m.$('.wb-attachment').length, m.$('.wb-bubble-customer .wb-attachment').length],
+    [3, 3],
+  );
+  eq('附件：名称写「附件：名称」，没有名称按类别写「图片」或「文件」', m.texts('.wb-attachment-name'), [
+    '附件：图片',
+    '附件：询价单.xlsx',
+    '附件：旧单.xlsx',
+  ]);
+  eq('附件：原件在的给「下载原件」按钮', [buttonText(rowOf(m, 0)), buttonText(rowOf(m, 1))], [['下载原件'], ['下载原件']]);
+  check(
+    '附件：库里没有原件（stored 为 false）写「原件不可下载」，没有按钮',
+    m.text(rowOf(m, 2)).includes('原件不可下载') && buttonText(rowOf(m, 2)).length === 0,
+    m.text(rowOf(m, 2)),
+  );
+  check(
+    '附件：原件在的不写「原件不可下载」',
+    !m.text(rowOf(m, 0)).includes('原件不可下载') && !m.text(rowOf(m, 1)).includes('原件不可下载'),
+  );
+  eq('附件：渲染本身不发下载请求', attRequests(), []);
+
+  // 下载中…：响应没回来之前按钮写「下载中…」且不能再点；只影响这一行
+  let release!: () => void;
+  server.attachmentHold = new Promise<void>((res) => (release = res));
+  downloads.length = 0;
+  await m.click(rowOf(m, 1).querySelector('button'));
+  eq('下载中：按钮写「下载中…」', buttonText(rowOf(m, 1)), ['下载中…']);
+  check('下载中：按钮处在加载态（点不了第二次）', rowOf(m, 1).querySelector('button')!.classList.contains('ant-btn-loading'));
+  eq('下载中：别的附件行不受影响', buttonText(rowOf(m, 0)), ['下载原件']);
+  eq('下载中：只发了一次请求，路径带会话与附件 id', attRequests(), [`GET /api/console/conversations/wecom:cust_F01/attachments/${A2}`]);
+  release();
+  server.attachmentHold = undefined;
+  await settle(m.qc);
+  eq(
+    '下载完成：按钮回到「下载原件」，没有错误',
+    [buttonText(rowOf(m, 1)), m.$('.wb-attachment .wb-inline-error').length],
+    [['下载原件'], 0],
+  );
+  eq(
+    '下载完成：存成响应头里的文件名（RFC 5987 解码），内容是响应体',
+    [downloads.length, downloads[0]?.name, await downloads[0]?.text],
+    [1, '询价单.xlsx', '合成的原件字节'],
+  );
+
+  // 没有名字的：文件名取响应头里的兜底名
+  downloads.length = 0;
+  await m.click(rowOf(m, 0).querySelector('button'));
+  eq(
+    '下载：没有名字的附件存成响应头里的「附件-<id 后 6 位>.jpg」',
+    downloads.map((d) => d.name),
+    ['附件-000001.jpg'],
+  );
+
+  // 失败：下载失败，请重试；按钮还在，重试成功后提示消失
+  server.attachment = { status: 500, body: { error: 'internal' } };
+  downloads.length = 0;
+  await m.click(rowOf(m, 0).querySelector('button'));
+  eq(
+    '失败：写「下载失败，请重试」，不存文件',
+    [m.text(rowOf(m, 0).querySelector('.wb-inline-error')), downloads.length],
+    ['下载失败，请重试', 0],
+  );
+  eq('失败：按钮还在，可以重试', buttonText(rowOf(m, 0)), ['下载原件']);
+  check('失败：提示用 role=alert 读出来', rowOf(m, 0).querySelector('.wb-inline-error')?.getAttribute('role') === 'alert');
+  eq('失败：别的行没有提示', m.$('.wb-attachment .wb-inline-error').length, 1);
+  server.attachment = undefined;
+  await m.click(rowOf(m, 0).querySelector('button'));
+  eq('失败后重试成功：提示消失，文件存下来', [m.$('.wb-attachment .wb-inline-error').length, downloads.length], [0, 1]);
+
+  // 点的时候服务端已经答 404（刚好被清理）：落到「原件不可下载」，不再给按钮
+  server.attachment = { status: 404, body: { error: 'not_found' } };
+  await m.click(rowOf(m, 1).querySelector('button'));
+  check(
+    '404：这一行改写「原件不可下载」，按钮没了，也不写「下载失败」',
+    m.text(rowOf(m, 1)).includes('原件不可下载') && buttonText(rowOf(m, 1)).length === 0 && !m.text(rowOf(m, 1)).includes('下载失败'),
+    m.text(rowOf(m, 1)),
+  );
+
+  // 401：会话过期走现有的统一处理（sessionFetch）：成员身份下请求停住，等就地登录——登录成功（同一个人）后重放，附件照样存下来；
+  // 登录框被关掉，请求拿到 401，这一行写「登录已过期」，不写「下载失败」，按钮还在
+  beginMemberSession({ userId: 'u1', csrf: 'c1' });
+  server.attachment = { status: 401, body: { error: 'unauthorized' } };
+  downloads.length = 0;
+  await m.click(rowOf(m, 0).querySelector('button'));
+  check(
+    '401：请求停在就地重登上（没有报错、没有存文件），按钮仍是「下载中…」',
+    isSessionExpired() &&
+      buttonText(rowOf(m, 0)).join() === '下载中…' &&
+      m.$('.wb-attachment .wb-inline-error').length === 0 &&
+      downloads.length === 0,
+    m.text(rowOf(m, 0)),
+  );
+  server.attachment = undefined; // 重新登录以后服务端认了
+  await act(async () => void resumeSession({ userId: 'u1', csrf: 'c2' }));
+  await settle(m.qc);
+  eq(
+    '401 重登后：同一个请求重放，附件存下来，没有报错',
+    [downloads.length, m.$('.wb-attachment .wb-inline-error').length, buttonText(rowOf(m, 0))],
+    [1, 0, ['下载原件']],
+  );
+  server.attachment = { status: 401, body: { error: 'unauthorized' } };
+  await m.click(rowOf(m, 0).querySelector('button'));
+  await act(async () => void abandonRelogin());
+  await settle(m.qc);
+  const expired = m.text(rowOf(m, 0).querySelector('.wb-inline-error'));
+  check(
+    '401 登录框被关掉：写「登录已过期」（不写「下载失败」），按钮还在可以再点',
+    expired.includes('登录已过期') && !expired.includes('下载失败') && buttonText(rowOf(m, 0)).join() === '下载原件',
+    expired,
+  );
+  endMemberSession();
+  await m.unmount();
+
+  // 坐席、主管也能下载；只读成员没有按钮（原件在不在都一样），只看到名称，没有原件的仍写「原件不可下载」
+  for (const role of ['agent', 'supervisor'] as const) {
+    server = fresh();
+    m = await mount(member(role));
+    eq(
+      `${role}：有下载按钮`,
+      [buttonText(rowOf(m, 0)), buttonText(rowOf(m, 1)), buttonText(rowOf(m, 2))],
+      [['下载原件'], ['下载原件'], []],
+    );
+    await m.unmount();
+  }
+  server = fresh();
+  requests.length = 0;
+  m = await mount(member('viewer'));
+  eq('只读成员：名称照常显示', m.texts('.wb-attachment-name'), ['附件：图片', '附件：询价单.xlsx', '附件：旧单.xlsx']);
+  eq('只读成员：任何一行都没有按钮', m.$('.wb-attachment button').length, 0);
+  check(
+    '只读成员：原件在的不写任何下载说明，没有原件的仍写「原件不可下载」',
+    !m.text(rowOf(m, 0)).includes('下载') && !m.text(rowOf(m, 1)).includes('下载') && m.text(rowOf(m, 2)).includes('原件不可下载'),
+  );
+  eq('只读成员：没有发过下载请求', attRequests(), []);
+  await m.unmount();
 }
 
 if (fails.length) {
