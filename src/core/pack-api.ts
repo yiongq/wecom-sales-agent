@@ -1,3 +1,8 @@
+import type { AttachmentClass, AttachmentRef } from '../shared/channel-types.js';
+import type { SheetRead } from './sheet-read.js';
+export type { AttachmentClass, AttachmentRef } from '../shared/channel-types.js';
+export type { SheetRead } from './sheet-read.js';
+export { parseCsv } from '../shared/csv.js';
 import { currentRuntime, tenantRuntimes, runtimeOf } from '../tenancy/runtime.js';
 import { registerTenantState } from '../tenancy/state.js';
 import { packPipelines } from './engine/pipelines.js';
@@ -236,6 +241,9 @@ import type { MockPolicy } from './llm/types.js';
 export { convLabel, logQuote } from '../log.js';
 
 export interface TurnContext {
+  attachment?: AttachmentRef;
+  /** 本会话后面已排着附件，本轮只保存识别结果。 */
+  moreQueued?: boolean;
   session: Session;
   text: string;
   /** 品牌模板模式下的品牌（旧版模式为 null）；contextNote 里对客口径按它渲染（06 原则的三种情形） */
@@ -251,6 +259,7 @@ export interface TurnContext {
 }
 
 export interface PrefetchResult {
+  effects?: { statePatch?: Record<string, unknown>; notify?: DeterministicReply['notify'] };
   calls: import('./llm/types.js').PrefetchedCall[];
   timings: string[];
 }
@@ -260,8 +269,24 @@ export interface DeterministicReply {
   text: string;
   fixedId?: string;
   handoff?: { reason: string };
-  notify?: { reason: 'quote_accepted'; orderId: string };
+  /** 核心与 quote_* 一样只做在途去重；跨轮次、已完成通知的去重由包的持久化状态负责。 */
+  notify?:
+    | { reason: 'quote_accepted'; orderId: string }
+    /** 同一个 intakeId 只通知一次：包记录已通知状态，后续轮次不再返回这项通知。 */
+    | { reason: 'intake_unmatched'; intakeId: string; lines: number[] };
   statePatch?: Record<string, unknown>;
+}
+
+export interface IntakeKit {
+  signal: AbortSignal;
+  sheet(): Promise<SheetRead>;
+  vision<T>(req: {
+    prompt: string;
+    schema: z.ZodType<T>;
+    maxOutputTokens: number;
+    mock?: unknown | ((signal: AbortSignal) => unknown | Promise<unknown>);
+  }): Promise<T | null>;
+  saveResult(result: unknown, intakeId: string): void;
 }
 
 export interface TurnToolContext extends ToolContext {
@@ -767,6 +792,10 @@ export interface SiteLinkDef {
 export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   id: string;
   documents?: { proposal?: boolean };
+  intake?: {
+    classes: readonly AttachmentClass[];
+    receive(ctx: TurnContext & { attachment: AttachmentRef }, kit: IntakeKit): Promise<DeterministicReply | null>;
+  };
   quotes?: {
     approval: true;
     validDays(policy: unknown): number;

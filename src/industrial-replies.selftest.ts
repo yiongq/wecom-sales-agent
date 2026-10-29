@@ -241,13 +241,19 @@ try {
   session.orderIds = orders.map((value) => value.id);
   session.packState = {};
   const confirm = () => preModel(context('确认下单'));
-  assert.equal(confirm()?.notify?.orderId, orders[1]!.id);
+  const confirmedOrder = () => {
+    const notify = confirm()?.notify;
+    assert.equal(notify?.reason, 'quote_accepted');
+    assert.ok(notify?.reason === 'quote_accepted');
+    return notify.orderId;
+  };
+  assert.equal(confirmedOrder(), orders[1]!.id);
   for (const text of ['还没确认下单', '不要确认下单', '可以下单吗？', '是否就按这个', '先别确认报价'])
     assert.equal(preModel(context(text)), null);
   session.orderIds.reverse();
-  assert.equal(confirm()?.notify?.orderId, orders[1]!.id);
+  assert.equal(confirmedOrder(), orders[1]!.id);
   orders[0]!.createdAt++;
-  assert.equal(confirm()?.notify?.orderId, orders[0]!.id);
+  assert.equal(confirmedOrder(), orders[0]!.id);
   assert.match(contextNote(context('确认下单')).join(''), /已批准且有效/);
   writeState(session, { rfqDraft: { at: now - 10, lines: [] } });
   assert.equal(confirm(), null);

@@ -122,7 +122,14 @@ export function stripAdvisorPrefix(text: string): string {
 // 在标题上标出来；正文是类型的中文。只按类型写死，不带转人工记录里的原因（model、claimed 的原因是模型写的，可能带着客户原话）
 
 /** 提醒的类型：转人工的类型，加上提醒专用类型（订单待确认、报价单待审/已确认、窗口快关、仍没人接手） */
-export type HandoffNoticeKind = HandoffKind | 'order_unconfirmed' | 'window_closing' | 'still_waiting' | 'quote_pending' | 'quote_accepted';
+export type HandoffNoticeKind =
+  | HandoffKind
+  | 'order_unconfirmed'
+  | 'window_closing'
+  | 'still_waiting'
+  | 'quote_pending'
+  | 'quote_accepted'
+  | 'intake_unmatched';
 
 /** 类型的中文。不用「待人工」「已转人工」「待接管」「需要介入」这类状态词（设计系统 §11） */
 export const HANDOFF_NOTICE_TEXT: Readonly<Record<HandoffNoticeKind, string>> = {
@@ -141,6 +148,7 @@ export const HANDOFF_NOTICE_TEXT: Readonly<Record<HandoffNoticeKind, string>> = 
   order_unconfirmed: '有订单等你确认价格',
   quote_pending: '有报价单等你审核',
   quote_accepted: '客户确认了报价单，等你安排付款发货',
+  intake_unmatched: '客户确认的询价单里有 N 行库里没找到，请核对',
   window_closing: '企微 48 小时窗口剩不到 4 小时，过了就发不出去',
   still_waiting: '转人工 10 分钟了，还没人接手',
 };
@@ -159,6 +167,7 @@ export function channelCustomerLabel(channel: string, customer: string): string 
  */
 export function handoffNoticeTitle(n: { label: string; shortId: string; kind: HandoffNoticeKind; paidCustomer: boolean }): string {
   const tag = `${n.label} · ${n.shortId || '····'}`;
+  if (n.kind === 'intake_unmatched') return `${tag} 询价清单需要核对`;
   if (n.kind === 'quote_pending') return `${tag} 报价单等你审核`;
   if (n.kind === 'quote_accepted') return `${tag} 客户确认了报价单`;
   const marks = [...(n.kind === 'emergency' ? ['紧急'] : []), ...(n.paidCustomer ? ['已成交客户要人工'] : [])];

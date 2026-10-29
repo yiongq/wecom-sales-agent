@@ -1,8 +1,10 @@
 // 12 R1 / R4：只读字节；不信任声明 MIME，不访问网络或存储。
 import { crc32 } from 'node:zlib';
+import type { AttachmentClass } from '../shared/channel-types.js';
+export type { AttachmentClass } from '../shared/channel-types.js';
 
 export const ATTACHMENT_CLASSES = Object.freeze(['image', 'sheet', 'legacy_sheet', 'locked_sheet', 'drawing', 'video', 'other'] as const);
-export type AttachmentClass = (typeof ATTACHMENT_CLASSES)[number];
+
 export const IMAGE_MAX_BYTES = 8 * 1024 * 1024;
 export const SHEET_MAX_BYTES = 2 * 1024 * 1024;
 /** 企微单个文件的上限：第 0 步实测，更大的文件不以文件消息到达 */

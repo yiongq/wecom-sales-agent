@@ -26,6 +26,7 @@ export interface HandoffNotice {
    * plan「实施记录 · 第 14 步」）。只在 kind 为 window_closing 时有意义
    */
   quotaExhausted?: boolean;
+  lines?: number[];
   /**
    * 会话标签的前半截，如「企微客户」（channelCustomerLabel：渠道短名加行业包里客户的叫法）。spec 的接口里没有这一项，
    * 标题「企微客户 · 7F3A 等人接手」要它（plan「实施记录 · 第 14 步」）
@@ -51,6 +52,7 @@ const TIME_LABEL: Partial<Record<HandoffNoticeKind, string>> = {
   order_unconfirmed: '下单',
   quote_pending: '申请报价',
   quote_accepted: '确认报价',
+  intake_unmatched: '确认清单',
 };
 
 /** 窗口的发送额度用完时追加的一句：只有这几个字，不碰会话内容（审查之后改的第 1 条） */
@@ -61,7 +63,10 @@ export const QUOTA_EXHAUSTED_MARK = '这个窗口的发送额度已用完，没�
  * 链接。只用这几样，不碰会话内容
  */
 export function noticeText(n: HandoffNotice, now = Date.now()): string {
-  const lines = [handoffNoticeTitle(n), HANDOFF_NOTICE_TEXT[n.kind], `${TIME_LABEL[n.kind] ?? '转人工'}时间：${absoluteTime(n.at, now)}`];
+  const body =
+    n.kind === 'intake_unmatched' ? HANDOFF_NOTICE_TEXT[n.kind].replace('N', String(n.lines?.length ?? 0)) : HANDOFF_NOTICE_TEXT[n.kind];
+  const lines = [handoffNoticeTitle(n), body, `${TIME_LABEL[n.kind] ?? '转人工'}时间：${absoluteTime(n.at, now)}`];
+  if (n.kind === 'intake_unmatched') lines.push(`行号：${n.lines?.join('、') ?? ''}`);
   if (n.kind === 'window_closing' && n.quotaExhausted) lines.push(QUOTA_EXHAUSTED_MARK);
   if (n.unsaved) lines.push(`${UNSAVED_MARK}：库暂时写不进去，工作台可能打不开，恢复之后不会再提醒这一条`);
   lines.push(`打开工作台：${n.link}`);
