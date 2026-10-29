@@ -1,6 +1,9 @@
 import type { ToolDef } from '../../tool-defs.js';
 import type { BrandProfile, ToolSpec } from '../pack-api.js';
 
+/** 仅视觉请求使用；主对话与历史仍只接受字符串。 */
+export type VisionContent = ({ type: 'text'; text: string } | { type: 'image_url'; image_url: { url: string } })[];
+
 export interface ChatTurn {
   role: 'user' | 'assistant';
   content: string;
