@@ -5,6 +5,7 @@ import {
   moneyProvenanceFollowupStep,
   type ShapePolicy,
 } from '../../core/pack-api.js';
+import { createIntake } from './intake.js';
 import { handoffVocab } from './handoff-vocab.js';
 import { industrialReplyGuard, industrialFollowupGuard, rfqTrimStep, rfqTrimFollowupStep } from './guards.js';
 import { IndustrialPolicySchema, quoteNotes } from './policy.js';
@@ -34,6 +35,7 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     session.orderIds.map(getAnyOrder).filter((order) => order && 'v' in order && order.sessionId === session.id);
   return {
     id: industrial.id,
+    intake: createIntake(sources),
     catalog: { part: partCatalog },
     maxQty: MAX_QTY,
     priceLine,
@@ -92,6 +94,12 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
       const policy = IndustrialPolicySchema.parse(ctx.policy ?? sources.currentPolicy().policy);
       return [
         ...contextNote(ctx),
+        ...(state.rfqIntake
+          ? [
+              `识别清单摘要：${JSON.stringify(state.rfqIntake)}`,
+              ...(state.rfqIntake.status === 'pending' ? ['识别清单还没确认，只能请客户确认或改行'] : []),
+            ]
+          : []),
         ...quoteNotes(policy),
         `付款条款：${policy.paymentTerms}；可开票种：${policy.invoice.join('、')}；报价有效期${policy.quoteValidDays}天`,
         ...(state.rfqDraft ? [`询价摘要：${JSON.stringify(state.rfqDraft)}`] : []),
