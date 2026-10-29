@@ -16,6 +16,11 @@ export const RfqIntakeSchema = z.strictObject({
   id: z.string().regex(/^int_[0-9a-f]{12}$/),
   at: safe,
   status: z.enum(['pending', 'confirmed', 'superseded']),
+  // 已并入附件的短哈希；旧会话缺省为空。删行也保留，恢复不能把删掉的行加回来。
+  seen: z
+    .array(z.string().regex(/^[0-9a-f]{8}$/))
+    .max(30)
+    .optional(),
   lines: z
     .array(
       z.strictObject({

@@ -146,6 +146,12 @@ export function createIntake(sources: Pick<PackSources, 'currentCatalog'>): NonN
       if (cls === 'video') return fixed('video', true);
       if (cls === 'other') return fixed('typing');
       const previous = readState(ctx.session).rfqIntake;
+      const attachmentHash = createHash('sha256').update(ctx.attachment.id).digest('hex').slice(0, 8);
+      // 状态与识别结果已保存、收件行尚未完成时可能重入；先去重，超出合并窗口也不重复识别或追加。
+      if (previous?.seen?.includes(attachmentHash)) {
+        const parts = (sources.currentCatalog().items.part ?? []).map((part) => PartSchema.parse(part));
+        return ctx.moreQueued ? null : { fixedId: 'industrial.intake.list', text: renderIntake(previous, parts) };
+      }
       // R9：只看上一份是否仍待确认、是否建于窗口内；回复、系统消息、等待句和夹在中间的文字都不打断。
       // 超出窗口新建时，状态里只有一个清单槽，旧的随之被取代（不再 pending）。
       const age = Date.now() - (previous?.at ?? 0);
@@ -191,10 +197,13 @@ export function createIntake(sources: Pick<PackSources, 'currentCatalog'>): NonN
       kit.saveResult({ original, lines: results }, id);
       if (lines.length + (collecting?.lines.length ?? 0) > 30) return refer('long');
       if (!lines.length) return fixed('typing');
+      // 删行不会清除去重记录；连续合并过多附件时转顾问，不能丢记录或让状态容量校验抛错。
+      if ((collecting?.seen?.length ?? 0) >= 30) return refer('long');
       const intake: RfqIntake = {
         id,
         at: collecting?.at ?? Date.now(),
         status: 'pending',
+        seen: [...(collecting?.seen ?? []), attachmentHash],
         lines: [...(collecting?.lines ?? []), ...lines],
       };
       writeState(

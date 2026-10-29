@@ -4,7 +4,7 @@ import { PartSchema } from './catalog.js';
 import { matchInMemory } from './match.js';
 import { FIXED, inquiryLines } from './inquiry.js';
 import { confirmsIntake, intakeNewer, intakeParts, intakePreModel, intakeQuoteLines, sameQuoteItems } from './intake-turn.js';
-import { pendingIntake } from './state.js';
+import { pendingIntake, readState, type RfqIntake } from './state.js';
 
 export { FIXED, inquiryLines };
 
@@ -150,19 +150,26 @@ async function textPrefetch(ctx: TurnContext, sources: PackSources, resumeExpire
 /** 12 R10：确认那一轮——已匹配的行按 q 一次试算，其余行通知顾问；清单同一次保存标 confirmed，之后不再触发。 */
 async function confirmPrefetch(ctx: TurnContext, sources: PackSources): Promise<PrefetchResult> {
   const intake = pendingIntake(ctx.session)!;
-  const { items, unmatched } = intakeQuoteLines(intake, intakeParts(sources));
+  const parts = intakeParts(sources);
+  const { items, unmatched } = intakeQuoteLines(intake, parts);
+  // 目录变更造成确认时不再精确的行，也要保留待核状态；以后重新上架不能自动解除数量闸。
+  const lines = intake.lines.map((line, i) =>
+    line.m === 'exact' && unmatched.includes(i + 1)
+      ? { ...line, m: line.qty === null ? ('bad_qty' as const) : matchInMemory(line.q, parts).match }
+      : line,
+  );
   const effects: NonNullable<PrefetchResult['effects']> = {
-    statePatch: { rfqIntake: { ...intake, status: 'confirmed' } },
+    statePatch: { rfqIntake: { ...intake, status: 'confirmed', lines } },
     ...(unmatched.length ? { notify: { reason: 'intake_unmatched', intakeId: intake.id, lines: unmatched } } : {}),
   };
   return { calls: items.length ? [await ctx.callTool('quote_items', { items })] : [], timings: [], effects };
 }
 export async function prefetch(ctx: TurnContext, sources: PackSources): Promise<PrefetchResult | null> {
-  const intake = pendingIntake(ctx.session);
-  if (!intake) return textPrefetch(ctx, sources, true);
+  const intake = readState(ctx.session).rfqIntake;
+  if (!intake || intake.status === 'superseded') return textPrefetch(ctx, sources, true);
   if (confirmsIntake(ctx.session, ctx.text)) return confirmPrefetch(ctx, sources);
-  const result = await textPrefetch(ctx, sources, false);
-  // 12 R9：客户这一轮自己打了带精确型号和数量的新询价，按文字询价走；待确认的清单随这一轮的回复标 superseded。
+  const result = await textPrefetch(ctx, sources, intake.status === 'confirmed');
+  // 12 R9：客户这一轮自己打了带精确型号和数量的新询价，按文字询价走；当前清单随这一轮的回复标 superseded。
   if (!mentionedParts(ctx.text, sources).some((m) => m.match === 'exact' && m.qty !== undefined && m.qty > 0)) return result;
   return {
     calls: result?.calls ?? [],
@@ -172,16 +179,39 @@ export async function prefetch(ctx: TurnContext, sources: PackSources): Promise<
 }
 const CONFIRMED_REJECT = '客户刚确认了识别清单：本轮只按清单里已匹配的行试算，不起草正式报价单，也不另查其他型号。';
 const PENDING_REJECT = '识别清单还没确认：请客户回复确认或指出要改的行';
-/** 12 R10：清单待确认时的工具闸；返回拒绝说明，放行返回 undefined。 */
-function intakeGate(
-  name: string,
-  args: unknown,
-  ctx: TurnToolContext,
-  intake: NonNullable<ReturnType<typeof pendingIntake>>,
-  sources: PackSources,
-) {
+const UNMATCHED_REJECT = '这一行顾问还在核对：请客户直接写出型号和数量';
+/** 12 R10：待确认清单与确认后待核行的工具闸；返回拒绝说明，放行返回 undefined。 */
+function intakeGate(name: string, args: unknown, ctx: TurnToolContext, intake: RfqIntake, sources: PackSources) {
   const parts = intakeParts(sources);
   const text = ctx.text ?? '';
+  if (intake.status === 'confirmed') {
+    if (name !== 'quote_items') return undefined;
+    const items = (args as { items?: unknown } | null)?.items;
+    if (!Array.isArray(items)) return UNMATCHED_REJECT;
+    const { items: quoted, unmatched } = intakeQuoteLines(intake, parts);
+    const quotedIds = new Set(quoted.map((item) => matchInMemory(item.query, parts).parts[0]!.id));
+    const heldIds = new Set(
+      unmatched.flatMap((n) => {
+        const line = intake.lines[n - 1]!;
+        const found = matchInMemory(line.q, parts);
+        return (found.match === 'exact' ? found.parts : line.m === 'ambiguous' ? found.parts.slice(0, 3) : [])
+          .filter((part) => !quotedIds.has(part.id))
+          .map((part) => part.id);
+      }),
+    );
+    const written = mentionedParts(text, sources).filter((m) => m.match === 'exact' && m.qty !== undefined);
+    for (const item of items) {
+      if (typeof item?.query !== 'string') continue; // 非法参数交工具 schema。
+      const found = matchInMemory(item.query, parts);
+      if (
+        found.match === 'exact' &&
+        heldIds.has(found.parts[0]!.id) &&
+        !written.some((m) => m.parts[0]!.id === found.parts[0]!.id && m.qty === item.qty)
+      )
+        return UNMATCHED_REJECT;
+    }
+    return undefined;
+  }
   // 确认那一轮：只放行入参恰好等于确认的那几行的 quote_items。
   if (confirmsIntake(ctx.session, text))
     return name === 'quote_items' && sameQuoteItems(args, intakeQuoteLines(intake, parts).items) ? undefined : CONFIRMED_REJECT;
@@ -199,8 +229,8 @@ function intakeGate(
   return allowed ? undefined : PENDING_REJECT;
 }
 export function beforeTool(name: string, args: unknown, ctx: TurnToolContext, sources: PackSources) {
-  const intake = pendingIntake(ctx.session);
-  const gated = intake ? intakeGate(name, args, ctx, intake, sources) : undefined;
+  const intake = readState(ctx.session).rfqIntake;
+  const gated = intake && intake.status !== 'superseded' ? intakeGate(name, args, ctx, intake, sources) : undefined;
   if (gated) return { reject: gated };
   const latestOrder = latestQuoteCandidate({ ...ctx.session, packState: {} }, Date.now());
   const confirming =

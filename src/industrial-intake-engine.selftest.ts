@@ -44,6 +44,8 @@ if (!mode) {
           ['6205-ZZ', '轴承'],
           ['6205-OPEN', '轴承'],
           ['M8×30', '紧固件'],
+          ['6206', '轴承'],
+          ['HS-100', '轴承'],
         ] as const
       ).map(([partNo, category], i) => ({
         id: `synthetic-${i}`,
@@ -121,7 +123,22 @@ if (!mode) {
   try {
     await store.initSessionStore(deps);
     await config.initConfig(null);
-    const runtime = createIndustrialRuntime(config.packSources());
+    const sources = config.packSources();
+    const baseCatalog = sources.currentCatalog;
+    let addedPart = false;
+    sources.currentCatalog = () => {
+      const base = baseCatalog();
+      return addedPart
+        ? {
+            ...base,
+            items: {
+              ...base.items,
+              part: [...base.items.part!, { ...(base.items.part![0] as object), id: 'synthetic-new', partNo: 'ZZ9999' }],
+            },
+          }
+        : base;
+    };
+    const runtime = createIndustrialRuntime(sources);
     const seen: ChatOptions[] = [];
     let script: (opts: ChatOptions) => Promise<string> = async () => '好的，已按清单处理。';
     runtime.mock = {
@@ -342,6 +359,23 @@ if (!mode) {
     const quiet = await send(D, sheet(['6205-2RS,1']), true);
     assert.equal(quiet.silent, true);
     assert.equal(store.getSession(D)!.messages.filter((m) => m.role === 'agent').length, 0);
+    await store.flushSession(D);
+    const replayRef = store.getSession(D)!.messages[0]!.attachment!;
+    const replayState = structuredClone(state(D));
+    await store.drainStore(5000);
+    rt.store.pgBackend!.close();
+    rt.store.pgBackend = null;
+    rt.store.sessions.clear();
+    rt.store.orders.clear();
+    await store.initSessionStore(deps);
+    const retried = await handleMessage(D, '', 'wecom', {
+      attachment: replayRef,
+      attachmentBytes: sheet(['6205-2RS,1']),
+      moreQueued: true,
+    });
+    await store.flushSession(D);
+    assert.equal(retried.silent, true);
+    assert.deepEqual(state(D), replayState, '重启后同附件重入：不重复并入，持久化的去重记录生效');
     const merged = await send(D, sheet(['M8*30,2']));
     assert.match(merged.text, /^从您发来的询价单里认出 2 行，请核对：\n1\. 6205-2RS，1件，已匹配\n2\. M8×30，2件，已匹配\n/);
     assert.equal(store.getSession(D)!.messages.filter((m) => m.role === 'agent').length, 1);
@@ -366,7 +400,68 @@ if (!mode) {
     await say(F, '可以');
     assert.equal(seen.at(-1)!.prefetch?.length ?? 0, 0, '隔了一轮模型回复：泛化肯定不算确认');
     assert.equal(state(F).rfqIntake!.status, 'pending');
-    console.log(`${mode}: ENGINE PASS 只通知、被取代、连发合并、超限提示、泛化确认`);
+    console.log(`${mode}: ENGINE PASS 只通知、被取代、连发合并与重启幂等、超限提示、泛化确认`);
+
+    // —— 场景 G：确认之后待核行不能被模型补数量；真正写出的型号、数量可报价 ——
+    const G = 'wecom:wmie-g';
+    await send(G, sheet(['6206,', 'ZZ9999,10', '6205,20', 'M8*30,5']));
+    script = async () => '已匹配的行已试算，其余行顾问核对。';
+    await say(G, '确认');
+    assert.deepEqual(
+      state(G).rfqIntake!.lines.map((line) => line.m),
+      ['bad_qty', 'none', 'ambiguous', 'exact'],
+    );
+    await runJobs();
+    assert.deepEqual(notices.at(-1)?.lines, [1, 2, 3]);
+    const heldDraft = structuredClone(state(G).rfqDraft);
+    // 库外型号后来上架，也不能把附件里未核过的数量直接拿来报价。
+    addedPart = true;
+    await store.drainStore(5000);
+    rt.store.pgBackend!.close();
+    rt.store.pgBackend = null;
+    rt.store.sessions.clear();
+    rt.store.orders.clear();
+    await store.initSessionStore(deps);
+    results.length = 0;
+    script = async (opts) => {
+      for (const query of ['6206', 'ZZ9999', '6205-ZZ'])
+        results.push(await opts.executeTool('quote_items', { items: [{ query, qty: 100 }] }));
+      return '请直接写出型号和数量。';
+    };
+    const held = await say(G, '确认');
+    assert.equal(seen.at(-1)!.prefetch?.length ?? 0, 0);
+    assert.deepEqual(
+      results.map((result) => JSON.parse(result).error),
+      Array(3).fill('这一行顾问还在核对：请客户直接写出型号和数量'),
+    );
+    assert.deepEqual(state(G).rfqDraft, heldDraft, '三项拒绝，没有新试算，rfqDraft 不变');
+    assert.doesNotMatch(held.text, /单价|合计/);
+    assert.equal(await jobCount(state(G).rfqIntake!.id), 1);
+    // 已报价行与清单外型号照 10 原样放行，不要求客户重写型号。
+    for (const [text, query, qty] of [
+      ['数量改成 200', 'M8×30', 200],
+      ['还有别的型号吗', 'HS-100', 10],
+    ] as const) {
+      script = async (opts) => {
+        const result = JSON.parse(await opts.executeTool('quote_items', { items: [{ query, qty }] }));
+        assert.equal(result.error, undefined);
+        assert.equal(result.lines[0].qty, qty);
+        return '已试算。';
+      };
+      await say(G, text);
+      assert.equal(state(G).rfqIntake!.status, 'confirmed');
+      assert.equal(state(G).rfqDraft!.lines[0]!.qty, qty);
+    }
+    script = async (opts) => {
+      const result = JSON.parse(await opts.executeTool('quote_items', { items: [{ query: '6206', qty: 50 }] }));
+      assert.equal(result.error, undefined);
+      assert.equal(result.lines[0].qty, 50);
+      return '已按您写的数量试算。';
+    };
+    await say(G, '6206 50个');
+    assert.equal(state(G).rfqDraft!.lines[0]!.qty, 50);
+    assert.equal(state(G).rfqIntake!.status, 'superseded', '明确的新文字询价取代已确认清单');
+    console.log(`${mode}: ENGINE PASS 确认后待核三类行拒绝、重启保护、显式数量放行、已报价与清单外型号照旧`);
   } finally {
     console.warn = warn;
     __notifierTest.use(null);

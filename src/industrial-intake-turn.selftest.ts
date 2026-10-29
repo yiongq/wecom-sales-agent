@@ -562,6 +562,63 @@ await test('beforeTool：确认那一轮、清单待确认的其他轮次、没�
   assert.match(direct(fresh(), '6205 100个', 'create_quote_sheet', { items: [] }).reject!, /多个候选/);
 });
 
+await test('确认后待核闸：逐项核型号与数量，别名与候选同样受限，已报价和清单外不受影响', async () => {
+  const session = withIntake(
+    [
+      { q: 'M8×30', qty: null, m: 'bad_qty' },
+      { q: 'HS-100', qty: 10, m: 'none' },
+      { q: '6205', qty: 20, m: 'ambiguous' },
+      { q: '6205-2RS', qty: 5, m: 'exact' },
+    ],
+    { status: 'confirmed' },
+  );
+  const call = (text: string, items: { query: string; qty: number }[]) =>
+    beforeTool('quote_items', { items }, toolCtx(session, text), sources) as { reject?: string };
+  const rejected = '这一行顾问还在核对：请客户直接写出型号和数量';
+  for (const query of ['M8*30', 'HS-100', '6205-2Z', '6205-OPEN']) {
+    assert.equal(call('确认', [{ query, qty: 100 }]).reject, rejected, query);
+    assert.equal(call(`${query} 有货吗`, [{ query, qty: 100 }]).reject, rejected);
+    assert.equal(call(`${query} 50个`, [{ query, qty: 100 }]).reject, rejected, '数量不等也拒绝');
+    assert.equal(call(`${query} 50个`, [{ query, qty: 50 }]).reject, undefined);
+  }
+  assert.equal(call('M8x30 50个', [{ query: 'M8×30', qty: 50 }]).reject, undefined, '归一后的同一型号');
+  assert.equal(
+    call('M8×30 50个', [
+      { query: 'M8×30', qty: 50 },
+      { query: 'HS-100', qty: 100 },
+    ]).reject,
+    rejected,
+    '逐项核对，不能夹带',
+  );
+  assert.equal(call('数量改成 200', [{ query: '6205-2RS', qty: 200 }]).reject, undefined, '候选与已报价重叠，已报价行照旧');
+  assert.equal(call('确认', [{ query: '6205-ZZ', qty: 200 }]).reject, undefined, '第四候选未列出，不扩大限制');
+  assert.equal(call('确认', [{ query: 'OUTSIDE-1', qty: 100 }]).reject, undefined, '清单外照旧');
+  writeState(session, { rfqIntake: { ...readState(session).rfqIntake!, status: 'superseded' } });
+  assert.equal(call('确认', [{ query: 'M8×30', qty: 100 }]).reject, undefined, '取代后不再限制');
+  const confirmed = withIntake(LINES, { status: 'confirmed' });
+  const next = await realPrefetch(confirmed, 'M8×30 50个').run();
+  assert.equal((next!.effects!.statePatch!.rfqIntake as Intake).status, 'superseded');
+  const drift = withIntake([{ q: 'HS-100', qty: 10, m: 'exact' }]);
+  const driftSources = {
+    ...sources,
+    currentCatalog: () => {
+      const base = sources.currentCatalog();
+      return {
+        ...base,
+        items: { ...base.items, part: base.items.part!.filter((part) => (part as { partNo: string }).partNo !== 'HS-100') },
+      };
+    },
+  };
+  const result = await prefetch(ctxOf(drift, '确认'), driftSources);
+  apply(drift, result!.effects);
+  assert.equal(readState(drift).rfqIntake!.lines[0]!.m, 'none', '确认时已下架的行保留待核状态');
+  assert.equal(
+    (beforeTool('quote_items', { items: [{ query: 'HS-100', qty: 100 }] }, toolCtx(drift, '确认'), sources) as { reject?: string }).reject,
+    rejected,
+    '重新上架后仍不能由模型补数量',
+  );
+});
+
 await test('被文字询价取代：客户自己打了带精确型号和数量的新询价，清单随这一轮回复标 superseded', async () => {
   // 新询价：按 10 的路试算，清单标 superseded，不发 intake_unmatched。
   const a = withIntake();

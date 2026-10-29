@@ -64,6 +64,7 @@ async function run(
     s?: Session;
     moreQueued?: boolean;
     signal?: AbortSignal;
+    id?: string;
   } = {},
 ) {
   const s = input.s ?? session();
@@ -98,7 +99,7 @@ async function run(
     session: s,
     text: '[文件]',
     attachment: {
-      id: `att_${randomBytes(12).toString('hex')}`,
+      id: input.id ?? `att_${randomBytes(12).toString('hex')}`,
       cls: input.cls ?? 'sheet',
       name: '投诉.xlsx',
       mime: 'application/octet-stream',
@@ -419,6 +420,7 @@ await test('状态、必留容量、缓存淘汰、resetKeys 与非法字段', a
       id: 'int_ffffffffffff',
       at: max,
       status: 'superseded',
+      seen: Array.from({ length: 30 }, (_, i) => i.toString(16).padStart(8, '0')),
       lines: Array.from({ length: 30 }, () => ({ q: '×'.repeat(32), qty: MAX_QTY, m: 'ambiguous' })),
     },
     lastQuoteId: `ord_${'f'.repeat(24)}`,
@@ -428,6 +430,8 @@ await test('状态、必留容量、缓存淘汰、resetKeys 与非法字段', a
   const { partsInPlay: _cache, ...mandatory } = readState(s);
   const mandatoryBytes = Buffer.byteLength(JSON.stringify(mandatory));
   assert.ok(mandatoryBytes <= 8192);
+  for (const seen of [Array(31).fill('12345678'), ['not-hex!'], ['123456789']])
+    assert.equal(StateSchema.safeParse({ ...mandatory, rfqIntake: { ...mandatory.rfqIntake, seen } }).success, false);
   writeState(
     s,
     {},
@@ -600,6 +604,46 @@ await test('连发：中间的只入库识别，最后一份统一回复整份�
   });
   assert.equal(readState(s).rfqIntake!.id, initial.id);
   assert.match(extra.reply!.text, /^从您发来的询价单里认出 4 行/);
+});
+await test('恢复幂等：同附件不重复识别或并入；第二份重试不影响三份合并', async () => {
+  const first = await run({ moreQueued: true });
+  const s = structuredClone(first.s);
+  const initial = structuredClone(s.packState);
+  const retry = await run({ s, id: first.ctx.attachment.id, moreQueued: true });
+  assert.equal(retry.reply, null);
+  assert.equal(retry.saved.length, 0);
+  assert.deepEqual(s.packState, initial, '同附件恢复不重复并入');
+  const replay = await run({ s, id: first.ctx.attachment.id, sheet: { ok: false, reason: 'corrupt' } });
+  assert.match(replay.reply!.text, /^从您发来的询价单里认出 1 行/);
+  assert.equal(replay.saved.length, 0, '已保存结果不重写，也不重新识别');
+  const second = await run({ s, moreQueued: true });
+  await run({ s, id: second.ctx.attachment.id, moreQueued: true });
+  const third = await run({ s });
+  assert.equal(readState(s).rfqIntake!.lines.length, 3);
+  assert.equal(readState(s).rfqIntake!.seen!.length, 3);
+  assert.match(third.reply!.text, /^从您发来的询价单里认出 3 行/);
+  assert.equal((await run({ s, id: second.ctx.attachment.id })).reply!.text, third.reply!.text);
+  // 恢复晚于十分钟，仍然只渲染当前清单；改过或删过的行不能被重复附件复原。
+  const current = readState(s).rfqIntake!;
+  writeState(s, { rfqIntake: { ...current, at: 0, lines: [{ q: 'M8×30', qty: 8, m: 'exact' }] } });
+  const edited = structuredClone(s.packState);
+  await run({ s, id: first.ctx.attachment.id });
+  assert.deepEqual(s.packState, edited);
+  // 老会话没有 seen 时按空集合处理，可以正常合并。
+  const legacy = session();
+  const { seen: _seen, ...old } = current;
+  writeState(legacy, { rfqIntake: old });
+  await run({ s: legacy });
+  assert.equal(readState(legacy).rfqIntake!.lines.length, 4);
+  assert.equal(readState(legacy).rfqIntake!.seen!.length, 1);
+  // 多次删行后也不能无界增加去重状态；记录满了安全转顾问。
+  const full = { ...current, seen: Array.from({ length: 30 }, (_, i) => i.toString(16).padStart(8, '0')) };
+  writeState(s, { rfqIntake: full });
+  const before = structuredClone(s.packState);
+  const overflow = await run({ s });
+  assert.equal(overflow.reply!.text, FIXED.long);
+  assert.ok(overflow.reply!.handoff);
+  assert.deepEqual(s.packState, before);
 });
 await test('合计 30 / 31 行边界：窗口内合计超限走 FIXED.long，不静默截断、不覆盖先前行', async () => {
   for (const n of [29, 30]) {
