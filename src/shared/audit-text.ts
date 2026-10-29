@@ -308,6 +308,8 @@ function single(entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups
       const reason = str(diff.reason);
       return { parts: [plain('取消了'), ...conv(diff), plain('的订单')], ...(reason ? { summary: `原因：${reason}` } : {}) };
     }
+    case 'attachment.download':
+      return { parts: [plain('下载了附件')] };
     case 'trace.export':
       return { parts: [plain('下载了'), ...conv(diff), plain('的回归用例草稿')] };
     case 'quick_reply.create':

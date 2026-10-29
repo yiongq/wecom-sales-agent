@@ -10,6 +10,7 @@ import { Button, Dropdown, Input, Modal, Switch } from 'antd';
 import { Ellipsis, MessagesSquare } from 'lucide-react';
 import { type FormEvent, type ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import type {
+  ApiError,
   ConversationQuote,
   ConversationQuoteCard,
   ConversationDetail,
@@ -22,6 +23,7 @@ import type {
 import { conversationState } from '../../../src/shared/conversation.js';
 import { clockTime, formatYuan } from '../../../src/shared/format.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
+import { saveBlob } from '../download.js';
 import { api, unwrap, HttpError } from '../api.js';
 import { ConfirmDanger } from '../parts/ConfirmDanger.js';
 import { errorLine } from '../parts/ErrorAlert.js';
@@ -438,11 +440,72 @@ function AgentBubble({
   );
 }
 
+/** 响应头里的文件名（filename*=UTF-8''…，服务端已按 RFC 5987 编码）；读不出来就用消息上的名字，再不行按附件 id 拼 */
+function downloadName(res: Response, attachment: NonNullable<MessageView['attachment']>): string {
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(res.headers.get('content-disposition') ?? '')?.[1];
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded);
+    } catch {
+      /* 编码不合格：用下面的兜底名 */
+    }
+  }
+  return attachment.name || `附件-${attachment.id.slice(-6)}`;
+}
+
+/**
+ * 12 R12：客户气泡下的附件行：「附件：名称」（没有名称按类别写「图片」或「文件」），原件还在（stored 以库里附件行为准）
+ * 且当前成员能处理会话时给下载按钮。下载中按钮写「下载中…」；原件不可下载（已清理、没存，或点的时候服务端已答 404）不给按钮；
+ * 失败写「下载失败，请重试」。下载走同一个会话客户端：401 照现有的会话过期处理（就地重登后重放），登录框被关掉才落到这里
+ */
+export function AttachmentRow({
+  id,
+  attachment,
+  handles,
+}: {
+  id: string;
+  attachment: NonNullable<MessageView['attachment']>;
+  handles: boolean;
+}) {
+  const download = useMutation({
+    mutationFn: async () => {
+      const res = await api.conversations[':id'].attachments[':attId'].$get({ param: { id, attId: attachment.id } });
+      if (res.status !== 200) {
+        const body = await res.json().catch(() => ({ error: 'bad_response' }));
+        throw new HttpError(res.status, body as ApiError);
+      }
+      saveBlob(downloadName(res, attachment), await res.blob());
+    },
+  });
+  const error = download.error;
+  const gone = !attachment.stored || (error instanceof HttpError && error.status === 404);
+  return (
+    <div className="wb-attachment">
+      <p className="wb-attachment-name">{cjk(`附件：${attachment.name || (attachment.cls === 'image' ? '图片' : '文件')}`)}</p>
+      {gone ? (
+        <p className="wb-attachment-note">原件不可下载</p>
+      ) : (
+        handles && (
+          <Button size="small" loading={download.isPending} onClick={() => download.mutate()}>
+            {download.isPending ? '下载中…' : '下载原件'}
+          </Button>
+        )
+      )}
+      {error && !gone && (
+        <p role="alert" className="wb-inline-error wb-attachment-error">
+          {error instanceof HttpError && error.status === 401 ? errorLine(error, {}).text : '下载失败，请重试'}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function MessageRow({
   id,
   m,
   steps,
   canTraces,
+  handles,
   selectedTurnId,
   onSelectTurn,
   pendingSave,
@@ -451,6 +514,7 @@ function MessageRow({
   m: MessageView;
   steps: readonly string[] | null;
   canTraces: boolean;
+  handles: boolean;
   selectedTurnId: string | null;
   onSelectTurn: (turnId: string) => void;
   pendingSave: boolean;
@@ -464,6 +528,7 @@ function MessageRow({
         <div className="wb-msg wb-msg-customer">
           <div className="wb-bubble wb-bubble-customer">
             <p className="wb-bubble-text">{cjk(m.text)}</p>
+            {m.attachment && <AttachmentRow id={id} attachment={m.attachment} handles={handles} />}
           </div>
         </div>
       ) : (
@@ -489,6 +554,7 @@ function MessageList({
   showSteps,
   steps,
   canTraces,
+  handles,
   selectedTurnId,
   onSelectTurn,
   pendingSeqs,
@@ -501,6 +567,7 @@ function MessageList({
   showSteps: boolean;
   steps: TurnStepsView | undefined;
   canTraces: boolean;
+  handles: boolean;
   selectedTurnId: string | null;
   onSelectTurn: (turnId: string) => void;
   pendingSeqs: ReadonlySet<number>;
@@ -529,6 +596,7 @@ function MessageList({
           id={id}
           m={m}
           steps={m.turnId ? (stepsOf.get(m.turnId) ?? null) : null}
+          handles={handles}
           canTraces={canTraces}
           selectedTurnId={selectedTurnId}
           onSelectTurn={onSelectTurn}
@@ -1015,6 +1083,7 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
           loadingEarlier={loadEarlier.isPending}
           showSteps={showSteps}
           steps={stepsQ.data}
+          handles={CAN_HANDLE_ROLES.has(me.role)}
           canTraces={detail.can.traces}
           selectedTurnId={selectedTurnId}
           onSelectTurn={(turnId) => {

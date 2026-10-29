@@ -75,6 +75,7 @@ import {
   currentPack,
 } from '../config/source.js';
 import { isUniqueViolation, withTenant, type TenantCtx, type Tx } from '../db/client.js';
+import { listAttachmentMetadata as listAttachmentRows, type AttachmentMetadata } from '../db/repo/attachments.js';
 import { writeAudit } from '../db/repo/audit.js';
 import { readMessagesBefore } from '../db/repo/messages.js';
 import { readOutboundForSeqs, type OutboundSendRow } from '../db/repo/outbound.js';
@@ -200,6 +201,7 @@ import {
   getSession,
   isDemoClassId,
   listAnyOrders,
+  listAttachmentMetadata,
   sessionStoreMode,
   storeHealth,
   StoreLaggingError,
@@ -207,6 +209,7 @@ import {
 import { rowToMessage } from '../store/project.js';
 import type { Order, Session } from '../types.js';
 import { safeEqual } from '../wecom-crypto.js';
+import { downloadAttachment, readFileAttachment } from './attachments.js';
 import { addListener, ensureEventHub, eventTiming, replayAfter, tailId, type Buffered } from './events.js';
 import { buildGoalDraft, GOAL_HISTORY_LIMIT, goalDraftFilename } from './goal-draft.js';
 import { maskNumbers } from './mask.js';
@@ -356,6 +359,16 @@ const committed = (sessionId: string): Promise<void> => flushSession(sessionId, 
 /** console 读库的那几处（trace 类、快捷回复）：本租户、当前成员 */
 const readTx = <T>(c: Context<ConsoleEnv>, fn: (tx: Tx) => Promise<T>): Promise<T> =>
   withTenant(configRuntime().db, ctxOf(c), fn, { readOnly: true });
+
+/**
+ * 12 R12：这个会话附件行的元数据，按附件 id 索引。工作台的 stored 以库里附件行为准，不信消息上附件引用的值（那是排队时的判断：
+ * 超出每日字节上限的、30 天后清掉字节的，库里已经没有原件）。db 存储的真实会话读库（本租户、当前成员，与别的读接口同一条路），
+ * demo 类会话与文件存储读文件后端。调用方只在消息里有附件引用时才查，没有附件的会话不多一次读
+ */
+async function attachmentIndex(c: Context<ConsoleEnv>, s: Session): Promise<ReadonlyMap<string, AttachmentMetadata>> {
+  const rows = tracedInDb(s) ? await readTx(c, (tx) => listAttachmentRows(tx, s.id)) : await listAttachmentMetadata(s.id);
+  return new Map(rows.map((a) => [a.id, a]));
+}
 
 /** 账本行里对应这条消息的投递状态（同 src/quota/ledger.ts 的 deliveryOf，同一张映射表；更早的消息读库里的行） */
 function deliveryFromRows(rows: readonly OutboundSendRow[], seq: number): MessageView['delivery'] {
@@ -711,8 +724,22 @@ export const consoleApi = new Hono<ConsoleEnv>()
     const s = listedSessionOf(c.req.param('id'));
     const turnIds = tracedInDb(s) ? windowTurnIds(s) : [];
     const guarded = turnIds.length ? await readTx(c, (tx) => readGuardTotals(tx, turnIds)) : new Map();
-    const body: ConversationDetail = conversationDetail(s, c.var.user!, guarded, clock());
+    const attachments = s.messages.some((m) => m.attachment) ? await attachmentIndex(c, s) : undefined;
+    const body: ConversationDetail = conversationDetail(s, c.var.user!, guarded, clock(), attachments);
     return c.json(body, 200);
+  })
+  // 下载客户发来的附件原件（12 R12）：只给能处理会话的成员，只读成员 403（图片无法像文字那样打码）。会留审计、给文件的 GET，
+  // 与 goal-draft 一样自己查跨站；读原件与写审计 attachment.download 在同一个事务里，审计写不进去就不给文件。
+  // 附件不属于这个会话、没有原件（没存、超日上限、30 天后清掉）、id 不合格都是 404
+  .get('/conversations/:id/attachments/:attId', canHandle, async (c) => {
+    if (isCrossSite(c)) return fail(c, 403, { error: 'cross_site', detail: '跨站请求已拒绝' });
+    const s = listedSessionOf(c.req.param('id'));
+    const attId = c.req.param('attId');
+    // db 存储的真实会话：附件在库里，和审计同一个事务读；demo 类会话与文件存储：附件在文件后端，事务外先读
+    const source = tracedInDb(s) ? 'db' : await readFileAttachment(attId);
+    const out = await withTenant(configRuntime().db, ctxOf(c), (tx) => downloadAttachment(tx, s.id, attId, source));
+    if (!out) return fail(c, 404, { error: 'not_found', detail: '这份附件的原件不可下载' });
+    return c.body(new Uint8Array(out.bytes), 200, out.headers);
   })
   .get('/conversations/:id/messages', canSeeCustomers, zValidator('query', MessagesQuery, badRequest), async (c) => {
     const s = listedSessionOf(c.req.param('id'));
@@ -734,9 +761,13 @@ export const consoleApi = new Hono<ConsoleEnv>()
               rows.filter((r) => r.role === 'agent').map((r) => r.seq),
             )
           : [];
-      return { rows, hasEarlier, guarded, outbound };
+      // 12 R12：这一页里有带附件引用的客户消息才查附件行（stored 以库里为准）
+      const attachments = rows.some((r) => r.role === 'customer' && rowToMessage(r).attachment)
+        ? new Map((await listAttachmentRows(tx, s.id)).map((a) => [a.id, a]))
+        : undefined;
+      return { rows, hasEarlier, guarded, outbound, attachments };
     });
-    const opts = { viewer: c.var.user!.role === 'viewer', withTurns: true, guarded: page.guarded };
+    const opts = { viewer: c.var.user!.role === 'viewer', withTurns: true, guarded: page.guarded, attachments: page.attachments };
     const body: MessagesPage = {
       messages: page.rows.map((r) =>
         messageView(rowToMessage(r), r.seq, r.turnId, r.role === 'agent' ? deliveryFromRows(page.outbound, r.seq) : null, opts),

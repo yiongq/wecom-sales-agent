@@ -3,7 +3,7 @@
 // Hono RPC 据此推出前端 hc 客户端的类型：这里改一个字段名，服务端和 console/src 的使用处都会在 typecheck 报错。
 // 配置层的领域类型（SopVersion、CatalogItem、ContractViolation）也定义在这里，src/config 与 src/sop 再导出，只此一份。
 import { z } from 'zod';
-import type { ChannelKind, ChannelAccountStatus } from './channel-types.js';
+import type { ChannelKind, ChannelAccountStatus, AttachmentClass } from './channel-types.js';
 import type { Hotel, Route } from './catalog-types.js';
 import type { CatalogKind } from './catalog.js';
 import {
@@ -567,6 +567,11 @@ export interface MessageView {
    * 03 起多 sending（发送中）与 cancelled（未发送）
    */
   delivery: DeliveryView | null;
+  /**
+   * 12 R12：客户这条消息带的附件（只有客户消息有）。stored 是库里附件行有没有原件（没存、超日上限、30 天后清掉都是 false），
+   * 不是消息上排队时的判断；name 对只读成员按正文同一口径打码。原件经 GET /conversations/:id/attachments/:attId 下载，只给能处理会话的成员
+   */
+  attachment?: { id: string; cls: AttachmentClass; name: string | null; size: number; stored: boolean };
 }
 
 /** J 页右栏与对话里的订单（ConversationDetail.orders、GET /orders） */
