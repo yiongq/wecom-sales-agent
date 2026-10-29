@@ -100,7 +100,8 @@ async function runVision<T>(req: VisionRequest<T>): Promise<VisionResult<T>> {
           messages: [{ role: 'user', content }],
           temperature: 0.1,
           max_tokens: req.maxOutputTokens,
-          // 第 0 步实测未带 response_format，带图兼容性未验证；JSON 由提示约束和 zod 校验，第 13 步真实模型闸再评估。
+          // 第 13 步实测：不带时约一半回复把 JSON 包在 ```json 代码块里；带上之后 9/9 是裸 JSON，内容与时延不变。
+          response_format: { type: 'json_object' },
           ...thinkingParams(baseUrl, model),
         }),
       },
@@ -116,7 +117,9 @@ async function runVision<T>(req: VisionRequest<T>): Promise<VisionResult<T>> {
     signal.throwIfAborted();
     const choice = data?.choices?.[0];
     if (choice?.finish_reason === 'length' || typeof choice?.message?.content !== 'string') throw new SyntaxError('vision_response');
-    const parsed = req.schema.safeParse(JSON.parse(choice.message.content));
+    // 换了不认 response_format 的服务商时，仍容忍外面包一层 ```json 代码块。
+    const body = /^\s*```(?:json)?\s*\n?([\s\S]*?)\n?\s*```\s*$/i.exec(choice.message.content)?.[1] ?? choice.message.content;
+    const parsed = req.schema.safeParse(JSON.parse(body));
     if (!parsed.success) throw new SyntaxError('vision_schema');
     return { ok: true, value: parsed.data };
   } catch (error) {

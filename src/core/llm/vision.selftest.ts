@@ -24,7 +24,7 @@ process.env.LLM_HEDGE_MODEL = 'glm-5.2';
 process.env.LLM_HEDGE_AFTER_MS = '1';
 
 let requests = 0;
-let mode: 'ok' | 'bad-json' | 'schema' | 'bad-envelope' | 'length' | 'hold' | 'slow-body' | 'error' = 'ok';
+let mode: 'ok' | 'fenced' | 'bad-json' | 'schema' | 'bad-envelope' | 'length' | 'hold' | 'slow-body' | 'error' = 'ok';
 let status = 500;
 let lastBody: Record<string, any> = {};
 const pending: (() => void)[] = [];
@@ -55,7 +55,13 @@ const server = createServer(async (req, res) => {
     res.end(
       JSON.stringify(
         completion(
-          mode === 'bad-json' ? 'not JSON' : mode === 'schema' ? '{"qty":"wrong"}' : undefined,
+          mode === 'bad-json'
+            ? 'not JSON'
+            : mode === 'schema'
+              ? '{"qty":"wrong"}'
+              : mode === 'fenced'
+                ? '```json\n{"part":"A1","qty":2}\n```'
+                : undefined,
           mode === 'length' ? 'length' : undefined,
         ),
       ),
@@ -126,14 +132,18 @@ try {
   ]);
   assert.equal(lastBody.max_tokens, 100);
   assert.equal(lastBody.temperature, 0.1);
-  assert.equal(Object.hasOwn(lastBody, 'response_format'), false);
+  assert.deepEqual(lastBody.response_format, { type: 'json_object' });
   assert.deepEqual(lastBody.thinking, thinkingParams(process.env.LLM_BASE_URL, 'glm-5.3-flashx').thinking);
   assert.equal(lastBody.reasoning_effort, 'low');
   assert.deepEqual(estimates[0], { purpose: 'vision', estimate: costOf('glm-5.3-flashx', request().prompt.length + 4000, 100) * 1000 });
   const estimate = estimates.at(-1);
   assert.equal((await vision({ ...request(), bytes: new Uint8Array(1024 * 1024) })).ok, true);
   assert.deepEqual(estimates.at(-1), estimate, '图字节变大不改变预占');
-  console.log('vision: success / data URL / model params / one usage / token estimate');
+  // 第 13 步实测：模型常把 JSON 包在 ```json 代码块里；带 response_format 之外仍容忍这层包装。
+  mode = 'fenced';
+  assert.deepEqual(await vision(request()), { ok: true, value: { part: 'A1', qty: 2 } });
+  mode = 'ok';
+  console.log('vision: success / data URL / model params (json_object) / fenced JSON / one usage / token estimate');
 
   // HTTP、正文与 schema 失败均不抛，且每次只发一个请求。
   for (const next of ['bad-json', 'bad-envelope', 'schema', 'length'] as const) {

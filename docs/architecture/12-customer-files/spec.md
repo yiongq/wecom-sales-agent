@@ -12,6 +12,7 @@ Revisions: 2026-10-29 第 4 步实现时就地修订，尚无已上线的代码�
 Revisions: 2026-10-29 第 6 步实现时就地修订，尚无已上线的代码依赖：网页的「发文件」按钮与上传接口只对声明了 `intake` 的包开放；没声明的包（旅游）页面与改动前逐项相同，上传接口在读请求体之前回 404。R3 随之写明（R15「没声明的包不变」的网页一侧）。
 Revisions: 2026-10-29 第 8 步实现时就地修订，尚无已上线的代码依赖：清单 `pending` 的其他轮次，`quote_items` 除了型号要是客户本句写出的精确型号，数量也须等于本句写的数量（防止模型借用清单里还没确认的数量去试算，守不变量 1）；确认那一轮除入参恰好等于确认行的 `quote_items` 外，其他工具一律拒绝；客户把清单的行删光时回固定句 `industrial.intake.cleared`、清单标 `superseded`；超限提示认的「已知扩展名」写定为常见表格、文档、压缩包、图纸与图片扩展名，文件名里带句内标点的不算；合并窗口按清单创建时刻计，合并后不顺延。R9、R10 随之写明。
 Revisions: 2026-10-30 第 12 步中期审查后就地修订，尚无已上线的代码依赖（审查与修复见 plan「实施记录 · 第 12 步」）：R6 一个工作表部件只能被一张可见表引用、可见表至多 20 张（同一部件重复引用几百次能撑爆内存）；R4 JPEG 只留 APP0、APP2、APP14，并按 owner 当日所定写回只含方向的最小 APP1，不变量 10 与验收 8 随之改为「除方向标记外」；R4 附件份数改为进程内预占；R3 网页附件唯一键改为 `<会话 id>:<cid>`，转人工那一轮的那句照常返回给网页客户（同时部分取代 03，见下）；R5 `moreQueued` 改为读到时求值；R9 清单记已并入的附件，恢复时不重复追加；R10 清单确认之后，确认时没报价的行不能被模型自己补数量。
+Revisions: 2026-10-30 第 13 步真实模型实测后就地修订，尚无已上线的代码依赖（结果见 plan「实施记录 · 第 13 步」）：R7 视觉请求带 `response_format: json_object`，解析时容忍 ```json 代码块。不带时约一半回复包着代码块，工业闸的「图片改行后确认」因此只有 2/5，修后 5/5。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8「按信号再定」；[10](../10-industrial-rfq-pack/spec.md)「后续」第 2 条。
 Depends on: [10 · 工业品询价包](../10-industrial-rfq-pack/spec.md) 已 implemented（`demo-v10`）；10 第 21 步（工业预取）已合入 `dev`，还没有随 tag 上线，12 的第一个 rc 一并带上。
 Supersedes in part: [10](../10-industrial-rfq-pack/spec.md) 的四处，理由都是「客户发来的附件要变成可确认的清单」。（1）R16 修订里工业包的 `non-text.image` / `non-text.file` / `non-text.video` 三句提示：图片、表格改由识别流程接管，视频改为转顾问（R1）。（2）R11：「确认下单」的候选判定，有更新的待确认清单时不接受更早的报价（R9）。（3）R7：`packState` 上限从 8,192 字节放宽到 10,240 字节，必留摘要加 `rfqIntake`、`resetKeys` 加 `rfqIntake`（R8）。（4）不变量 5：只约束经模型回复管线的回复；确定性的识别清单至多 30 行，另由本 spec 不变量 8 约束。10 在本 spec 翻 `ready` 时加反向的 `Superseded in part by:` 行。
@@ -273,7 +274,7 @@ type SheetRead = { ok: true; sheets: { name: string; rows: string[][] }[] } | { 
 
 - 核心在模型客户端加一条带图片的请求：消息内容为 `[{ type: 'text' }, { type: 'image_url' }]`，图片以 `data:<mime>;base64,` 的 data URL 内联（第 0 步实测可用）。
 - 模型取 `LLM_VISION_MODEL`，缺省为主模型 `glm-5.3-flashx`（智谱价格页列明其输入含图片）。
-- 输出必须是 JSON，经包给的 zod schema 校验，不合格当 `null`。
+- 输出必须是 JSON：请求带 `response_format: { type: 'json_object' }`，解析时容忍外面一层 ```json 代码块，再经包给的 zod schema 校验，不合格当 `null`。第 13 步实测：不带它时约一半回复包着代码块（原先的解析会全判失败），带上后都是裸 JSON，内容与时延不变。
 - 提示与图片只在这一次请求里，不进主对话的系统前缀，也不进会话历史；图里的文字一律当数据。
 
 **失败与时限。**
