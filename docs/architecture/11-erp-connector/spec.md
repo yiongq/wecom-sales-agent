@@ -1,9 +1,10 @@
 # 11 · 外部业务系统连接器：Odoo 实时库存（只读）
 
-Status: draft
+Status: ready
 Revisions: 2026-10-29 起草；依据 10「后续」第 1 条与工业品询价调研（另记）。
 Revisions: 2026-10-29 起草期评审（一路 Claude Opus，只读，对照代码并核对 Odoo 文档与源码）之后就地修订，尚无代码依赖；owner 当日定开放问题 1：第一期只读，写回整段移出 11、另起 spec（理由见「非目标」「被否决的方案」）。按评审改：出站防护补上 IP 字面量（Node 遇字面量不调 `lookup`），AGENTS.md 规则原文随之修改；交期不再取 Odoo 的 `sale_delay`（语义不同）；「新鲜值」只有一个定义，工具结果、`priceLine`、自动批准与护栏证据（含跟进）共用；每轮共享一个 ERP 截止时间、预取一次预热、每个连接器一条保活连接，按 10 第 21 步的实测重算时延；API key 到期日必填并提前告警，Odoo 20 只认 scope 为 `rpc` 的 key；不再加 pre-11 回滚档（R11）；头部改为部分取代 10 R4、R6 (2) 与 ADR-003 决策 2；集成脚本进程内注入出站；补齐边界规则、计划依赖、`package.json` 与 `sandbox_tenant_purge`；单路请求加每秒限速、401 与 403 分开、`search_read` 带 `active_test`、地址改白名单式等次要项；砍掉并发池、可调时限与连接器 key。开放问题由 7 条减为 5 条。
 Revisions: 2026-10-29 owner 定开放问题 1–5，全部照推荐：只支持 Odoo 19、20 的 JSON-2；客户料号 / 竞品料号对照不放进 11；工业演示租户不接 Odoo，验收在本机一次性容器上做；连接器凭据共用 `CHANNEL_SECRETS_KEY`；这一轮取不到新鲜值时退回产品库的值，同时不自动批准、给顾问留系统消息。
+Revisions: 2026-10-29 owner 定 `ready`。同一 docs PR 把 R3、R4 的两条规则原文写进 AGENTS.md，给 ADR-003 与 10 加反向的 `Superseded in part by:`（10 的那一行一并写 R9 的收紧），给 03、04、05、08 加 `Amended by:`，主参考「阶段 8」加一条。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8「按信号再定」；[10](../10-industrial-rfq-pack/spec.md)「后续」第 1 条。
 Depends on: [12 · 客户发来的图片与文件](../12-customer-files/spec.md) 已 implemented（R7 要改的工业包文件与 12 重叠）；[09](../09-quote-approval/spec.md)、[10](../10-industrial-rfq-pack/spec.md) 已 implemented；[03](../03-channels-v2/spec.md) R9 的密钥环与加密存库；[05](../05-tenancy-sandbox/spec.md) R5 的租户状态登记与 R12 的沙箱回收。
 Supersedes in part: [10](../10-industrial-rfq-pack/spec.md) 的两处，理由都是「接了 ERP 的租户，库存以 ERP 的新鲜值为准」：（1）R4「行属性」里判现货用的「库存」；（2）R6 自动批准条件（2）「每一行在建单这一刻都是库存 ≥ 数量」。新条文见 R7，没有启用连接器的租户仍按原文。[ADR-003](../../adr/adr-003-open-core-boundary.md) 决策 2「不进任何仓库」一格的「凭据：只放服务器上的 env 文件（01 起按 compose 服务拆分），不写进日志」：改为按租户的渠道凭据（03 引入，当时没有在 ADR 落档）与外部业务系统凭据（本 spec）可以加密存库，密钥环只在 env 文件（R3）。10 与 ADR-003 在本 spec 翻 `ready` 时加反向的 `Superseded in part by:` 行。

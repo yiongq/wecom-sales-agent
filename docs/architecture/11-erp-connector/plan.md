@@ -1,6 +1,6 @@
 # 11 · 外部业务系统连接器 — 执行计划
 
-对应 [spec.md](./spec.md)。只记步骤和状态，不复述设计；R、不变量、验收、开放问题的编号都指本 spec。本 spec 现为 `draft`。
+对应 [spec.md](./spec.md)。只记步骤和状态，不复述设计；R、不变量、验收、开放问题的编号都指本 spec。本 spec 已由 owner 于 2026-10-29 定为 `ready`。
 
 ## 开工条件
 
@@ -150,3 +150,8 @@
 - 已向 owner 讲通俗版；开放问题 1–5 全部照推荐（spec 第三条 `Revisions:`）。
 - spec 仍为 `draft`，随本 docs PR 进 `dev`；是否翻 `ready` 由 owner 决定。翻 `ready` 的 PR 同时改 AGENTS.md（R3、R4 两条原文），给 ADR-003 与 10 加反向的 `Superseded in part by:`，给 03、04、05、08 加 `Amended by:`，主参考「阶段 8」加一条。
 - 开工要等 12 implemented（R7 改的工业包文件与 12 重叠）。
+
+### 交接（2026-10-29，owner 定 ready）
+
+- spec 翻 `ready`；AGENTS.md 的两条规则、ADR-003 与 10 的反向行、03 / 04 / 05 / 08 的 `Amended by:`、主参考「阶段 8」同一 PR 补上。
+- 下一步：12 implemented 之后开工第 0 步。第 0 步里「从线上服务器所在地区测远端 Odoo」要 owner 当次授权。
