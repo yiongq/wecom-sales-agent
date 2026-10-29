@@ -4,8 +4,54 @@ import { classifyAttachment, sniffAttachment, stripImageMetadata } from './attac
 import type { AttachmentItem } from '../db/repo/attachments.js';
 import type { AttachmentRef } from '../shared/channel-types.js';
 import { readAttachmentUsage } from '../store.js';
-import { numEnv } from '../env.js';
+import { numEnv, todayIso } from '../env.js';
 import { alert } from '../ops/alert.js';
+import { TenantLocal } from '../tenancy/local-state.js';
+import { currentRuntime } from '../tenancy/runtime.js';
+import { registerTenantState } from '../tenancy/state.js';
+
+interface DayCount {
+  day: string;
+  count: number;
+  ready: Promise<void> | null;
+}
+const counts = new TenantLocal(() => ({ current: null as DayCount | null }));
+registerTenantState({ name: 'attachment.daily', ...counts.registration((s) => (s.current ? 1 : 0)) });
+
+/** 每租户每天只读一次基数；等待者醒来后同步预占，避免把已提交份数重复相加。
+ * 成本护栏而非计费：仅准备失败退还，成功后不随落库结果回退；重启重新读库。
+ */
+async function reserveAttachment(): Promise<(() => void) | null> {
+  const rt = currentRuntime();
+  const state = counts.get();
+  for (;;) {
+    if (!counts.owns(rt, state) || rt.cancel.aborted) throw new Error('tenant_closing');
+    const day = todayIso();
+    if (state.current?.day !== day) state.current = { day, count: 0, ready: null };
+    const current = state.current;
+    if (!current.ready) {
+      current.ready = readAttachmentUsage(new Date())
+        .then(({ count }) => {
+          if (counts.owns(rt, state) && state.current === current && !rt.cancel.aborted) current.count = count;
+        })
+        .catch((error: unknown) => {
+          if (state.current === current) current.ready = null;
+          throw error;
+        });
+    }
+    await current.ready;
+    if (!counts.owns(rt, state) || rt.cancel.aborted) throw new Error('tenant_closing');
+    if (state.current !== current || current.day !== todayIso()) continue;
+    if (current.count >= Math.max(0, Math.floor(numEnv('ATTACHMENT_DAILY_PER_TENANT', 300)))) return null;
+    current.count++;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      if (counts.owns(rt, state) && state.current === current) current.count--;
+    };
+  }
+}
 
 export interface AttachmentInput {
   bytes: Uint8Array;
@@ -54,39 +100,44 @@ export async function prepareAttachment(
     if (stripped.ok) bytes = stripped.bytes;
     else kind = { cls: 'other', mime: 'application/octet-stream' };
   }
-  const usage = await readAttachmentUsage();
-  if (usage.count >= Math.max(0, Math.floor(numEnv('ATTACHMENT_DAILY_PER_TENANT', 300)))) {
+  const releaseReservation = await reserveAttachment();
+  if (!releaseReservation) {
     alert('attachment_limit', '附件达到当日份数上限，请客户改用文字提供型号和数量');
     return { ok: false, text: '请把型号和数量打字发来', cls: kind.cls };
   }
-  const stored = kind.cls === 'image' || kind.cls === 'sheet';
-  const attachment: AttachmentRef = {
-    id: input.id ?? `att_${randomBytes(12).toString('hex')}`,
-    cls: kind.cls,
-    mime: kind.mime,
-    name,
-    size: early?.size ?? bytes.byteLength,
-    stored,
-  };
-  return {
-    ok: true,
-    value: {
-      attachment,
-      attachmentItem: {
-        id: attachment.id,
-        cls: attachment.cls,
-        mime: attachment.mime,
-        name,
-        size: attachment.size,
-        channel: input.channel,
-        sourceKey: input.sourceKey,
-        sha256: early ? null : createHash('sha256').update(bytes).digest('hex'),
-        bytes: stored ? bytes : null,
-        intakeId: null,
-        result: null,
-        createdAt: Date.now(),
+  try {
+    const stored = kind.cls === 'image' || kind.cls === 'sheet';
+    const attachment: AttachmentRef = {
+      id: input.id ?? `att_${randomBytes(12).toString('hex')}`,
+      cls: kind.cls,
+      mime: kind.mime,
+      name,
+      size: early?.size ?? bytes.byteLength,
+      stored,
+    };
+    return {
+      ok: true,
+      value: {
+        attachment,
+        attachmentItem: {
+          id: attachment.id,
+          cls: attachment.cls,
+          mime: attachment.mime,
+          name,
+          size: attachment.size,
+          channel: input.channel,
+          sourceKey: input.sourceKey,
+          sha256: early ? null : createHash('sha256').update(bytes).digest('hex'),
+          bytes: stored ? bytes : null,
+          intakeId: null,
+          result: null,
+          createdAt: Date.now(),
+        },
+        ...(stored ? { attachmentBytes: bytes } : {}),
       },
-      ...(stored ? { attachmentBytes: bytes } : {}),
-    },
-  };
+    };
+  } catch (error) {
+    releaseReservation();
+    throw error;
+  }
 }

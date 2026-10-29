@@ -288,6 +288,8 @@
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
+  /* AI 气泡是右对齐的按钮，气泡里的多行文字（如 12 的识别清单）仍从左读起 */
+  text-align: left;
 }
 .wb-bubble-label {
   margin: 0 0 2px;

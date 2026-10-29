@@ -215,7 +215,7 @@ export interface HandleOpts {
    * 优先于存储原件：超过每日字节上限或进入 spill、库里只有元数据时仍照常识别，读完即弃。
    */
   attachmentBytes?: Uint8Array;
-  moreQueued?: boolean;
+  moreQueued?: boolean | (() => boolean);
   /** 渠道消息 id：企微文本消息带上，记在客户消息上，重放时按它对齐 */
   msgid?: string;
   /** 企微 send_time（毫秒）：发送窗口从它起算（R18） */
@@ -320,7 +320,9 @@ async function handleMessageInner(
     session,
     text: state.text,
     ...(opts.attachment ? { attachment: opts.attachment } : {}),
-    ...(opts.moreQueued !== undefined ? { moreQueued: opts.moreQueued } : {}),
+    get moreQueued() {
+      return typeof opts.moreQueued === 'function' ? opts.moreQueued() : opts.moreQueued;
+    },
     brand: state.binding.brand,
     policy: state.policy,
     policyHash: state.policyHash,
@@ -330,7 +332,7 @@ async function handleMessageInner(
     },
   };
   const intake = opts.attachment
-    ? await receiveAttachment(runtime, { ...turnContext, attachment: opts.attachment }, opts.attachmentBytes)
+    ? await receiveAttachment(runtime, Object.assign(turnContext, { attachment: opts.attachment }), opts.attachmentBytes)
     : undefined;
   if (intake && state.takenOver()) return state.unsentTakenOver();
   const deterministic = intake ? intake.reply : runtime.preModel?.(turnContext);

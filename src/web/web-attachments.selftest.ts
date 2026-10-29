@@ -95,6 +95,7 @@ let received = 0;
 let blocked: Promise<void> | undefined;
 let started: (() => void) | undefined;
 let invalidReply = false;
+let handoffReply = false;
 const runtime = withFixtureIntake(base, async (ctx, kit) => {
   received++;
   started?.();
@@ -123,7 +124,11 @@ const runtime = withFixtureIntake(base, async (ctx, kit) => {
     assert.deepEqual(result, { code: 'A1' });
   }
   kit.saveResult(result, 'int_123456789abc');
-  return { text: invalidReply ? '未登记的文字' : '附件已核验。', fixedId: 'fixture.intake' };
+  return {
+    text: invalidReply ? '未登记的文字' : '附件已核验。',
+    fixedId: 'fixture.intake',
+    ...(handoffReply ? { handoff: { reason: '附件已核验。' } } : {}),
+  };
 });
 bindPack(runtime, runtime.defaultBrand);
 const jpeg = Buffer.from('ffd8ffe10008457869664750ffda000273ffd9', 'hex');
@@ -168,7 +173,6 @@ try {
   await store.flushSession(visitor.s.id);
   const rows = await store.listAttachmentMetadata(visitor.s.id);
   assert.equal(rows.length, 1);
-  assert.equal(rows[0]!.sourceKey, firstCid);
   assert.equal(rows[0]!.cls, 'sheet');
   assert.equal(rows[0]!.channel, 'web');
   assert.equal(rows[0]!.name, '投诉.csv');
@@ -204,6 +208,27 @@ try {
   );
   assert.ok(!JSON.stringify(historyBody).includes('投诉'));
   console.log('PASS web attachments: cid 重试同回复、附件只存一份、历史只有占位');
+
+  const second = await upload(form(csv, '另一份.csv', firstCid));
+  await json(second);
+  const otherVisitor = own(second);
+  assert.notEqual(otherVisitor.cookie, visitor.cookie);
+  await store.flushSession(otherVisitor.s.id);
+  const otherRows = await store.listAttachmentMetadata(otherVisitor.s.id);
+  assert.equal(otherRows.length, 1);
+  assert.equal(rows[0]!.sourceKey, `${visitor.s.id}:${firstCid}`);
+  assert.equal(otherRows[0]!.sourceKey, `${otherVisitor.s.id}:${firstCid}`);
+  assert.notEqual(otherRows[0]!.id, rows[0]!.id);
+  assert.equal(otherVisitor.s.messages[0]!.attachment?.id, otherRows[0]!.id);
+  for (const row of [rows[0]!, otherRows[0]!]) {
+    const saved = await store.readAttachment(row.id, true);
+    assert.ok(saved && 'bytes' in saved && saved.bytes);
+    assert.equal(saved.conversationId, row.conversationId);
+    assert.deepEqual(Buffer.from(saved.bytes), csv);
+  }
+  await json(await upload(form(jpeg, '重试.jpg', firstCid), { cookie: otherVisitor.cookie }));
+  assert.equal((await store.listAttachmentMetadata(otherVisitor.s.id)).length, 1);
+  console.log('PASS web attachments: 不同 cookie 复用 cid 各有可读附件，同会话重试不重复');
 
   const events = await app.request(`/api/web/${primary.key}/events`, { headers: { cookie: visitor.cookie, 'x-forwarded-for': nextIp() } });
   const reader = events.body!.getReader();
@@ -350,6 +375,16 @@ try {
   await store.flushSession(b.s.id);
   assert.equal((await store.listAttachmentMetadata(b.s.id)).length, 4, '预算转人工也保留原件');
   console.log('PASS web attachments: 表格退还 dailyTurns、视觉保留预占、预算转人工保存附件');
+
+  // 12 R3：这一轮刚转人工（如图纸的固定句），那句照常回给客户；之后的轮次才回 null。
+  handoffReply = true;
+  const referred = await upload();
+  assert.equal((await json(referred)).reply?.text, '附件已核验。', '转人工那一轮的固定句照常回给网页客户');
+  const r = own(referred);
+  assert.equal(r.s.handedOver, true);
+  handoffReply = false;
+  assert.equal((await json(await upload(form(), { cookie: r.cookie }))).reply, null, '已转人工之后的轮次回 null');
+  console.log('PASS web attachments: 转人工那一轮回固定句、之后回 null');
 
   visitor.s.handedOver = true;
   const callsBeforeHuman = received;

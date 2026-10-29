@@ -288,8 +288,9 @@ function xlsx(bytes: Uint8Array): SheetRead {
   const shared = sharedRoot ? children(sharedRoot, 'si').map(richText) : [];
   const sheetsNode = one(workbook, 'sheets');
   check(!!sheetsNode);
-  const sheets: { name: string; rows: string[][] }[] = [];
+  const visible: { name: string; target: string }[] = [];
   const names = new Set<string>();
+  const targets = new Set<string>();
   for (const sheet of children(sheetsNode, 'sheet')) {
     const state = sheet.attrs.get('state');
     if (state === 'hidden' || state === 'veryHidden') continue;
@@ -297,10 +298,14 @@ function xlsx(bytes: Uint8Array): SheetRead {
     const name = sheet.attrs.get('name');
     const relationId = [...sheet.attrs].find(([key]) => local(key) === 'id')?.[1];
     const target = relationId ? links.get(relationId) : undefined;
-    check(!!name && !!target && !names.has(name));
+    check(!!name && !!target && !names.has(name) && !targets.has(target));
     names.add(name);
-    sheets.push({ name, rows: worksheet(read(target), shared) });
+    targets.add(target);
+    visible.push({ name, target });
   }
+  // 先核完整引用表，再展开任何二维数组；解压缓存不能约束重复展开的内存。
+  limit(visible.length <= 20);
+  const sheets = visible.map(({ name, target }) => ({ name, rows: worksheet(read(target), shared) }));
   return { ok: true, sheets };
 }
 

@@ -70,7 +70,7 @@ function cfb(names: string[], version = 3): Buffer {
   }
   return b;
 }
-function segment(marker: number, text: string): Buffer {
+function segment(marker: number, text: string | Buffer): Buffer {
   const data = Buffer.from(text);
   const head = Buffer.from([255, marker, 0, 0]);
   head.writeUInt16BE(data.length + 2, 2);
@@ -190,7 +190,95 @@ test('R2 sniff 六类、声明大小超限与 64 KiB 分片字符', () => {
   assert.equal(sniffAttachment(Buffer.alloc(SHEET_MAX_BYTES + 1, 65), null).tooLarge, true);
 });
 
-test('R4 JPEG 删除全部 APP1（Exif / XMP），保留段链、熵编码与多扫描', () => {
+// 手写 TIFF：IFD0 同时带方向、Make / Model、GPS 指针；不使用生产解析器生成样本。
+function exif(orientation: number, little = false): Buffer {
+  const tiff = Buffer.alloc(80);
+  tiff.write(little ? 'II' : 'MM');
+  const u16 = (value: number, at: number) => (little ? tiff.writeUInt16LE(value, at) : tiff.writeUInt16BE(value, at));
+  const u32 = (value: number, at: number) => (little ? tiff.writeUInt32LE(value, at) : tiff.writeUInt32BE(value, at));
+  u16(42, 2);
+  u32(8, 4);
+  u16(4, 8);
+  for (const [i, [tag, type, count, value]] of [
+    [0x0112, 3, 1, orientation],
+    [0x010f, 2, 6, 62],
+    [0x0110, 2, 6, 68],
+    [0x8825, 4, 1, 74],
+  ].entries()) {
+    const at = 10 + i * 12;
+    u16(tag!, at);
+    u16(type!, at + 2);
+    u32(count!, at + 4);
+    if (type === 3) u16(value!, at + 8);
+    else u32(value!, at + 8);
+  }
+  tiff.write('Maker', 62);
+  tiff.write('Model', 68);
+  return Buffer.concat([Buffer.from('457869660000', 'hex'), tiff]);
+}
+
+test('R4 JPEG MM / II 方向 2–8 重写为唯一最小 APP1，设备 / GPS / XMP 全丢', () => {
+  const soi = Buffer.from('ffd8', 'hex');
+  const app0 = segment(0xe0, 'JFIF');
+  const scan = Buffer.from('ffda000273ff0020ffd031ffd9', 'hex');
+  for (const little of [false, true])
+    for (let orientation = 2; orientation <= 8; orientation++) {
+      const original = Buffer.concat([soi, segment(0xe1, 'XMP location'), app0, segment(0xe1, exif(orientation, little)), scan]);
+      const result = stripImageMetadata(original);
+      assert.equal(result.ok, true);
+      if (!result.ok) continue;
+      const out = Buffer.from(result.bytes);
+      // 第一个 APP1 原来是 XMP：仍在该位置写方向，且整条段链只剩这一个 APP1。
+      assert.equal(out.readUInt16BE(2), 0xffe1);
+      assert.equal(out.readUInt16BE(4), 34);
+      const payload = out.subarray(6, 38);
+      assert.equal(payload.subarray(0, 6).toString('hex'), '457869660000');
+      const tiff = payload.subarray(6);
+      assert.equal(tiff.toString('ascii', 0, 2), 'MM');
+      assert.equal(tiff.readUInt16BE(2), 42);
+      assert.equal(tiff.readUInt32BE(4), 8);
+      assert.equal(tiff.readUInt16BE(8), 1);
+      assert.equal(tiff.readUInt16BE(10), 0x0112);
+      assert.equal(tiff.readUInt16BE(12), 3);
+      assert.equal(tiff.readUInt32BE(14), 1);
+      assert.equal(tiff.readUInt16BE(18), orientation);
+      assert.equal(tiff.readUInt16BE(20), 0);
+      assert.equal(tiff.readUInt32BE(22), 0);
+      assert.deepEqual(out.subarray(38), Buffer.concat([app0, scan]), '扫描数据逐字节不变，其他 APP1 全丢');
+      for (const secret of ['Maker', 'Model', 'XMP']) assert.equal(out.includes(Buffer.from(secret)), false);
+      assert.deepEqual(stripImageMetadata(out), result, '去元数据幂等');
+    }
+});
+
+test('R4 JPEG 方向 1 / 缺失 / 不可信 Exif 不保留 APP1，但图片仍成功', () => {
+  const variants = [exif(1), Buffer.from('XMP only'), Buffer.from('457869660000', 'hex')];
+  for (const [offset, value, size] of [
+    [6, 0, 2], // 字节序
+    [6, 0xcdcd, 2], // 高位不能被 ASCII 解码抹去
+    [8, 43, 2], // TIFF magic
+    [10, 0xffffffff, 4], // IFD0 越界
+    [14, 100, 2], // 条目表越界
+    [16, 0x010e, 2], // 没有 Orientation
+    [18, 4, 2], // 非 SHORT
+    [20, 2, 4], // count 非 1
+    [24, 0, 2],
+    [24, 9, 2],
+  ]) {
+    const invalid = exif(6);
+    if (size === 4) invalid.writeUInt32BE(value!, offset!);
+    else invalid.writeUInt16BE(value!, offset!);
+    variants.push(invalid);
+  }
+  variants.push(exif(6).subarray(0, 50));
+  const clean = Buffer.from('ffd8ffda000273ff0020ffd031ffd9', 'hex');
+  for (const payload of variants) {
+    const result = stripImageMetadata(Buffer.concat([clean.subarray(0, 2), segment(0xe1, payload), clean.subarray(2)]));
+    assert.deepEqual(result, { ok: true, bytes: clean });
+  }
+  assert.deepEqual(stripImageMetadata(clean), { ok: true, bytes: clean }, '原来没有 APP1 不添加');
+});
+
+test('R4 JPEG 删除无有效方向的 APP1（Exif / XMP），保留段链、熵编码与多扫描', () => {
   const soi = Buffer.from([255, 216]);
   const eoi = Buffer.from([255, 217]);
   const app0 = segment(224, 'JFIF');
@@ -226,6 +314,31 @@ test('R4 JPEG 删除全部 APP1（Exif / XMP），保留段链、熵编码与多
     Buffer.from('ffd8ff00', 'hex'),
   ])
     assert.deepEqual(stripImageMetadata(broken), { ok: false });
+});
+
+test('R4 JPEG 只保留 APP0 / APP2 / APP14，删除其他 APPn 与 COM，扫描字节不变', () => {
+  const soi = Buffer.from([255, 216]);
+  const eoi = Buffer.from([255, 217]);
+  const kept = [segment(0xe0, 'JFIF'), segment(0xe2, 'ICC'), segment(0xee, 'Adobe')];
+  const scan = Buffer.concat([segment(0xda, 'scan'), Buffer.from([20, 255, 0, 40, 255, 208, 50])]);
+  const coding = [0xdb, 0xc0, 0xc4, 0xdd].map((marker) => segment(marker, 'coding'));
+  const input = Buffer.concat([
+    soi,
+    kept[0]!,
+    ...Array.from({ length: 16 }, (_, i) => 0xe0 + i)
+      .filter((m) => ![0xe0, 0xe2, 0xee].includes(m))
+      .map((m) => segment(m, 'private metadata')),
+    kept[1]!,
+    segment(0xfe, 'private comment'),
+    kept[2]!,
+    ...coding,
+    scan,
+    segment(0xed, 'IPTC between scans'),
+    segment(0xfe, 'comment between scans'),
+    scan,
+    eoi,
+  ]);
+  assert.deepEqual(stripImageMetadata(input), { ok: true, bytes: Buffer.concat([soi, ...kept, ...coding, scan, scan, eoi]) });
 });
 
 test('R4 PNG 删除 eXIf / tEXt / iTXt / zTXt，保留原块与 CRC；坏结构失败', () => {
