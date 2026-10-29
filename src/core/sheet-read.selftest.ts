@@ -183,6 +183,35 @@ test('R6 合并填满、隐藏 / veryHidden 跳过、多表与绝对部件路径
   ]);
 });
 
+test('R6 重复工作表部件按解析路径拒绝，在展开单元格之前检查', () => {
+  for (const target of ['worksheets/sheet0.xml', '/xl/worksheets/sheet0.xml', 'worksheets/../worksheets/sheet0.xml']) {
+    const parts = book([
+      { name: '第一张', xml: sheet(cells('A')) },
+      { name: '不同表名', xml: sheet(cells('B')), target },
+    ]);
+    failure(parts, 'corrupt');
+    // 若先展开第一张，就会先报 too_large，证明引用校验没有前置。
+    parts[2]!.data = sheet('<row r="201"><c><v>1</v></c></row>');
+    failure(parts, 'corrupt');
+    parts[0]!.data = String(parts[0]!.data).replace('r:id="rId1"', 'r:id="rId0"');
+    failure(parts, 'corrupt');
+  }
+});
+
+test('R6 可见工作表 20 张正常、21 张在展开之前判 too_large，隐藏表不占名额', () => {
+  const tables = Array.from({ length: 21 }, (_, i) => ({ name: `表${i}`, xml: sheet(cells(String(i))) }));
+  const twenty = book(tables.slice(0, 20));
+  assert.deepEqual(
+    success(readSheet(zip(twenty))).sheets.map((s) => s.rows),
+    tables.slice(0, 20).map((_, i) => [[String(i)]]),
+  );
+  failure(book(tables), 'too_large');
+  const invalidFirst = book(tables);
+  invalidFirst[2]!.data = '<broken>';
+  failure(invalidFirst, 'too_large');
+  assert.equal(success(readSheet(zip(book([...tables.slice(0, 20), { ...tables[20]!, state: 'hidden' }])))).sheets.length, 20);
+});
+
 test('R6 XML 五个预定义实体、数字引用、命名空间、注释与 CDATA', () => {
   const body =
     '<row><c t="inlineStr"><is><t>&amp;&lt;&gt;&quot;&apos;&#65;&#x4E2D;</t></is></c><c t="inlineStr"><is><t><![CDATA[A&B]]></t></is></c></row>';

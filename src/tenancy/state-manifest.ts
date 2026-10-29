@@ -3,6 +3,7 @@ export const STATE_MANIFEST: Record<
   string,
   { kind: 'tenant'; state: string } | { kind: 'instance'; why: string } | { kind: 'object-keyed' }
 > = Object.freeze({
+  'src/core/attachment-intake.ts:counts': { kind: 'tenant', state: 'attachment.daily' },
   'src/packs/industrial/auxiliary.ts:followupTemplates': { kind: 'instance', why: '工业包的固定配置与词表，不含租户数据或运行时快照。' },
   'src/packs/industrial/auxiliary.ts:insightPrompts': { kind: 'instance', why: '工业包的固定配置与词表，不含租户数据或运行时快照。' },
   'src/packs/industrial/auxiliary.ts:mock': { kind: 'instance', why: '工业包的固定配置与词表，不含租户数据或运行时快照。' },
