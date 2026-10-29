@@ -29,6 +29,8 @@
       <button class="retry-btn" id="retryBtn" type="button" hidden>重试</button>
       <form class="inputbar" id="composer">
         <textarea id="input" rows="2" maxlength="1000" aria-label="咨询内容" placeholder="想去哪儿玩？聊聊您的旅行计划…" enterkeyhint="send" required></textarea>
+        <input id="fileInput" type="file" accept="image/jpeg,image/png,.xlsx,.csv,.xls,.pdf" hidden disabled>
+        <button id="fileBtn" type="button" hidden disabled>发文件</button>
         <button id="sendBtn" type="submit">发送</button>
       </form>
       <footer class="foot">AI 回复仅供参考，需要真人服务时请回复「人工」。<br><a id="privacy" href="/privacy" target="_blank" rel="noopener noreferrer" hidden>隐私说明</a></footer>
