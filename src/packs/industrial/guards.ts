@@ -142,6 +142,7 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
           .filter((m) => m.role === 'customer')
           .map((m) => m.content)
           .join('\n');
+  const intakeQueries = readState(ctx.session).rfqIntake?.lines.map((line) => normalizePartNo(line.q)) ?? [];
   const inputNormalized = normalizePartNo(input);
   const facts = evidence(ctx, sources);
   const models = [...new Set([...cache.map((part) => part.partNo), ...facts.map((fact) => fact.partNo)])];
@@ -190,6 +191,7 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
               !specToken.test(token) &&
               !known.has(normalized) &&
               !inputNormalized.includes(normalized) &&
+              !intakeQueries.some((q) => q.includes(normalized)) &&
               !specs.some((spec) => spec.includes(normalized)) &&
               !/^https?:/i.test(sentence.trim())
             );
