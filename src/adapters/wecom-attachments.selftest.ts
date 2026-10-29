@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { z } from 'zod';
 import type { KfMessage } from './wecom-state.js';
 import type { Db } from '../db/client.js';
 
@@ -201,6 +202,45 @@ async function send(uid: string, type = 'image', media = 'jpeg', n = 1) {
 const sentTo = (uid: string) => sent.filter((s) => s.touser === uid).map((s) => s.text.content);
 const rowOf = async (uid: string) => (await store.listAttachmentMetadata(`wecom:${uid}`))[0]!;
 const waitText = '收到图片，正在识别型号和数量，请稍等';
+// 合成视觉结果逐份并入持久状态，检查对客清单确实含三张图的行，而非只数发送次数。
+function mergingRuntime(messages: KfMessage[], beforeRead: (index: number) => Promise<void>) {
+  const merging = withFixtureIntake(base, async (ctx, kit) => {
+    const msgid = ctx.session.messages.find((m) => m.attachment?.id === ctx.attachment.id)?.msgid;
+    const index = messages.findIndex((m) => m.msgid === msgid);
+    assert.ok(index >= 0);
+    await beforeRead(index);
+    const result = await kit.vision({
+      prompt: '读取合成型号',
+      schema: z.object({ part: z.string() }),
+      maxOutputTokens: 100,
+      mock: { part: ['A1', 'B2', 'C3'][index] },
+    });
+    assert.ok(result);
+    const parts = [
+      ...new Set([
+        ...String(ctx.session.packState?.tier ?? '')
+          .split('、')
+          .filter(Boolean),
+        result.part,
+      ]),
+    ];
+    ctx.session.packState = { ...ctx.session.packState, tier: parts.join('、') };
+    kit.saveResult(result, 'int_123456789abc');
+    return ctx.moreQueued ? null : { text: `合并清单：${parts.join('、')}`, fixedId: 'fixture.merged' };
+  });
+  merging.fixedReplies = [
+    ...(merging.fixedReplies ?? []),
+    {
+      id: 'fixture.merged',
+      source: 'src/adapters/wecom-attachments.selftest.ts',
+      kind: 'plain',
+      producedBy: { outside: '合成附件清单' },
+      pattern: /^合并清单：(A1|B2|C3)(、(A1|B2|C3))*$/,
+      samples: () => [{ mode: 'template', text: '合并清单：A1、B2、C3' }],
+    },
+  ];
+  return merging;
+}
 try {
   await channels.initChannels({ db, tenantId, tenantSlug: 'attachment-in', varDir: dir, keyRing: ring });
   channels.startChannels();
@@ -270,6 +310,92 @@ try {
   assert.deepEqual(sentTo('wmAsheet'), ['附件已核验。']);
   receiveDelay = 0;
   console.log('ATTACHMENT PASS: 连发三张只合并回复、按批 5 秒只发一次 notice 且先于清单、仅表格无等待');
+
+  for (const slowRead of [false, true]) {
+    const uid = slowRead ? 'wmAlateslow' : 'wmAlate';
+    const messages = Array.from({ length: 3 }, () => message(uid));
+    let started!: () => void;
+    const reading = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    let resume!: () => void;
+    const queued = new Promise<void>((resolve) => {
+      resume = resolve;
+    });
+    const merging = mergingRuntime(messages, async (index) => {
+      if (index === 0) {
+        started();
+        await queued;
+      }
+      // A 超过 5 秒后，B 再识别 5 秒：批次若被提前结束，会多发一句等待句。
+      if (slowRead && index < 2) await sleep(5100);
+    });
+    bindPack(merging, merging.defaultBrand);
+    try {
+      incoming = [messages[0]!];
+      await wecom.syncAccountFromCallback(account, 'fixture-sync');
+      await reading;
+      assert.deepEqual(sentTo(uid), [], 'A 正在识别，尚未输出');
+      incoming = messages.slice(1);
+      await wecom.syncAccountFromCallback(account, 'fixture-sync');
+      resume();
+      await idle();
+      assert.deepEqual(sentTo(uid), [...(slowRead ? [waitText] : []), '合并清单：A1、B2、C3'], '晚到附件只输出一份完整清单');
+      assert.equal(store.getSession(`wecom:${uid}`)!.messages.filter((m) => m.role === 'agent').length, 1);
+      for (const msg of messages)
+        assert.equal((await query<{ state: string }>('select state from channel_inbox where msgid=$1', [msg.msgid]))[0]?.state, 'done');
+      console.log(`ATTACHMENT PASS: 晚到 B/C 合并 A+B+C，${slowRead ? 'A/B 各超过 5 秒只一句等待且先于清单' : '快批次无等待'}`);
+    } finally {
+      resume();
+      bindPack(runtime, runtime.defaultBrand);
+    }
+  }
+
+  // 重启中间态：A 已并入状态且 done，B 已 recorded 尚未识别，C 仍 received。
+  const restartMessages = Array.from({ length: 3 }, () => message('wmAmidrestart'));
+  const restartSession = store.getOrCreateSession('wecom:wmAmidrestart', 'wecom');
+  restartSession.packState = { tier: 'A1' };
+  for (const [index, msg] of restartMessages.entries()) {
+    if (index < 2) {
+      const prepared = await prepareAttachment({ bytes: jpeg, name: null, channel: 'wecom', sourceKey: msg.msgid });
+      assert.ok(prepared.ok);
+      restartSession.messages.push({
+        role: 'customer',
+        content: '[图片]',
+        at: Date.now(),
+        msgid: msg.msgid,
+        attachment: prepared.value.attachment,
+      });
+      store.queueAttachment(restartSession.id, prepared.value.attachmentItem);
+    }
+  }
+  store.saveSession(restartSession);
+  await store.flushSession(restartSession.id);
+  for (const [index, msg] of restartMessages.entries()) {
+    await query(
+      `insert into channel_inbox (tenant_id,account_id,msgid,kind,conversation_id,sent_at,state,payload) values ($1,$2,$3,'message',$4,now(),$5,$6::json)`,
+      [tenantId, account, msg.msgid, restartSession.id, ['done', 'recorded', 'received'][index], index === 0 ? null : JSON.stringify(msg)],
+    );
+  }
+  const resumedReads: number[] = [];
+  const merging = mergingRuntime(restartMessages, async (index) => {
+    resumedReads.push(index);
+    if (index === 1) await sleep(5100);
+  });
+  bindPack(merging, merging.defaultBrand);
+  const beforeRestartDownloads = downloads;
+  channels.__channelsTest.reset();
+  await channels.initChannels({ db, tenantId, tenantSlug: 'attachment-in', varDir: dir, keyRing: ring });
+  channels.startChannels();
+  await wecom.syncAccountFromCallback(account, 'fixture-restart');
+  await idle();
+  assert.deepEqual(resumedReads, [1, 2], '已完成的 A 不重读');
+  assert.equal(downloads - beforeRestartDownloads, 1, 'B 只读原件，C 下载');
+  assert.deepEqual(sentTo('wmAmidrestart'), ['合并清单：A1、B2、C3']);
+  for (const msg of restartMessages)
+    assert.equal((await query<{ state: string }>('select state from channel_inbox where msgid=$1', [msg.msgid]))[0]?.state, 'done');
+  bindPack(runtime, runtime.defaultBrand);
+  console.log('ATTACHMENT PASS: 批次中途重启保留 A，恢复 B/C 只发一份合并清单且无等待');
 
   const human = store.getOrCreateSession('wecom:wmAhuman', 'wecom');
   human.handedOver = true;

@@ -242,7 +242,7 @@ export { convLabel, logQuote } from '../log.js';
 
 export interface TurnContext {
   attachment?: AttachmentRef;
-  /** 本会话后面已排着附件，本轮只保存识别结果。 */
+  /** 读到时求值：本会话后面仍排着附件时，本轮只保存识别结果。 */
   moreQueued?: boolean;
   session: Session;
   text: string;
