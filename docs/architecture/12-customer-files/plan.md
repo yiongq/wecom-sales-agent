@@ -52,7 +52,7 @@
     - mock 下成功、超时、坏 JSON、超日上限四条路径；
     - 对冲、主对话前缀与并发上限 8 不受影响。
   - 依赖：0、1（`vision` 枚举）。
-- [ ] 4. 引擎与包接口（R5、R10）。
+- [x] 4. 引擎与包接口（R5、R10）。2026-10-29 完成（#360），见「实施记录 · 第 4 步」。
   - 做：`HandleOpts` / `TurnContext` 的 `attachment` 与 `moreQueued`、`PackRuntime.intake`、`IntakeKit`（含 `signal`）、`PrefetchResult.effects`（与回复同一次保存）、`notify` 联合与 `handoff_notify` 的 `intake_unmatched`（含去重与文案）。
   - 验：
     - 没声明 `intake` 的包，行为逐字节不变；
@@ -129,6 +129,18 @@
 - 按 03–10 的实际速度折算，日历时间约一周，不含等 owner 实测与授权的时间。
 
 ## 实施记录
+
+### 第 4 步 · 引擎与包接口（2026-10-29，Codex 实现，协调者审查）
+
+- **分工**：一路 Codex，续跑一轮。它停下来问了两个 spec 没写到的设计问题，协调者答复后补改（spec 第八条 `Revisions:`）：
+  - 附件随会话排队、识别时还没落库，`readAttachment` 读不到原件：不扩展存储后端，改为 `HandleOpts.attachmentBytes` 由调用方直接交字节；
+  - `intake_unmatched` 不加永久幂等：核心只做在途去重，同一 `intakeId` 只通知一次由包的状态保证。
+- **改动**（#360）：
+  - 类型：`AttachmentClass` 的唯一定义挪到 `src/shared/channel-types.ts`，新增 `AttachmentRef`；`ChatMessage.attachment` 经 `messages.extra` 往返；`HandleOpts` / `TurnContext` 的 `attachment`、`moreQueued`；`PackRuntime.intake`、`IntakeKit`、`PrefetchResult.effects`、`notify` 联合；`pack-api` 转出 `parseCsv`、`SheetRead` 等。
+  - `src/core/engine/intake.ts`：附件轮先过 `preflight`，再由 `intake.receive` 代替 `preModel` 与模型；包在会话副本上跑，成功后才交回状态与识别结果；返回按确定性回复处理（固定句登记与 `pattern` 校验）；`null` 时只保存状态与结果；抛错或 60 秒超时回核心兜底句、记 trace、不转人工，迟到的结果作废；视觉遇每日上限由引擎改回「请把型号和数量打字发来」并每租户每天告警一次。
+  - `effects` 在第一条 AI 回复写进会话的同一段同步代码里应用，重启不重放；`intake_unmatched` 的通知接到 `handoff_notify` 与通知文案。
+  - 证明包 `src/packs/__fixture/intake.ts` 声明 `intake`，供自测用；渠道与工业包都没改。
+- **验证**：两套新自测（`src/intake-engine.selftest.ts`、`src/intake-effects.selftest.ts`，后者含 PGlite 与真实 PG）、22 套受影响自测、console 构建与字体检查、门禁、`test:locked`（前缀哈希不变）、v2 两条路径各 900/900 0 差异。全量交 CI。
 
 ### 第 3、11 步 · 视觉请求与 pre-12 回滚检查（2026-10-29，Codex 实现，协调者审查）
 
@@ -297,3 +309,9 @@
 - 第 3、11 步完成，见「实施记录 · 第 3、11 步」。
 - 留给后面的：第 13 步评估视觉请求要不要加 `response_format`；第 14 步上线 rc 前做一次真镜像的回滚演练。
 - 下一步：第 4 步（引擎与包接口）已派出；之后第 5、6、7 步可并行，第 9 步只依赖第 1 步。
+
+### 交接（2026-10-29，第 4 步）
+
+- 第 4 步完成，见「实施记录 · 第 4 步」；spec 第八条 `Revisions:` 随同一 docs PR。
+- 第 5、6 步的适配器与网页路由要把去过元数据的原件字节经 `HandleOpts.attachmentBytes` 交给引擎；恢复路径从库里读出再交。
+- 下一步：第 5（企微接收）、6（网页上传）、7（工业包识别清单）步可并行；第 9 步（工作台）只依赖第 1 步。

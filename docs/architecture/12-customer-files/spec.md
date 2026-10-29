@@ -8,6 +8,7 @@ Revisions: 2026-10-29 owner 定 `ready`。同一 docs PR 给 10 加反向的 `Su
 Revisions: 2026-10-29 第 0 步实测后就地修订，尚无代码依赖（结果见 plan「实施记录 · 第 0 步」）：图片上限 2 MB → 8 MB（企微实测没有按 2 MB 拦图片，模型实测接受 7 MB 的图）；文件名来源写定（文件消息有原文件名，图片消息的名字由企微生成，记为 null）；超过 20 MB 的文件以「原文件名」文字消息到达及其处理；视觉请求格式写定为 data URL；图片那一轮 P90 目标从 20 秒收紧到 10 秒；加每日原件字节上限 1 GB；视觉预占估算改为每张图 4,000 token。
 Revisions: 2026-10-29 owner 改开放问题 2：等待句从「识别前先发」改为「一批图片 5 秒还没发出清单才发」（第 0 步实测识别 1.3–4.0 秒，每次都发会让客户几秒内连收两条，还多占一条窗口）。R2、R11、验收 4 随之修改，尚无代码依赖。
 Revisions: 2026-10-29 第 1、2 步实现时就地修订，尚无已上线的代码依赖：下载早判的上限按类别写定——图片 8 MB，ZIP 与文本 2 MB，图纸与 CFB 不设类别上限、读完为止（企微单文件至多 20 MB），这样大图纸照样转顾问、加密文件照样判 `locked_sheet`；超过 2 MB 的 ZIP 一律 `other`，早判与完整判类结论一致；超限当场中断的那份算不出 `sha256`，记 null。R1、R2、R4 随之修改。
+Revisions: 2026-10-29 第 4 步实现时就地修订，尚无已上线的代码依赖：`HandleOpts` 加只在内存里的 `attachmentBytes`（去过元数据的原件字节），由渠道下载后、或恢复路径从库里读出后交给引擎，`IntakeKit` 优先用它，这样刚收到、超出每日字节上限或进了 spill 的那份照常识别（附件行随会话排队，识别时还没落库）；`intake_unmatched` 的去重写定为「核心只做在途去重，同一 `intakeId` 只通知一次由包的状态保证」，与 `quote_*` 相同。R2、R5、R10 随之写明。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8「按信号再定」；[10](../10-industrial-rfq-pack/spec.md)「后续」第 2 条。
 Depends on: [10 · 工业品询价包](../10-industrial-rfq-pack/spec.md) 已 implemented（`demo-v10`）；10 第 21 步（工业预取）已合入 `dev`，还没有随 tag 上线，12 的第一个 rc 一并带上。
 Supersedes in part: [10](../10-industrial-rfq-pack/spec.md) 的四处，理由都是「客户发来的附件要变成可确认的清单」。（1）R16 修订里工业包的 `non-text.image` / `non-text.file` / `non-text.video` 三句提示：图片、表格改由识别流程接管，视频改为转顾问（R1）。（2）R11：「确认下单」的候选判定，有更新的待确认清单时不接受更早的报价（R9）。（3）R7：`packState` 上限从 8,192 字节放宽到 10,240 字节，必留摘要加 `rfqIntake`、`resetKeys` 加 `rfqIntake`（R8）。（4）不变量 5：只约束经模型回复管线的回复；确定性的识别清单至多 30 行，另由本 spec 不变量 8 约束。10 在本 spec 翻 `ready` 时加反向的 `Superseded in part by:` 行。
@@ -92,6 +93,7 @@ Amends: 只新增，原有成员与行为不变。[04](../04-industry-packs/spec
 
 - 客户消息的 `content` 只写不带名称的占位 `[图片]` / `[文件]`。名称不进正文，避免「投诉.xlsx」这类文件名经 `preflight` 的触发器转人工，或作为客户原话进入模型历史。
 - 附件引用放在消息的 `extra.attachment`，见 R5。
+- 下载并去元数据后的字节经 `HandleOpts.attachmentBytes` 直接交给引擎识别（R5），不等附件行落库；恢复表里「有原件」的重新识别，由适配器从库里读出原件再交。
 
 **收件行的状态与恢复。**
 
@@ -194,6 +196,9 @@ export interface AttachmentRef {
 attachment?: AttachmentRef;
 /** 适配器告诉引擎：这个会话后面已排着别的附件（R2 合并），本轮只入库识别、不回复 */
 moreQueued?: boolean;
+// 只加在 HandleOpts：去过元数据的原件字节，只在内存里，由渠道下载后或恢复时从库里读出后交来（R2）；
+// IntakeKit 的 sheet() / vision() 优先用它。不进 TurnContext、消息、trace 与日志
+attachmentBytes?: Uint8Array;
 
 // PackRuntime 新增可选能力；没有它就保持现状
 intake?: {
@@ -422,7 +427,7 @@ rfqIntake: {
 
 **通知。**
 
-- 与「确认报价」同一个通道（`handoff_notify`），原因 `intake_unmatched`，按 `intakeId` 去重。
+- 与「确认报价」同一个通道（`handoff_notify`），原因 `intake_unmatched`。核心只做在途去重（同一个 `intakeId` 在途只有一条）；同一个 `intakeId` 只通知一次由包保证：确认之后清单进入 `confirmed`，不再发 `notify`，与 `quote_*` 相同。
 - 文案登记进通知文案表：「客户确认的询价单里有 N 行库里没找到，请核对」，并列出行号。
 
 **之后。** 确认之后的正式报价单、审批、确认下单，照 09、10 原样。
