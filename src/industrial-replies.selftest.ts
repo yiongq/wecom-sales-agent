@@ -216,15 +216,15 @@ try {
     ['要样品', 'sample'],
     [Array.from({ length: 31 }, (_, i) => `HS${1000 + i} 2件`).join('\n'), 'long'],
   ] as const) {
-    const result = preModel(context(text))!;
+    const result = preModel(context(text), sources)!;
     assert.equal(result.fixedId, `industrial.${key}`);
     assert.ok(result.handoff);
     assert.ok(runtime.fixedReplies!.find((fixed) => fixed.id === result.fixedId));
   }
   const twenty = Array.from({ length: 20 }, (_, i) => `HS${1000 + i} 2件`).join('\n');
   assert.equal(inquiryLines(twenty).length, 20);
-  assert.equal(preModel(context(twenty)), null);
-  assert.equal(preModel(context(twenty)), null);
+  assert.equal(preModel(context(twenty), sources), null);
+  assert.equal(preModel(context(twenty), sources), null);
   const order = (id: string, event: number, createdAt = event): LineOrder =>
     ({
       v: 2,
@@ -240,7 +240,7 @@ try {
   for (const value of orders) orderStore.set(value.id, value);
   session.orderIds = orders.map((value) => value.id);
   session.packState = {};
-  const confirm = () => preModel(context('确认下单'));
+  const confirm = () => preModel(context('确认下单'), sources);
   const confirmedOrder = () => {
     const notify = confirm()?.notify;
     assert.equal(notify?.reason, 'quote_accepted');
@@ -249,7 +249,7 @@ try {
   };
   assert.equal(confirmedOrder(), orders[1]!.id);
   for (const text of ['还没确认下单', '不要确认下单', '可以下单吗？', '是否就按这个', '先别确认报价'])
-    assert.equal(preModel(context(text)), null);
+    assert.equal(preModel(context(text), sources), null);
   session.orderIds.reverse();
   assert.equal(confirmedOrder(), orders[1]!.id);
   orders[0]!.createdAt++;

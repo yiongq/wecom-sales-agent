@@ -10,6 +10,7 @@ import { handoffVocab } from './handoff-vocab.js';
 import { industrialReplyGuard, industrialFollowupGuard, rfqTrimStep, rfqTrimFollowupStep } from './guards.js';
 import { IndustrialPolicySchema, quoteNotes } from './policy.js';
 import { preModel, contextNote, prefetch, beforeTool } from './turn.js';
+import { intakeNewer, intakeNotes } from './intake-turn.js';
 import { sopSections, templates, contractRules, hardRequirements } from './sop.js';
 import { fixedReplies, consistencyRules } from './fixed-replies.js';
 import { followupTemplates, followupGate, insightPrompts, mock } from './auxiliary.js';
@@ -86,7 +87,7 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     },
     onQuoteDecided: (_session, _order, event) =>
       event === 'approved' ? 'closing' : event === 'rejected' || event === 'withdrawn' ? 'quote' : null,
-    preModel,
+    preModel: (ctx) => preModel(ctx, sources),
     prefetch: (ctx) => prefetch(ctx, sources),
     beforeTool: (name, args, ctx) => beforeTool(name, args, ctx, sources),
     contextNote(ctx) {
@@ -94,15 +95,11 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
       const policy = IndustrialPolicySchema.parse(ctx.policy ?? sources.currentPolicy().policy);
       return [
         ...contextNote(ctx),
-        ...(state.rfqIntake
-          ? [
-              `识别清单摘要：${JSON.stringify(state.rfqIntake)}`,
-              ...(state.rfqIntake.status === 'pending' ? ['识别清单还没确认，只能请客户确认或改行'] : []),
-            ]
-          : []),
+        ...intakeNotes(ctx.session, ctx.text, sources),
         ...quoteNotes(policy),
         `付款条款：${policy.paymentTerms}；可开票种：${policy.invoice.join('、')}；报价有效期${policy.quoteValidDays}天`,
-        ...(state.rfqDraft ? [`询价摘要：${JSON.stringify(state.rfqDraft)}`] : []),
+        // 12 R9：待确认的清单比试算更新时，只带清单摘要。
+        ...(state.rfqDraft && !intakeNewer(ctx.session, Date.now()) ? [`询价摘要：${JSON.stringify(state.rfqDraft)}`] : []),
       ];
     },
     tools: createIndustrialTools(sources),

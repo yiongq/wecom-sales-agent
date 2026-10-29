@@ -81,3 +81,9 @@ export function draftParts(session: Session, sources: Pick<PackSources, 'catalog
     return parsed.success ? [parsed.data] : [];
   });
 }
+
+/** 清单不参加报价候选排序，由需要它的调用点显式比较时间。 */
+export function pendingIntake(session: Session): RfqIntake | undefined {
+  const intake = readState(session).rfqIntake;
+  return intake?.status === 'pending' ? intake : undefined;
+}
