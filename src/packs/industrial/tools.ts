@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { live, refreshParts } from './live.js';
 import { beforeTool } from './turn.js';
 import {
   cleanText,
@@ -45,6 +46,10 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
       async execute(input, { session, cancel }) {
         const args = z.object({ query: z.string().min(1), category: z.string().optional() }).parse(input);
         const found = await match(args.query, args.category);
+        if (sources.erp?.active('part') && found.match === 'exact') {
+          await refreshParts(sources, found.parts, session);
+          found.parts = found.parts.map((part) => live(part, sources.erp.fresh('part', normalizePartNo(part.partNo))));
+        }
         cancel?.throwIfAborted();
         // 工具展示的替代型号也进入同一有界缓存，只接受当前已上架的目标。
         const alternatives = new Set(found.parts.flatMap((part) => part.substitutes ?? []).map(normalizePartNo));
@@ -108,8 +113,18 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
         const lines = [];
         let totalFen = 0;
         let unmatched = 0;
-        for (const { query, qty } of args.items) {
-          const found = await match(query);
+        let matches;
+        if (sources.erp?.active('part')) {
+          matches = [];
+          for (const { query } of args.items) matches.push(await match(query));
+          await refreshParts(
+            sources,
+            matches.flatMap((found) => (found.match === 'exact' ? found.parts : [])),
+            session,
+          );
+        }
+        for (const [index, { query, qty }] of args.items.entries()) {
+          const found = matches ? matches[index]! : await match(query);
           shown.push(...found.parts);
           if (found.match !== 'exact') {
             draft.lines.push({ match: found.match, qty });
@@ -135,7 +150,8 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
             lines.push({ ...base, note: 'over_max' });
             continue;
           }
-          const price = priceLine(part, qty);
+          const current = sources.erp?.active('part') ? live(part, sources.erp.fresh('part', normalizePartNo(part.partNo))) : part;
+          const price = priceLine(current, qty);
           if ('reject' in price) {
             unmatched++;
             lines.push({ ...base, note: 'below_moq', moq: part.moq });
@@ -189,6 +205,16 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
         if ('reject' in allowed) return JSON.stringify({ error: allowed.reject });
         const args = z.object({ items: z.array(z.object({ code: z.string(), qty: z.number() })).max(30) }).parse(input);
         cancel?.throwIfAborted();
+        if (sources.erp?.active('part')) {
+          const ids = new Set(args.items.map((item) => item.code));
+          const parts = (sources.currentCatalog().items.part ?? []) as Part[];
+          await refreshParts(
+            sources,
+            parts.filter((part) => ids.has(part.id)),
+            session,
+          );
+          cancel?.throwIfAborted();
+        }
         const result = await createLineOrder(
           session,
           args.items.map(({ code, qty }) => ({ kind: 'part', code, qty })),

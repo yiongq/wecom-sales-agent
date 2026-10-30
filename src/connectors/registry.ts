@@ -339,7 +339,12 @@ async function availability(kind: string, codes: readonly string[]): Promise<Rea
     }),
   );
 }
-export const erpSources: PackSources['erp'] = { active: (kind) => loadedFor(kind) !== null, availability, fresh };
+export const erpSources: PackSources['erp'] = {
+  active: (kind) => loadedFor(kind) !== null,
+  mapped: (kind, code) => loadedFor(kind)?.links.has(`${kind}:${code}`) ?? false,
+  availability,
+  fresh,
+};
 
 /** 自测只替换依赖与启动快照；请求、排队、冷却均走生产路径。 */
 export const __erpTest = {

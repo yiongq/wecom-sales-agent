@@ -1,4 +1,4 @@
-import { withErpTurn } from '../../connectors/registry.js';
+import { withErpTurn, erpTurnStats } from '../../connectors/registry.js';
 import { receiveAttachment } from './intake.js';
 import type { AttachmentItem } from '../../db/repo/attachments.js';
 import { queueAttachment } from '../../store.js';
@@ -878,6 +878,10 @@ async function callModel(state: TurnState, turnContext: TurnContext, runTool: Re
   state.prefetchEffects = prefetched?.effects;
   const prefetch: PrefetchedCall[] = prefetched?.calls ?? [];
   const prefetchTimes = prefetched?.timings ?? [];
+  if (runtime.erp) {
+    const erp = erpTurnStats();
+    if (erp && !erp.cacheHit) prefetchTimes.push(`ERP ${erp.ms}ms cache=miss deadline=${erp.deadlineReached}`);
+  }
   const modelStart = Date.now();
   notePrefix(turn.sopVersion, turn.prefixHash());
   const call = () => {

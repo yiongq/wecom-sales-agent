@@ -9,6 +9,7 @@ import {
 } from '../../core/pack-api.js';
 import { IndustrialPolicySchema, quoteNotes } from './policy.js';
 import { PartSchema } from './catalog.js';
+import { normalizePartNo } from './normalize.js';
 import { readState } from './state.js';
 
 export function quoteCapabilities(sources: PackSources): NonNullable<PackRuntime['quotes']> {
@@ -23,6 +24,11 @@ export function quoteCapabilities(sources: PackSources): NonNullable<PackRuntime
       return order.lines.every((line) => {
         if (line.kind !== 'part' || !draft?.lines.some((entry) => entry.match === 'exact' && entry.code === line.code)) return false;
         const item = PartSchema.safeParse(items.find((value) => (value as Record<string, unknown>).id === line.code));
+        if (sources.erp?.active('part')) {
+          if (!item.success) return false;
+          const value = sources.erp.fresh('part', normalizePartNo(item.data.partNo));
+          return value !== undefined && value.onHand >= line.qty;
+        }
         return item.success && item.data.stock >= line.qty;
       });
     },

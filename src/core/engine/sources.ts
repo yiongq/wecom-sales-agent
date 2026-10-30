@@ -21,6 +21,7 @@ export function packSources(): PackSources {
   return {
     erp: {
       active: (...args) => erpSources.active(...args),
+      mapped: (...args) => erpSources.mapped(...args),
       availability: (...args) => erpSources.availability(...args),
       fresh: (...args) => erpSources.fresh(...args),
     },

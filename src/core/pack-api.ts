@@ -991,6 +991,8 @@ export interface FollowupGuardContext extends GuardContext {
 export interface PackSources extends Omit<TravelToolSources, 'budgetVerdict'> {
   erp: {
     active(kind: string): boolean;
+    /** 启用连接器的启动映射中包含此编号。 */
+    mapped(kind: string, code: string): boolean;
     availability(kind: string, codes: readonly string[]): Promise<ReadonlyMap<string, import('../connectors/types.js').Availability>>;
     fresh(kind: string, code: string): import('../connectors/types.js').Availability | undefined;
   };
