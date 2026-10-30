@@ -351,7 +351,8 @@ export function stripImageMetadata(bytes: Uint8Array): StrippedImage {
       const marker = b[at++];
       requireFormat(marker !== undefined && marker !== 0 && marker !== 0xd8);
       if (marker === 0xd9) {
-        requireFormat(scanSeen && at === b.length);
+        requireFormat(scanSeen);
+        // 微信压缩图可能在 EOI 后附厂商数据；只输出到 EOI，尾部一律丢弃。
         parts.push(b.subarray(start, at));
         if (firstApp1 !== undefined && orientation !== undefined && orientation > 1)
           parts.splice(firstApp1, 0, orientationApp1(orientation));
