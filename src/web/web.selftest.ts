@@ -1670,12 +1670,13 @@ for (const status of [413, 429, 409, 503, 0]) {
   );
   await changing;
   await settle();
-  assert.match(uploadUi.nodes.get('notice')!.textContent, /没发出去，请重试/);
+  // 413 不留重试，提示里不写「请重试」；其余失败仍写
+  assert.match(uploadUi.nodes.get('notice')!.textContent, status === 413 ? /^没发出去：/ : /没发出去，请重试/);
   if (status === 413)
     assert.equal(
       uploadUi.nodes.get('notice')!.textContent,
-      '没发出去，请重试：文件太大（图片最大 8 MB，表格最大 2 MB）',
-      '413 提示文案不变',
+      '没发出去：文件太大（图片最大 8 MB，表格最大 2 MB），请换个小一点的文件，或把型号和数量打字发来',
+      '413 提示文案',
     );
   if (status === 429) assert.match(uploadUi.nodes.get('notice')!.textContent, /太频繁，稍后再试/);
   const sentUpload = uploadUi.requests[1]!;
@@ -1711,7 +1712,7 @@ for (const status of [413, 429, 409, 503, 0]) {
     assert.equal(replacementForm.get('file'), replacement);
     assert.notEqual(replacementForm.get('cid'), sentForm.get('cid'), '另发文件使用新 cid');
     await uploadUi.win.emit('pagehide');
-    console.log('PASS web 页面附件：413 后控件恢复、重试隐藏、文案不变、气泡标未发送，可继续发文字与新文件');
+    console.log('PASS web 页面附件：413 后控件恢复、重试隐藏、提示换文件或打字、气泡标未发送，可继续发文字与新文件');
     continue;
   }
   for (const id of ['input', 'sendBtn', 'fileBtn', 'fileInput'])

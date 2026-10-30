@@ -163,7 +163,9 @@ function startWebChat() {
     if (!response.ok) {
       if (upload) {
         if (response.status === 413)
-          throw Object.assign(new Error('没发出去，请重试：文件太大（图片最大 8 MB，表格最大 2 MB）'), { status: 413 });
+          throw Object.assign(new Error('没发出去：文件太大（图片最大 8 MB，表格最大 2 MB），请换个小一点的文件，或把型号和数量打字发来'), {
+            status: 413,
+          });
         if (response.status === 429) throw new Error('没发出去，请重试：太频繁，稍后再试');
         throw new Error('没发出去，请重试');
       }
