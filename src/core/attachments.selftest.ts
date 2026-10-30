@@ -217,6 +217,61 @@ function exif(orientation: number, little = false): Buffer {
   return Buffer.concat([Buffer.from('457869660000', 'hex'), tiff]);
 }
 
+test('R4 JPEG 安卓微信段链在 EOI 后带 24 字节尾巴：丢弃尾部隐私数据，仍判 image', () => {
+  const header = Buffer.concat([
+    Buffer.from('ffd8', 'hex'),
+    segment(0xe0, Buffer.from('4a46494600010100000100010000', 'hex')),
+    segment(0xe2, Buffer.concat([Buffer.from('ICC_PROFILE\0\x01\x01'), Buffer.alloc(548)])),
+    segment(0xdb, Buffer.alloc(65)),
+    segment(0xdb, Buffer.alloc(65)),
+    segment(0xc0, Buffer.from('080001000103012200021101031101', 'hex')),
+    ...[29, 179, 29, 179].map((length) => segment(0xc4, Buffer.alloc(length))),
+    segment(0xda, Buffer.from('03010002110311003f00', 'hex')),
+  ]);
+  assert.equal(header.length, 1189);
+  const clean = Buffer.concat([header, Buffer.alloc(296482 - header.length, 0x32), Buffer.from('ffd9', 'hex')]);
+  const trailer = Buffer.alloc(24);
+  Buffer.from('347b7ad300000000', 'hex').copy(trailer);
+  trailer.write('Exif GPS:secret!', 8);
+  const original = Buffer.concat([clean, trailer]);
+  assert.equal(original.length, 296508);
+  assert.deepEqual(classifyAttachment(original), { cls: 'image', mime: 'image/jpeg' });
+  const before = Buffer.from(original);
+  const result = stripImageMetadata(original);
+  assert.equal(result.ok, true);
+  if (!result.ok) return;
+  const out = Buffer.from(result.bytes);
+  assert.equal(out.subarray(-2).toString('hex'), 'ffd9');
+  assert.equal(out.length, original.length - 24);
+  assert.deepEqual(out, clean, 'JFIF / ICC / 编码段与扫描数据逐字节不变');
+  for (const secret of [trailer, Buffer.from('Exif'), Buffer.from('GPS:secret!')]) assert.equal(out.includes(secret), false);
+  assert.deepEqual(classifyAttachment(out), { cls: 'image', mime: 'image/jpeg' });
+  assert.deepEqual(original, before, '不改写输入');
+  for (const tail of [Buffer.alloc(0), Buffer.from([0xff]), trailer, Buffer.alloc(4096, 0xff)])
+    assert.deepEqual(stripImageMetadata(Buffer.concat([clean, tail])), result, 'EOI 后任意长度与内容的字节均丢弃');
+});
+
+test('R4 JPEG 方向 6 加尾巴：只写回最小方向 APP1，尾部 Exif / GPS 丢弃', () => {
+  const soi = Buffer.from('ffd8', 'hex');
+  const scan = Buffer.from('ffda000273ff0020ffd031ffd9', 'hex');
+  const orientationOnly = Buffer.from('ffe100224578696600004d4d002a00000008000101120003000000010006000000000000', 'hex');
+  for (const little of [false, true]) {
+    const input = Buffer.concat([soi, segment(0xe1, exif(6, little)), scan, Buffer.from('Exif trailer GPS:secret!')]);
+    const result = stripImageMetadata(input);
+    assert.deepEqual(result, { ok: true, bytes: Buffer.concat([soi, orientationOnly, scan]) });
+    if (result.ok) {
+      const out = Buffer.from(result.bytes);
+      for (const secret of ['Maker', 'Model', 'trailer', 'GPS']) assert.equal(out.includes(Buffer.from(secret)), false);
+      assert.deepEqual(stripImageMetadata(out), result, '含方向的输出幂等');
+    }
+  }
+});
+
+test('R4 JPEG EOI 在扫描之前、段长度越界仍失败', () => {
+  for (const broken of [Buffer.from('ffd8ffd9ffda000273ffd9', 'hex'), Buffer.from('ffd8ffe10010ffd9', 'hex')])
+    assert.deepEqual(stripImageMetadata(broken), { ok: false });
+});
+
 test('R4 JPEG MM / II 方向 2–8 重写为唯一最小 APP1，设备 / GPS / XMP 全丢', () => {
   const soi = Buffer.from('ffd8', 'hex');
   const app0 = segment(0xe0, 'JFIF');
@@ -307,12 +362,8 @@ test('R4 JPEG 删除无有效方向的 APP1（Exif / XMP），保留段链、熵
     assert.deepEqual(stripImageMetadata(result.bytes), result);
   }
   assert.deepEqual(input, before);
-  for (const broken of [
-    input.subarray(0, -1),
-    Buffer.concat([input, Buffer.from('trailing')]),
-    Buffer.from('ffd8ffe10001ffd9', 'hex'),
-    Buffer.from('ffd8ff00', 'hex'),
-  ])
+  assert.deepEqual(stripImageMetadata(Buffer.concat([input, Buffer.from('trailing')])), { ok: true, bytes: keep });
+  for (const broken of [input.subarray(0, -1), Buffer.from('ffd8ffe10001ffd9', 'hex'), Buffer.from('ffd8ff00', 'hex')])
     assert.deepEqual(stripImageMetadata(broken), { ok: false });
 });
 
