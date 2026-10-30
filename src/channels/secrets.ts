@@ -94,32 +94,31 @@ export function keyRingFromEnv(env: Readonly<Record<string, string | undefined>>
   return { current: current!, all };
 }
 
-function additionalData(aad: { tenantId: string; accountId: string }): Buffer {
-  return Buffer.from(`channel_accounts:v1:${aad.tenantId}:${aad.accountId}`, 'utf8');
-}
-
-export function sealSecrets(ring: KeyRing, aad: { tenantId: string; accountId: string }, s: WecomSecrets): { ct: Buffer; keyId: string } {
+/** 共用密文布局：12 字节 nonce + JSON 密文 + 16 字节 tag；前缀隔离凭据域。 */
+export function sealJson<T>(ring: KeyRing, prefix: string, aad: { tenantId: string; id: string }, value: T): { ct: Buffer; keyId: string } {
   const nonce = randomBytes(12);
   const cipher = createCipheriv('aes-256-gcm', ring.current.key, nonce);
-  cipher.setAAD(additionalData(aad));
-  const plaintext = JSON.stringify({ appSecret: s.appSecret, callbackToken: s.callbackToken, callbackAesKey: s.callbackAesKey });
-  const ciphertext = Buffer.concat([cipher.update(plaintext, 'utf8'), cipher.final()]);
+  cipher.setAAD(Buffer.from(`${prefix}:${aad.tenantId}:${aad.id}`, 'utf8'));
+  const ciphertext = Buffer.concat([cipher.update(JSON.stringify(value), 'utf8'), cipher.final()]);
   return { ct: Buffer.concat([nonce, ciphertext, cipher.getAuthTag()]), keyId: ring.current.id };
 }
 
-export function openSecrets(
+/** 校验器同时挑出允许的字段；错误沿用渠道凭据的固定错误类型，不携带底层异常或明文。 */
+export function openJson<T>(
   ring: KeyRing,
-  aad: { tenantId: string; accountId: string },
+  prefix: string,
+  aad: { tenantId: string; id: string },
   ct: Buffer,
   keyId: string,
-): Redacted<WecomSecrets> {
+  validate: (value: unknown) => T | null,
+): Redacted<T> {
   const key = ring.all.get(keyId);
   if (!key) throw new ChannelSecretError(keyId, '密钥不存在');
   if (ct.length < 28) throw new ChannelSecretError(keyId, '密文长度不足');
   let plaintext: string;
   try {
     const decipher = createDecipheriv('aes-256-gcm', key, ct.subarray(0, 12));
-    decipher.setAAD(additionalData(aad));
+    decipher.setAAD(Buffer.from(`${prefix}:${aad.tenantId}:${aad.id}`, 'utf8'));
     decipher.setAuthTag(ct.subarray(-16));
     plaintext = Buffer.concat([decipher.update(ct.subarray(12, -16)), decipher.final()]).toString('utf8');
   } catch {
@@ -131,6 +130,17 @@ export function openSecrets(
   } catch {
     throw new ChannelSecretError(keyId, 'JSON 无效');
   }
+  let value: T | null;
+  try {
+    value = validate(parsed);
+  } catch {
+    throw new ChannelSecretError(keyId, '凭据字段无效');
+  }
+  if (value === null) throw new ChannelSecretError(keyId, '凭据字段无效');
+  return new Redacted(value);
+}
+
+function wecomFields(parsed: unknown): WecomSecrets | null {
   if (
     parsed === null ||
     typeof parsed !== 'object' ||
@@ -140,8 +150,29 @@ export function openSecrets(
     typeof parsed.callbackToken !== 'string' ||
     !('callbackAesKey' in parsed) ||
     typeof parsed.callbackAesKey !== 'string'
-  ) {
-    throw new ChannelSecretError(keyId, '凭据字段无效');
-  }
-  return new Redacted({ appSecret: parsed.appSecret, callbackToken: parsed.callbackToken, callbackAesKey: parsed.callbackAesKey });
+  )
+    return null;
+  return { appSecret: parsed.appSecret, callbackToken: parsed.callbackToken, callbackAesKey: parsed.callbackAesKey };
+}
+
+export function sealSecrets(ring: KeyRing, aad: { tenantId: string; accountId: string }, s: WecomSecrets): { ct: Buffer; keyId: string } {
+  return sealJson(
+    ring,
+    'channel_accounts:v1',
+    { tenantId: aad.tenantId, id: aad.accountId },
+    {
+      appSecret: s.appSecret,
+      callbackToken: s.callbackToken,
+      callbackAesKey: s.callbackAesKey,
+    },
+  );
+}
+
+export function openSecrets(
+  ring: KeyRing,
+  aad: { tenantId: string; accountId: string },
+  ct: Buffer,
+  keyId: string,
+): Redacted<WecomSecrets> {
+  return openJson(ring, 'channel_accounts:v1', { tenantId: aad.tenantId, id: aad.accountId }, ct, keyId, wecomFields);
 }

@@ -8,7 +8,7 @@ One engine serves isolated tenants. Industry logic plugs in as industry packs, w
 
 Node 22 · Hono · TypeScript (run directly by `tsx`) · PostgreSQL 17 + pgvector · Vite + React console · MIT license.
 
-**Status**: phases 00–10 and 12 are `implemented`; 00–10 are released (latest: `demo-v10`), and 12 (customer images and spreadsheets for industrial RFQs) is live on the demo environment, awaiting release. The roadmap is in the [master reference](docs/architecture/master-reference.md) (Chinese).
+**Status**: phases 00–10 and 12 are `implemented` and released (latest: `demo-v11`, 12 customer images and spreadsheets for industrial RFQs). The roadmap is in the [master reference](docs/architecture/master-reference.md) (Chinese).
 
 ## Live demo
 
