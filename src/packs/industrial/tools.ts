@@ -48,7 +48,7 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
         const found = await match(args.query, args.category);
         if (sources.erp?.active('part') && found.match === 'exact') {
           await refreshParts(sources, found.parts, session);
-          found.parts = found.parts.map((part) => live(part, sources.erp.fresh('part', normalizePartNo(part.partNo))));
+          found.parts = found.parts.map((part) => live(part, sources.erp.fresh('part', part.id)));
         }
         cancel?.throwIfAborted();
         // 工具展示的替代型号也进入同一有界缓存，只接受当前已上架的目标。
@@ -150,7 +150,7 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
             lines.push({ ...base, note: 'over_max' });
             continue;
           }
-          const current = sources.erp?.active('part') ? live(part, sources.erp.fresh('part', normalizePartNo(part.partNo))) : part;
+          const current = sources.erp?.active('part') ? live(part, sources.erp.fresh('part', part.id)) : part;
           const price = priceLine(current, qty);
           if ('reject' in price) {
             unmatched++;

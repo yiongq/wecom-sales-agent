@@ -1,5 +1,4 @@
 import type { PackSources, Session } from '../../core/pack-api.js';
-import { normalizePartNo } from './normalize.js';
 
 type Availability = ReturnType<PackSources['erp']['fresh']>;
 
@@ -9,8 +8,8 @@ export function live<T extends Readonly<Record<string, unknown>>>(part: T, a?: A
 }
 
 /** 调用点先门控；失败继续按产品库回答，仅给顾问留系统消息。 */
-export async function refreshParts(sources: PackSources, parts: readonly { partNo: string }[], session?: Session): Promise<void> {
-  const codes = [...new Set(parts.map((part) => normalizePartNo(part.partNo)))].slice(0, 30);
+export async function refreshParts(sources: PackSources, parts: readonly { id: string }[], session?: Session): Promise<void> {
+  const codes = [...new Set(parts.map((part) => part.id))].slice(0, 30);
   if (!codes.length) return;
   try {
     await sources.erp.availability('part', codes);

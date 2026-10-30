@@ -1,4 +1,4 @@
-// 11 R7：真实工业工具与建单路径；ERP 用可推进时钟的合成门面。
+// 11 R7：工业工具与建单回归；包含合成ERP门面及真实映射/连接器/registry的接缝用例。
 import './selftest-env.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -7,6 +7,7 @@ import path from 'node:path';
 import { createIndustrialRuntime } from './packs/industrial/runtime.js';
 import { defaultIndustrialPolicy } from './packs/industrial/policy.js';
 import { industrialReplyGuard, industrialFollowupGuard } from './packs/industrial/guards.js';
+import { normalizePartNo } from './packs/industrial/normalize.js';
 import { prefetch } from './packs/industrial/turn.js';
 import type { PackSources, Session, LineOrder, TurnContext, ReplyGuardContext, FollowupGuardContext } from './core/pack-api.js';
 
@@ -26,7 +27,7 @@ const config = await import('./config/source.js');
 const store = await import('./store.js');
 const { bindPack } = await import('./core/pack-api.js');
 assert.equal(config.packSources().erp.active('part'), false, '未装配引擎时连接器不启用');
-assert.equal(config.packSources().erp.mapped('part', 'HS1000'), false);
+assert.equal(config.packSources().erp.mapped('part', 'part-0'), false);
 await import('./core/engine/sources.js');
 const parts = Array.from({ length: 32 }, (_, i) => ({
   id: `part-${i}`,
@@ -138,13 +139,125 @@ try {
   await prefetch(turn(freshSession(), 'HS1000 10件'), sources);
   console.log('ERP INACTIVE PASS: 所有 ERP 路径门控，无异步调用或新鲜值读取');
 
+  // 接缝回归：真实自动映射 → registry → packSources → 工业工具，三个编号刻意不同。
+  const { startOdooMock } = await import('./connectors/odoo-mock.js');
+  const { createOdooConnector } = await import('./connectors/odoo.js');
+  const { autoMapProducts } = await import('./connectors/mapping.js');
+  const { createEgress } = await import('./net/egress.js');
+  const { Redacted } = await import('./channels/secrets.js');
+  const { __erpTest: seamRegistry } = await import('./connectors/registry.js');
+  const { packSources: seamPackSources } = await import('./core/engine/sources.js');
+  const { sealConnectorSecrets: sealSeamSecrets } = await import('./connectors/secrets.js');
+  const seamPart = { ...parts[0]!, id: 'part-a', partNo: '6205-2RS', moq: 10, aliases: [], substitutes: [] };
+  const seamDir = path.join(dir, 'seam');
+  fs.mkdirSync(path.join(seamDir, 'catalog'), { recursive: true });
+  for (const file of ['sop.md', 'brand.json', 'pack.json', 'policy.json']) fs.copyFileSync(path.join(dir, file), path.join(seamDir, file));
+  fs.writeFileSync(path.join(seamDir, 'catalog/part.json'), JSON.stringify([seamPart]));
+  const seamTenant = tenancy.createTenantRuntime({ id: '33333333-3333-4333-8333-333333333333', slug: 'erp-seam', isHost: true });
+  tenancy.registerRuntime(seamTenant);
+  const previousSopPath = process.env.SOP_PATH;
+  const mock = await startOdooMock({
+    version: 20,
+    apiKey: 'synthetic-key',
+    products: [{ id: 731, default_code: '6205 2rs', uom_id: [1, 'Synthetic units'], active: true, sale_ok: true, freeQty: { 10: 7 } }],
+  });
+  try {
+    process.env.SOP_PATH = path.join(seamDir, 'sop.md');
+    await tenancy.withTenantScope(seamTenant, async () => {
+      const seamSources = seamPackSources();
+      const seamRuntime = createIndustrialRuntime(seamSources);
+      bindPack(seamRuntime, seamRuntime.defaultBrand);
+      const send = createEgress(mock.url, {
+        allowLoopback: true,
+        resolver: { resolve4: async () => ['127.0.0.1'], resolve6: async () => [] },
+      });
+      const connector = createOdooConnector({ send, apiKey: new Redacted({ apiKey: 'synthetic-key' }), locationId: 10 });
+      const connectorId = '44444444-4444-4444-8444-444444444444';
+      const mapping = await autoMapProducts({
+        declaration: seamRuntime.erp!,
+        items: [{ kind: 'part', code: seamPart.id, status: 'active', payload: seamPart }],
+        connectorId,
+        connector,
+        uom: { 件: 1 },
+        existing: [],
+        now: () => now,
+      });
+      assert.deepEqual(mapping.mapped, ['part-a']);
+      assert.equal(mapping.links[0]!.remoteId, 731);
+      assert.notEqual(seamPart.id, seamRuntime.erp!.key(seamPart));
+      const key = Buffer.alloc(32, 0x31);
+      const ring = { current: { id: 'synthetic', key }, all: new Map([['synthetic', key]]) };
+      const sealed = sealSeamSecrets(ring, { tenantId: seamTenant.id, connectorId }, { apiKey: 'synthetic-key' });
+      // 仅注入测试出站，客户端、映射、registry 与 PackSources 全走真实实现。
+      seamRegistry.configure({ factory: (opts) => createOdooConnector({ ...opts, send }), alert: () => {} });
+      seamRegistry.install(
+        {
+          id: connectorId,
+          kind: 'odoo',
+          status: 'active',
+          baseUrl: 'https://erp.example.test',
+          database: null,
+          settings: { locationId: 10, uom: { 件: 1 }, keyExpiresAt: '2030-01-01' },
+          secretsCt: sealed.ct,
+          secretsKeyId: sealed.keyId,
+          createdAt: new Date(now),
+          updatedAt: new Date(now),
+        },
+        mapping.links,
+        ring,
+      );
+      assert.equal(seamSources.erp.mapped('part', seamPart.id), true, 'ERP 接缝：映射表以产品库code为键');
+      assert.equal(seamSources.erp.mapped('part', normalizePartNo(seamPart.partNo)), false);
+      const seamSession = store.getOrCreateSession('erp-seam', 'web');
+      const seamExecute = async (name: string, args: unknown) =>
+        JSON.parse(
+          await seamRuntime.tools
+            .find((tool) => tool.def.function.name === name)!
+            .execute(args, {
+              session: seamSession,
+              hints: {},
+              text: '',
+              args: {},
+              notes: {},
+              handoffDeclined: false,
+            }),
+        );
+      const found = await seamExecute('find_parts', { query: seamPart.partNo });
+      assert.equal(found.parts[0].stock, '部分现货', 'ERP 接缝：find_parts 必须使用产品库code命中自动映射');
+      const quoted = await seamExecute('quote_items', { items: [{ query: seamPart.partNo, qty: 10 }] });
+      assert.equal(quoted.lines[0].delivery, '现货 7 件，其余约 12 天', 'ERP 接缝：quote_items 必须读取Odoo可售量');
+      assert.equal(seamSources.erp.fresh('part', seamPart.id)?.onHand, 7);
+      assert.equal(seamSources.erp.fresh('part', normalizePartNo(seamPart.partNo)), undefined);
+      const values = await seamSources.erp.availability('part', [seamPart.id]);
+      assert.deepEqual([...values.keys()], ['part-a']);
+      const stockRequests = mock.requests.filter((request) => (request.body as { fields?: string[] }).fields?.includes('free_qty'));
+      assert.equal(stockRequests.length, 1, '接缝查询共用registry缓存');
+      assert.deepEqual(
+        (stockRequests[0]!.body as { domain: unknown }).domain,
+        [['id', 'in', [731]]],
+        'ERP 接缝：Odoo只收到自动映射出的整数id',
+      );
+      assert.equal(seamPart.stock, 100);
+    });
+    console.log('ERP SEAM PASS: 接缝回归（自动映射→registry→packSources→工业工具），产品库code与型号不同，Odoo收到整数id731');
+  } finally {
+    process.env.SOP_PATH = previousSopPath;
+    seamRegistry.reset();
+    tenancy.unregisterRuntime(seamTenant.id);
+    await mock.close();
+  }
+
   let enabled = true;
   let cooldown = false;
   let throws = false;
   let onHand = 7;
   const cache = new Map<string, { onHand: number; at: number }>();
   const requests: string[][] = [];
-  const mapped = new Set(parts.slice(0, 31).map((part) => part.partNo));
+  assert.ok(
+    parts.every((part) => normalizePartNo(part.partNo) !== part.id),
+    '合成型号归一值必须与条目code不同',
+  );
+  const mapped = new Set(parts.slice(0, 31).map((part) => part.id));
   const erp: PackSources['erp'] = {
     active: (kind) => enabled && kind === 'part',
     mapped: (kind, code) => kind === 'part' && mapped.has(code),
@@ -191,7 +304,7 @@ try {
   requests.length = 0;
   const three = freshSession();
   const prefetched = await prefetch(turn(three, 'HS1000 10件，HS1001 10件，HS1002'), sources);
-  assert.deepEqual(requests, [['HS1000', 'HS1001', 'HS1002']]);
+  assert.deepEqual(requests, [['part-0', 'part-1', 'part-2']]);
   assert.deepEqual(
     prefetched!.calls.map((call) => call.name),
     ['quote_items', 'find_parts'],
@@ -226,7 +339,7 @@ try {
   cache.clear();
   requests.length = 0;
   const resumed = await prefetch(turn(expired, '重新确认报价，HS1001'), sources);
-  assert.deepEqual(requests, [['HS1001', 'HS1000']], '文字与过期报价行合并一次预热');
+  assert.deepEqual(requests, [['part-1', 'part-0']], '文字与过期报价行合并一次预热');
   assert.deepEqual(
     resumed!.calls.map((call) => call.name),
     ['quote_items'],
@@ -350,7 +463,7 @@ try {
         parts.slice(0, 3).map((part, i) => ({
           connectorId: id,
           kind: 'part',
-          code: part.partNo,
+          code: part.id,
           remoteId: i + 1,
           remoteCode: part.partNo,
           remoteUomId: 1,
@@ -360,9 +473,9 @@ try {
         ring,
       );
       for (const facade of [erpSources, packSources().erp, config.packSources().erp]) {
-        assert.equal(facade.mapped('part', 'HS1000'), true);
-        assert.equal(facade.mapped('part', 'HS1031'), false);
-        assert.equal(facade.mapped('route', 'HS1000'), false);
+        assert.equal(facade.mapped('part', 'part-0'), true);
+        assert.equal(facade.mapped('part', 'part-31'), false);
+        assert.equal(facade.mapped('route', 'part-0'), false);
       }
       assert.equal((await handleMessage('trace-first', 'HS1000 10件', 'web')).text, modelText);
       modelText = '已查询型号。';

@@ -48,8 +48,8 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     catalog: { part: partCatalog },
     maxQty: MAX_QTY,
     priceLine(item, qty) {
-      if (!sources.erp?.active('part') || typeof item.partNo !== 'string') return priceLine(item, qty);
-      return priceLine(live(item, sources.erp.fresh('part', normalizePartNo(item.partNo))), qty);
+      if (!sources.erp?.active('part') || typeof item.id !== 'string') return priceLine(item, qty);
+      return priceLine(live(item, sources.erp.fresh('part', item.id)), qty);
     },
     policy: industrialPolicy,
     quotes: quoteCapabilities(sources),

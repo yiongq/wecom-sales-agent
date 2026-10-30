@@ -41,7 +41,7 @@ function evidence(ctx: FollowupGuardContext, sources: PackSources): Evidence[] {
     if (!line || !Number.isSafeInteger(line.qty) || line.qty < 1 || line.qty > MAX_QTY) return [];
     let current = part;
     if (sources.erp?.active('part')) {
-      const value = sources.erp.fresh('part', normalizePartNo(part.partNo));
+      const value = sources.erp.fresh('part', part.id);
       if (!value) return [{ partNo: part.partNo, substitutes: part.substitutes }];
       current = live(part, value);
     }
