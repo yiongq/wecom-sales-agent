@@ -356,6 +356,12 @@ a.cv-stage.is-selected:hover {
   outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
+.cv-stage-text {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .cv-text-2 {
   color: var(--text-2);
 }

@@ -342,7 +342,11 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
           key: 'stage',
           title: '阶段',
           width: 120,
-          render: (_, r) => <span className={r.stage === '—' ? 'cv-dim' : 'cv-text-2'}>{r.stage}</span>,
+          render: (_, r) => (
+            <span className={`cv-stage-text ${r.stage === '—' ? 'cv-dim' : 'cv-text-2'}`} title={r.stage}>
+              {r.stage}
+            </span>
+          ),
         },
         { key: 'messages', title: '消息', width: 88, align: 'right', render: (_, r) => digits(r.messages) },
         {
