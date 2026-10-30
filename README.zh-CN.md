@@ -8,7 +8,7 @@
 
 Node 22 · Hono · TypeScript（`tsx` 直接运行）· PostgreSQL 17 + pgvector · Vite + React 后台 · MIT 许可。
 
-**进度**：阶段 00–10 与 12 已 `implemented`；00–10 已发版（最新为 `demo-v10`），12（工业询价的客户图片与表格）已上线演示环境，待发版。路线见 [架构总参考](docs/architecture/master-reference.md)。
+**进度**：阶段 00–10 与 12 已 `implemented` 并发版（最新为 `demo-v11`：12 工业询价的客户图片与表格）。路线见 [架构总参考](docs/architecture/master-reference.md)。
 
 ## 在线体验
 
