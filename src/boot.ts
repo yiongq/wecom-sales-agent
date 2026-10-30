@@ -10,6 +10,7 @@ import { ChannelStartupError } from './channels/startup-error.js';
 import { ConfigStartupError } from './config/source.js';
 import { installJsonConsole } from './log.js';
 import { SessionStoreStartupError } from './store/backend.js';
+import { initErp } from './connectors/registry.js';
 
 export interface BootDeps {
   /** 生产：先校验 CONFIG_SOURCE（非法值报 env_invalid）；是 db 就构造依赖再装载，否则按文件模式 */
@@ -21,6 +22,7 @@ export interface BootDeps {
    * 六种拒绝以 ChannelStartupError reject
    */
   initChannels(): Promise<void>;
+  initErp?(): Promise<void>;
   serve(onListening: () => void): void;
   /** 现有的数据文件启动预检 */
   preflight(): void;
@@ -79,6 +81,7 @@ export async function boot(d: BootDeps): Promise<void> {
     d.exit(1);
     return;
   }
+  await (d.initErp ?? initErp)();
   // 先注册告警，再起后台入口：缺作用域的初始化错误也要能推 tenant_scope_missing。
   withoutTenantScope(() => backgroundEntry(() => d.startAlerts?.()));
   // 隐私说明不影响启动：读不到就先当没发布过，60 秒后台轮询会再试

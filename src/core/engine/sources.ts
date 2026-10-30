@@ -1,5 +1,6 @@
 // 组合根需要的能力：调用时读取配置、存储与支付模式，模块装载时不装配包。
 import type { PackSources } from '../pack-api.js';
+import { erpSources } from '../../connectors/registry.js';
 import {
   catalogItemAt,
   catalogVersionKey,
@@ -18,6 +19,11 @@ import { enterHandoff, HANDOFF_REASON, isTerminalStage } from '../../handoff/rec
 
 export function packSources(): PackSources {
   return {
+    erp: {
+      active: (...args) => erpSources.active(...args),
+      availability: (...args) => erpSources.availability(...args),
+      fresh: (...args) => erpSources.fresh(...args),
+    },
     modelHandoffReason: HANDOFF_REASON.model,
     handoffReasons: HANDOFF_REASON,
     catalogItemAt,

@@ -1490,6 +1490,11 @@ function liveSources(): PackSources {
 }
 export function packSources(): PackSources {
   return {
+    erp: {
+      active: (...args) => liveSources().erp.active(...args),
+      availability: (...args) => liveSources().erp.availability(...args),
+      fresh: (...args) => liveSources().erp.fresh(...args),
+    },
     currentPolicy,
     configMode,
     currentCatalog,

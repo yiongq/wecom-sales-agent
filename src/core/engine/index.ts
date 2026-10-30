@@ -1,3 +1,4 @@
+import { withErpTurn } from '../../connectors/registry.js';
 import { receiveAttachment } from './intake.js';
 import type { AttachmentItem } from '../../db/repo/attachments.js';
 import { queueAttachment } from '../../store.js';
@@ -376,28 +377,31 @@ async function handleMessageInner(
     if (effects) saveSession(session);
     return done('deterministic', { text: reply, stage: session.stage, ...(session.handedOver ? { handoff: true } : {}) }, msg);
   }
-  const ordersBefore = session.orderIds.length;
-  const stageAtStart = session.stage;
-  let model: Awaited<ReturnType<typeof callModel>>;
-  try {
-    model = await callModel(state, turnContext, tools.runTool);
-  } catch (error) {
-    if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent())) return state.unsentTakenOver();
-    // 供应商内容审核拦截：重试也是同样结果，回包里的离题话术兜住，不抛给渠道（06 第 14 步验收）
-    if (isContentFiltered(error)) {
-      console.warn(`[engine] 模型供应商的内容审核拦下了这一轮，已回固定话术（会话 ${convLabel(sessionId)}）`);
-      const reply = cleanText(brandTexts(runtime, state.binding.brand).offTopicReply);
-      const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
-      recordQuoteStates(msg, session);
-      session.messages.push(msg);
-      applyTurnEffects(session, runtime, state.prefetchEffects);
-      saveSession(session);
-      return done('deterministic', { text: reply, stage: session.stage }, msg);
+  const complete = async () => {
+    const ordersBefore = session.orderIds.length;
+    const stageAtStart = session.stage;
+    let model: Awaited<ReturnType<typeof callModel>>;
+    try {
+      model = await callModel(state, turnContext, tools.runTool);
+    } catch (error) {
+      if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent())) return state.unsentTakenOver();
+      // 供应商内容审核拦截：重试也是同样结果，回包里的离题话术兜住，不抛给渠道（06 第 14 步验收）
+      if (isContentFiltered(error)) {
+        console.warn(`[engine] 模型供应商的内容审核拦下了这一轮，已回固定话术（会话 ${convLabel(sessionId)}）`);
+        const reply = cleanText(brandTexts(runtime, state.binding.brand).offTopicReply);
+        const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+        recordQuoteStates(msg, session);
+        session.messages.push(msg);
+        applyTurnEffects(session, runtime, state.prefetchEffects);
+        saveSession(session);
+        return done('deterministic', { text: reply, stage: session.stage }, msg);
+      }
+      throw error;
     }
-    throw error;
-  }
-  if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent())) return state.unsentTakenOver();
-  return finishTurn(state, model, tools, stageAtStart, ordersBefore);
+    if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent())) return state.unsentTakenOver();
+    return finishTurn(state, model, tools, stageAtStart, ordersBefore);
+  };
+  return runtime.erp ? withErpTurn(complete) : complete();
 }
 
 /** 与本轮回复处在同一同步保存段；不单独提交预取的效果。 */

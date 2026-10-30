@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 export const STRICT_SUITES = Object.freeze([
+  'src/connectors/registry.selftest.ts',
   'src/config/brand.selftest.ts',
   'src/config/brand-publish.selftest.ts',
   'src/config/brand-transfer.selftest.ts',

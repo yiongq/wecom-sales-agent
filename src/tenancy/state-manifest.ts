@@ -3,6 +3,13 @@ export const STATE_MANIFEST: Record<
   string,
   { kind: 'tenant'; state: string } | { kind: 'instance'; why: string } | { kind: 'object-keyed' }
 > = Object.freeze({
+  'src/connectors/registry.ts:turns': { kind: 'object-keyed' },
+  'src/connectors/registry.ts:deps': { kind: 'instance', why: '时钟与连接器工厂的自测注入，不保存租户数据。' },
+  'src/connectors/registry.ts:tenantState': { kind: 'tenant', state: 'erp.registry.loaded' },
+  'src/connectors/registry.ts:state': { kind: 'tenant', state: 'erp.registry.loaded' },
+  'src/connectors/registry.ts:expiryTimer': { kind: 'instance', why: '每天逐租户进入作用域检查到期，关闭时清除。' },
+  'src/connectors/registry.ts:erpSources': { kind: 'instance', why: '调用时读取当前租户的能力门面。' },
+  'src/connectors/registry.ts:__erpTest': { kind: 'instance', why: '自测接线出口，租户数据由登记状态持有。' },
   'src/core/attachment-intake.ts:counts': { kind: 'tenant', state: 'attachment.daily' },
   'src/packs/industrial/auxiliary.ts:followupTemplates': { kind: 'instance', why: '工业包的固定配置与词表，不含租户数据或运行时快照。' },
   'src/packs/industrial/auxiliary.ts:insightPrompts': { kind: 'instance', why: '工业包的固定配置与词表，不含租户数据或运行时快照。' },
