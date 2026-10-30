@@ -115,7 +115,25 @@ const PURE_CHANNELS = [
   'src/channels/recovery-rules.ts',
 ];
 
+const EGRESS = 'src/net/egress.ts';
+const ODOO_MOCK = 'src/connectors/odoo-mock.ts';
+const isBoundaryChecker = (f: string) => ['scripts/check-boundaries.ts', 'scripts/check-boundaries.selftest.ts'].includes(f);
+const egressTestOptionsAllowed = (f: string) =>
+  f === EGRESS || isSelftest(f) || f === 'scripts/odoo-integration.ts' || isBoundaryChecker(f);
+const checksConnectorNetwork = (f: string) => under(f, 'src/connectors/') && f !== ODOO_MOCK && !isSelftest(f);
+const NETWORK_BUILTINS = new Set(['http', 'https', 'net', 'tls', 'dns']);
+
 const IMPORT_RULES: ImportRule[] = [
+  {
+    desc: '11 R2：连接器网络只经 src/net/egress.ts，不 import 网络内置模块',
+    applies: checksConnectorNetwork,
+    bad: (i) => NETWORK_BUILTINS.has(i.spec.replace(/^node:/, '').split('/')[0]),
+  },
+  {
+    desc: '11 R2：src/connectors/odoo-mock.ts 只许 *.selftest.ts import',
+    applies: (f) => !isSelftest(f) && !isBoundaryChecker(f),
+    bad: (i) => i.target === ODOO_MOCK,
+  },
   {
     desc: '04 R2：src/core/ 不 import src/packs/',
     applies: (f) => under(f, CORE_DIR),
@@ -272,6 +290,12 @@ const SQL_RAW = ['sql', 'raw'].join('.');
 const CHANNEL_KEY_ENV = ['CHANNEL', 'SECRETS', 'KEY'].join('_');
 
 const TEXT_RULES: TextRule[] = [
+  {
+    desc: '11 R2：allowLoopback 只给出站实现、自测与本机集成脚本使用',
+    files: (f) => CODE_EXT.test(f),
+    allowed: egressTestOptionsAllowed,
+    re: /\ballowLoopback\b/g,
+  },
   {
     desc: 'runtime 的 __tenantTest 只给自测夹具与严格预载器使用',
     files: (f) => CODE_EXT.test(f),
@@ -498,6 +522,32 @@ for (const file of files) {
     importCount += imps.length;
     for (const imp of imps) {
       for (const r of rules) if (r.bad(imp, file)) found.push([imp.line, `${r.desc}（'${imp.spec}'）`]);
+    }
+    if (checksConnectorNetwork(file)) {
+      const visit = (node: ts.Node): void => {
+        if (ts.isCallExpression(node)) {
+          const callee = unwrap(node.expression);
+          if (
+            (ts.isIdentifier(callee) && callee.text === 'fetch') ||
+            (ts.isPropertyAccessExpression(callee) && callee.name.text === 'fetch') ||
+            (ts.isElementAccessExpression(callee) &&
+              ts.isStringLiteralLike(unwrap(callee.argumentExpression)) &&
+              (unwrap(callee.argumentExpression) as ts.StringLiteralLike).text === 'fetch')
+          ) {
+            found.push([
+              sf.getLineAndCharacterOfPosition(node.getStart(sf)).line + 1,
+              '11 R2：连接器不调 fetch，网络只经 src/net/egress.ts',
+            ]);
+          }
+        }
+        ts.forEachChild(node, visit);
+      };
+      visit(sf);
+    }
+    if (!egressTestOptionsAllowed(file) && imps.some((i) => i.target === EGRESS)) {
+      for (const m of text.matchAll(/\bresolver\b/g)) {
+        found.push([text.slice(0, m.index).split('\n').length, '11 R2：egress 的 resolver 只给自测与本机集成脚本使用']);
+      }
     }
     if (checksSessionFields(file)) {
       for (const use of sessionFieldUsesOf(sf)) {
