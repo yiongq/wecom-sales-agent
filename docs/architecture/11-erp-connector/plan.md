@@ -88,7 +88,7 @@
   - 依赖：4（与第 5 步可并行，只同改 `package.json`）。
 - [ ] 7. 本机集成（R12）。
   - 文件：`scripts/odoo-integration.ts`（不进 `pnpm test`）。
-  - 做：起 `odoo:19`、`odoo:20` 一次性容器，建机器人用户、scope 为 `rpc` 的 key、合成产品与库存；进程内用 `createEgress(baseUrl, { allowLoopback: true })` 构造连接器，跑 `check`、映射、`stock` 与门面的 `availability`；20 上再用一把空 scope 的 key 验 401；记耗时；外层超时，结束删容器。
+  - 做：起 `odoo:19`、`odoo:20` 一次性容器，建机器人用户、scope 为 `rpc` 的 key、合成产品与库存；进程内用 `createEgress(baseUrl, { allowLoopback: true })` 构造连接器，跑 `check`、映射、`stock` 与门面的 `availability`；20 上再用一把空 scope 的 key 验 401；在 Odoo 前放一层一次性 nginx（回环 HTTP），确认连接确实复用，记复用率（第 0 步测得 Odoo 直连不复用，R8）；记耗时；外层超时，结束删容器。
   - 验：验收 9；结束后 `docker ps -a` 与 `ps` 没有残留。
   - 依赖：5、6。
 - [ ] 8. 中期审查与回滚演练。
@@ -114,11 +114,121 @@
 
 ## 实施记录
 
-（无。）
+### 第 0 步 · 本机部分（2026-10-31，Codex 执行，协调者审查）
+
+本次只做第 0 步的本机核对与 HTTP 实测，没有实现连接器。跨地区 DNS、TLS、远端首请求与保活耗时不在授权范围，未测；第 0 步复选框保持未勾选。本节由 Codex 填写，协调者已审查：抽查样本与记录一致，下面的建议已按 spec 2026-10-31 的 `Revisions:` 落地。
+
+**环境与数据。** 两版依次运行，每套独立的 `postgres:17` 与 Odoo，安装 `sale_management`、`stock`，`--without-demo=all`；直连默认 HTTP 服务，`workers=0`，关闭 cron。Node 22.22.0；全部地址与产品为合成数据，未调用真实 ERP、模型或生产服务。
+
+| 镜像          | 实际版本 / digest                                                                          |
+| ------------- | ------------------------------------------------------------------------------------------ |
+| `odoo:19`     | `19.0-20261015`；`sha256:27f920e002c43a1af7022a68f3cc17db71a2f9f3348800cb050721ce54893e49` |
+| `odoo:20`     | `20.0-20261015`；`sha256:d5e3a26baa044867c826dddc09058f10e2582706bf83c146ea04fea889720c76` |
+| `postgres:17` | `sha256:d74eeac9a635390a49bc21bd49fccd973de707e2a53a76ac49b552b8712ec46f`                  |
+
+每版创建 38 个有合成料号的产品：35 个在售且未归档（其中两个 `default_code` 都是 `6205-2RS`），另有一个归档、一个 `sale_ok=false`、一个创建后删除；另建一个无料号产品验证筛选。两个内部库位的库存不同，第一个产品在 A 有 12.5、B 有 21.25，在 A 预留 3；公司币种设为 CNY。专用机器人不在管理员组；分别生成 `rpc`、空 scope、到期测试用 key，不保存或输出 key 明文。
+
+**1. 行号核对。** 对照当前 `HEAD df85a025` 与起草核对基线 `c5cda19a`，逐项复核 spec 中 31 个去重后的 `src/…:行号` / `scripts/…:行号` 引用；只有以下 11 项有差异，其他位置与所述含义均保留。未改 spec。
+
+| 文件                              | spec 行号 → 当前行号                          | 差异                                                                      |
+| --------------------------------- | --------------------------------------------- | ------------------------------------------------------------------------- |
+| `src/adapters/wecom.ts`           | `465、515、621、1040` → `475、525、631、1050` | 原四处出站仍在，均 +10；12 还新增固定企微地址的附件下载，不是租户配置出站 |
+| `src/notify/notifier.ts`          | `97` → `102`                                  | 群机器人 `fetch` +5                                                       |
+| `src/ops/alert.ts`                | `154` → `155`                                 | 告警 `fetch` +1                                                           |
+| `src/core/pack-api.ts`            | `956-962` → `985-991`                         | `PackSources` +29；原行号现为品牌页类型                                   |
+| `src/packs/industrial/turn.ts`    | `139-156` → `131-148`                         | 原文字预取主体 -8；见下方流程变化                                         |
+| `src/packs/industrial/turn.ts`    | `125-157` → `118-149`                         | 原预取移入 `textPrefetch`，并非全段一个固定偏移；当前总入口为 `167-178`   |
+| `src/packs/industrial/runtime.ts` | `39` → `42`                                   | `priceLine` +3；39 现为新增 `intake`                                      |
+| `src/packs/industrial/guards.ts`  | `223` → `225`                                 | 库存证据不足时替换 / 删句 +2，原义保留                                    |
+| `src/core/engine/index.ts`        | `771` → `823`                                 | 模型历史排除系统消息 +52                                                  |
+| `src/core/pack-api.ts`            | `253-256` → `261-265`                         | `PrefetchResult` 增加 `effects`，`timings` 当前为 264                     |
+| `src/ops/alert.ts`                | `34-45` → `34-46`                             | `AlertKey` 新增 `attachment_limit`，原成员保留                            |
+
+单独标记的流程 / 契约扩展：12 把预取拆成文字分支 `textPrefetch`（117–149）、确认分支 `confirmPrefetch`（151–166）与总入口（167–178）。确认分支按清单一次 `quote_items`，经 `effects.statePatch` 标 confirmed、经 `effects.notify` 通知未匹配项；旧的文字预取区间不能覆盖它。`PrefetchResult.effects` 与 `AlertKey.attachment_limit` 均已存在，后续只能追加。另核对 spec 用自然语言引用的引擎「第 821 行 prefetch」：当前实际调用在 873 行（+52）。R7 的预热应覆盖两个分支，并放在各分支调用工具之前。
+
+**2–3. JSON-2、库存、分页与检查。** 下表无特别标注时，两版结果相同。请求为 `POST /json/2/<model>/<method>`，`Authorization: bearer <遮盖>`，`Content-Type: application/json`，请求体直接是方法的具名参数对象；没有 JSON-RPC 外壳。成功均为 200，原样响应媒体类型为 `application/json; charset=utf-8`，结果直接是数组或对象，没有 `result` 外壳。
+
+| 实测                | 请求要点                                                                                                                                         | 结果与返回形状                                                                                                                                                                         |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 批量库存            | `product.product/search_read`；`domain=[["id","in",ids]]`；`fields=["free_qty","uom_id","active"]`；`context={"location":A,"active_test":false}` | 响应每行 `{id,free_qty,uom_id,active}`；`id` 自动带回。含已删 id 的整批成功，已删项缺席；归档项返回且 `active=false`                                                                   |
+| 库位 / 预留         | 第一个产品 A、B 分开读取；A 另读 `qty_available`                                                                                                 | A：`free_qty=9.5`、`qty_available=12.5`；B：`free_qty=21.25`。确实按库位算且扣了预留。样本中所有 `free_qty` 都是有限 JSON 数字，允许小数；仍须保留 R6 的有限数校验、向下取整与负数截零 |
+| many2one            | `uom_id`、`currency_id`、`company_id`                                                                                                            | 非空值为 `[整数id,展示字符串]`，不是对象；本样本 `uom_id=[1,"Units"]`。未构造空 many2one；客户端不能据此免除形状校验                                                                   |
+| 归档过滤            | 库存请求去掉 `active_test:false`                                                                                                                 | 归档项消失；显式 false 才带回                                                                                                                                                          |
+| 数据库请求头        | 加 / 不加 `X-Odoo-Database`                                                                                                                      | 只有一个已初始化库时，两版均成功且结果相同；指定不存在的库返回 HTML 404。多库且无法自动选择的情况未测，不能据此删掉可配置请求头                                                        |
+| 产品第一页 / 第二页 | `domain=[["default_code","!=",false],["sale_ok","=",true]]`，`fields=["default_code","uom_id"]`，`order="id asc"`，`limit=30`，`offset=0/30`     | 分别 30 / 5 行，按 id 升序且无交叠；两条重复料号都保留，无料号、不可销售、归档、已删项均不在默认分页里                                                                                 |
+| 分页排序 / 归档     | `order="id desc",limit=3`；另用 `context={"active_test":false},limit=100`                                                                        | 前者取最大的 3 个在售 id，倒序；后者返回 36 条，额外包含归档产品。自动映射应保留默认 active 过滤，并显式固定排序                                                                       |
+| `read` 对照         | `product.product/read`，`ids=[有效id,已删id]`，`fields=["free_qty","uom_id","active"]`                                                           | 两版均 200，仅返回有效项；只传已删 id 返回 `[]`。这组字段下没有出现 spec 所述整批报错；仍按 spec 选择 `search_read`                                                                    |
+
+`check()` 的可行调用与形状：
+
+| 目的                   | 最小读取与返回                                                                                                                                                                                                                                                                                                         |
+| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 单公司读取币种         | `res.company/search_read`：`{"domain":[],"fields":["currency_id"],"limit":1,"order":"id asc"}` → `[{"id":1,"currency_id":[6,"CNY"]}]`。若直接使用展示字符串，本次单公司环境只需它与下行两次调用                                                                                                                        |
+| 库位存在               | `stock.location/search_read`：`{"domain":[["id","=",locationId]],"fields":["id"],"limit":1}` → `[{"id":locationId}]`；不存在则 200、`[]`。`locationOk` 按是否命中该 id 判断                                                                                                                                            |
+| 确认币种代码而非展示名 | 再调 `res.currency/read`：`{"ids":[6],"fields":["name"]}` → `[{"id":6,"name":"CNY"}]`，也验证了相同条件的 `search_read` 可用。单公司合计三次调用，不依赖展示名                                                                                                                                                         |
+| 明确读取机器人默认公司 | `res.users/context_get {}` → `{lang,tz,uid}`，本样本没有 `allowed_company_ids`；再用返回的 `uid` 调 `res.users/read {ids:[uid],fields:["company_id"]}` → `[{id,company_id:[整数id,展示名]}]`；之后 `res.company/read {ids:[companyId],fields:["currency_id"]}`，再读币种与库位，共五次。无需已知机器人 id 或管理员权限 |
+
+本次只有一个公司。多公司时第一家可见公司与机器人默认公司是否相同未测，二者不可混称；建议协调者在第 3 步前明确 `companyCurrency` 的公司选择口径。
+
+**3–5. 错误、scope 与到期。** 原样 JSON 媒体类型均为 `application/json; charset=utf-8`；不存在数据库的 HTML 为 `text/html; charset=utf-8`，普通路由的 HTML 为 `text/html;charset=utf-8`（空格不同）。JSON 错误顶层：19 是 `name,message,arguments,context,debug`；20 是 `name,message,arguments,timestamp,context,debug`，额外的 `timestamp` 为整数。`arguments` 为数组、`context` 为对象、`debug` 为字符串；没有 `error` 外壳。样本只留字段、类型与异常类名，遮掉 message / debug 原文。
+
+| 情况 / 触发方式                                                   | 19                         | 20                         | 媒体与形状                                                                                                           |
+| ----------------------------------------------------------------- | -------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| 错 key、`bearer` 后空 key                                         | 401                        | 401                        | JSON；`name=werkzeug.exceptions.Unauthorized`                                                                        |
+| 同用户空 scope key                                                | 200                        | 401                        | 19 返回正常产品数组；20 为上述 JSON 401；`rpc` key 两版均 200                                                        |
+| key 到期                                                          | 到期前 200，改到过去后 401 | 到期前 200，改到过去后 401 | 通过 shell 把独立测试 key 的 `expiration_date` 改成过去，JSON 401                                                    |
+| 缺权限 / 调私有方法                                               | 403                        | 403                        | JSON；权限不足为 `odoo.exceptions.AccessError`；固定只读客户端不应调用私有方法                                       |
+| 不存在模型 / 方法                                                 | 404                        | 404                        | JSON；`name=werkzeug.exceptions.NotFound`                                                                            |
+| 不存在的数据库 / 普通 HTTP 路由                                   | 404                        | 404                        | HTML，媒体类型分别为 `text/html; charset=utf-8` / `text/html;charset=utf-8`；不是 JSON 错误对象，只保留 kind、字节数 |
+| 给模型级 `search_read` 额外传非空 `ids`                           | 422                        | 422                        | JSON；`name=werkzeug.exceptions.UnprocessableEntity`                                                                 |
+| `res.currency/round` 传 `ids` 与未知参数 `unexpected`             | 422                        | 422                        | 同上，入口能检查到的参数绑定错误                                                                                     |
+| 不存在字段 `fields=["wsa11_missing"]`                             | 500                        | 500                        | JSON；`name=builtins.ValueError`                                                                                     |
+| `search_read` 传未知参数 `unexpected`                             | 500                        | 500                        | JSON；`name=builtins.TypeError`，不是 422                                                                            |
+| 非法 domain 运算符、错误类型的 `context.location`、字符串 `limit` | 500                        | 500                        | JSON；均已触发 500，无需人为制造服务崩溃                                                                             |
+| 破损 JSON 请求体                                                  | 400                        | 400                        | JSON；参数入口解析失败                                                                                               |
+| 对 JSON-2 方法地址发 GET                                          | 404                        | 404                        | JSON；不能当成正常只读 GET 接口                                                                                      |
+
+修改用户组的实验必须通知 HTTP 进程清除权限缓存，否则会把旧权限误认为新权限。19 的独立 shell 在提交后显式调用 `registry.signal_changes()`；20 的提交已触发失效通知，且没有同名公共方法。key 的到期变更也在提交后重新发 HTTP 请求验证，不只看数据库字段。
+
+**6. 最小内置组。** 两版均依次测下列五档，移除库存组后再次失败，排除了只加不减造成的误判。每档都通过真实 HTTP 读取，机器人始终 `base.group_system=false`，未加销售组或管理员组。
+
+| 显式组（按测试顺序）                         | 产品 `default_code,uom_id` | `free_qty,uom_id,active` | 公司 / 币种 / 库位 |
+| -------------------------------------------- | -------------------------- | ------------------------ | ------------------ |
+| 无组                                         | 403                        | 403                      | 全部 403           |
+| 仅 `base.group_user`                         | 200                        | 403                      | 全部 200           |
+| `base.group_user` + `stock.group_stock_user` | 200                        | 200                      | 全部 200           |
+| 移除库存组，仅保留内部用户                   | 200                        | 403                      | 全部 200           |
+| 仅显式 `stock.group_stock_user`              | 200                        | 200                      | 全部 200           |
+
+`stock.group_stock_user` 隐含内部用户权限，单独指定即可跑通，R6 的库存权限不足告警有实际 403 依据。这是本次逐步删减所得的最小内置组组合，没有穷举所有自定义 ACL。补验有效 ACL：库存用户对 `stock.quant`、`stock.move` 有 read / write / create，没有 unlink；对 `product.product` 有 read、没有 write / create / unlink。它不是严格只读账号；连接器自身仍必须只构造约定的只读调用。若要求凭据本身也只能读，需要另定 Odoo 侧自定义权限，不在本步实现。
+
+**7. 耗时与连接。** 同一 Node 22 进程，30 个产品一批，使用 `http.Agent({keepAlive:true,maxSockets:1})`；测第一次新 Agent 请求、之后 20 次，以及禁用 Agent 的另 20 次作对照。分位数按排序后的 nearest-rank 取值；每次均 200。下表单位毫秒，仅为 Colima 本机回环 HTTP，不含 DNS 或 TLS，不能外推同地区公网或跨地区。
+
+| 版本 | 第一次新 Agent 请求 | Agent 后 20 次 p50 / p90 / 最大 | 无 Agent 20 次 p50 / p90 / 最大 | Agent 后 20 次 `reusedSocket=true` |
+| ---- | ------------------- | ------------------------------- | ------------------------------- | ---------------------------------- |
+| 19   | 9.37                | 10.98 / 17.33 / 18.26           | 14.05 / 25.22 / 28.65           | 0 / 20                             |
+| 20   | 18.79               | 15.28 / 23.11 / 29.70           | 12.62 / 16.90 / 19.42           | 0 / 20                             |
+
+两版所有响应均为 `Connection: close`；显式请求 `Connection: keep-alive` 也一样。观察 socket 的 close 事件，独立连接样本在响应结束后 19 约 0.23 ms、20 约 0.17 ms 就关闭，没有进入 Agent 空闲池；这不是 30 秒的空闲超时。等 1 秒后再请求，两版均新建连接、200、`reusedSocket=false`，Node 无错误，没有观察到 `ECONNRESET`。因此没有真正的「保活之后 20 次」分布，也无法在这种直连模式下测到空闲保活连接超时后的复用错误；不能把表中的 Agent 请求称作保活样本。未测反向代理、TLS 或非默认 worker 模式。
+
+**8–10. 交付、清理与交接。** 脱敏样本逐情况保存在 gitignored 的 `var/11-step0/samples/`，以 `19-` / `20-` 加情况名区分，含请求参数、状态码、原样媒体类型、返回字段、权限状态与 20 次逐请求耗时；不含 key、错误全文、HTML 原文或 Odoo 源码。19 为补齐检查调用又单独起过一套环境，补验 fixture 与原库存 fixture 分文件保留。本任务创建的 19 / 20 容器均以 `docker rm -f -v` 删除，初始化容器也以 `-v` 删除，匿名卷随之删除；本任务网络已删除。最终 `docker ps -a` 仍列出一个其他步骤创建的 `wsa11-` 前缀容器，未停止、删除或连接它；所以全机「无此名前缀」条件未满足。本任务命名下无容器、卷或网络残留。`ps` 被系统权限拒绝，无法独立列进程核对；所有探针执行会话均已结束，没有主动留下后台进程。
+
+**与 spec 不符之处（已修订 spec，见 2026-10-31 的 `Revisions:`）。**
+
+1. R4 / R8 的保活是客户端能力，不是 Odoo 直连的保证。建议保留 Agent，同时明确直连可能每次重连；跨地区测试要同时测真实入口与实际复用率，不能从本机 p90 推导 300 ms / 1 秒预算成立。若要求代理提供保活，把入口条件写清后再测。
+2. R6 错误表的 500 归类仍可照状态码执行，但配置错误也可能变成 500。建议在前置 JSON-2 说明与第 3 步自测中明确：错字段 / 透传错误参数可为 500，按现有表归 `server`、冷却 30 秒；入口绑定错误才可能 422，归 `invalid`、冷却 10 分钟。不能按响应文字把 500 猜成配置错误。
+3. R6「`read` 遇已删 id 会整批报错」在两版的本次字段组合下不成立。建议删去这句绝对断言，保留 `search_read` 及其省略已删项的实测契约；不主张更换客户端方法。
+4. R2 的 `companyCurrency` 没有说明多公司选哪一家。建议选机器人默认公司，经 `context_get` → 用户 `company_id` → 公司 `currency_id` → 币种 `name`，加库位共五次，均在非管理员账号上调通；单公司三次路径可作更小的集成探针，不把展示字符串当币种字段。
+
+给第 3 步的要点：成功数组与错误对象都无外壳；20 多一个 `timestamp`；先按状态码分类，再处理成功响应的媒体类型与结构（HTML 404 仍是 404）；媒体类型忽略 charset；many2one 取首个整数 id；分页固定 `id asc`；归档 false、已删缺席、小数 `free_qty`、重复料号都要进入模拟器；500 与 422 都需按上述触发方式覆盖。第 7 步初始化建议用布尔开关 `--without-demo`：本次的 `--without-demo=all` 在两版都警告后按 True 执行（19 另核对两模块的 `demo=false`）；造预留时，两版 `stock.move` 都没有旧的 `name` 字段，19 的单位字段是 `product_uom`，20 是 `uom_id`；这只是集成造数据差异，不改变客户端只读接口。
+
+未完成部分：跨地区实测未授权，未进行；直连没有可复用的保活连接，真正保活分布与空闲复用错误无法取得，留到第 7 步经 nginx 测。第 0 步保持未勾选，等跨地区实测。
+
+本步验证：两版样本断言通过（库存、归档 / 删除、分页、权限、scope / 到期、错误形状、检查调用与每版 20 + 20 次耗时），143 个 JSON 样本完成脱敏检查；其余 plan 小节与复选框逐字节未改。`pnpm -s format:check` 通过，`git diff --check` 通过；相对 `origin/dev` 的新增行无本机绝对路径或超长假企微 id。按本任务只跑格式门禁，lint / typecheck / test / test:locked 未跑；无新增或受影响自测。临时探针与日志已清理，只保留脱敏样本。
 
 ## Open
 
-（无。）
+- 第 0 步的跨地区实测等 owner 授权并提供一台远端主机（本机部分已完成）。它决定 R8 的目标对远端 Odoo 是否成立，不挡第 1–8 步；验收 9 要把它记进 plan，所以第 10 步之前要做完。
 
 ## 已定
 
@@ -155,3 +265,11 @@
 
 - spec 翻 `ready`；AGENTS.md 的两条规则、ADR-003 与 10 的反向行、03 / 04 / 05 / 08 的 `Amended by:`、主参考「阶段 8」同一 PR 补上。
 - 下一步：12 implemented 之后开工第 0 步。第 0 步里「从线上服务器所在地区测远端 Odoo」要 owner 当次授权。
+
+### 交接（2026-10-31，第 0 步本机部分）
+
+- owner 定开工，Codex 并行：第 0、1、2 步同时派出。第 1、2 步用不到实测结果，但都等本节合入 `dev` 之后才合。
+- 第 0 步本机部分完成，见「实施记录」；spec 按实测就地修订（第五条 `Revisions:`），只改事实与细节，不改决定。第 7 步加了经 nginx 验证保活。
+- 12 的预取已拆成 `textPrefetch`、`confirmPrefetch` 与总入口，第 6 步按当前行号改，不按 spec 里的旧行号。
+- 响应样本（143 个脱敏 JSON）在协调者本机、不进仓库，第 3 步派活时交给 Codex。
+- 下一步：合入第 1、2 步，再派第 3 步。
