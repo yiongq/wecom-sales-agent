@@ -14,6 +14,7 @@ Revisions: 2026-10-29 第 8 步实现时就地修订，尚无已上线的代码�
 Revisions: 2026-10-30 第 12 步中期审查后就地修订，尚无已上线的代码依赖（审查与修复见 plan「实施记录 · 第 12 步」）：R6 一个工作表部件只能被一张可见表引用、可见表至多 20 张（同一部件重复引用几百次能撑爆内存）；R4 JPEG 只留 APP0、APP2、APP14，并按 owner 当日所定写回只含方向的最小 APP1，不变量 10 与验收 8 随之改为「除方向标记外」；R4 附件份数改为进程内预占；R3 网页附件唯一键改为 `<会话 id>:<cid>`，转人工那一轮的那句照常返回给网页客户（同时部分取代 03，见下）；R5 `moreQueued` 改为读到时求值；R9 清单记已并入的附件，恢复时不重复追加；R10 清单确认之后，确认时没报价的行不能被模型自己补数量。
 Revisions: 2026-10-30 第 13 步真实模型实测后就地修订，尚无已上线的代码依赖（结果见 plan「实施记录 · 第 13 步」）：R7 视觉请求带 `response_format: json_object`，解析时容忍 ```json 代码块。不带时约一半回复包着代码块，工业闸的「图片改行后确认」因此只有 2/5，修后 5/5。
 Revisions: 2026-10-30 第 14 步线上走查后就地修订（rc1 上的旧行为随本修订一并替换；413 解锁见 #376）：R3 网页上传得 413 时不再保留待发文件与「重试」，放开输入；原写法下重试只会再得 413，页面卡住。owner 定提示改为「没发出去：文件太大（图片最大 8 MB，表格最大 2 MB），请换个小一点的文件，或把型号和数量打字发来」。
+Revisions: 2026-10-30 第 14 步真机走查后就地修订（rc1 上的旧行为随本修订一并替换；修复见 #377）：R4 JPEG 去元数据读到 EOI 即结束，EOI 之后的字节一律丢弃。安卓微信的压缩照片在 EOI 后带 24 字节尾巴，原写法要求 EOI 在文件末尾，去元数据失败后整张图被降为 `other`，安卓照片全都识别不了（诊断见 plan「实施记录 · 第 14 步」）。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8「按信号再定」；[10](../10-industrial-rfq-pack/spec.md)「后续」第 2 条。
 Depends on: [10 · 工业品询价包](../10-industrial-rfq-pack/spec.md) 已 implemented（`demo-v10`）；10 第 21 步（工业预取）已合入 `dev`，还没有随 tag 上线，12 的第一个 rc 一并带上。
 Supersedes in part: [10](../10-industrial-rfq-pack/spec.md) 的四处，理由都是「客户发来的附件要变成可确认的清单」。（1）R16 修订里工业包的 `non-text.image` / `non-text.file` / `non-text.video` 三句提示：图片、表格改由识别流程接管，视频改为转顾问（R1）。（2）R11：「确认下单」的候选判定，有更新的待确认清单时不接受更早的报价（R9）。（3）R7：`packState` 上限从 8,192 字节放宽到 10,240 字节，必留摘要加 `rfqIntake`、`resetKeys` 加 `rfqIntake`（R8）。（4）不变量 5：只约束经模型回复管线的回复；确定性的识别清单至多 30 行，另由本 spec 不变量 8 约束。10 在本 spec 翻 `ready` 时加反向的 `Superseded in part by:` 行。
@@ -169,7 +170,7 @@ attachments: {
 
 **去位置信息。** 存库与送模型之前按字节剥元数据，不加依赖。sha256 按剥离后的字节算。
 
-- JPEG：APPn 只留 APP0（JFIF）、APP2（ICC 色彩配置）、APP14（Adobe，CMYK 解码要用）；APP1（Exif / XMP）、APP3–APP13、APP15 与 COM 注释一律丢弃，其他段不动。
+- JPEG：APPn 只留 APP0（JFIF）、APP2（ICC 色彩配置）、APP14（Adobe，CMYK 解码要用）；APP1（Exif / XMP）、APP3–APP13、APP15 与 COM 注释一律丢弃，其他段不动；读到 EOI 即结束，EOI 之后的字节一律丢弃（微信压缩图会在 EOI 后附尾巴）。
 - 方向例外：原图 Exif 的 IFD0 里方向（Orientation）是 2–8 时，在原来第一个 APP1 的位置写回一个只含这一项的最小 APP1（36 字节，不含时间、机型、位置）；方向是 1、缺失或 Exif 结构不可信时不写。手机竖拍的照片是横向像素加方向标记，全丢会让工作台与模型看到横图。
 - PNG：剥掉 `eXIf`、`tEXt`、`iTXt`、`zTXt` 块。
 
