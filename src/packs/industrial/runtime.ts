@@ -6,6 +6,7 @@ import {
   type ShapePolicy,
 } from '../../core/pack-api.js';
 import { createIntake } from './intake.js';
+import { normalizePartNo } from './normalize.js';
 import { handoffVocab } from './handoff-vocab.js';
 import { industrialReplyGuard, industrialFollowupGuard, rfqTrimStep, rfqTrimFollowupStep } from './guards.js';
 import { IndustrialPolicySchema, quoteNotes } from './policy.js';
@@ -36,6 +37,12 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     session.orderIds.map(getAnyOrder).filter((order) => order && 'v' in order && order.sessionId === session.id);
   return {
     id: industrial.id,
+    erp: {
+      kind: 'part',
+      key: (item) => (typeof item.partNo === 'string' ? normalizePartNo(item.partNo) : null),
+      remoteKey: normalizePartNo,
+      unit: (item) => String(item.unit),
+    },
     intake: createIntake(sources),
     catalog: { part: partCatalog },
     maxQty: MAX_QTY,
