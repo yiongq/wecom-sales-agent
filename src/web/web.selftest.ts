@@ -1671,7 +1671,12 @@ for (const status of [413, 429, 409, 503, 0]) {
   await changing;
   await settle();
   assert.match(uploadUi.nodes.get('notice')!.textContent, /没发出去，请重试/);
-  if (status === 413) assert.match(uploadUi.nodes.get('notice')!.textContent, /文件太大（图片最大 8 MB，表格最大 2 MB）/);
+  if (status === 413)
+    assert.equal(
+      uploadUi.nodes.get('notice')!.textContent,
+      '没发出去，请重试：文件太大（图片最大 8 MB，表格最大 2 MB）',
+      '413 提示文案不变',
+    );
   if (status === 429) assert.match(uploadUi.nodes.get('notice')!.textContent, /太频繁，稍后再试/);
   const sentUpload = uploadUi.requests[1]!;
   assert.equal(sentUpload.url, '/api/web/web-page/attachments');
@@ -1680,6 +1685,40 @@ for (const status of [413, 429, 409, 503, 0]) {
   assert.equal(sentForm.get('file'), file);
   assert.equal((sentUpload.init!.headers as Record<string, string>)['Content-Type'], undefined);
   assert.equal((sentUpload.init!.headers as Record<string, string>)['x-web-chat'], '1');
+  if (status === 413) {
+    assert.equal(uploadUi.nodes.get('notice')!.hidden, false, '413 后显示失败提示');
+    for (const id of ['input', 'sendBtn', 'fileBtn', 'fileInput'])
+      assert.equal(uploadUi.nodes.get(id)!.disabled, false, `413 后 ${id} 恢复可用`);
+    assert.equal(uploadUi.nodes.get('fileBtn')!.textContent, '发文件');
+    assert.equal(uploadUi.nodes.get('retryBtn')!.hidden, true, '413 后隐藏重试');
+    assert.ok(uploadUi.nodes.get('msgs')!.textContent.includes('[图片]未发送'), '413 占位气泡标为未发送');
+    await uploadUi.nodes.get('retryBtn')!.emit('click');
+    await settle();
+    assert.equal(uploadUi.requests.length, 2, '413 后丢弃待发文件，重试不再上传');
+    uploadUi.nodes.get('input')!.value = '改用文字咨询';
+    uploadUi.results.push(Response.json({ reply: null }));
+    await uploadUi.nodes.get('composer')!.emit('submit', { preventDefault() {} });
+    await settle();
+    assert.equal(uploadUi.requests[2]!.url, '/api/web/web-page/messages', '413 后可以发送文字');
+    assert.equal(JSON.parse(uploadUi.requests[2]!.init!.body as string).text, '改用文字咨询');
+    const replacement = new File(['replacement'], '替换.csv', { type: 'text/csv' });
+    uploadUi.nodes.get('fileInput')!.files = [replacement];
+    uploadUi.results.push(Response.json({ reply: null }));
+    await uploadUi.nodes.get('fileInput')!.emit('change');
+    await settle();
+    assert.equal(uploadUi.requests[3]!.url, '/api/web/web-page/attachments', '413 后可以另发文件');
+    const replacementForm = uploadUi.requests[3]!.init!.body as FormData;
+    assert.equal(replacementForm.get('file'), replacement);
+    assert.notEqual(replacementForm.get('cid'), sentForm.get('cid'), '另发文件使用新 cid');
+    await uploadUi.win.emit('pagehide');
+    console.log('PASS web 页面附件：413 后控件恢复、重试隐藏、文案不变、气泡标未发送，可继续发文字与新文件');
+    continue;
+  }
+  for (const id of ['input', 'sendBtn', 'fileBtn', 'fileInput'])
+    assert.equal(uploadUi.nodes.get(id)!.disabled, true, `${status || '断网'} 后仍保留待发文件并锁定输入`);
+  assert.equal(uploadUi.nodes.get('retryBtn')!.hidden, false, `${status || '断网'} 后仍可重试`);
+  assert.equal(uploadUi.nodes.get('retryBtn')!.disabled, false);
+  assert.ok(!uploadUi.nodes.get('msgs')!.textContent.includes('未发送'), '可重试失败不标记为永久失败');
   uploadUi.results.push(Response.json({ reply: { text: '附件已核验。', parts: [] } }));
   await uploadUi.nodes.get('retryBtn')!.emit('click');
   await settle();
@@ -1693,4 +1732,4 @@ for (const status of [413, 429, 409, 503, 0]) {
   assert.equal(uploadUi.nodes.get('fileBtn')!.textContent, '发文件');
   await uploadUi.win.emit('pagehide');
 }
-console.log('PASS web 页面附件：按钮/accept、上传态、413/429/409/503 提示、同 cid/File 重试、无预览占位、原 CSP');
+console.log('PASS web 页面附件：按钮/accept、上传态、429/409/503/断网保留同 cid/File 重试、无预览占位、原 CSP');

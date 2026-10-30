@@ -162,7 +162,8 @@ function startWebChat() {
     });
     if (!response.ok) {
       if (upload) {
-        if (response.status === 413) throw new Error('没发出去，请重试：文件太大（图片最大 8 MB，表格最大 2 MB）');
+        if (response.status === 413)
+          throw Object.assign(new Error('没发出去，请重试：文件太大（图片最大 8 MB，表格最大 2 MB）'), { status: 413 });
         if (response.status === 429) throw new Error('没发出去，请重试：太频繁，稍后再试');
         throw new Error('没发出去，请重试');
       }
@@ -203,8 +204,13 @@ function startWebChat() {
             ? error.message
             : '发送失败，请点重试。',
       );
-      // 服务端可能已经发了 cookie 并记录了消息；同 cid 重试恢复，事件连接也再试一次。
-      ensureEvents();
+      if (pending?.file && error instanceof Error && error.status === 413) {
+        pending.bubble.append(node('span', 'nick', '未发送'));
+        pending = null;
+      } else {
+        // 服务端可能已经发了 cookie 并记录了消息；同 cid 重试恢复，事件连接也再试一次。
+        ensureEvents();
+      }
     } finally {
       typing?.remove();
       typing = null;
@@ -261,7 +267,7 @@ function startWebChat() {
     if (!file || !ready || busy || pending) return;
     pending = { body: { cid: crypto.randomUUID() }, file };
     chips.hidden = true;
-    addMessage('customer', /^image\/(jpeg|png)$/.test(file.type) ? '[图片]' : '[文件]');
+    pending.bubble = addMessage('customer', /^image\/(jpeg|png)$/.test(file.type) ? '[图片]' : '[文件]');
     fileInput.value = '';
     void transmit();
   });
