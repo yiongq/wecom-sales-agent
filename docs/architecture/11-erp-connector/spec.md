@@ -5,6 +5,7 @@ Revisions: 2026-10-29 起草；依据 10「后续」第 1 条与工业品询价�
 Revisions: 2026-10-29 起草期评审（一路 Claude Opus，只读，对照代码并核对 Odoo 文档与源码）之后就地修订，尚无代码依赖；owner 当日定开放问题 1：第一期只读，写回整段移出 11、另起 spec（理由见「非目标」「被否决的方案」）。按评审改：出站防护补上 IP 字面量（Node 遇字面量不调 `lookup`），AGENTS.md 规则原文随之修改；交期不再取 Odoo 的 `sale_delay`（语义不同）；「新鲜值」只有一个定义，工具结果、`priceLine`、自动批准与护栏证据（含跟进）共用；每轮共享一个 ERP 截止时间、预取一次预热、每个连接器一条保活连接，按 10 第 21 步的实测重算时延；API key 到期日必填并提前告警，Odoo 20 只认 scope 为 `rpc` 的 key；不再加 pre-11 回滚档（R11）；头部改为部分取代 10 R4、R6 (2) 与 ADR-003 决策 2；集成脚本进程内注入出站；补齐边界规则、计划依赖、`package.json` 与 `sandbox_tenant_purge`；单路请求加每秒限速、401 与 403 分开、`search_read` 带 `active_test`、地址改白名单式等次要项；砍掉并发池、可调时限与连接器 key。开放问题由 7 条减为 5 条。
 Revisions: 2026-10-29 owner 定开放问题 1–5，全部照推荐：只支持 Odoo 19、20 的 JSON-2；客户料号 / 竞品料号对照不放进 11；工业演示租户不接 Odoo，验收在本机一次性容器上做；连接器凭据共用 `CHANNEL_SECRETS_KEY`；这一轮取不到新鲜值时退回产品库的值，同时不自动批准、给顾问留系统消息。
 Revisions: 2026-10-29 owner 定 `ready`。同一 docs PR 把 R3、R4 的两条规则原文写进 AGENTS.md，给 ADR-003 与 10 加反向的 `Superseded in part by:`（10 的那一行一并写 R9 的收紧），给 03、04、05、08 加 `Amended by:`，主参考「阶段 8」加一条。
+Revisions: 2026-10-31 第 0 步本机实测（Odoo `19.0-20261015`、`20.0-20261015`）之后就地修订，尚无代码依赖；都是事实修正或补细节，不改决定：R6 删去「`read` 遇已删 id 会整批报错」这条不成立的理由（两版实测都只是省略），仍用 `search_read`；R6 补 `check()` 的五次调用，公司取机器人默认公司（原文没说多公司取哪家）；R5 分页固定 `id asc`；R6 错误表之后补「错字段、错参数也可能是 500」；R8 写明保活取决于服务入口（Odoo 内置 HTTP 服务每次都 `Connection: close`）；「安全」写明最小内置组 `stock.group_stock_user` 不是严格只读。跨地区实测仍待 owner 授权。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8「按信号再定」；[10](../10-industrial-rfq-pack/spec.md)「后续」第 1 条。
 Depends on: [12 · 客户发来的图片与文件](../12-customer-files/spec.md) 已 implemented（R7 要改的工业包文件与 12 重叠）；[09](../09-quote-approval/spec.md)、[10](../10-industrial-rfq-pack/spec.md) 已 implemented；[03](../03-channels-v2/spec.md) R9 的密钥环与加密存库；[05](../05-tenancy-sandbox/spec.md) R5 的租户状态登记与 R12 的沙箱回收。
 Supersedes in part: [10](../10-industrial-rfq-pack/spec.md) 的两处，理由都是「接了 ERP 的租户，库存以 ERP 的新鲜值为准」：（1）R4「行属性」里判现货用的「库存」；（2）R6 自动批准条件（2）「每一行在建单这一刻都是库存 ≥ 数量」。新条文见 R7，没有启用连接器的租户仍按原文。[ADR-003](../../adr/adr-003-open-core-boundary.md) 决策 2「不进任何仓库」一格的「凭据：只放服务器上的 env 文件（01 起按 compose 服务拆分），不写进日志」：改为按租户的渠道凭据（03 引入，当时没有在 ADR 落档）与外部业务系统凭据（本 spec）可以加密存库，密钥环只在 env 文件（R3）。10 与 ADR-003 在本 spec 翻 `ready` 时加反向的 `Superseded in part by:` 行。
@@ -215,7 +216,7 @@ export type EgressCode =
 
 - 新表 `erp_item_links`（`tenant_id`、FORCE RLS）：主键 `(tenant_id, connector_id, kind, code)`，存 `remote_id`、`remote_code`、`remote_uom_id`、`source: 'auto' | 'manual'`、`checked_at`。`agent_app` 有 SELECT、INSERT、UPDATE、DELETE（`map --unset` 要删），写操作记审计 `erp.map`。产品库本身不加字段。
 - **自动映射**（命令行 `map --auto`，可 `--dry-run`）：
-  - 分页读 Odoo 里 `default_code` 非空、`sale_ok` 为真的 `product.product`，每页 500，单页时限 15 秒、至多 2 MiB；
+  - 分页读 Odoo 里 `default_code` 非空、`sale_ok` 为真的 `product.product`，保留默认的归档过滤，按 `id asc` 排序，每页 500，单页时限 15 秒、至多 2 MiB；
   - 包的 `erp.remoteKey(default_code)` 与 `erp.key(item)` 全等才算对上；工业包两边都用 `normalizePartNo`，所以 `6205 2RS` 与 `6205-2RS` 对得上；
   - 恰好一个 → 建链接；没有 → 未映射；多于一个（`default_code` 在 Odoo 不唯一）→ 冲突，不建；
   - 单位必须对上：Odoo 的 `uom_id` 等于 `settings.uom[erp.unit(item)]`，否则单位不符，不建；
@@ -226,7 +227,9 @@ export type EgressCode =
 
 ### R6 · 实时可售量、新鲜值与时限
 
-**读法。** 一次请求：`POST /json/2/product.product/search_read`，`domain` 为 `[["id", "in", ids]]`（至多 30 个），`fields` 为 `free_qty`、`uom_id`、`active`，`context` 为 `{ "location": settings.locationId, "active_test": false }`。用 `search_read` 而不是 `read`：有一个 id 已被删时 `read` 会整批报错。many2one 只取 id。`free_qty` 必须是有限数，向下取整、负数记 0。
+**读法。** 一次请求：`POST /json/2/product.product/search_read`，`domain` 为 `[["id", "in", ids]]`（至多 30 个），`fields` 为 `free_qty`、`uom_id`、`active`，`context` 为 `{ "location": settings.locationId, "active_test": false }`。用 `search_read` 而不是 `read`：按条件取，已删的 id 只是不在结果里，这正是要的语义，不依赖 `read` 对缺失 id 的处理。many2one 只取 id。`free_qty` 必须是有限数，向下取整、负数记 0。
+
+**检查。** `check()` 依次发五次只读调用：`res.users/context_get` 取 `uid`；`res.users/read` 取 `company_id`（机器人的默认公司，多公司时只看这一家）；`res.company/read` 取 `currency_id`；`res.currency/read` 取 `name` 作为 `companyCurrency`，不用 many2one 的展示字符串；`stock.location/search_read` 按 `id` 查库位，命中才算 `locationOk`。只在命令行跑，不走每轮截止时间。
 
 **新鲜值（唯一定义）。** 本进程从 ERP 取到、`at` 距现在不超过 60 秒的值。`PackSources.erp.fresh()` 只按这一条返回；`availability()` 对超过 30 秒的值重新取，所以它交出去的值至少还新鲜 30 秒，够一轮用完。工具结果、`priceLine`、自动批准与护栏证据都只认 `fresh()`（R7）。
 
@@ -243,6 +246,8 @@ export type EgressCode =
 | 403                                                                              | `forbidden`：机器人用户权限不够                  | 10 分钟 | 「机器人用户缺少读产品或库存的权限」       |
 | 404、400、422                                                                    | `not_found` / `invalid`                          | 10 分钟 | 「连接器配置与 Odoo 不符」                 |
 | 超时、网络错误、出站防护拒绝、5xx、非 JSON（如代理的 502 页面）                  | `timeout` / `egress` / `server` / `bad_response` | 30 秒   | 从正常转为失败时推一次                     |
+
+错字段、错参数在 Odoo 上常是 500 而不是 422（19、20 实测），一律按状态码归 `server`，不按响应文字猜成配置错误；我们只发固定的调用，这种情况只会在 Odoo 字段变化时出现。
 
 冷却期内 `availability()` 不发请求，直接返回空（`cooldown`）。
 
@@ -268,6 +273,7 @@ export type EgressCode =
 | 12 确认轮（一次预取 `quote_items`） | 照 10 第 21 步                        | 预热一次，至多 +1 秒                                         |
 
 - 目标：同地区、保活连接命中时，ERP 段 p90 ≤ 300 毫秒；任何情况下一轮 ≤ 1 秒。
+- 保活取决于服务入口。Odoo 内置 HTTP 服务每次响应都是 `Connection: close`（19、20 实测），连接不复用；R4 只许 HTTPS，真实入口都在 TLS 终结层之后（nginx、Odoo.sh 等），能不能复用看这一层。入口不支持保活时每次请求都要重新建连和握手，p90 目标不成立，只剩 1 秒上限与退路兜底。第 7 步经 nginx 验证复用，跨地区实测记实际复用率。
 - 跨地区或到境外托管的 Odoo，第一次 TLS 握手可能就接近 1 秒，这一轮会退回产品库值；保活连接复用之后才快。第 0 步的跨地区实测决定这个目标对远端 Odoo 是否成立，不成立就在 plan「Open」里请 owner 定（例如对远端 Odoo 只在命令行建连接器时提示风险）。
 
 ### R9 · 平台命令行
@@ -351,7 +357,7 @@ export type EgressCode =
 
 - **SSRF**：R4；配置入口只有平台命令行（运维执行），以后若开放给商家在后台自助配置，同一道防护照用。
 - **注入**：Odoo 的检索条件只由整数 id 组成；ERP 返回的字符串不进模型。
-- **最小权限**：Odoo 侧用专用机器人用户，只给读产品与库存所需的组；`check` 不需要管理员。key 到期前告警，换 key 用 `set-secrets`。
+- **最小权限**：Odoo 侧用专用机器人用户，只给读产品与库存所需的组；`check` 不需要管理员。实测（19、20）最小内置组是 `stock.group_stock_user`（隐含内部用户），只有内部用户时读 `free_qty` 得 403。这个组对 `stock.quant`、`stock.move` 有读、写、建权限，不是严格只读：我们的客户端只发只读调用，但 key 泄露时风险大于纯只读账号；要凭据本身只读，商家在 Odoo 里自建只读组。key 到期前告警，换 key 用 `set-secrets`。
 - **隐私**：只读，不向 ERP 发送任何客户信息；请求里只有产品 id、库位 id 与字段名。
 - **许可**：只调用 Odoo 的公开接口；不复制 Odoo 的代码与文档；集成用的官方镜像只在本机下载运行，不进仓库、不随产品分发。
 - **性能**：R8；映射在命令行里跑，不在请求路径上。
