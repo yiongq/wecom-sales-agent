@@ -1,6 +1,7 @@
 # 02 · 会话入库 + 坐席工作台
 
 Status: implemented
+Amended by: [12 · 客户发来的图片与文件：询价单识别与确认](../12-customer-files/spec.md)（只做新增：`MessageView` 加可选 `attachment`，`handoff_notify` 的原因加 `intake_unmatched`；全文见该 spec 顶部 `Amends:`）
 Superseded in part by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md) — R22 里 `/api/orders/:id` 的白名单投影（第 151 行）、不变量 43（第 1469 行）与验收 9 里「`order` 的键集合恰为白名单」（第 1491 行）：通用单（`data.v = 2`）改用另一份白名单 `PublicLineOrder`，旧版旅游单的键集合不变（08 R12）。按 08 的 plan 落地。
 Amended by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md)（只做新增或收紧，全文见该 spec 顶部 `Amends:`：「数据库」的 `orders` 加可空列 `total_fen` 与两个 CHECK，通用单的 `data` 是 `LineOrder`（`v: 2`）、`route_id` 写第一行的条目编号、`total_price` 写 `round(total_fen / 100)`（第 1107–1122 行，08 R3）；`/proposal/*` 与 `/api/proposal/:routeId`（第 617 行）只对声明了 `documents.proposal` 的包开放，其余包 404（08 R12））。
 Superseded in part by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md) — 验收 12 里已付会话「我要退款」那一段：开着自助退款时第一句先回退款报价，客户确认之后要人动手的（超过阈值等审批，或顾问收款模式下等顾问退款）才转人工、进「已成交客户要人工」，低于阈值且模拟支付的当场办完、不转人工；自助退款关着时原文照旧（07 R18、R19）。

@@ -4,6 +4,8 @@ function startWebChat() {
   const msgs = get('msgs');
   const input = get('input');
   const sendBtn = get('sendBtn');
+  const fileBtn = config.attachments ? get('fileBtn') : null;
+  const fileInput = config.attachments ? get('fileInput') : null;
   const endBtn = get('endBtn');
   const retryBtn = get('retryBtn');
   const chips = get('chips');
@@ -39,6 +41,11 @@ function startWebChat() {
   function controls() {
     input.disabled = busy || !ready || !!pending;
     sendBtn.disabled = busy || !ready || !!pending;
+    if (fileBtn && fileInput) {
+      fileBtn.disabled = busy || !ready || !!pending;
+      fileInput.disabled = fileBtn.disabled;
+      fileBtn.textContent = busy && pending?.file ? '正在上传…' : '发文件';
+    }
     endBtn.disabled = busy || !ready;
     retryBtn.disabled = busy;
     retryBtn.hidden = busy || (ready && !pending);
@@ -145,14 +152,23 @@ function startWebChat() {
     connectEvents();
   }
   async function post(endpoint, body) {
+    const upload = body instanceof FormData;
     const response = await fetch(`${api}/${endpoint}`, {
       method: 'POST',
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json', 'x-web-chat': '1' },
-      body: JSON.stringify(body),
+      headers: upload ? { 'x-web-chat': '1' } : { 'Content-Type': 'application/json', 'x-web-chat': '1' },
+      body: upload ? body : JSON.stringify(body),
       signal: AbortSignal.timeout(60_000),
     });
     if (!response.ok) {
+      if (upload) {
+        if (response.status === 413)
+          throw Object.assign(new Error('没发出去：文件太大（图片最大 8 MB，表格最大 2 MB），请换个小一点的文件，或把型号和数量打字发来'), {
+            status: 413,
+          });
+        if (response.status === 429) throw new Error('没发出去，请重试：太频繁，稍后再试');
+        throw new Error('没发出去，请重试');
+      }
       if (response.status === 409) throw new Error('上一条消息还在处理，请稍后点重试。');
       if (response.status === 429) throw new Error('现在咨询有点多，请稍后点重试。');
       throw new Error('暂时未能完成，请点重试。');
@@ -166,7 +182,13 @@ function startWebChat() {
     controls();
     showTyping();
     try {
-      const data = await post('messages', pending.body);
+      let body = pending.body;
+      if (pending.file) {
+        body = new FormData();
+        body.append('file', pending.file);
+        body.append('cid', pending.body.cid);
+      }
+      const data = await post(pending.file ? 'attachments' : 'messages', body);
       if (data.reply) addMessage('agent', data.reply.text, undefined, data.reply.parts);
       if (pending.actions) {
         pending.actions.replaceChildren(node('span', '', '已记录您的选择'));
@@ -175,9 +197,22 @@ function startWebChat() {
       pending = null;
       ensureEvents();
     } catch (error) {
-      notice(error instanceof Error ? error.message : '发送失败，请点重试。');
-      // 服务端可能已经发了 cookie 并记录了消息；同 cid 重试恢复，事件连接也再试一次。
-      ensureEvents();
+      notice(
+        pending?.file
+          ? error instanceof Error && error.message.startsWith('没发出去')
+            ? error.message
+            : '没发出去，请重试'
+          : error instanceof Error
+            ? error.message
+            : '发送失败，请点重试。',
+      );
+      if (pending?.file && error instanceof Error && error.status === 413) {
+        pending.bubble.append(node('span', 'nick', '未发送'));
+        pending = null;
+      } else {
+        // 服务端可能已经发了 cookie 并记录了消息；同 cid 重试恢复，事件连接也再试一次。
+        ensureEvents();
+      }
     } finally {
       typing?.remove();
       typing = null;
@@ -227,6 +262,16 @@ function startWebChat() {
       event.preventDefault();
       send(input.value);
     }
+  });
+  fileBtn?.addEventListener('click', () => fileInput.click());
+  fileInput?.addEventListener('change', () => {
+    const file = fileInput.files?.[0];
+    if (!file || !ready || busy || pending) return;
+    pending = { body: { cid: crypto.randomUUID() }, file };
+    chips.hidden = true;
+    pending.bubble = addMessage('customer', /^image\/(jpeg|png)$/.test(file.type) ? '[图片]' : '[文件]');
+    fileInput.value = '';
+    void transmit();
   });
   for (const button of chips.querySelectorAll('button')) button.addEventListener('click', () => send(button.dataset.q));
   retryBtn.addEventListener('click', () => void (ready ? transmit() : restore()));

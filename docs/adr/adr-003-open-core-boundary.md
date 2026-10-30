@@ -2,6 +2,7 @@
 
 - **状态**：采纳
 - **Superseded in part by**：[ADR-005](adr-005-industrial-reference-pack.md) — 决策 2「本仓库（MIT）」一格中的第二个参考行业包由电商售后改为工业品询价（owner 2026-10-23 拍板）；其余内容不变。
+- **Superseded in part by**：[11 · 外部业务系统连接器：Odoo 实时库存（只读）](../architecture/11-erp-connector/spec.md) — 决策 2「不进任何仓库」一格中的「凭据：只放服务器上的 env 文件（01 起按 compose 服务拆分），不写进日志」：按租户的渠道凭据（03 引入，当时没有在本 ADR 落档）与外部业务系统凭据（11）可以加密存库，密钥环只在 env 文件（11 R3）；其余内容不变。
 - **日期**：2026-09-25
 - **Amended by**：[08 · 核心去旅游化：产品种类、通用订单与金额](../architecture/08-pack-generalization/spec.md) — 决策 4 的包白名单（第 50 行）同样管 `data/packs/<名>/`，白名单以外的目录让 `pnpm lint` 失败（08 R5）。
 - **Amended by**：[ADR-005](adr-005-industrial-reference-pack.md) — 决策 4 的公开包白名单增加 `industrial`，保留 `travel`、`ecommerce-aftersales`；同样适用于 `src/packs/` 与 `data/packs/`。

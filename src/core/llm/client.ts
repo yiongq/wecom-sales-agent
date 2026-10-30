@@ -209,7 +209,7 @@ function mustThink(baseUrl: string, model: string): boolean {
 }
 
 /** thinking 参数仅智谱识别；其他 OpenAI 兼容端（DeepSeek 等）可能拒绝未知字段，一律不带 */
-function thinkingParams(baseUrl: string, model: string, forceThink = false): Record<string, unknown> {
+export function thinkingParams(baseUrl: string, model: string, forceThink = false): Record<string, unknown> {
   if (forceThink || mustThink(baseUrl, model)) {
     return { thinking: { type: 'enabled' }, reasoning_effort: reasoningEffort() };
   }
@@ -731,6 +731,8 @@ function callKey(name: string, args: Record<string, unknown>): string {
 
 /** 本轮每次模型调用的耗时与它要的工具，整轮超时时打出来；也交给 onLlmCall 的订阅者（逐轮 trace，02 spec） */
 export interface CallTrace {
+  /** 仅视觉调用显式标记；缺省保持既有主对话 trace 字节。 */
+  purpose?: 'vision';
   model: string;
   hedged: boolean;
   ms: number;
@@ -750,7 +752,7 @@ registerTenantState({ name: 'client.llmCallObservers', ...llmCallObservers.regis
 export function onLlmCall(fn: (c: CallTrace) => void): () => void {
   return llmCallObservers.subscribe(fn);
 }
-function notifyLlmCall(c: CallTrace): void {
+export function notifyLlmCall(c: CallTrace): void {
   for (const fn of llmCallObservers) {
     try {
       fn(c);

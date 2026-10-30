@@ -8,7 +8,7 @@
 
 Node 22 · Hono · TypeScript（`tsx` 直接运行）· PostgreSQL 17 + pgvector · Vite + React 后台 · MIT 许可。
 
-**进度**：阶段 00–10 已 `implemented`；00–08 已发版，09（报价审批）与 10（工业品询价包与演示租户）已上线演示环境，待发版。路线见 [架构总参考](docs/architecture/master-reference.md)。
+**进度**：阶段 00–10 与 12 已 `implemented`；00–10 已发版（最新为 `demo-v10`），12（工业询价的客户图片与表格）已上线演示环境，待发版。路线见 [架构总参考](docs/architecture/master-reference.md)。
 
 ## 在线体验
 
@@ -127,7 +127,7 @@ pnpm test           # 锁定套件、各模块自测、两种配置的 mock 回�
 | 文档                                                | 内容                                         |
 | --------------------------------------------------- | -------------------------------------------- |
 | [架构总参考](docs/architecture/master-reference.md) | 定位、已定决策、分阶段路线                   |
-| [docs/architecture/](docs/architecture/)            | 各阶段 spec 与 plan（00–10），以 Status 为准 |
+| [docs/architecture/](docs/architecture/)            | 各阶段 spec 与 plan（00–12），以 Status 为准 |
 | [docs/adr/](docs/adr/)                              | 跨阶段的技术选型                             |
 | [规格驱动开发](docs/spec-driven-dev.md)             | spec、plan 与评审流程                        |
 

@@ -13,7 +13,14 @@ export const HANDOFF_UNCLAIMED_MS = 10 * 60_000;
 export const WINDOW_NOTICE_MS = 4 * 3_600_000;
 
 /** started 立即、unclaimed 10 分钟仍没人接手、window 企微窗口剩不到 4 小时、order_unconfirmed 待确认的订单 */
-export type HandoffNotifyReason = 'started' | 'unclaimed' | 'window' | 'order_unconfirmed' | 'quote_pending' | 'quote_accepted';
+export type HandoffNotifyReason =
+  | 'started'
+  | 'unclaimed'
+  | 'window'
+  | 'order_unconfirmed'
+  | 'quote_pending'
+  | 'quote_accepted'
+  | 'intake_unmatched';
 
 /**
  * 任务的 payload。sessionId 必带（清除与行权删除据它一并删掉，验收 27）；handoffAt 是这次转人工（或升级）的时刻，键里也有它：
@@ -29,6 +36,8 @@ export interface HandoffNotifyPayload {
   kind?: HandoffKind;
   handoffCount?: number;
   orderId?: string;
+  intakeId?: string;
+  lines?: number[];
   unsavedSent?: boolean;
 }
 
@@ -105,4 +114,26 @@ export function quoteNotifyOps(sessionId: string, orderId: string, reason: 'quot
  */
 export function cancelHandoffNotifyOps(sessionId: string): JobOp[] {
   return [{ op: 'cancelSession', kind: 'handoff_notify', sessionId }];
+}
+
+/** 12 R10：清单编号去重，与 quote_* 一样由任务表唯一键去重在途通知。 */
+export function intakeUnmatchedNotifyOps(sessionId: string, intakeId: string, lines: number[], at: number): JobOp[] {
+  if (
+    !/^int_[a-f0-9]{12}$/.test(intakeId) ||
+    !lines.length ||
+    lines.length > 30 ||
+    lines.some((line) => !Number.isInteger(line) || line < 1 || line > 30) ||
+    new Set(lines).size !== lines.length
+  )
+    throw new Error('未匹配清单通知参数不合法');
+  return [
+    {
+      op: 'enqueue',
+      kind: 'handoff_notify',
+      dedupeKey: `intake_unmatched:${intakeId}`,
+      runAt: at,
+      payload: { sessionId, reason: 'intake_unmatched', intakeId, lines: [...lines] } satisfies HandoffNotifyPayload,
+      maxAttempts: HANDOFF_NOTIFY_MAX_ATTEMPTS,
+    },
+  ];
 }

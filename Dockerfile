@@ -43,6 +43,8 @@ COPY data ./data
 # 发布闸（07 R9，第 13 步）的评测子进程：node --import tsx eval/sim/gate.ts …。
 # 只依赖 Node 内置模块、zod 与 src/；回归目标集 eval/sim/goals/ 也在里面，漏了闸起不来
 COPY eval/sim ./eval/sim
+# 12 R13：工业闸的附件目标读这里的合成样本（约 300 KB）；漏了它，工业租户的发布闸因附件目标 runner_error 起不来
+COPY eval/fixtures ./eval/fixtures
 COPY public ./public
 # assets/ 是运行期读的，不是构建期资源：企微链接卡片的缩略图从这里读。
 # 漏了它不会报错——uploadThumb 拿不到文件就静默退回纯文本，客户收到的是一条秃网址，

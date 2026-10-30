@@ -35,3 +35,14 @@ export interface WebMessage {
   at: number;
   parts: MessagePart[];
 }
+
+/** 12 R5：核心与渠道共用的附件引用，正文只写占位。 */
+export type AttachmentClass = 'image' | 'sheet' | 'legacy_sheet' | 'locked_sheet' | 'drawing' | 'video' | 'other';
+export interface AttachmentRef {
+  id: string;
+  cls: AttachmentClass;
+  name: string | null;
+  mime: string;
+  size: number;
+  stored: boolean;
+}

@@ -85,6 +85,7 @@ export async function purgeFinishedJobs(tx: Tx, now: Date): Promise<number> {
 }
 
 export interface EraseCounts {
+  attachments: number;
   conversations: number;
   messages: number;
   traces: number;

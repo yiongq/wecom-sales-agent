@@ -8,6 +8,7 @@ import { Meter } from './runner.js';
 import type { Snapshot } from './judge.js';
 import type { FinishedTurn } from '../../src/trace/recorder.js';
 import { PACK_FILE, readPackFile } from '../../src/config/pack-file.js';
+import { prepareFixture } from './attachment-fixtures.js';
 
 export const FIXTURE_CLOCK = '2026-10-10T12:00:00+08:00';
 export function fixtureClock(): () => void {
@@ -97,11 +98,12 @@ export async function resolveConfigDir(dir: string): Promise<string> {
 // （policy.json、brand.json 在 SOP_PATH 同目录，有就用，没有走包默认）；目录里有 pack.json 指向非旅游包时只设 SOP_PATH，
 // 包与产品库（catalog/）由同目录的 pack.json 认（08 R11）；
 // 没给照旧读 data/（07 plan 风险 G3）。用完照旧恢复 process.env。
+// options.vision：要测图片识别（12 R13 的准确率脚本）时给 true，启动时连视觉模型的单价一起核对。
 export async function engineRuntime(
   meter: Meter,
   customerModel: string | undefined,
   overrides: Record<string, PriceRow> = {},
-  options: { configDir?: string } = {},
+  options: { configDir?: string; vision?: boolean } = {},
 ): Promise<{
   deps: SimDeps;
   close(): Promise<void>;
@@ -227,8 +229,16 @@ export async function engineRuntime(
   try {
     if (process.env.LLM_MOCK === '1' || !salesCfg.apiKey || !customerCfg.apiKey)
       throw new Error('模拟评测需要模型服务配置，不能使用 LLM_MOCK 或隐式 mock');
+    // 12 R7：图片识别走视觉模型（缺省 glm-5.3-flashx），它的用量也记进预算，单价同样不能未知。
+    // 只在调用方说要测图片时才在启动时核对（识别准确率脚本）；发布闸不为一个用不到的变量拒绝启动，真有附件目标时按用量记账那一步照样会拦
     for (const model of new Set(
-      [salesCfg.model, llmCfg(true).model, customerCfg.model, llmStats().hedgeModel].filter((m): m is string => !!m),
+      [
+        salesCfg.model,
+        llmCfg(true).model,
+        customerCfg.model,
+        llmStats().hedgeModel,
+        ...(options.vision ? [process.env.LLM_VISION_MODEL || 'glm-5.3-flashx'] : []),
+      ].filter((m): m is string => !!m),
     ))
       checkModel(model);
     // 配置读不出来（policy.json 不合格、brand.json 不合格、非旅游包的 pack.json / catalog/*.json 不合格……）在这里就抛，一个目标都不跑；
@@ -377,10 +387,19 @@ export async function engineRuntime(
           if (t.turn.conversationId === id) trace = structuredClone(t);
         });
         try {
-          const reply = await handleMessage(id, customer.say, 'simulator');
+          // 附件轮（12 R13）走与渠道同一个入口：样本经 prepareAttachment 准备，客户消息只有占位。
+          // 视觉识别在这里是真的模型请求（门禁评测）或本机脚本服务（自测），不用 mock
+          const prepared = customer.attach ? await prepareFixture(customer.attach, `sim-${randomUUID()}`) : undefined;
+          const reply = await handleMessage(id, prepared ? prepared.text : customer.say, 'simulator', prepared?.opts);
           if (!trace) throw new Error('trace_missing');
           if (accountingError) throw new Error('accounting_usage_missing');
-          return { customer, reply: reply.text, silent: !!reply.silent, trace, state: snapshot(id) };
+          return {
+            customer: prepared ? { say: prepared.text, done: customer.done } : customer,
+            reply: reply.text,
+            silent: !!reply.silent,
+            trace,
+            state: snapshot(id),
+          };
         } finally {
           off();
         }

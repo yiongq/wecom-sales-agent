@@ -8,7 +8,7 @@ One engine serves isolated tenants. Industry logic plugs in as industry packs, w
 
 Node 22 · Hono · TypeScript (run directly by `tsx`) · PostgreSQL 17 + pgvector · Vite + React console · MIT license.
 
-**Status**: phases 00–10 are `implemented`; 00–08 are released, and 09 (quote approval) and 10 (industrial RFQ pack and demo tenant) are live on the demo environment, awaiting release. The roadmap is in the [master reference](docs/architecture/master-reference.md) (Chinese).
+**Status**: phases 00–10 and 12 are `implemented`; 00–10 are released (latest: `demo-v10`), and 12 (customer images and spreadsheets for industrial RFQs) is live on the demo environment, awaiting release. The roadmap is in the [master reference](docs/architecture/master-reference.md) (Chinese).
 
 ## Live demo
 
@@ -130,7 +130,7 @@ Design and decisions:
 | Document                                                  | Covers                                                       |
 | --------------------------------------------------------- | ------------------------------------------------------------ |
 | [Master reference](docs/architecture/master-reference.md) | Positioning, settled decisions, phased roadmap               |
-| [docs/architecture/](docs/architecture/)                  | Per-phase specs and plans (00–10); `Status` is authoritative |
+| [docs/architecture/](docs/architecture/)                  | Per-phase specs and plans (00–12); `Status` is authoritative |
 | [docs/adr/](docs/adr/)                                    | Cross-phase technology choices                               |
 | [Spec-driven development](docs/spec-driven-dev.md)        | How specs, plans and reviews work                            |
 

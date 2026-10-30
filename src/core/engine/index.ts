@@ -1,3 +1,7 @@
+import { receiveAttachment } from './intake.js';
+import type { AttachmentItem } from '../../db/repo/attachments.js';
+import { queueAttachment } from '../../store.js';
+import type { AttachmentRef } from '../../shared/channel-types.js';
 import { TenantObservers } from '../../tenancy/observers.js';
 import { TenantLocal } from '../../tenancy/local-state.js';
 import { registerTenantState } from '../../tenancy/state.js';
@@ -24,6 +28,8 @@ import { chat, isContentFiltered } from '../llm/client.js';
 import type { PrefetchedCall } from '../llm/types.js';
 import { createToolRegistry } from '../tools/registry.js';
 import type {
+  DeterministicReply,
+  PrefetchResult,
   TurnContext,
   TurnToolContext,
   ReplyGuardContext,
@@ -57,7 +63,7 @@ import { cleanText } from '../../shared/text.js';
 import { withAdvisorPrefix } from '../../shared/conversation.js';
 import { convLabel } from '../../log.js';
 import { followupOptOutOf } from '../../jobs/optout.js';
-import { cancelHandoffNotifyOps } from '../../jobs/notify.js';
+import { intakeUnmatchedNotifyOps, cancelHandoffNotifyOps } from '../../jobs/notify.js';
 import {
   endTurn,
   noteDraft,
@@ -198,6 +204,18 @@ export function trimSessionMessages(session: Session): void {
 
 /** handleMessage 的可选参数（02 spec「消息只追加」） */
 export interface HandleOpts {
+  /** 核心内部待提交行；与客户消息一起保存，不进入包上下文。 */
+  attachmentItem?: AttachmentItem;
+  /** 附件首轮的渠道归属随新会话保存，适配器不用提前建立空会话。 */
+  attachmentAccountId?: string;
+  attachment?: AttachmentRef;
+  /**
+   * 去除元数据后的原件字节，仅供核心内部在内存中识别，不进入 TurnContext、pack-api、消息、trace 或日志。
+   * 新下载由渠道适配器/网页路由传入；recorded 恢复由适配器从库里读出再传入。
+   * 优先于存储原件：超过每日字节上限或进入 spill、库里只有元数据时仍照常识别，读完即弃。
+   */
+  attachmentBytes?: Uint8Array;
+  moreQueued?: boolean | (() => boolean);
   /** 渠道消息 id：企微文本消息带上，记在客户消息上，重放时按它对齐 */
   msgid?: string;
   /** 企微 send_time（毫秒）：发送窗口从它起算（R18） */
@@ -266,6 +284,7 @@ async function maybeAskConsent(sessionId: string, text: string, stillCurrent?: (
  * 同意菜单在同一段串行链里、这一轮的回复之后处理（R23）：失败只打日志，不影响这一轮已经算出的回复
  */
 export function handleMessage(sessionId: string, text: string, channel: string, opts: HandleOpts = {}): Promise<AgentReply> {
+  if (opts.attachment) text = opts.attachment.cls === 'image' ? '[图片]' : opts.attachment.cls === 'video' ? '[视频]' : '[文件]';
   const rt = currentRuntime();
   const receivedAt = Date.now();
   const work = () =>
@@ -300,6 +319,10 @@ async function handleMessageInner(
   const turnContext: TurnContext = {
     session,
     text: state.text,
+    ...(opts.attachment ? { attachment: opts.attachment } : {}),
+    get moreQueued() {
+      return typeof opts.moreQueued === 'function' ? opts.moreQueued() : opts.moreQueued;
+    },
     brand: state.binding.brand,
     policy: state.policy,
     policyHash: state.policyHash,
@@ -308,12 +331,22 @@ async function handleMessageInner(
       return { name, args: calls[calls.length - 1]?.args ?? args, result };
     },
   };
-  const deterministic = runtime.preModel?.(turnContext);
+  const intake = opts.attachment
+    ? await receiveAttachment(runtime, Object.assign(turnContext, { attachment: opts.attachment }), opts.attachmentBytes)
+    : undefined;
+  if (intake && state.takenOver()) return state.unsentTakenOver();
+  const deterministic = intake ? intake.reply : runtime.preModel?.(turnContext);
+  if (intake && !deterministic) {
+    applyTurnEffects(session, runtime, { statePatch: intake.statePatch });
+    intake.commitResults();
+    saveSession(session);
+    return done('silent', { text: '', stage: session.stage, silent: true });
+  }
   if (deterministic) {
     // 身份补句之前核对包原文；先完整校验，再写入任何副作用。
     const effects = deterministic.handoff || deterministic.notify || deterministic.statePatch;
     const fixed = runtime.fixedReplies?.find((item) => item.id === deterministic.fixedId);
-    if (effects || deterministic.fixedId !== undefined) {
+    if (!intake?.coreReply && (intake || effects || deterministic.fixedId !== undefined)) {
       const samples = fixed ? await fixed.samples() : [];
       const pattern = fixed?.pattern;
       const match = pattern ? new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, '')).exec(deterministic.text) : null;
@@ -329,13 +362,9 @@ async function handleMessageInner(
     if (state.takenOver()) return state.unsentTakenOver();
     if (deterministic.handoff && (!deterministic.handoff.reason.trim() || [...deterministic.handoff.reason].length > 120))
       throw new Error('行业转人工原因必须为 1–120 字');
-    if (deterministic.statePatch) {
-      if (!runtime.sessionState) throw new Error('行业包未声明状态 schema');
-      session.packState = runtime.sessionState.schema.parse({ ...session.packState, ...deterministic.statePatch }) as Record<
-        string,
-        unknown
-      >;
-    }
+    const statePatch = intake?.statePatch || deterministic.statePatch ? { ...intake?.statePatch, ...deterministic.statePatch } : undefined;
+    applyTurnEffects(session, runtime, { statePatch });
+    intake?.commitResults();
     const reply = cleanText(answerIdentity(state.text, deterministic.text));
     const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
     recordQuoteStates(msg, session);
@@ -343,7 +372,7 @@ async function handleMessageInner(
     saveSession(session);
     if (deterministic.handoff)
       enterHandoff(session, { kind: 'pack', reason: deterministic.handoff.reason, at: Date.now(), quote: cleanText(state.text, 200) });
-    if (deterministic.notify) recordQuoteAccepted(session, deterministic.notify.orderId);
+    applyTurnEffects(session, runtime, { notify: deterministic.notify });
     if (effects) saveSession(session);
     return done('deterministic', { text: reply, stage: session.stage, ...(session.handedOver ? { handoff: true } : {}) }, msg);
   }
@@ -361,6 +390,7 @@ async function handleMessageInner(
       const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
       recordQuoteStates(msg, session);
       session.messages.push(msg);
+      applyTurnEffects(session, runtime, state.prefetchEffects);
       saveSession(session);
       return done('deterministic', { text: reply, stage: session.stage }, msg);
     }
@@ -370,7 +400,20 @@ async function handleMessageInner(
   return finishTurn(state, model, tools, stageAtStart, ordersBefore);
 }
 
+/** 与本轮回复处在同一同步保存段；不单独提交预取的效果。 */
+function applyTurnEffects(session: Session, runtime: PackBinding['runtime'], effects: PrefetchResult['effects']): void {
+  if (effects?.statePatch) {
+    if (!runtime.sessionState) throw new Error('行业包未声明状态 schema');
+    session.packState = runtime.sessionState.schema.parse({ ...session.packState, ...effects.statePatch });
+  }
+  const notify: DeterministicReply['notify'] = effects?.notify;
+  if (notify?.reason === 'quote_accepted') recordQuoteAccepted(session, notify.orderId);
+  if (notify?.reason === 'intake_unmatched')
+    queueJobs(session.id, intakeUnmatchedNotifyOps(session.id, notify.intakeId, notify.lines, Date.now()));
+}
+
 interface TurnState {
+  prefetchEffects?: PrefetchResult['effects'];
   sessionId: string;
   text: string;
   channel: string;
@@ -400,6 +443,10 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
   const session = getOrCreateSession(sessionId, channel);
   // 逐轮 trace（02 spec）：确定性路径也记。每个出口经 done 结束这一轮，与写进回复、saveSession 在同一段同步代码里
   startTurn(sessionId, text);
+  if (opts.attachment && configMode() !== 'db') {
+    const prefix = turnPrefix();
+    notePrefix(prefix.sopVersion, prefix.prefixHash());
+  }
   const stageBefore = session.stage;
   const done = (outcome: TurnOutcome, r: AgentReply, msg?: ChatMessage): AgentReply => {
     endTurn(outcome, r.text, stageBefore, session.stage, msg);
@@ -441,6 +488,7 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
 
 async function preflight(state: TurnState): Promise<AgentReply | null> {
   const { text, opts, session, runtime, triggers, answerIdentity, done } = state;
+  if (opts.attachmentItem && opts.attachmentAccountId) session.channelAccountId = opts.attachmentAccountId;
   const { isComplaint, isHandoffIntent, departNoteForHandoff, safetyNetKind, handoffReply } = runtime.engineHooks;
   const { negativeLevel, pushWindow, SENTIMENT_WINDOW, emergencyOf, consentWithdrawalOf, sentimentThresholdReached } = triggers;
   // 06 R16：转人工话术按品牌快照渲染联系方式；客户同时在问身份时合并成一句
@@ -460,11 +508,13 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
         at: Date.now(),
         msgid: opts.msgid,
         ...(opts.sentAt ? { sentAt: opts.sentAt } : {}),
+        ...(opts.attachment ? { attachment: opts.attachment } : {}),
       };
       session.messages.push(customerMsg);
       saveSession(session);
       // 03：入站行记 recorded，与这句同一次落库（saveSession 刚给它分了 seq）
       if (opts.inboxId) queueInboxState(session.id, { inboxId: opts.inboxId, state: 'recorded', message: customerMsg });
+      if (opts.attachmentItem) queueAttachment(session.id, opts.attachmentItem);
     }
     session.stage = runtime.stages[0]!.id;
     session.profile = {};
@@ -508,6 +558,7 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
       at: Date.now(),
       ...(opts.msgid ? { msgid: opts.msgid } : {}),
       ...(opts.sentAt ? { sentAt: opts.sentAt } : {}),
+      ...(opts.attachment ? { attachment: opts.attachment } : {}),
     };
     session.messages.push(customerMsg);
     trimSessionMessages(session);
@@ -530,6 +581,7 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
   saveSession(session);
   // 03：入站行记 recorded，与这句同一次落库（与上面 push 是同一段同步代码，saveSession 刚给它分了 seq）
   if (customerMsg && opts.inboxId) queueInboxState(session.id, { inboxId: opts.inboxId, state: 'recorded', message: customerMsg });
+  if (customerMsg && opts.attachmentItem) queueAttachment(session.id, opts.attachmentItem);
 
   // 紧急情况（02 spec「确定性转人工触发」、R15、不变量 29）：客户消息入库之后、「已转人工」判断之前判，本轮不调模型。
   // 已转人工：不回话（00 不变量 14），只把记录升级为 emergency，enterHandoff 再发一次 handoff.started（升级）、db 存储下再排一个
@@ -819,6 +871,7 @@ async function callModel(state: TurnState, turnContext: TurnContext, runTool: Re
   // 保留整轮的分段耗时；包预取失败时返回已完成的结果。
   const turnStart = Date.now();
   const prefetched = await runtime.prefetch?.(turnContext);
+  state.prefetchEffects = prefetched?.effects;
   const prefetch: PrefetchedCall[] = prefetched?.calls ?? [];
   const prefetchTimes = prefetched?.timings ?? [];
   const modelStart = Date.now();
@@ -878,6 +931,7 @@ async function finishTurn(
   const handoffDeclined = tools.handoffDeclined();
   let finishedReply: AgentReply | undefined;
   let replyMsg: ChatMessage | undefined;
+  let effectsApplied = false;
   const ctx: ReplyGuardContext = {
     session,
     text: raw,
@@ -922,6 +976,10 @@ async function finishTurn(
       if (state.opts.stillCurrent && !state.opts.stillCurrent()) return;
       recordQuoteStates(message, session);
       session.messages.push(message);
+      if (message.role === 'agent' && !effectsApplied) {
+        applyTurnEffects(session, runtime, state.prefetchEffects);
+        effectsApplied = true;
+      }
       if (message.role === 'agent') replyMsg = message;
     },
     enterHandoff: (record) => enterHandoff(session, record),

@@ -20,19 +20,24 @@ const MAX_INFLIGHT = Math.max(0, numEnv('LLM_MAX_INFLIGHT', process.env.APP_ROLE
 /** 失败重试次数（不含首次）。0 表示不重试 */
 const MAX_RETRY = Math.max(0, numEnv('LLM_MAX_RETRY', 2));
 
-let inflight = 0;
+const inflight = { chat: 0, vision: 0 };
 /** 排队中的请求。放弃了的会被摘掉，名额不会交棒给一个已经不要它的请求（那样名额就丢了） */
-const waiting: (() => void)[] = [];
+const waiting: Record<'chat' | 'vision', (() => void)[]> = { chat: [], vision: [] };
+
+function poolLimit(pool: 'chat' | 'vision'): number {
+  return pool === 'vision' ? Math.max(1, Math.floor(numEnv('LLM_VISION_MAX_INFLIGHT', 2))) : MAX_INFLIGHT;
+}
 
 /**
  * 拿一个名额。排队也要响应 abort：整轮 deadline 到了、或对冲已有一方胜出，就别再等——
  * 此前排队时不看信号，要等某个名额空出来才发现自己早过期了，LLM_ROUND_TIMEOUT_MS 标称的
  * 墙钟上限在排队阶段并不成立。
  */
-function acquire(signal: AbortSignal): Promise<void> {
+function acquire(signal: AbortSignal, pool: 'chat' | 'vision'): Promise<void> {
+  const max = poolLimit(pool);
   if (signal.aborted) return Promise.reject(signal.reason);
-  if (!MAX_INFLIGHT || inflight < MAX_INFLIGHT) {
-    inflight += 1;
+  if (!max || inflight[pool] < max) {
+    inflight[pool] += 1;
     return Promise.resolve();
   }
   return new Promise<void>((resolve, reject) => {
@@ -41,11 +46,11 @@ function acquire(signal: AbortSignal): Promise<void> {
       resolve();
     };
     const onAbort = (): void => {
-      const i = waiting.indexOf(grant);
-      if (i >= 0) waiting.splice(i, 1);
+      const i = waiting[pool].indexOf(grant);
+      if (i >= 0) waiting[pool].splice(i, 1);
       reject(signal.reason);
     };
-    waiting.push(grant);
+    waiting[pool].push(grant);
     withoutTenantScope(() => signal.addEventListener('abort', onAbort, { once: true }));
   });
 }
@@ -68,10 +73,10 @@ function sleep(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-function release(): void {
-  const next = waiting.shift();
+function release(pool: 'chat' | 'vision'): void {
+  const next = waiting[pool].shift();
   if (next) next(); // 名额直接交棒，inflight 计数不变
-  else inflight = Math.max(0, inflight - 1);
+  else inflight[pool] = Math.max(0, inflight[pool] - 1);
 }
 
 /** 这些是「等一下就好」的错误，值得重试；4xx 参数错/鉴权错重试无意义 */
@@ -108,17 +113,36 @@ interface GateUsage {
   sessionId?: string;
   poolOnly?: boolean;
   deferUsage?: boolean;
+  /** 视觉只尝试一次；省略时保留主对话的重试策略。 */
+  maxRetry?: number;
 }
 /** standard 保留既有估值；沙箱从实际请求体计算上限，调用方不能缩小预占绕过额度。 */
 function requestUsage(init: RequestInit, url: string, opts: GateUsage): { model: string; purpose: UsagePurpose; estimateMilli: number } {
-  let body: { model?: string; max_tokens?: number; max_completion_tokens?: number } = {};
+  let body: { model?: string; max_tokens?: number; max_completion_tokens?: number; messages?: { content?: unknown }[] } = {};
   try {
     if (typeof init.body === 'string') body = JSON.parse(init.body);
   } catch {
     /* 请求格式仍由上游检查 */
   }
   const model = body.model ?? '';
-  const inputTokens = typeof init.body === 'string' ? Buffer.byteLength(init.body, 'utf8') : 0;
+  // 视觉按实际消息计提示字数与图片张数；沙箱也不能按 base64 的体积预占。
+  const inputTokens =
+    opts.purpose === 'vision'
+      ? (body.messages ?? []).reduce((total, message) => {
+          if (typeof message.content === 'string') return total + message.content.length;
+          if (!Array.isArray(message.content)) return total;
+          return (
+            total +
+            message.content.reduce(
+              (n: number, part: { type?: string; text?: string }) =>
+                n + (part.type === 'image_url' ? 4000 : typeof part.text === 'string' ? part.text.length : 0),
+              0,
+            )
+          );
+        }, 0)
+      : typeof init.body === 'string'
+        ? Buffer.byteLength(init.body, 'utf8')
+        : 0;
   return {
     model,
     purpose: opts.purpose ?? (url.endsWith('/embeddings') ? 'embedding' : 'chat'),
@@ -187,12 +211,21 @@ async function fetchThroughGate(
 ): Promise<GateResult> {
   const rt = currentRuntime();
   const usage = requestUsage(init, url, opts);
+  const maxRetry = opts.maxRetry ?? MAX_RETRY;
   // 排队用的信号同样带着一个从此刻起算的单次超时，所以排队本身也不会超过 LLM_TIMEOUT_MS
-  await acquire(signalFactory());
+  const pool = opts.purpose === 'vision' ? 'vision' : 'chat';
+  await acquire(signalFactory(), pool);
+  let holdSlot = false;
+  let released = false;
+  const releaseOnce = (): void => {
+    if (released) return;
+    released = true;
+    release(pool);
+  };
   try {
     let last: Response | null = null;
     let lastBody = '';
-    for (let attempt = 0; attempt <= MAX_RETRY; attempt++) {
+    for (let attempt = 0; attempt <= maxRetry; attempt++) {
       // 每次尝试（含退避之前）先看调用方是否已放弃：整轮 deadline 到期、或对冲请求
       // 已经有一方胜出。此时 signalFactory() 拿到的都是已中止的信号，fetch 必然秒失败，
       // 再退避重试只是白占名额约 2s——而这恰好发生在系统最拥堵的时候，排在后面的
@@ -228,6 +261,7 @@ async function fetchThroughGate(
       const settleUsage = (data: unknown): void => {
         if (settled) return;
         settled = true;
+        if (holdSlot) releaseOnce();
         rt.cancel.removeEventListener('abort', onCancel);
         const actual = actualCost(data, usage.model);
         reservation.settle(actual);
@@ -272,6 +306,7 @@ async function fetchThroughGate(
         }
         if (res.ok) {
           handedOff = true;
+          holdSlot = pool === 'vision';
           return { res, attempts: attempt + 1, settleUsage, ...(rt.kind === 'sandbox' ? { reportUsage } : {}) };
         }
         settleUsage(null);
@@ -282,25 +317,25 @@ async function fetchThroughGate(
         lastBody = await res.text().catch(() => '');
       } catch (e) {
         // 网络异常/超时：超时是我们自己 abort 的，重试一次仍有意义（上游偶发挂起）
-        if (attempt === MAX_RETRY) throw e;
+        if (attempt === maxRetry) throw e;
         last = null;
         lastBody = '';
       } finally {
         if (!handedOff) settleUsage(null);
       }
     }
-    if (last) return { res: last, attempts: MAX_RETRY + 1, errorBody: lastBody, settleUsage: () => {} };
+    if (last) return { res: last, attempts: maxRetry + 1, errorBody: lastBody, settleUsage: () => {} };
     throw new Error('LLM 请求重试后仍失败');
   } finally {
-    release();
+    if (!holdSlot) releaseOnce();
   }
 }
 
 /** 名额已满（再发就要排队）。对冲请求据此决定要不要加发：拥堵时再加一个请求只会让队更长 */
 export function gateBusy(): boolean {
-  return MAX_INFLIGHT > 0 && inflight >= MAX_INFLIGHT;
+  return MAX_INFLIGHT > 0 && inflight.chat >= MAX_INFLIGHT;
 }
 
 export function gateStatus(): { inflight: number; waiting: number; maxInflight: number } {
-  return { inflight, waiting: waiting.length, maxInflight: MAX_INFLIGHT };
+  return { inflight: inflight.chat, waiting: waiting.chat.length, maxInflight: MAX_INFLIGHT };
 }

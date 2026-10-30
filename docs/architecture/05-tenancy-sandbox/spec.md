@@ -1,6 +1,8 @@
 # 05 · 同部署多租户 + 一键体验沙箱
 
 Status: implemented
+Amended by: [11 · 外部业务系统连接器：Odoo 实时库存（只读）](../11-erp-connector/spec.md)（只做新增：R5 的进程内状态清单加连接器的租户状态，R12 `sandbox_tenant_purge` 的删除清单加 `erp_connectors`、`erp_item_links`；见 11 R3、R5、R11）
+Amended by: [12 · 客户发来的图片与文件：询价单识别与确认](../12-customer-files/spec.md)（只做新增：`sandbox_tenant_purge` 加附件表，用量 `purpose` 加 `vision`；全文见该 spec 顶部 `Amends:`）
 Superseded in part by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md) — R21「微信里点开的链接」中固定三类公开页及其接口的白名单：改由核心登记与本租户包的 SiteLinkDef 登记合并生成，页面与 resources 的方法 / 路径按 09 R10；旅游白名单逐项相同，令牌、cookie 优先级、同源与限频规则不变。
 Amended by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md)（R14 写入上限里的「产品条目总数」按全部 kind 合计（第 87 行），见 08 R2）。
 Amended by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md)（只做新增，全文见该 spec 顶部 `Amends:`：R5 清单加闸的单槽与进度两项，R9 复制范围加 policy 与知识库行，R12 `sandbox_tenant_purge` 的删除清单加 `kb_chunks`、`kb_vectors`、`sop_gate_runs`，沙箱不跑发布闸，种子订单支持相对出发日，见 07 R7、R10、R13、R21）。

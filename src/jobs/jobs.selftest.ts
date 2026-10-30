@@ -14,6 +14,7 @@
 // 文件存储下的扫描器由锁定的 llm.selftest F1 测；拒绝识别的向量表在这里。
 // 用法：npx tsx src/jobs/jobs.selftest.ts
 import '../selftest-env.js'; // 必须第一个 import：把部署 profile 与会话存储钉住，本机 .env 进不来（见 selftest-env.ts）
+import { randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import http from 'node:http';
@@ -516,6 +517,18 @@ async function inboxRetentionSuite(
         [tenantId, account!.id, `${prefix}-${name}`, state, state === 'done' ? null : JSON.stringify({ text: '过期消息' }), oldAt],
       );
     }
+    const attachmentId = `att_${randomUUID().replaceAll('-', '').slice(0, 24)}`;
+    const conversationId = `wecom:att-${prefix}`;
+    await su(
+      `insert into conversations (tenant_id,id,channel,stage,handed_over,state,created_at,updated_at)
+       values ($1,$2,'wecom','greeting',false,json_build_object('id',$2::text),now(),now())`,
+      [tenantId, conversationId],
+    );
+    await su(
+      `insert into attachments (tenant_id,id,conversation_id,channel,source_key,cls,mime,size,sha256,bytes,result,created_at)
+       values ($1,$2,$3,'wecom',$2,'image','image/png',1,'synthetic',decode('01','hex'),'[{"keep":true}]',now()-interval '31 days')`,
+      [tenantId, attachmentId, conversationId],
+    );
     const spec = retentionPurgeSpec(Date.now());
     const result = daily
       ? await runRetentionPurgeJob({ dedupeKey: spec.dedupeKey, runAt: new Date(spec.runAt) } as JobRow, Date.now())
@@ -525,7 +538,7 @@ async function inboxRetentionSuite(
       [tenantId, account!.id, `${prefix}-%`],
     );
     const audit = (
-      await su<{ diff: { inbox: number } }>(
+      await su<{ diff: { inbox: number; attachments: number } }>(
         "select diff from audit_log where tenant_id=$1 and action='system.purge' order by id desc limit 1",
         [tenantId],
       )
@@ -539,6 +552,15 @@ async function inboxRetentionSuite(
         rows.find((r) => r.msgid === `${prefix}-open`)?.reason === 'too_old' &&
         rows.find((r) => r.msgid === `${prefix}-open`)?.nopay === true,
       json(rows),
+    );
+    const [attachment] = await su<{ cleared: boolean; result: unknown }>(
+      'select bytes is null as cleared,result from attachments where tenant_id=$1 and id=$2',
+      [tenantId, attachmentId],
+    );
+    check(
+      `${label}：每日附件清理保留元数据与结果，system.purge 计入条数`,
+      attachment?.cleared === true && json(attachment.result) === '[{"keep":true}]' && audit?.diff.attachments === 1,
+      json({ attachment, audit }),
     );
     check(
       `${label}：${daily ? '每日任务 done' : '返回 inbox=2'}，system.purge 审计 diff.inbox=2`,

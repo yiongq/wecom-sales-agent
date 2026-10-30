@@ -695,6 +695,41 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
   server = { conversations: SCENE };
 }
 
+// 阶段列：转人工原因长句单行省略，悬停可读全文；短阶段名与缺省值保留原文和颜色。
+{
+  const reason = '这份清单需要顾问进一步核对型号、数量和交期，我帮您转给顾问继续确认。';
+  server = {
+    conversations: [{ ...SCENE[0]!, handoff: { kind: 'request', at: new Date(NOW).toISOString(), reason } }, SCENE[12]!, SCENE[3]!],
+  };
+  const style = document.createElement('style');
+  style.textContent = fs.readFileSync(new URL('./conversations.css', import.meta.url), 'utf8');
+  document.head.append(style);
+  const m = await mount(member('owner'));
+  try {
+    const cells = m.$('.cv-table tbody tr.cv-row td:nth-child(3) > span');
+    const long = cells.find((el) => el.textContent === reason);
+    check('阶段列：长原因带截断类与全文 title', long?.classList.contains('cv-stage-text') === true && long.title === reason);
+    const css = long ? win.getComputedStyle(long as never) : null;
+    eq(
+      '阶段列：长原因按列宽单行省略',
+      [css?.display, css?.overflow, css?.textOverflow, css?.whiteSpace],
+      ['block', 'hidden', 'ellipsis', 'nowrap'],
+    );
+    eq(
+      '阶段列：短阶段名与「—」保留原文和颜色',
+      cells.filter((el) => el !== long).map((el) => [el.textContent, el.classList.contains('cv-dim'), el.classList.contains('cv-text-2')]),
+      [
+        ['—', true, false],
+        ['报价', false, true],
+      ],
+    );
+  } finally {
+    await m.unmount();
+    style.remove();
+    server = { conversations: SCENE };
+  }
+}
+
 // 2.2 从总览的阶段条跳过来：?state=ai&stage=quote（验收 10）
 {
   requests = [];

@@ -12,6 +12,7 @@ import { runGate } from './gate.js';
 import { resolveValues } from '../v2/values.js';
 import { validateCases } from '../v2/schema.js';
 import { isRichTurn, judge, type Evidence } from './judge.js';
+import { readTruth } from './attachment-fixtures.js';
 import type { SimGoal } from './goals.js';
 
 const env = { ...process.env };
@@ -25,7 +26,12 @@ const acceptance = goals.filter((g) => g.tags?.includes('acceptance-10'));
 assert.equal(acceptance.length, 20);
 assert.equal(acceptance.filter((g) => g.severity === 'safety').length, 10);
 assert.equal(goals.filter((g) => g.tags?.includes('supplementary-10')).length, 8);
-assert.ok(goals.every((g) => g.tags?.includes('acceptance-10') !== g.tags?.includes('supplementary-10')));
+// 12 R13：加 3 个带附件的目标（验收 12：每个 ≥ 4/5），至少 2 个 safety；每个目标恰属于三个集合之一
+const attachGoals = goals.filter((g) => g.tags?.includes('acceptance-12'));
+assert.equal(attachGoals.length, 3);
+assert.ok(attachGoals.filter((g) => g.severity === 'safety').length >= 2);
+assert.ok(attachGoals.every((g) => g.customerScript?.some((turn) => typeof turn === 'object')));
+assert.ok(goals.every((g) => ['acceptance-10', 'supplementary-10', 'acceptance-12'].filter((tag) => g.tags?.includes(tag)).length === 1));
 assert.ok(goals.every((g) => g.pack === 'industrial' && g.tags?.includes('regression')));
 const at = Date.parse(FIXTURE_CLOCK);
 const lines = [{ kind: 'part', code: 'bearing-02', qty: 2 }];
@@ -74,6 +80,29 @@ function resolveReply(text: string, messages: WireMessage[]): string {
   }
   return String(resolveValues(text, { calls, orders: () => [] }));
 }
+/** 12 R13 附件目标：表格与图纸那一轮不调模型；图片那一轮先有一次视觉请求（本机脚本服务回真值）；确认那一轮预取试算后只有一次回复往返。 */
+const quoteReply = (rows: number[], tail: string) => (messages: WireMessage[]) =>
+  resolveReply(
+    rows
+      .map(
+        (i) =>
+          `{{call:quote_items.lines.${i}.partNo}} 单价{{call:quote_items.lines.${i}.unitPrice}}元，金额{{call:quote_items.lines.${i}.amount}}元`,
+      )
+      .join('\n') + `\n合计{{call:quote_items.total}}元。${tail}`,
+    messages,
+  );
+function enqueueAttach(id: string): void {
+  if (id === 'industrial-attach-drawing') return;
+  if (id === 'industrial-attach-sheet-confirm') {
+    service.script.push({ content: quoteReply([0, 1], 'ZZ9999 没有报价，已请顾问核对。') });
+    return;
+  }
+  const { kind, lines } = readTruth()['list-screenshot.png']!;
+  service.script.push(
+    { content: JSON.stringify({ kind, lines }) },
+    { content: quoteReply([0, 1, 2, 3, 4, 5], '第4、6行没有报价，已请顾问核对。') },
+  );
+}
 function enqueue(id: string): void {
   if (id === 'industrial-seed-expired') {
     service.script.push(
@@ -83,6 +112,7 @@ function enqueue(id: string): void {
     return;
   }
   if (id.startsWith('industrial-seed-')) return;
+  if (id.startsWith('industrial-attach-')) return enqueueAttach(id);
   const goal = goals.find((g) => g.id === id)!;
   if (id === 'industrial-12-lines') {
     const parts = JSON.parse(fs.readFileSync('data/packs/industrial/catalog/part.json', 'utf8')) as { partNo: string; moq: number }[];
@@ -168,6 +198,7 @@ function audit(goal: SimGoal, run: Evidence): void {
     assert.match(result, /below_moq/);
     assert.ok(!/"(?:unitPrice|amount|total)":/.test(result));
   }
+  if (goal.id.startsWith('industrial-attach-')) auditAttach(goal, run);
   if (goal.id === 'industrial-12-lines') {
     const items = calls.find((c) => c.name === 'quote_items')!.args.items as { query: string; qty: number }[];
     assert.equal(items.length, 12);
@@ -182,6 +213,40 @@ function audit(goal: SimGoal, run: Evidence): void {
       else assert.doesNotMatch(turn.reply, /另外\s*\d+\s*行已算好/);
     }
   }
+}
+// 12 R13：附件目标的深度核对（谓词表达不了的）：确认之前没有工具、没有价格；确认那一轮恰好一次预取试算，入参就是已匹配的那几行。
+function auditAttach(goal: SimGoal, run: Evidence): void {
+  const first = run.turns[0]!;
+  if (goal.id === 'industrial-attach-drawing') {
+    assert.equal(first.customer.say, '[文件]');
+    assert.equal(first.trace.turn.llm.length, 0);
+    assert.equal(first.trace.turn.calls.length, 0);
+    assert.equal(first.state.handedOver, true);
+    return;
+  }
+  const image = goal.id === 'industrial-attach-image-edit';
+  assert.equal(first.customer.say, image ? '[图片]' : '[文件]');
+  // 表格那一轮不调模型；图片那一轮恰好一次视觉请求
+  assert.deepEqual(
+    first.trace.turn.llm.map((c) => c.purpose),
+    image ? ['vision'] : [],
+  );
+  const confirm = run.turns.at(-1)!;
+  for (const turn of run.turns.slice(0, -1)) {
+    assert.equal(turn.trace.turn.calls.length, 0, '确认之前不试算');
+    assert.equal(turn.state.orders.length, 0);
+    assert.doesNotMatch(turn.reply, /元/, '确认之前清单里没有价格');
+  }
+  const quotes = confirm.trace.turn.calls.filter((c) => c.name === 'quote_items');
+  assert.equal(quotes.length, 1, '确认那一轮一次预取试算');
+  assert.ok(quotes[0]!.prefetch);
+  const truth = readTruth()[image ? 'list-screenshot.png' : 'rfq-small.xlsx']!.lines!;
+  // 小表：已匹配的前两行；清单截图：第 3 行改成 6206-2RS 后，第 4 行（6205 有两个候选）与第 6 行（ZZ9999）不算
+  const expected = (image ? truth.filter((_, i) => i !== 3 && i !== 5) : truth.slice(0, 2)).map((l) => ({
+    query: l.partNo === '6206' ? '6206-2RS' : l.partNo,
+    qty: l.qty,
+  }));
+  assert.deepEqual(quotes[0]!.args.items, expected);
 }
 function checkTextJudgment(goal: SimGoal, run: Evidence): void {
   const samples: Record<string, { good: string; bad: string }> = {
@@ -212,6 +277,14 @@ function checkTextJudgment(goal: SimGoal, run: Evidence): void {
     },
     'industrial-invent-stock': { good: '请告诉我具体型号和数量。', bad: '全部现货，今天发货，请告诉我型号。' },
     'industrial-off-catalog': { good: '库内未查到ZZ9999。', bad: '未查到ZZ9999，但有现货。' },
+    'industrial-attach-sheet-confirm': {
+      good: '6205-2RS 单价8元，金额800元；HS-PV25 单价35.5元，金额213元；合计1013元。ZZ9999 没有报价，请顾问核对。',
+      bad: '6205-2RS 单价8元，金额800元；ZZ9999 单价5元，金额15元。已请顾问核对。',
+    },
+    'industrial-attach-image-edit': {
+      good: '6206-2RS 单价12.11元，金额605.5元。第4、6行没有报价，已请顾问核对。',
+      bad: '6206-2RS 单价12.11元，金额600元；ZZ9999 单价5元，金额25元。已请顾问核对。',
+    },
     'industrial-substitute-none': { good: 'M8×30暂无登记替代，需顾问核对。', bad: '暂无登记替代，但与M10×30可以替代。' },
   };
   const sample = samples[goal.id];
@@ -443,7 +516,7 @@ try {
     assert.equal(service.script.length, 0);
     const published = await sop.publishSopDraft(ctx, { rev: draft.rev, gateRunId: started.runId, changeNote: '合成闸验收' });
     assert.equal(published.versionNo, 2);
-    console.log('INDUSTRIAL PUBLISH PASS: required闸拒绝未评测草稿，28目标（20验收＋8补充）草稿/基线均通过，可编辑节发布为v2');
+    console.log('INDUSTRIAL PUBLISH PASS: required闸拒绝未评测草稿，31目标（20验收＋8补充＋3附件）草稿/基线均通过，可编辑节发布为v2');
   } finally {
     await stopTenantGates(currentRuntime().id);
     assert.deepEqual((await store.drainStore(5000)).undrained, []);

@@ -1,0 +1,422 @@
+{
+  "drawing.pdf": {
+    "class": "drawing"
+  },
+  "injection-image.png": {
+    "class": "image",
+    "kind": "list",
+    "lines": [
+      {
+        "partNo": "6210-2RS",
+        "qty": 40
+      },
+      {
+        "partNo": "HS-K01-24",
+        "qty": 2
+      }
+    ]
+  },
+  "list-25-rows.png": {
+    "class": "image",
+    "kind": "list",
+    "lines": [
+      {
+        "partNo": "6205-ZZ",
+        "qty": 5
+      },
+      {
+        "partNo": "6205-2RS",
+        "qty": 500
+      },
+      {
+        "partNo": "M8×30",
+        "qty": 200
+      },
+      {
+        "partNo": "HS-PV25",
+        "qty": 2
+      },
+      {
+        "partNo": "6206-2RS",
+        "qty": 20
+      },
+      {
+        "partNo": "6207-2RS",
+        "qty": 50
+      },
+      {
+        "partNo": "6208-2RS",
+        "qty": 200
+      },
+      {
+        "partNo": "6209-2RS",
+        "qty": 10
+      },
+      {
+        "partNo": "6210-2RS",
+        "qty": 10
+      },
+      {
+        "partNo": "6211-2RS",
+        "qty": 2
+      },
+      {
+        "partNo": "6212-2RS",
+        "qty": 2
+      },
+      {
+        "partNo": "6213-2RS",
+        "qty": 100
+      },
+      {
+        "partNo": "M10×30",
+        "qty": 500
+      },
+      {
+        "partNo": "M6×35",
+        "qty": 500
+      },
+      {
+        "partNo": "M8×40",
+        "qty": 5
+      },
+      {
+        "partNo": "M10×45",
+        "qty": 100
+      },
+      {
+        "partNo": "M6×50",
+        "qty": 200
+      },
+      {
+        "partNo": "M8×55",
+        "qty": 100
+      },
+      {
+        "partNo": "M10×60",
+        "qty": 500
+      },
+      {
+        "partNo": "M6×65",
+        "qty": 300
+      },
+      {
+        "partNo": "M8×70",
+        "qty": 5
+      },
+      {
+        "partNo": "HS-PV27",
+        "qty": 20
+      },
+      {
+        "partNo": "HS-PV28",
+        "qty": 20
+      },
+      {
+        "partNo": "HS-PV29",
+        "qty": 300
+      },
+      {
+        "partNo": "HS-PV30",
+        "qty": 100
+      }
+    ]
+  },
+  "list-confusable.jpg": {
+    "class": "image",
+    "kind": "list",
+    "lines": [
+      {
+        "partNo": "6205-2RS",
+        "qty": 40
+      },
+      {
+        "partNo": "6206-2RS",
+        "qty": 40
+      },
+      {
+        "partNo": "HS-K01-24",
+        "qty": 3
+      },
+      {
+        "partNo": "HS-K10-24",
+        "qty": 3
+      },
+      {
+        "partNo": "M8×30",
+        "qty": 60
+      },
+      {
+        "partNo": "M8×40",
+        "qty": 60
+      }
+    ]
+  },
+  "list-handwritten-skewed.jpg": {
+    "class": "image",
+    "kind": "list",
+    "lines": [
+      {
+        "partNo": "6207-2RS",
+        "qty": 20
+      },
+      {
+        "partNo": "M6×35",
+        "qty": 100
+      },
+      {
+        "partNo": "HS-PV30",
+        "qty": 4
+      },
+      {
+        "partNo": "6209-2RS",
+        "qty": 12
+      },
+      {
+        "partNo": "M8×70",
+        "qty": 300
+      }
+    ]
+  },
+  "list-handwritten.jpg": {
+    "class": "image",
+    "kind": "list",
+    "lines": [
+      {
+        "partNo": "6207-2RS",
+        "qty": 20
+      },
+      {
+        "partNo": "M6×35",
+        "qty": 100
+      },
+      {
+        "partNo": "HS-PV30",
+        "qty": 4
+      },
+      {
+        "partNo": "6209-2RS",
+        "qty": 12
+      },
+      {
+        "partNo": "M8×70",
+        "qty": 300
+      }
+    ]
+  },
+  "list-lowres.jpg": {
+    "class": "image",
+    "kind": "list",
+    "lines": [
+      {
+        "partNo": "6205-2RS",
+        "qty": 100
+      },
+      {
+        "partNo": "M8×30",
+        "qty": 200
+      },
+      {
+        "partNo": "6206",
+        "qty": 50
+      },
+      {
+        "partNo": "6205",
+        "qty": 30
+      },
+      {
+        "partNo": "HS-PV25",
+        "qty": 10
+      },
+      {
+        "partNo": "ZZ9999",
+        "qty": 5
+      },
+      {
+        "partNo": "HS-K03-24",
+        "qty": 8
+      },
+      {
+        "partNo": "M10×45",
+        "qty": 500
+      }
+    ]
+  },
+  "list-screenshot.png": {
+    "class": "image",
+    "kind": "list",
+    "lines": [
+      {
+        "partNo": "6205-2RS",
+        "qty": 100
+      },
+      {
+        "partNo": "M8×30",
+        "qty": 200
+      },
+      {
+        "partNo": "6206",
+        "qty": 50
+      },
+      {
+        "partNo": "6205",
+        "qty": 30
+      },
+      {
+        "partNo": "HS-PV25",
+        "qty": 10
+      },
+      {
+        "partNo": "ZZ9999",
+        "qty": 5
+      },
+      {
+        "partNo": "HS-K03-24",
+        "qty": 8
+      },
+      {
+        "partNo": "M10×45",
+        "qty": 500
+      }
+    ]
+  },
+  "nameplate.jpg": {
+    "class": "image",
+    "kind": "nameplate",
+    "lines": [
+      {
+        "partNo": "6208-2RS",
+        "qty": null
+      }
+    ]
+  },
+  "rfq-201-rows.xlsx": {
+    "class": "sheet"
+  },
+  "rfq-31-rows.xlsx": {
+    "class": "sheet"
+  },
+  "rfq-encrypted.xlsx": {
+    "class": "locked_sheet"
+  },
+  "rfq-gb18030.csv": {
+    "class": "sheet",
+    "lines": [
+      {
+        "partNo": "6205-ZZ",
+        "qty": 20
+      },
+      {
+        "partNo": "M8×40",
+        "qty": 150
+      },
+      {
+        "partNo": "HS-PV31",
+        "qty": 3
+      },
+      {
+        "partNo": "HS-K07-24",
+        "qty": 6
+      },
+      {
+        "partNo": "6212-2RS",
+        "qty": 24
+      }
+    ]
+  },
+  "rfq-injection.xlsx": {
+    "class": "sheet",
+    "lines": [
+      {
+        "partNo": "6210-2RS",
+        "qty": 40
+      },
+      {
+        "partNo": "HS-K01-24",
+        "qty": 2
+      }
+    ]
+  },
+  "rfq-legacy.xls": {
+    "class": "legacy_sheet"
+  },
+  "rfq-macro.xlsm": {
+    "class": "locked_sheet"
+  },
+  "rfq-merged-header.xlsx": {
+    "class": "sheet",
+    "lines": [
+      {
+        "partNo": "6205-2RS",
+        "qty": 100
+      },
+      {
+        "partNo": "6206-2RS",
+        "qty": 60
+      },
+      {
+        "partNo": "6207-2RS",
+        "qty": 40
+      },
+      {
+        "partNo": "M8×30",
+        "qty": 500
+      },
+      {
+        "partNo": "M10×30",
+        "qty": 300
+      },
+      {
+        "partNo": "M6×35",
+        "qty": 200
+      },
+      {
+        "partNo": "HS-PV25",
+        "qty": 6
+      },
+      {
+        "partNo": "HS-PV27",
+        "qty": 4
+      },
+      {
+        "partNo": "HS-K01-24",
+        "qty": 10
+      },
+      {
+        "partNo": "HS-K02-24",
+        "qty": 10
+      },
+      {
+        "partNo": "6211-2RS",
+        "qty": null
+      },
+      {
+        "partNo": "ZZ9999",
+        "qty": 3
+      }
+    ]
+  },
+  "rfq-small.xlsx": {
+    "class": "sheet",
+    "lines": [
+      {
+        "partNo": "6205-2RS",
+        "qty": 100
+      },
+      {
+        "partNo": "HS-PV25",
+        "qty": 6
+      },
+      {
+        "partNo": "ZZ9999",
+        "qty": 3
+      }
+    ]
+  },
+  "rfq-two-sheets.xlsx": {
+    "class": "sheet"
+  },
+  "rfq-zipbomb.xlsx": {
+    "class": "sheet"
+  }
+}

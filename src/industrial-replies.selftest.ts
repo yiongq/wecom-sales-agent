@@ -9,7 +9,7 @@ import { handoffVocab } from './packs/industrial/handoff-vocab.js';
 import { handoffVocab as travelVocab } from './packs/travel/handoff-vocab.js';
 import { defaultIndustrialPolicy } from './packs/industrial/policy.js';
 import { industrialReplyGuard, trimRfq, TRIM_FALLBACK } from './packs/industrial/guards.js';
-import { preModel, contextNote, inquiryLines, FIXED } from './packs/industrial/turn.js';
+import { preModel, contextNote, inquiryLines, prefetch, FIXED } from './packs/industrial/turn.js';
 import { latestQuoteCandidate } from './packs/industrial/quote-candidate.js';
 import { writeState } from './packs/industrial/state.js';
 import type { ReplyGuardContext, TurnContext, LineOrder } from './core/pack-api.js';
@@ -216,15 +216,15 @@ try {
     ['要样品', 'sample'],
     [Array.from({ length: 31 }, (_, i) => `HS${1000 + i} 2件`).join('\n'), 'long'],
   ] as const) {
-    const result = preModel(context(text))!;
+    const result = preModel(context(text), sources)!;
     assert.equal(result.fixedId, `industrial.${key}`);
     assert.ok(result.handoff);
     assert.ok(runtime.fixedReplies!.find((fixed) => fixed.id === result.fixedId));
   }
   const twenty = Array.from({ length: 20 }, (_, i) => `HS${1000 + i} 2件`).join('\n');
   assert.equal(inquiryLines(twenty).length, 20);
-  assert.equal(preModel(context(twenty)), null);
-  assert.equal(preModel(context(twenty)), null);
+  assert.equal(preModel(context(twenty), sources), null);
+  assert.equal(preModel(context(twenty), sources), null);
   const order = (id: string, event: number, createdAt = event): LineOrder =>
     ({
       v: 2,
@@ -240,14 +240,20 @@ try {
   for (const value of orders) orderStore.set(value.id, value);
   session.orderIds = orders.map((value) => value.id);
   session.packState = {};
-  const confirm = () => preModel(context('确认下单'));
-  assert.equal(confirm()?.notify?.orderId, orders[1]!.id);
+  const confirm = () => preModel(context('确认下单'), sources);
+  const confirmedOrder = () => {
+    const notify = confirm()?.notify;
+    assert.equal(notify?.reason, 'quote_accepted');
+    assert.ok(notify?.reason === 'quote_accepted');
+    return notify.orderId;
+  };
+  assert.equal(confirmedOrder(), orders[1]!.id);
   for (const text of ['还没确认下单', '不要确认下单', '可以下单吗？', '是否就按这个', '先别确认报价'])
-    assert.equal(preModel(context(text)), null);
+    assert.equal(preModel(context(text), sources), null);
   session.orderIds.reverse();
-  assert.equal(confirm()?.notify?.orderId, orders[1]!.id);
+  assert.equal(confirmedOrder(), orders[1]!.id);
   orders[0]!.createdAt++;
-  assert.equal(confirm()?.notify?.orderId, orders[0]!.id);
+  assert.equal(confirmedOrder(), orders[0]!.id);
   assert.match(contextNote(context('确认下单')).join(''), /已批准且有效/);
   writeState(session, { rfqDraft: { at: now - 10, lines: [] } });
   assert.equal(confirm(), null);
@@ -294,6 +300,61 @@ try {
     assert.equal(session.packState?.confirmedQuoteAt, undefined);
   }
   console.log('工业确定性回复：非标/来图/月结/样品/31行、跨消息20+20、确认四分支/终态/同时间乱序排序通过');
+
+  // 发现 4：型号精确时引擎先查或先试算；试算会整份替换 rfqDraft，进行中的询价只在整份重说时才替算。
+  const fresh = store.getOrCreateSession('wecom:wmRfqPrefetch', 'wecom');
+  const prefetched = async (text: string) => {
+    const seen: { name: string; args: Record<string, unknown> }[] = [];
+    const ctx: TurnContext = {
+      session: fresh,
+      text,
+      policy,
+      callTool: async (name, args) => {
+        seen.push({ name, args });
+        return { name, args, result: '{}' };
+      },
+    };
+    const result = await prefetch(ctx, sources);
+    assert.deepEqual(
+      result?.calls.map((call) => call.name) ?? [],
+      seen.map((call) => call.name),
+    );
+    return seen;
+  };
+  const quoted = (...items: [string, number][]) => [
+    { name: 'quote_items', args: { items: items.map(([query, qty]) => ({ query, qty })) } },
+  ];
+  fresh.packState = {};
+  assert.deepEqual(await prefetched('HS1000轴承100个'), quoted(['HS1000', 100]));
+  assert.deepEqual(await prefetched('HS1000 100'), quoted(['HS1000', 100]));
+  assert.deepEqual(await prefetched('HS1000 x100'), quoted(['HS1000', 100]));
+  assert.deepEqual(await prefetched('型号就是HS1000，数量19件，请试算'), quoted(['HS1000', 19]));
+  assert.deepEqual(await prefetched('HS1000 数量：100'), quoted(['HS1000', 100]));
+  assert.deepEqual(await prefetched('HS1000，另外100个HS1001'), [
+    { name: 'find_parts', args: { query: 'HS1000' } },
+    { name: 'find_parts', args: { query: 'HS1001' } },
+  ]);
+  assert.deepEqual(await prefetched('HS1000 2件，HS1001 3件'), quoted(['HS1000', 2], ['HS1001', 3]));
+  assert.deepEqual(await prefetched('HS1000 2件，HS1001有货吗'), [
+    ...quoted(['HS1000', 2]),
+    { name: 'find_parts', args: { query: 'HS1001' } },
+  ]);
+  for (const text of ['HS1000有现货吗', 'HS1000 不要100个', 'HS1000 2020年买过'])
+    assert.deepEqual(await prefetched(text), [{ name: 'find_parts', args: { query: 'HS1000' } }], text);
+  assert.deepEqual(await prefetched('HS1000 2件 HS1000 3件'), []);
+  assert.deepEqual(await prefetched('HS10 2件'), [{ name: 'find_parts', args: { query: 'HS10' } }]);
+  writeState(fresh, {
+    rfqDraft: {
+      at: now,
+      lines: [
+        { code: 'part-0', version: 1, match: 'exact', qty: 2 },
+        { code: 'part-1', version: 1, match: 'exact', qty: 3 },
+      ],
+    },
+  });
+  assert.deepEqual(await prefetched('HS1000 改成5件'), []);
+  assert.deepEqual(await prefetched('HS1000 5件，HS1001 6件'), quoted(['HS1000', 5], ['HS1001', 6]));
+  console.log('工业预取：品名夹在中间/无单位/×、多行、精确未给数量查、否定与年份不算数量、重复与未决走旧路、进行中询价只整份重算通过');
 
   const { tenantImage, tenantRenderer, contractInputs, readImageSop } = await import('./config/brand.js');
   const { checkSopContract } = await import('./sop/contract.js');

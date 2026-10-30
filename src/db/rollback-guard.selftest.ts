@@ -1,9 +1,12 @@
-// 04 R14：真实脚本经 bash -s 与 deploy.sh 两条入口；假 docker 主动吞 stdin，数据库谓词另用 PGlite 验证。
+// 04 R14 / 12 R14：真实脚本经 bash -s 与 deploy.sh 两条入口；假 docker 主动吞 stdin，数据库谓词用 PGlite 验证。
+// 12 的三项查询还经 PG_TEST_URL 指向的一次性集群验证；只建删本套件的独立数据库。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import nodePg from 'pg';
 import { performance } from 'node:perf_hooks';
 import { PGlite } from '@electric-sql/pglite';
 import { hostRuntime } from '../tenancy/runtime.js';
@@ -95,7 +98,7 @@ case "$*" in
       *) exit 99 ;;
     esac
     case "\${FAKE_HANG:-}:$*" in
-      pending-probe:*information_schema.columns*tenants*|published-probe:*information_schema.columns*sop_versions*|pending:*"from public.tenants t"*|published:*"from public.sop_versions"*|catalog-probe:*to_regclass*catalog_item_versions*|catalog:*"from catalog_item_versions"*|channel-probe:*to_regclass*channel_accounts*|channel:*"from channel_accounts where"*)
+      pending-probe:*information_schema.columns*tenants*|published-probe:*information_schema.columns*sop_versions*|pending:*"select exists(select 1 from public.tenants t"*|published:*"from public.sop_versions"*|catalog-probe:*to_regclass*catalog_item_versions*|catalog:*"from catalog_item_versions"*|channel-probe:*to_regclass*channel_accounts*|channel:*"from channel_accounts where"*)
         exec perl -e 'sleep 60' ;;
     esac ;;
 esac
@@ -103,15 +106,25 @@ case "$*" in
   *"inspect --format {{.Image}}"*) [ "\${FAKE_RUNNING:-4}" = missing ] && exit 1; echo sha256:running ;;
   *"container ls"*) [ "\${FAKE_CONTAINER_DOWN:-0}" = 0 ] || exit 1; [ "\${FAKE_SANDBOX_CONTAINER:-absent}" = absent ] || echo placeholder; exit 0 ;;
   *"sandbox.ts purge --all"*) [ "\${FAKE_PURGE_FAIL:-0}" = 0 ] || { echo "[sandbox] sandbox_tenant_lock_held" >&2; exit 3; }; echo "purge image=\${APP_IMAGE:-missing}" >> "$FAKE_LOG"; touch "$FAKE_PURGED" ;;
-  *pg-backend.ts*|*registry.ts*|*pack-api.ts*|*runtime.ts*|*0015_order_refund_status.sql*|*order-view.ts*|*site-links.ts*)
+  *pg-backend.ts*|*registry.ts*|*pack-api.ts*|*runtime.ts*|*0015_order_refund_status.sql*|*order-view.ts*|*site-links.ts*|*attachments.ts*)
     phase="\${FAKE_TARGET:-3}"
     case "$*" in *sha256:running*) phase="\${FAKE_RUNNING:-4}" ;; esac
     case "$*" in *src/packs/industrial/runtime.ts*) phase="\${FAKE_INDUSTRIAL_TARGET:-$phase}" ;; esac
     case "$*" in *site-links.ts*) phase="\${FAKE_QUOTE_TARGET:-$phase}" ;; esac
+    case "$*" in *attachments.ts*) phase="\${FAKE_ATTACHMENT_TARGET:-$phase}" ;; esac
     [ "$phase" = hang ] && exec perl -e 'sleep 60'
     [ "$phase" = error ] && exit 125
-    case "$*" in *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *pack-api.ts*) need=4 ;; *src/packs/industrial/runtime.ts*) need=10 ;; *runtime.ts*) need=5 ;; *order-view.ts*) need=8 ;; *site-links.ts*) need=9 ;; *) need=7 ;; esac
+    case "$*" in *attachments.ts*) need=12 ;; *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *pack-api.ts*) need=4 ;; *src/packs/industrial/runtime.ts*) need=10 ;; *runtime.ts*) need=5 ;; *order-view.ts*) need=8 ;; *site-links.ts*) need=9 ;; *) need=7 ;; esac
     [ "$phase" -ge "$need" ] ;;
+  *to_regclass*public.attachments*|*to_regclass*public.usage_daily*|*to_regclass*public.conversations*|*"from public.attachments where"*|*"from public.usage_daily where"*|*"from public.conversations where"*)
+    case "$*" in
+      *public.attachments*) key=attachments; value="\${FAKE_ATTACHMENTS-f}" ;;
+      *public.usage_daily*) key=usage; value="\${FAKE_VISION-f}" ;;
+      *) key=conversations; value="\${FAKE_RFQ_INTAKE-f}" ;;
+    esac
+    case "$*" in *to_regclass*) key="$key-probe"; value="\${FAKE_ATTACHMENT_SCHEMA-t}" ;; esac
+    printf '%s' "\${!#}" > "$FAKE_QUERY.attachment-$key"
+    case "$value" in down) exit 1 ;; lock-timeout) echo f; exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "$value" ;; esac ;;
   *"select to_regclass('public.tenants') is not null"|*"select to_regclass('public.catalog_items') is not null")
     case "$*" in *public.tenants*) key=tenants ;; *) key=catalog ;; esac
     printf '%s' "\${!#}" > "$FAKE_QUERY.industrial-$key-probe"
@@ -197,17 +210,20 @@ case "$1" in
     case "$3" in
       *pg-backend.ts) case "$3" in *v01:*) exit 1 ;; esac ;;
       *registry.ts) case "$3" in *v01:*|*v02:*) exit 1 ;; esac ;;
-      *pack-api.ts) case "$3" in *v04:*|*v06:*|*v07:*|*v08:*|*v09:*|*v10:*) exit 0 ;; *) exit 1 ;; esac ;;
-      *runtime.ts) case "$3" in *v06:*|*v07:*|*v08:*|*v09:*|*v10:*) exit 0 ;; *) exit 1 ;; esac ;;
-      *0015_order_refund_status.sql) case "$3" in *v07:*|*v08:*|*v09:*|*v10:*) exit 0 ;; *) exit 1 ;; esac ;;
-      *order-view.ts) case "$3" in *v08:*|*v09:*|*v10:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *pack-api.ts) case "$3" in *v04:*|*v06:*|*v07:*|*v08:*|*v09:*|*v10:*|*v11:*|*v12:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *runtime.ts) case "$3" in *v06:*|*v07:*|*v08:*|*v09:*|*v10:*|*v11:*|*v12:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *0015_order_refund_status.sql) case "$3" in *v07:*|*v08:*|*v09:*|*v10:*|*v11:*|*v12:*) exit 0 ;; *) exit 1 ;; esac ;;
+      *order-view.ts) case "$3" in *v08:*|*v09:*|*v10:*|*v11:*|*v12:*) exit 0 ;; *) exit 1 ;; esac ;;
     esac ;;
   ls-tree)
     case "$*" in
+      *src/core/attachments.ts*)
+        [ "\${FAKE_ATTACHMENT_TREE_DOWN:-0}" = 0 ] || exit 1
+        case "$*" in *v12*) echo src/core/attachments.ts ;; esac ;;
       *src/packs/industrial/runtime.ts*)
         [ "\${FAKE_TREE_DOWN:-0}" = 0 ] || exit 1
-        case "$*" in *v10*) echo src/packs/industrial/runtime.ts ;; esac ;;
-      *) case "$*" in *v09*|*v10*) echo src/core/site-links.ts ;; esac ;;
+        case "$*" in *v10*|*v11*|*v12*) echo src/packs/industrial/runtime.ts ;; esac ;;
+      *) case "$*" in *v09*|*v10*|*v11*|*v12*) echo src/core/site-links.ts ;; esac ;;
     esac ;;
   archive) tar -cf - package.json Dockerfile deploy src ;;
   *) exit 98 ;;
@@ -598,7 +614,7 @@ exit 0`,
       `08：${label}部署旧 tag，9 转 1、原样透出、rsync 前拒绝`,
       d.code === 1 &&
         d.out.includes(pre08.out.trim()) &&
-        d.out.includes('旧版本，非旅游数据、报价单或工业数据回滚检查拒绝部署（服务器上什么都没动）') &&
+        d.out.includes('旧版本，非旅游数据、报价单、工业数据或附件回滚检查拒绝部署（服务器上什么都没动）') &&
         !d.log.includes('rsync '),
       d.out,
     );
@@ -616,7 +632,7 @@ exit 0`,
       `08：${label}自动回滚，9 转 1、原样透出、不启动 prev`,
       auto.code === 1 &&
         auto.out.includes(r.out.trim()) &&
-        auto.out.includes('非旅游数据、报价单或工业数据回滚检查拒绝，没有自动回滚，服务当前不可用！按上面的步骤人工处理') &&
+        auto.out.includes('非旅游数据、报价单、工业数据或附件回滚检查拒绝，没有自动回滚，服务当前不可用！按上面的步骤人工处理') &&
         !fs.existsSync(rolledBack),
       auto.out,
     );
@@ -904,7 +920,7 @@ exit 0`,
     check('10：确认三表不存在的空库放行', r.code === 0, r.out);
     r = guard('pre-10', { ...industrialEnv, FAKE_QUOTE: 't', FAKE_NONTRAVEL_TENANTS: 't', FAKE_BRAND: 't', FAKE_HEALTH_FAIL: '1' });
     check(
-      '10：无工业风险放行，只查工业、不探测健康或旧风险',
+      '10：无工业风险放行，查附件与工业、不探测健康或旧风险',
       r.code === 0 && !r.log.includes('curl ') && !r.log.includes('site-links.ts') && !r.log.includes('information_schema'),
       r.log + r.out,
     );
@@ -921,7 +937,7 @@ exit 0`,
       check('10：无风险健康失败可以切换旧镜像', r.code === 1 && fs.existsSync(rolledBack), r.out);
     }
     r = guard('side1:prev', { ...industrialEnv, FAKE_TARGET: '10', FAKE_INDUSTRIAL_TENANTS: 't' });
-    check('10：含10目标不查工业数据', r.code === 0 && !r.log.includes("pack_id = 'industrial'"), r.log + r.out);
+    check('10：含10目标不查工业数据', r.code === 0 && !r.log.includes("from public.tenants where pack_id = 'industrial'"), r.log + r.out);
     r = guard('side1:prev', { ...industrialEnv, FAKE_TARGET: '10', FAKE_QUOTE_TARGET: '8', FAKE_QUOTE: 't' });
     check('10：工业标记不跳过其他独立能力检查', r.code === 9 && r.out.includes('另一个含 09 的 tag'), r.out);
     for (const state of ['error', 'hang']) {
@@ -1001,6 +1017,182 @@ exit 0`,
     } finally {
       await pg.close();
     }
+  }
+
+  {
+    const message = '前滚修复，或者回滚到另一个含 12 的 tag';
+    const attachmentRisks = [
+      ['attachments', 'FAKE_ATTACHMENTS', '有附件'],
+      ['usage', 'FAKE_VISION', '有 vision 用量'],
+      ['conversations', 'FAKE_RFQ_INTAKE', '有 rfqIntake 工业会话'],
+    ] as const;
+    for (const [, variable, label] of attachmentRisks) {
+      const env = { FAKE_TARGET: '10', [variable]: 't' };
+      for (const target of ['pre-12', 'side1:prev']) {
+        r = guard(target, env);
+        check(`12：${label}拒绝9，提示含12且无删除`, r.code === 9 && r.out.includes(message) && !r.log.includes('purge --all'), r.out);
+      }
+      for (const tag of ['v09', 'v10', 'v11']) {
+        r = deploy(tag, env);
+        check(`12：${label}手动退${tag}在同步前拒绝1`, r.code === 1 && r.out.includes(message) && !r.log.includes('rsync '), r.out);
+        if (tag !== 'v09')
+          check(
+            `12：${tag}按附件文件树进入pre-12`,
+            r.log.includes('pre-12 side1 3999') && r.log.includes(`refs/tags/${tag} -- src/core/attachments.ts`),
+            r.log,
+          );
+      }
+      r = deploy('v12', env);
+      check(
+        `12：含12的tag有${label}仍可部署，不进入pre-12`,
+        r.code === 0 && r.log.includes('rsync ') && !r.log.includes('pre-12 side1 3999'),
+        r.out,
+      );
+      r = deploy('v12', { ...env, FAKE_HEALTH_FAIL: '1' });
+      check(`12：${label}自动退10拒绝1且不切换`, r.code === 1 && r.out.includes(message) && !fs.existsSync(rolledBack), r.out);
+      r = guard('side1:prev', { ...env, FAKE_TARGET: '12' });
+      check(`12：含12目标跳过${label}检查`, r.code === 0 && !r.log.includes('public.attachments'), r.log + r.out);
+      for (const state of ['down', 'unexpected', '', 'lock-timeout', 'hang']) {
+        r = guard('pre-12', { [variable]: state, FAKE_RUNNING: '9', FAKE_TIMEOUT_MS: '100' });
+        check(
+          `12：${label}查询${state || '空结果'}从严拒绝，不豁免旧运行镜像`,
+          r.code === 9 && r.out.includes(message) && r.elapsed < 5000,
+          r.out,
+        );
+      }
+    }
+    for (const tag of ['v10', 'v11']) {
+      r = deploy(tag);
+      check(`12：${tag}三项均无时检查后允许同步`, r.code === 0 && r.log.includes('pre-12 side1 3999') && r.log.includes('rsync '), r.out);
+    }
+    r = deploy('v12', { FAKE_ATTACHMENT_TREE_DOWN: '1' });
+    check('12：tag文件树查询失败即使无数据仍拒绝1且不同步', r.code === 1 && r.out.includes(message) && !r.log.includes('rsync '), r.out);
+    r = deploy('v10', { FAKE_ATTACHMENT_SCHEMA: 'down' });
+    check(
+      '12：手动退10查询未知拒绝1且不切换',
+      r.code === 1 && r.out.includes(message) && !r.log.includes('rsync ') && !r.log.includes('up -d app'),
+      r.out,
+    );
+    for (const schema of ['f', 't', 'down', 'unexpected', '', 'hang']) {
+      r = guard('pre-12', { FAKE_ATTACHMENT_SCHEMA: schema, FAKE_TIMEOUT_MS: '100' });
+      check(`12：表探测${schema || '空结果'}`, r.code === (['t', 'f'].includes(schema) ? 0 : 9) && r.elapsed < 5000, r.out);
+      if (schema === 'f') check('12：缺表只跳过对应查询', !r.log.includes('select exists('), r.log);
+    }
+    for (const state of ['error', 'hang']) {
+      r = guard('side1:prev', { FAKE_TARGET: '12', FAKE_ATTACHMENT_TARGET: state, FAKE_TIMEOUT_MS: '100' });
+      check(`12：目标能力${state}即使数据为空仍拒绝9`, r.code === 9 && r.out.includes(message) && r.elapsed < 5000, r.out);
+    }
+    for (const target of ['pre-09', 'side1:prev']) {
+      const env = { FAKE_TARGET: '8', FAKE_REFUND_SCHEMA: 't', FAKE_INDUSTRIAL_TENANTS: 't', FAKE_QUOTE: 't' };
+      r = guard(target, { ...env, FAKE_ATTACHMENTS: 't' });
+      check(
+        '12：附件、工业、审批同时触发先报12',
+        r.code === 9 &&
+          r.out.includes(message) &&
+          !r.log.includes('from public.tenants where') &&
+          !r.log.includes("where data->'approval' IS NOT NULL"),
+        r.log + r.out,
+      );
+      r = guard(target, env);
+      check('12：附件为空仍由pre-10拒绝工业数据', r.code === 9 && r.out.includes('另一个含 10 的 tag') && !r.out.includes(message), r.out);
+      r = guard(target, { ...env, FAKE_INDUSTRIAL_TENANTS: 'f' });
+      check('12：附件与工业为空仍由pre-09拒绝审批历史', r.code === 9 && r.out.includes('另一个含 09 的 tag'), r.out);
+    }
+    r = guard('pre-12');
+    check('12：三项都没有放行，只查询附件风险', r.code === 0 && !r.log.includes('curl ') && !r.log.includes('docker run'), r.log + r.out);
+    r = guard('side1:prev', { FAKE_TARGET: '10' });
+    check(
+      '12：pre-12镜像三项都没有放行，按attachments.ts探测',
+      r.code === 0 && r.log.includes('/app/src/core/attachments.ts'),
+      r.log + r.out,
+    );
+
+    // 执行生产脚本捕获的SQL；PGlite与一次性PG独立数据库走相同的四类数据与JSON边界。
+    const sqls = Object.fromEntries(
+      attachmentRisks.flatMap(([key]) =>
+        [key, `${key}-probe`].map((name) => [name, fs.readFileSync(`${queryFile}.attachment-${name}`, 'utf8')]),
+      ),
+    );
+    const suite = async (label: string, query: (sql: string, values?: string[]) => Promise<{ rows: Record<string, unknown>[] }>) => {
+      const exists = async (key: string) => Object.values((await query(sqls[key]!)).rows[0]!)[0];
+      for (const [key] of attachmentRisks) check(`12 ${label}：${key}缺表可识别`, (await exists(`${key}-probe`)) === false);
+      for (const sql of `create table attachments(id text, bytes bytea);
+        create table usage_daily(tenant_id text, purpose text);
+        create table tenants(id text, pack_id text, status text);
+        create table conversations(tenant_id text, state json);
+        insert into tenants values ('industrial-other', 'industrial', 'disabled'), ('travel', 'travel', 'active');`
+        .split(';')
+        .filter((sql) => sql.trim()))
+        await query(sql);
+      const verify = async (name: string, riskKey?: string) => {
+        const env: Record<string, string> = {};
+        for (const [key, variable] of attachmentRisks) {
+          check(`12 ${label}：${key}表存在可识别`, (await exists(`${key}-probe`)) === true);
+          const risk = await exists(key);
+          check(`12 ${label}：${name}/${key}`, risk === (key === riskKey));
+          env[variable] = risk ? 't' : 'f';
+        }
+        const result = guard('pre-12', env);
+        check(
+          `12 ${label}：${name}真实SQL结果送guard`,
+          result.code === (riskKey ? 9 : 0) && (!riskKey || result.out.includes(message)),
+          result.out,
+        );
+      };
+      await verify('都没有');
+      await query("insert into attachments values ('metadata-only', null)");
+      await verify('只有附件元数据也拒绝', 'attachments');
+      await query('delete from attachments');
+      await query("insert into usage_daily values ('industrial-other', 'vision')");
+      await verify('只有vision用量', 'usage');
+      await query('delete from usage_daily');
+      await query("insert into usage_daily values ('travel', 'main')");
+      for (const intake of [{ lines: [] }, null, {}]) {
+        await query('insert into conversations values ($1, $2)', [
+          'industrial-other',
+          JSON.stringify({ packState: { rfqIntake: intake } }),
+        ]);
+        await verify('停用非demo工业会话含rfqIntake键', 'conversations');
+        await query('delete from conversations');
+      }
+      for (const state of [{}, { rfqIntake: {} }, { packState: {} }, { packState: null }, { packState: { nested: { rfqIntake: {} } } }]) {
+        await query('insert into conversations values ($1, $2)', ['industrial-other', JSON.stringify(state)]);
+        await verify('错误层级或缺键不误拒绝');
+        await query('delete from conversations');
+      }
+      await query(`insert into conversations values ('travel', '{"packState":{"rfqIntake":{}}}')`);
+      await verify('其他包同名键不误拒绝');
+    };
+    const local = new PGlite();
+    try {
+      await suite('PGlite', (sql, values) => local.query(sql, values));
+    } finally {
+      await local.close();
+    }
+    if (process.env.PG_TEST_URL) {
+      const config = { connectionTimeoutMillis: 5000, statement_timeout: 5000, lock_timeout: 2000 };
+      const admin = new nodePg.Client({ connectionString: process.env.PG_TEST_URL, ...config });
+      const database = `rollback_guard_${randomUUID().replaceAll('-', '')}`;
+      const url = new URL(process.env.PG_TEST_URL);
+      url.pathname = `/${database}`;
+      const client = new nodePg.Client({ connectionString: url.toString(), ...config });
+      let created = false;
+      try {
+        await admin.connect();
+        await admin.query(`create database "${database}"`);
+        created = true;
+        await client.connect();
+        await suite('真实PG', (sql, values) => client.query(sql, values));
+        console.log('12：真实 PG 四类数据、JSON 层级与 guard 返回码通过');
+      } finally {
+        await client.end();
+        try {
+          if (created) await admin.query(`drop database "${database}"`);
+        } finally {
+          await admin.end();
+        }
+      }
+    } else console.log('12：未设 PG_TEST_URL，真实 PG 待补跑');
   }
 
   const sandboxEnv = { FAKE_TARGET: '4', FAKE_RUNNING: '5', FAKE_TENANCY_SCHEMA: 't' };
@@ -1194,7 +1386,8 @@ exit 0`,
       check(`${name}：bash -s`, g.code === (expected ? 6 : 0) && (!expected || g.out.includes(recovery)), g.out);
       check(
         `${name}：缺表/列只跳过对应的风险查询`,
-        g.log.includes('from public.tenants t') === pendingSchema && g.log.includes('from public.sop_versions where') === publishedSchema,
+        g.log.includes('select exists(select 1 from public.tenants t') === pendingSchema &&
+          g.log.includes('from public.sop_versions where') === publishedSchema,
         g.log,
       );
       const d = deploy('v03', env);
@@ -1250,7 +1443,7 @@ exit 0`,
   } finally {
     await pg.close();
   }
-  console.log(`PASS rollback brand/sandbox/nontravel：${checks} 项（stdin、SQL、部署与自动回滚）`);
+  console.log(`PASS rollback brand/sandbox/nontravel/attachments：${checks} 项（stdin、SQL、部署与自动回滚）`);
 } finally {
   fs.rmSync(tmp, { recursive: true, force: true });
 }

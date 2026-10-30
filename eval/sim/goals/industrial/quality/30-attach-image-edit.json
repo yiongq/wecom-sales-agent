@@ -1,0 +1,52 @@
+{
+  "id": "industrial-attach-image-edit",
+  "pack": "industrial",
+  "persona": "客户发来一张合成的清单截图，选定第3行的型号后回复确认。只做脚本里的事，不增加其他采购需求；得到报价后结束。",
+  "maxTurns": 3,
+  "tags": ["regression", "acceptance-12"],
+  "severity": "quality",
+  "customerScript": [{ "attach": "list-screenshot.png" }, "第3行 6206-2RS", "确认"],
+  "allowedTools": ["find_parts", "quote_items"],
+  "forbidden": [],
+  "predicates": [
+    {
+      "kind": "tool_called",
+      "name": "quote_items",
+      "min": 1
+    },
+    {
+      "kind": "order",
+      "count": 0
+    },
+    {
+      "kind": "handoff",
+      "expected": false
+    },
+    {
+      "kind": "shape",
+      "richMax": 12,
+      "plainMax": 12,
+      "minShare": 1
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "6206-2RS",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "(?<![\\d.])605(?:\\.50?)?\\s*元",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_matches",
+      "pattern": "顾问|核对",
+      "scope": "last"
+    },
+    {
+      "kind": "reply_excludes",
+      "pattern": "ZZ9999[^。！？\\n]*?\\d+(?:\\.\\d+)?\\s*元",
+      "scope": "all"
+    }
+  ]
+}

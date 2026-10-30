@@ -16,6 +16,9 @@ import {
 } from '../tenancy/runtime.js';
 import { cardLinks, coreSiteLinks, registeredTextLinks } from '../core/site-links.js';
 import { currentPack } from '../config/source.js';
+import { earlyAttachment, prepareAttachment, type PreparedAttachment } from '../core/attachment-intake.js';
+import { INTAKE_FAILED } from '../core/engine/intake.js';
+import { listAttachmentMetadata, readAttachment } from '../store.js';
 import { brandTexts } from '../core/brand.js';
 // 企业微信「微信客服」（kf）适配器：回调驱动 + 兜底轮询。
 //
@@ -66,6 +69,7 @@ import { saveSessionSkippingFollowup } from '../jobs/followup.js';
 import type { SensitiveCategory } from '../handoff/triggers.js';
 import { currentPrivacyNotice, privacyLink } from '../privacy/privacy.js';
 import {
+  adoptOpenOutbound,
   cancelInboxIntents,
   cancelIntents,
   commitOutbound,
@@ -252,6 +256,9 @@ const apiErrorCode = (e: unknown): string =>
   e instanceof Error ? (/errcode=(-?\d+)/.exec(e.message)?.[1] ?? e.name.replace(/[^\w.-]/g, '').slice(0, 40)) : 'unknown';
 
 class WecomRuntime {
+  /** 同一处理链上已排队的附件；只属于这个账号，清理时一并撤销等待计时。 */
+  readonly attachmentRows = new Map<string, InboxRow>();
+  readonly attachmentBatches = new Map<string, AttachmentBatch>();
   readonly observationStartedAt = observationClock();
   lastSyncAt: number | null = null;
   lastErrorCode: string | null = null;
@@ -275,6 +282,9 @@ class WecomRuntime {
   private readonly customWelcomeBackText: string | undefined;
   private readonly issuedWelcomeTexts = new Set<string>();
   clearCachedState(): void {
+    for (const batch of this.attachmentBatches.values()) if (batch.timer) clearTimeout(batch.timer);
+    this.attachmentBatches.clear();
+    this.attachmentRows.clear();
     this.issuedWelcomeTexts.clear();
     this.token = null;
     this.tokenExpireAt = 0;
@@ -1880,7 +1890,15 @@ function dispatchInboxRows(
       void t.finally(() => rt.eventTasks.delete(t));
       continue;
     }
-    enqueueForUser(rt, chainKeyOf(row), () => processInboxRow(rt, cfg, row, rec));
+    if (attachmentCandidate(row.payload as KfMessage | null)) rt.attachmentRows.set(row.id, row);
+    enqueueForUser(rt, chainKeyOf(row), async () => {
+      try {
+        await processInboxRow(rt, cfg, row, rec);
+      } finally {
+        rt.attachmentRows.delete(row.id);
+        if (!queuedAttachment(rt, row)) await finishAttachmentBatch(rt, chainKeyOf(row));
+      }
+    });
   }
 }
 
@@ -1932,8 +1950,12 @@ function processOpenMessageRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow
     known: recentMsgids(sessionId).has(row.msgid),
     hasOutbound: rec ? rec.withOutbound.has(row.id) : pendingIntentsOfInbox(row.id).length > 0,
   });
-  if (eff.state === 'received') return processMessageRow(rt, cfg, row);
+  if (eff.state === 'received') return processMessageRow(rt, cfg, row, false, rec !== null);
   if (eff.state === 'replied') return resumeRepliedRow(rt, cfg, row, sessionId);
+  if (attachmentCandidate(msg) && (at < 0 || s?.messages[at]?.attachment)) {
+    const reply = s && at >= 0 ? aiReplyAfter(s.messages, at, (c) => isWelcomeText(rt, c)) : -1;
+    if (reply < 0) return processAttachmentRow(rt, cfg, row, msg, sessionId, true, true);
+  }
   return resumeRecordedRow(rt, cfg, row, msg, sessionId, { restore: eff.restore, upgrade: row.state === 'received' });
 }
 
@@ -2121,11 +2143,12 @@ function recordOnlyInboxRow(rt: WecomRuntime, row: InboxRow, cutoff: number): Pr
 }
 
 /** 客户消息（文本与非文本）。alreadyRecorded：启动恢复时这句已经记进会话、回复还没生成（入站恢复表的 recorded），不再记一遍 */
-function processMessageRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, alreadyRecorded = false): Promise<void> {
+function processMessageRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, alreadyRecorded = false, recovering = false): Promise<void> {
   const msg = row.payload as KfMessage;
   const sessionId = row.conversationId ?? rt.prefix + msg.external_userid;
   // 这条消息的日志（含引擎这一轮结束之后的几行）都带 conv（R24）
   return withAccountConversationLog(rt, sessionId, async () => {
+    if (attachmentCandidate(msg)) return processAttachmentRow(rt, cfg, row, msg, sessionId, alreadyRecorded, recovering);
     if (msg.msgtype !== 'text' || !msg.text?.content) return processNonTextRow(rt, cfg, row, msg, sessionId, alreadyRecorded);
     const t0 = Date.now();
     console.log(`${rt.tag} ${alreadyRecorded ? '重跑' : '收到'}客户消息: "${logQuote(msg.text.content)}"`);
@@ -2156,6 +2179,239 @@ function processMessageRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, al
       await finishInboxRow(sessionId, row.id, 'done');
     }
   });
+}
+
+interface AttachmentBatch {
+  startedAt: number;
+  recovering: boolean;
+  timer: ReturnType<typeof setTimeout> | null;
+  notice: Promise<void> | null;
+}
+
+function attachmentCandidate(msg: KfMessage | null): boolean {
+  return !!currentPack().runtime.intake && !!msg && ['image', 'file', 'video'].includes(msg.msgtype);
+}
+
+function queuedAttachment(rt: WecomRuntime, row: InboxRow): boolean {
+  return [...rt.attachmentRows.values()].some((next) => next.id !== row.id && next.ord > row.ord && chainKeyOf(next) === chainKeyOf(row));
+}
+
+const ATTACHMENT_WAIT = '收到图片，正在识别型号和数量，请稍等';
+const ATTACHMENT_RETRY = '这份附件没读出来，请再发一次或打字';
+
+function attachmentBatch(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, sessionId: string, recovering: boolean): AttachmentBatch {
+  let batch = rt.attachmentBatches.get(sessionId);
+  if (!batch) {
+    batch = { startedAt: Date.now(), recovering, timer: null, notice: null };
+    rt.attachmentBatches.set(sessionId, batch);
+  }
+  const imageQueued = [...rt.attachmentRows.values()].some(
+    (next) => chainKeyOf(next) === chainKeyOf(row) && (next.payload as KfMessage | null)?.msgtype === 'image',
+  );
+  if (imageQueued && currentPack().runtime.intake?.classes.includes('image')) armAttachmentWait(rt, cfg, sessionId, batch);
+  return batch;
+}
+
+function armAttachmentWait(rt: WecomRuntime, cfg: WecomConfig, sessionId: string, batch: AttachmentBatch): void {
+  if (batch.recovering || batch.timer || batch.notice || getSession(sessionId)?.handedOver) return;
+  const gen = takeoverGen(sessionId);
+  batch.timer = setTimeout(
+    () => {
+      batch.timer = null;
+      if (getSession(sessionId)?.handedOver || takeoverGen(sessionId) !== gen || rt.stopping || sendsClosed(rt)) return;
+      // 不记为 agent 消息：恢复时不能把等待句错当作这份附件的最终回复。
+      batch.notice = (async () => {
+        const group = planGroup(rt, cfg, sessionId, 'notice', null, textPayloads(ATTACHMENT_WAIT), null, gen);
+        group.checksTakeover = true;
+        await runGroup(group);
+      })().catch((err) => console.error(`${rt.tag} 附件等待提示失败:`, apiErrorCode(err)));
+    },
+    Math.max(0, 5000 - (Date.now() - batch.startedAt)),
+  );
+}
+
+async function finishAttachmentBatch(rt: WecomRuntime, sessionId: string): Promise<void> {
+  const batch = rt.attachmentBatches.get(sessionId);
+  if (!batch) return;
+  if (batch.timer) clearTimeout(batch.timer);
+  rt.attachmentBatches.delete(sessionId);
+  await batch.notice;
+}
+
+/** RFC 5987 优先；损坏的扩展参数回退到普通 filename，最终由公共入口清洗。 */
+function mediaFilename(header: string | null): string | null {
+  if (!header) return null;
+  const extended = /(?:^|;)\s*filename\*\s*=\s*(?:"([^"]*)"|([^;]*))/i.exec(header);
+  if (extended) {
+    const value = (extended[1] ?? extended[2] ?? '').trim();
+    const encoded = /^utf-8'[^']*'(.*)$/i.exec(value);
+    if (encoded) {
+      try {
+        return decodeURIComponent(encoded[1]!);
+      } catch {
+        /* 普通 filename 兜底 */
+      }
+    }
+  }
+  const plain = /(?:^|;)\s*filename\s*=\s*(?:"((?:\\.|[^"\\])*)"|([^;]*))/i.exec(header);
+  return plain ? (plain[1] ?? plain[2] ?? '').trim().replace(/\\(.)/g, '$1') : null;
+}
+
+async function downloadAttachment(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage) {
+  if (msg.msgtype === 'video') return { bytes: new Uint8Array(), name: null };
+  const media = (msg as KfMessage & { image?: { media_id?: unknown }; file?: { media_id?: unknown } })[msg.msgtype as 'image' | 'file'];
+  if (typeof media?.media_id !== 'string' || !media.media_id) throw new Error('attachment_media_missing');
+  // 同一次下载（包括过期 token 重试）共用 20 秒期限；读取流也受该 signal 约束。
+  const controller = new AbortController();
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(20_000), currentRuntime().cancel]);
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const token = await getAccessToken(rt, cfg, attempt > 0);
+      signal.throwIfAborted();
+      const response = await fetch(
+        `${API_BASE}/media/get?access_token=${encodeURIComponent(token)}&media_id=${encodeURIComponent(media.media_id)}`,
+        { signal },
+      );
+      if (!response.ok || !response.body) throw new Error('attachment_download_failed');
+      const name = msg.msgtype === 'image' ? null : mediaFilename(response.headers.get('content-disposition'));
+      const lengthHeader = response.headers.get('content-length');
+      const length = lengthHeader && /^\d+$/.test(lengthHeader) ? Number(lengthHeader) : null;
+      const json = response.headers.get('content-type')?.includes('application/json');
+      const reader = response.body.getReader();
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      let prefix = Buffer.alloc(0);
+      try {
+        for (;;) {
+          const part = await reader.read();
+          if (part.done) break;
+          size += part.value.byteLength;
+          if (prefix.length < 65536) prefix = Buffer.concat([prefix, part.value.subarray(0, 65536 - prefix.length)]);
+          if (json && size > 65536) throw new Error('attachment_api_response_too_large');
+          const early = earlyAttachment(prefix, Math.max(length ?? 0, size));
+          if (!json && early.abort && (prefix.length >= 65536 || earlyAttachment(prefix, null).maxBytes > 2 * 1024 * 1024)) {
+            controller.abort();
+            await reader.cancel().catch(() => {});
+            return { bytes: new Uint8Array(), name, early: early.metadata };
+          }
+          chunks.push(part.value);
+        }
+      } finally {
+        await reader.cancel().catch(() => {});
+        reader.releaseLock();
+      }
+      const bytes = Buffer.concat(chunks);
+      if (json) {
+        const data = JSON.parse(bytes.toString('utf8')) as { errcode?: number };
+        if (attempt === 0 && (data.errcode === 42001 || data.errcode === 40014)) continue;
+        throw new Error(`errcode=${typeof data.errcode === 'number' ? data.errcode : -1}`);
+      }
+      const early = earlyAttachment(prefix, Math.max(length ?? 0, size));
+      return { bytes, name, ...(early.abort ? { early: early.metadata } : {}) };
+    }
+    throw new Error('attachment_download_failed');
+  } finally {
+    controller.abort();
+  }
+}
+
+/** 12 R2：下载/恢复、识别与固定失败句，所有最终回复仍经现有入站关联的出站账本。 */
+async function processAttachmentRow(
+  rt: WecomRuntime,
+  cfg: WecomConfig,
+  row: InboxRow,
+  msg: KfMessage,
+  sessionId: string,
+  alreadyRecorded = false,
+  recovering = false,
+): Promise<void> {
+  const gen = takeoverGen(sessionId);
+  const t0 = Date.now();
+  const batch = attachmentBatch(rt, cfg, row, sessionId, recovering);
+  const fallback = async (text: string) => {
+    const session = accountSession(rt, sessionId);
+    // 下载失败/日上限仍是一条客户消息；不把未通过入口的附件交给引擎。
+    if (!session.messages.some((m) => m.role === 'customer' && m.msgid === row.msgid)) {
+      const customer: ChatMessage = {
+        role: 'customer',
+        content: placeholderOf(msg.msgtype),
+        at: Date.now(),
+        msgid: row.msgid,
+        sentAt: msg.send_time * 1000,
+      };
+      session.messages.push(customer);
+      trimSessionMessages(session);
+      saveSession(session);
+      queueInboxState(sessionId, { inboxId: row.id, state: 'recorded', message: customer });
+    }
+    await finishAttachmentBatch(rt, sessionId);
+    if (session.handedOver || takeoverGen(sessionId) !== gen) return finishInboxRow(sessionId, row.id, 'done');
+    const reply: ChatMessage = { role: 'agent', content: text, at: Date.now() };
+    session.messages.push(reply);
+    saveSession(session);
+    await replyDb(rt, cfg, sessionId, { text, stage: session.stage, message: reply }, gen, t0, row.id);
+  };
+  try {
+    let prepared: PreparedAttachment;
+    const existing = (await listAttachmentMetadata(sessionId)).find((item) => item.channel === 'wecom' && item.sourceKey === row.msgid);
+    if (alreadyRecorded) {
+      const session = accountSession(rt, sessionId);
+      const saved = existing ? await readAttachment(existing.id, true) : null;
+      if (!saved || !('bytes' in saved) || !saved.bytes) return await fallback(ATTACHMENT_RETRY);
+      const attachment = { id: saved.id, cls: saved.cls, mime: saved.mime, name: saved.name, size: saved.size, stored: true };
+      if (!currentPack().runtime.intake?.classes.includes(saved.cls)) return await processNonTextRow(rt, cfg, row, msg, sessionId, true);
+      prepared = { attachment, attachmentItem: { ...saved, createdAt: saved.createdAt.getTime() }, attachmentBytes: saved.bytes };
+      const customer = session.messages.find((m) => m.role === 'customer' && m.msgid === row.msgid);
+      if (!customer) {
+        session.messages.push({
+          role: 'customer',
+          content: placeholderOf(msg.msgtype),
+          at: Date.now(),
+          msgid: row.msgid,
+          sentAt: msg.send_time * 1000,
+          attachment,
+        });
+        trimSessionMessages(session);
+        saveSession(session);
+      }
+      if (row.state === 'received')
+        queueInboxState(sessionId, { inboxId: row.id, state: 'recorded', message: customer ?? session.messages.at(-1)! });
+    } else {
+      const downloaded = await downloadAttachment(rt, cfg, msg);
+      const result = await prepareAttachment(
+        { ...downloaded, msgtype: msg.msgtype, channel: 'wecom', sourceKey: row.msgid, ...(existing ? { id: existing.id } : {}) },
+        downloaded.early,
+      );
+      const cls = result.ok ? result.value.attachment.cls : result.cls;
+      if (!currentPack().runtime.intake?.classes.includes(cls)) {
+        await finishAttachmentBatch(rt, sessionId);
+        return await processNonTextRow(rt, cfg, row, msg, sessionId);
+      }
+      if (!result.ok) return await fallback(result.text);
+      prepared = result.value;
+    }
+    if (prepared.attachment.cls === 'image') armAttachmentWait(rt, cfg, sessionId, batch);
+    // 引擎串行链真正开始时才建新会话，避免空会话先被 microtask 写入。
+    const reply = await handleMessage(sessionId, placeholderOf(msg.msgtype), 'wecom', {
+      ...prepared,
+      attachmentAccountId: rt.sessionAccountId,
+      msgid: row.msgid,
+      sentAt: msg.send_time * 1000,
+      inboxId: row.id,
+      alreadyRecorded,
+      moreQueued: () => queuedAttachment(rt, row),
+    });
+    if (!reply.silent && reply.text.trim()) {
+      await finishAttachmentBatch(rt, sessionId);
+      await replyDb(rt, cfg, sessionId, { text: reply.text, stage: reply.stage, message: replyMessageOf(reply) ?? null }, gen, t0, row.id);
+    } else {
+      if (!queuedAttachment(rt, row) || getSession(sessionId)?.handedOver) await finishAttachmentBatch(rt, sessionId);
+      await finishInboxRow(sessionId, row.id, 'done');
+    }
+  } catch (err) {
+    console.error(`${rt.tag} 附件处理失败:`, apiErrorCode(err));
+    await fallback(INTAKE_FAILED);
+  }
 }
 
 /**
@@ -2665,7 +2921,19 @@ async function runRecovery(rt: WecomRuntime, cfg: WecomConfig, start: WecomAccou
     stopping: () => rt.stopping,
   };
   try {
-    await recoverOutbound(port, start.open.outbound, start.open.inbox);
+    // R11：停机前只排队、还没发的等待句已过时；其余 notice 的恢复规则不变。
+    const obsolete = start.open.outbound.filter((item) => {
+      const payload = item.payload as OutboundPayload | null;
+      return (
+        item.status === 'pending' && item.kind === 'notice' && payload?.msgtype === 'text' && payload.text?.content === ATTACHMENT_WAIT
+      );
+    });
+    cancelIntents(adoptOpenOutbound(rt.id, obsolete), 'restore');
+    await recoverOutbound(
+      port,
+      start.open.outbound.filter((item) => !obsolete.includes(item)),
+      start.open.inbox,
+    );
   } catch (err) {
     // 出站恢复中途出错：没处理到的行留在库里原样（下次启动再按表处理），入站恢复与拉取照常，不让这个账号停在这里
     console.error(`${rt.tag} ⚠️ 启动恢复（出站）中途出错，没处理到的行留到下次启动:`, apiErrorCode(err));
@@ -2928,6 +3196,9 @@ export const wecomAdapter: ChannelAdapter = {
 /** 模拟「进程退出再启动」：先像 exit 阶段那样把去抖窗口里的状态写出去、等排队的写完，再把运行时内存清回刚启动的样子
  *  （写下来的状态保留，下次拉取时重新加载）。不清 token、缩略图、started、pollTimer 与监听器（02 原样） */
 async function resetRuntime(rt: WecomRuntime): Promise<void> {
+  for (const batch of rt.attachmentBatches.values()) if (batch.timer) clearTimeout(batch.timer);
+  rt.attachmentBatches.clear();
+  rt.attachmentRows.clear();
   if (rt.state.kind === 'file') await rt.state.resetForTest();
   else rt.state.resetForTest();
   rt.readyPromise = null;

@@ -1,7 +1,9 @@
 # 03 · 渠道层 v2
 
 Status: implemented
+Amended by: [11 · 外部业务系统连接器：Odoo 实时库存（只读）](../11-erp-connector/spec.md)（只做新增：R9 的密钥环兼管 ERP 连接器凭据，附加数据另起 `erp_connectors:v1` 一域，轮换多一步 `erp-connector rekey`；见 11 R3）
 Superseded in part by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md) — 开放问题 1 已定 A 中 guide.html 指向 chat.html 的一句（05 R23）。
+Superseded in part by: [12 · 客户发来的图片与文件](../12-customer-files/spec.md) — 网页消息接口返回值「转人工后为 null」只指转人工之后的轮次；这一轮刚转人工的那句照常返回给客户（12 R3，2026-10-30）。
 Amended by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md)（R20 公开路由按 Host 解析且 key 在租户内唯一，R22 脱敏正则新增 sbx-，见 05 R4、R10）。
 Phase: 3 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」（2026-10-09 重排之后的编号）
 Depends on: [02 · 会话入库 + 坐席工作台](../02-conversations-workbench/spec.md)（开工时须已 implemented：PG 会话存储与每会话写队列、spill、发送账本、清除与删除函数、任务表、告警）；[01 · Postgres 底座 + 配置入库 + 后台 v0](../01-pg-config-console/spec.md)（`withTenant`、三个角色、RLS 模板、租户锁、启动顺序、审计）。选型见 [ADR-001](../../adr/adr-001-postgres-drizzle.md)

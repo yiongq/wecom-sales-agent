@@ -288,6 +288,8 @@
   margin: 0;
   white-space: pre-wrap;
   word-break: break-word;
+  /* AI 气泡是右对齐的按钮，气泡里的多行文字（如 12 的识别清单）仍从左读起 */
+  text-align: left;
 }
 .wb-bubble-label {
   margin: 0 0 2px;
@@ -679,4 +681,31 @@
 .wb-order.is-quote-pending {
   border-inline-start: 2px solid var(--warning);
   padding-inline-start: 12px;
+}
+
+/* 12 R12：客户气泡里正文下面的附件行：名称、下载按钮或「原件不可下载」，出错的一行另起 */
+.wb-attachment {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--divider);
+  font-size: 13px;
+  line-height: 20px;
+}
+.wb-attachment p {
+  margin: 0;
+}
+.wb-attachment-name {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  color: var(--text-2);
+}
+.wb-attachment-note {
+  color: var(--text-3);
+}
+.wb-attachment-error {
+  flex-basis: 100%;
 }

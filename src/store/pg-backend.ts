@@ -14,6 +14,7 @@ import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { pgErrorOf, trySavepoint, withTenant, type Db, type TenantCtx, type Tx } from '../db/client.js';
 import { writeAuditAs, type AuditEntry } from '../db/repo/audit.js';
+import { insertAttachments, writeAttachmentResult, type AttachmentItem, type AttachmentResultWrite } from '../db/repo/attachments.js';
 import { applyInboxStates, type InboxStateWrite } from '../db/repo/channel-inbox.js';
 import { appendConsents, type ConsentRow } from '../db/repo/consents.js';
 import {
@@ -137,6 +138,8 @@ interface VoidedOrder {
   reason: 'reset' | 'resync';
 }
 interface SpillSideRows {
+  attachments?: AttachmentItem[];
+  attachmentResults?: AttachmentResultWrite[];
   audits: AuditItem[];
   jobs: JobOp[];
   consents: ConsentItem[];
@@ -190,6 +193,8 @@ interface SpillDoc {
 
 /** 一次落库的快照：第一个 await 之前同步取好，消息进快照即冻结 */
 interface Snap {
+  attachments: AttachmentItem[];
+  attachmentResults: AttachmentResultWrite[];
   flushId: string;
   /** 快照取到的改动代次：提交后 committedGen = gen */
   gen: number;
@@ -243,6 +248,8 @@ interface Waiter {
 }
 
 interface Entry {
+  attachments: AttachmentItem[];
+  attachmentResults: AttachmentResultWrite[];
   id: string;
   /**
    * 会话行的 ref（随机 uuid，不含客户标识）：预载的取库里的；新会话在建写队列时生成、第一次落库插入时写进去，
@@ -396,6 +403,8 @@ export interface PgBackend extends StoreBackend {
   patchQueuedJob(sessionId: string, dedupeKey: string, patch: Record<string, unknown>): number;
   /** report 的状态变化已随这个会话的落库提交、而且改中了：取走（只报一次）。没提交、没改中都是 false */
   jobOpApplied(sessionId: string, jobId: string): boolean;
+  queueAttachment(sessionId: string, item: AttachmentItem): boolean;
+  queueAttachmentResult(sessionId: string, write: AttachmentResultWrite): boolean;
   queueConsents(sessionId: string, items: readonly ConsentItem[]): void;
   queueTelemetry(sessionId: string, rows: TelemetryRows): void;
   /**
@@ -662,6 +671,8 @@ async function preload(d: PgBackendDeps): Promise<Preloaded> {
 // ---------------- spill 回放 ----------------
 
 const rowSide = (side: SpillSideRows, extra?: SpillSideRows): SpillSideRows => ({
+  attachments: [...(side.attachments ?? []), ...(extra?.attachments ?? [])],
+  attachmentResults: [...(side.attachmentResults ?? []), ...(extra?.attachmentResults ?? [])],
   audits: [...side.audits, ...(extra?.audits ?? [])],
   jobs: [...side.jobs, ...(extra?.jobs ?? [])],
   consents: [...side.consents, ...(extra?.consents ?? [])],
@@ -669,6 +680,8 @@ const rowSide = (side: SpillSideRows, extra?: SpillSideRows): SpillSideRows => (
 
 /** 审计、任务、同意记录。返回改中了的 report 状态变化（任务 id） */
 async function writeSideRows(tx: Tx, sessionId: string, side: SpillSideRows): Promise<string[]> {
+  await insertAttachments(tx, sessionId, side.attachments ?? []);
+  for (const write of side.attachmentResults ?? []) await writeAttachmentResult(tx, sessionId, write);
   const applied: string[] = [];
   for (const a of side.audits) await writeAuditAs(tx, a.actor, a.entry);
   for (const j of side.jobs) {
@@ -1080,6 +1093,8 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     audits: [],
     jobs: [],
     consents: [],
+    attachments: [],
+    attachmentResults: [],
     telemetry: emptyTelemetry(),
     channel: [],
     inbox: [],
@@ -1278,6 +1293,8 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       audits: e.audits,
       jobs: e.jobs,
       consents: e.consents,
+      attachments: e.attachments,
+      attachmentResults: e.attachmentResults,
       telemetry: e.telemetry,
       channel: e.channel,
       inbox: e.inbox,
@@ -1290,6 +1307,8 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     e.audits = [];
     e.jobs = [];
     e.consents = [];
+    e.attachments = [];
+    e.attachmentResults = [];
     e.telemetry = emptyTelemetry();
     e.channel = [];
     e.inbox = [];
@@ -1543,6 +1562,8 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
             audits: inf.audits,
             jobs: inf.jobs,
             consents: inf.consents,
+            attachments: inf.attachments.map((a) => ({ ...a, bytes: null })),
+            attachmentResults: inf.attachmentResults,
             // 03 R21：这次落库里的渠道行（以数据类错误失败的那次已把它们移进 pc，这里是空的）
             channel: spillChannelOf(liveChannelRows(inf)),
           }
@@ -1559,6 +1580,8 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       audits: e.audits,
       jobs: e.jobs,
       consents: e.consents,
+      attachments: e.attachments.map((a) => ({ ...a, bytes: null })),
+      attachmentResults: e.attachmentResults,
       poisoned: e.poisoned,
     };
   }
@@ -1680,6 +1703,20 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     },
     jobOpApplied(sessionId, jobId) {
       return entries.get(sessionId)?.applied.delete(jobId) ?? false;
+    },
+    queueAttachment(sessionId, item) {
+      const e = entryById(sessionId);
+      if (!e) return false;
+      e.attachments.push(structuredClone(item));
+      change(e);
+      return true;
+    },
+    queueAttachmentResult(sessionId, write) {
+      const e = entryById(sessionId);
+      if (!e) return false;
+      e.attachmentResults.push(structuredClone(write));
+      change(e);
+      return true;
     },
     queueConsents(sessionId, items) {
       const e = entryById(sessionId);

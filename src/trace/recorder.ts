@@ -38,6 +38,8 @@ export interface TraceCall {
 export type LlmErrorKind = 'timeout' | 'rate_limited' | 'http_5xx' | 'bad_response' | null;
 /** llm.ts 的 CallTrace 加用量 */
 export interface TraceLlmCall {
+  /** 缺省为主对话，旧 trace 与主对话序列化不变。 */
+  purpose?: 'vision';
   model: string;
   hedged: boolean;
   ms: number;
@@ -372,12 +374,18 @@ withoutTenantScope(() =>
   }),
 );
 
-// 主对话每次调用的 token：llm.ts 先通知 onLlmCall、再记用量，这一笔归最近一次还没有用量、同一模型的成功调用
+// 主对话与视觉每次调用的 token（视觉 schema 失败也可能消耗 token）：llm.ts 先通知 onLlmCall、再记用量，这一笔归最近一次还没有用量、同一模型的成功调用
 withoutTenantScope(() =>
   onUsage((e) => {
-    if (e.purpose !== 'chat') return;
+    if (e.purpose !== 'chat' && e.purpose !== 'vision') return;
     const h = live();
-    const slot = h?.llm.findLast((x) => !x.usage && x.trace.error === null && x.trace.model === e.model);
+    const slot = h?.llm.findLast(
+      (x) =>
+        !x.usage &&
+        (x.trace.error === null || e.purpose === 'vision') &&
+        x.trace.model === e.model &&
+        (x.trace.purpose ?? 'chat') === e.purpose,
+    );
     if (slot) {
       slot.usage = {
         promptTokens: e.promptTokens,
@@ -419,6 +427,7 @@ function finish(
   h.tools = [];
   t.llm = h.llm.map(({ trace: c, usage, startedAt }) => ({
     model: c.model,
+    ...(c.purpose ? { purpose: c.purpose } : {}),
     hedged: c.hedged,
     ms: c.ms,
     tools: [...c.tools],

@@ -362,7 +362,10 @@
 - 2026-10-25 implemented：线上 `demo-v9-rc1` 起生效（四个哈希与开工相同），发版 `demo-v9`；验收 13、14 按 owner 确认的偏离通过，见该 spec 末条 `Revisions:` 与 plan「验收记录」。
 - 2026-10-26 owner 定 09 `ready`，spec 见 [09 · 报价审批、报价单页与站内链接（核心）](./09-quote-approval/spec.md)（[docs/architecture/09-quote-approval/](./09-quote-approval/)）：第二个真实行业包所需的核心能力——报价审批、报价单页、站内链接按包登记，用证明包验证，旅游不变；[10](./10-industrial-rfq-pack/spec.md) 已为 `ready`，见下一条。
 - 2026-10-26 owner 定 10 `ready`，spec 见 [10 · 第二个行业包：工业品询价（与演示租户）](./10-industrial-rfq-pack/spec.md)：用工业品询价包与合成演示租户验证 08、09 的通用能力，公开参考包决定见 [ADR-005](../adr/adr-005-industrial-reference-pack.md)，pre-10 回滚按 R17 拒绝含工业数据的库退旧版本；09 与 10 一起验收、一次上线 `demo-v10-rc1`，各自经 owner 确认后翻 `implemented`。
-- 2026-10-27 implemented（09、10）：随 `demo-v10-rc1` 联合上线，`demo-v10-rc3` 起含终验修复；10 验收 10 的偏离「没有独立预发环境」由 owner 接受，见两份 spec 末条 `Revisions:` 与 plan「验收记录」。发版待 owner 授权。
+- 2026-10-27 implemented（09、10）：随 `demo-v10-rc1` 联合上线，`demo-v10-rc3` 起含终验修复；10 验收 10 的偏离「没有独立预发环境」由 owner 接受，见两份 spec 末条 `Revisions:` 与 plan「验收记录」。发版 `demo-v10`（`main` `1a3f1539`）。
+- 2026-10-29 owner 定 12 `ready`，spec 见 [12 · 客户发来的图片与文件：询价单识别与确认](./12-customer-files/spec.md)（[docs/architecture/12-customer-files/](./12-customer-files/)）。工业询价客户发来的 Excel / CSV 询价单与清单截图、铭牌照片：表格由代码读，图片由主模型抽型号与数量，逐行走 10 的确定性匹配，代码渲染编号清单，客户确认后才试算，未找到的行转顾问；原件存库，30 天后清除字节。部分取代 10 的四处，见该 spec 顶部。11（外部业务系统连接器）排在 12 之后。
+- 2026-10-29 owner 定 11 `ready`，spec 见 [11 · 外部业务系统连接器：Odoo 实时库存（只读）](./11-erp-connector/spec.md)（[docs/architecture/11-erp-connector/](./11-erp-connector/)）。第一家 Odoo（19、20 的 JSON-2），第一期只读：按事先映射的产品 id 实时查可售量，叠到产品库库存上，每轮花在 ERP 上至多 1 秒，取不到退回产品库值；价格、交期、报价单不变，模型碰不到 ERP；连接器凭据加密存库（AGENTS.md 密钥规则随之修订），连接器出站一律经出站防护（SSRF）。报价单写回 ERP 另起 spec。部分取代 10 R4、R6 (2) 与 ADR-003 决策 2，见该 spec 顶部。开工等 12 implemented。
+- 2026-10-31 implemented（12）：随 `demo-v11-rc1` 上线，`demo-v11-rc2` 起含网页 413 与安卓压缩照片的修复；验收 4 的企微 P90 以第 13 步引擎路径为准，由 owner 接受，见该 spec 末条 `Revisions:` 与 plan「验收记录」。发版 `demo-v11` 随后进行。
 - 候选：
   - 第二个真实行业包：模板机制要靠它来验证。
   - 电商售后参考包。

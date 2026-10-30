@@ -242,6 +242,12 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
     values ($1,'order-test','sbx-test','route-test','paid',1,now(),now(),'{"id":"order-test"}')`,
     [created.tenantId],
   );
+  // 12 R4：原件、识别结果随沙箱回收删除，并计入逐表核对。
+  await q(
+    `insert into attachments (tenant_id,id,conversation_id,channel,source_key,cls,mime,size,sha256,bytes,result)
+     values ($1,'att_000000000000000000000001','sbx-test','web','fixture','image','image/png',1,'synthetic',decode('01','hex'),'{}')`,
+    [created.tenantId],
+  );
   const turnId = randomUUID();
   await q(
     `insert into turn_traces (tenant_id,id,conversation_id,started_at,duration_ms,outcome,prefix_hash,catalog_versions,calls,llm)
@@ -364,7 +370,8 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
       counts?.counts.users === 1 &&
       counts.counts.tenants === 1 &&
       counts.counts.usage_daily === 3 &&
-      counts.counts.sandbox_wechat === 1,
+      counts.counts.sandbox_wechat === 1 &&
+      counts.counts.attachments === 1,
     'purge 返回每表删除数',
   );
   check(

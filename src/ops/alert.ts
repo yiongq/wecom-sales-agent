@@ -32,6 +32,7 @@ import { onShutdown, onStoreIncident, storeCounters, storeHealth, type StoreHeal
 import { onTurnEnd, type FinishedTurn } from '../trace/recorder.js';
 
 export type AlertKey =
+  | 'attachment_limit'
   | 'model_errors'
   | 'wecom_send'
   | 'tenant_lock'
@@ -206,7 +207,8 @@ export function alert(key: AlertKey, text: string, opts: AlertOpts = {}): void {
       if (!st.active) return;
       st.active = false;
     } else {
-      if (st.active && t - st.lastSentAt < DEDUPE_MS && !opts.escalate) return;
+      if (key === 'attachment_limit' && st.active && stamp(t).slice(0, 10) === stamp(st.lastSentAt).slice(0, 10)) return;
+      if (key !== 'attachment_limit' && st.active && t - st.lastSentAt < DEDUPE_MS && !opts.escalate) return;
       st.active = true;
       st.lastSentAt = t;
     }
