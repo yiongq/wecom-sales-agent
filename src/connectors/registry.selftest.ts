@@ -193,6 +193,39 @@ try {
   pass('慢而成功后，同轮第二次需要请求立即退回，总 ERP 等待 700ms');
 
   setup();
+  await inside(async () => {
+    stock = async () => new Map([[1, { freeQty: 7, active: true, uomId: 1 }]]);
+    await erp.availability('part', ['P1']);
+    await clock.advance(29_000);
+    await withErpTurn(async () => {
+      assert.equal((await erp.availability('part', ['P1'])).get('P1')?.onHand, 7);
+      stock = async (ids) => new Map(ids.map((id) => [id, { freeQty: 0, active: true, uomId: 1 }]));
+      await clock.advance(2000);
+      assert.equal((await erp.availability('part', ['P1'])).get('P1')?.onHand, 7, '缓存过了 30 秒，本轮仍用已读到的值');
+      await clock.advance(60_000);
+      assert.equal(erp.fresh('part', 'P1')?.onHand, 7, '跨过 60 秒也不换');
+      assert.equal((await erp.availability('part', ['P2'])).size, 1, '本轮没读过的编号照常取');
+    });
+    assert.equal(erp.fresh('part', 'P1'), undefined);
+    await clock.advance(1000);
+    assert.equal((await erp.availability('part', ['P1'])).get('P1')?.onHand, 0, '下一轮才换');
+  });
+  await inside(async () => {
+    setup();
+    stock = async () => {
+      throw new ErpError('server');
+    };
+    await withErpTurn(async () => {
+      assert.equal((await erp.availability('part', ['P1'])).size, 0);
+      stock = async () => new Map([[1, { freeQty: 7, active: true, uomId: 1 }]]);
+      await clock.advance(31_000);
+      assert.equal((await erp.availability('part', ['P1'])).size, 0, '本轮没取到的也不换');
+      assert.equal(erp.fresh('part', 'P1'), undefined);
+    });
+  });
+  pass('同一轮看到同一份：读到的值与没取到都固定到本轮结束，下一轮才换');
+
+  setup();
   await inside(() =>
     withErpTurn(async () => {
       delay = Infinity;

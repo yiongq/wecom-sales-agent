@@ -7,6 +7,7 @@ Revisions: 2026-10-29 owner 定开放问题 1–5，全部照推荐：只支持 
 Revisions: 2026-10-29 owner 定 `ready`。同一 docs PR 把 R3、R4 的两条规则原文写进 AGENTS.md，给 ADR-003 与 10 加反向的 `Superseded in part by:`（10 的那一行一并写 R9 的收紧），给 03、04、05、08 加 `Amended by:`，主参考「阶段 8」加一条。
 Revisions: 2026-10-31 第 0 步本机实测（Odoo `19.0-20261015`、`20.0-20261015`）之后就地修订，尚无代码依赖；都是事实修正或补细节，不改决定：R6 删去「`read` 遇已删 id 会整批报错」这条不成立的理由（两版实测都只是省略），仍用 `search_read`；R6 补 `check()` 的五次调用，公司取机器人默认公司（原文没说多公司取哪家）；R5 分页固定 `id asc`；R6 错误表之后补「错字段、错参数也可能是 500」；R8 写明保活取决于服务入口（Odoo 内置 HTTP 服务每次都 `Connection: close`）；「安全」写明最小内置组 `stock.group_stock_user` 不是严格只读。跨地区实测仍待 owner 授权。
 Revisions: 2026-10-31 实现期就地补细节（第 5、6 步），不改决定：`PackSources.erp` 的 `code` 写明是产品库条目 code，`erp.key` 只用于映射时比对（原文没写，两步实现各取一边，所有查询都对不上，见 plan 第 6 步记录）；加同步的 `mapped()`，R7 的系统消息收窄到已映射的型号（未映射是常态，不该提醒）；`settings` 加可选的 `lastCheck`（R9 的 `show` 要显示最近一次检查结论，原文没写存哪）。
+Revisions: 2026-10-31 第 8 步只读审查之后就地修订，不改决定：R6 补「同一轮固定已读到的值」（原文说交出去的值够一轮用完，但缓存 29 秒时不会预热，模型思考几秒后建单会被刷新，同一轮两份不同的值，违反不变量 8）；R6 把「冷却期内 `availability()` 直接返回空」改成「不发请求，只返回还在 60 秒内的值」（原文与「新鲜值的唯一定义」冲突：工具与护栏读的是 `fresh()`，返回空也不改变它们看到的值；60 秒内的 ERP 值比产品库更准，也在 spec 接受的窗口内）。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8「按信号再定」；[10](../10-industrial-rfq-pack/spec.md)「后续」第 1 条。
 Depends on: [12 · 客户发来的图片与文件](../12-customer-files/spec.md) 已 implemented（R7 要改的工业包文件与 12 重叠）；[09](../09-quote-approval/spec.md)、[10](../10-industrial-rfq-pack/spec.md) 已 implemented；[03](../03-channels-v2/spec.md) R9 的密钥环与加密存库；[05](../05-tenancy-sandbox/spec.md) R5 的租户状态登记与 R12 的沙箱回收。
 Supersedes in part: [10](../10-industrial-rfq-pack/spec.md) 的两处，理由都是「接了 ERP 的租户，库存以 ERP 的新鲜值为准」：（1）R4「行属性」里判现货用的「库存」；（2）R6 自动批准条件（2）「每一行在建单这一刻都是库存 ≥ 数量」。新条文见 R7，没有启用连接器的租户仍按原文。[ADR-003](../../adr/adr-003-open-core-boundary.md) 决策 2「不进任何仓库」一格的「凭据：只放服务器上的 env 文件（01 起按 compose 服务拆分），不写进日志」：改为按租户的渠道凭据（03 引入，当时没有在 ADR 落档）与外部业务系统凭据（本 spec）可以加密存库，密钥环只在 env 文件（R3）。10 与 ADR-003 在本 spec 翻 `ready` 时加反向的 `Superseded in part by:` 行。
@@ -235,7 +236,7 @@ export type EgressCode =
 
 **检查。** `check()` 依次发五次只读调用：`res.users/context_get` 取 `uid`；`res.users/read` 取 `company_id`（机器人的默认公司，多公司时只看这一家）；`res.company/read` 取 `currency_id`；`res.currency/read` 取 `name` 作为 `companyCurrency`，不用 many2one 的展示字符串；`stock.location/search_read` 按 `id` 查库位，命中才算 `locationOk`。只在命令行跑，不走每轮截止时间。
 
-**新鲜值（唯一定义）。** 本进程从 ERP 取到、`at` 距现在不超过 60 秒的值。`PackSources.erp.fresh()` 只按这一条返回；`availability()` 对超过 30 秒的值重新取，所以它交出去的值至少还新鲜 30 秒，够一轮用完。工具结果、`priceLine`、自动批准与护栏证据都只认 `fresh()`（R7）。
+**新鲜值（唯一定义）。** 本进程从 ERP 取到、`at` 距现在不超过 60 秒的值。`PackSources.erp.fresh()` 只按这一条返回；`availability()` 对超过 30 秒的值重新取，所以它交出去的值至少还新鲜 30 秒。工具结果、`priceLine`、自动批准与护栏证据都只认 `fresh()`（R7）。同一轮里，一个编号第一次经 `availability()` 得到的结果（含没取到）固定到本轮结束，之后不再刷新，`fresh()` 也返回这一份，所以模型思考几秒之后建单，看到的和本轮工具结果相同（不变量 8）。
 
 **每轮截止时间。** 引擎在每轮开始时开一个 `AsyncLocalStorage` 作用域（`src/core/engine/index.ts` 第 821 行 `prefetch` 之前）。本轮第一次真正向 ERP 发请求时定下截止时刻：发起时刻加 1 秒；本轮之后的请求、包括排队等待，都只等到它为止，到点按「没取到」返回。作用域外（命令行、映射）每次请求用自己的时限。所以一轮花在 ERP 上的时间至多 1 秒，不论慢而成功还是超时。
 
@@ -253,7 +254,7 @@ export type EgressCode =
 
 错字段、错参数在 Odoo 上常是 500 而不是 422（19、20 实测），一律按状态码归 `server`，不按响应文字猜成配置错误；我们只发固定的调用，这种情况只会在 Odoo 字段变化时出现。
 
-冷却期内 `availability()` 不发请求，直接返回空（`cooldown`）。
+冷却期内 `availability()` 不发请求（`cooldown`），只返回还在 60 秒内的值，与 `fresh()` 一致。
 
 ### R7 · 工业包怎么用
 
