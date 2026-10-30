@@ -329,6 +329,17 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
   check(!privacyGuc?.id, '隐私说明函数不泄漏 GUC');
   const [privacyGrant] = await q<{ ok: boolean }>("select has_table_privilege('agent_app','privacy_notices','INSERT') as ok");
   check(!privacyGrant?.ok, 'agent_app 对隐私说明表仍无 INSERT 权限');
+  // 11 R11：即使沙箱里残留连接器，也必须先删映射、再删连接器，并各自计数。
+  const [erp] = await q<{ id: string }>(
+    `insert into erp_connectors (tenant_id,kind,base_url,settings,secrets_ct,secrets_key_id)
+     values ($1,'odoo','https://erp.example.test','{}','synthetic','synthetic') returning id`,
+    [created.tenantId],
+  );
+  await q(
+    `insert into erp_item_links (tenant_id,connector_id,kind,code,remote_id,remote_code,remote_uom_id,source,checked_at)
+     values ($1,$2,'part','synthetic-part',1,'SYN-1',1,'manual',now())`,
+    [created.tenantId, erp!.id],
+  );
   await execute(sql`select sandbox_tenant_expire(${created.tenantId})`);
   const expired = await resolve();
   check(
@@ -371,7 +382,9 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
       counts.counts.tenants === 1 &&
       counts.counts.usage_daily === 3 &&
       counts.counts.sandbox_wechat === 1 &&
-      counts.counts.attachments === 1,
+      counts.counts.attachments === 1 &&
+      counts.counts.erp_item_links === 1 &&
+      counts.counts.erp_connectors === 1,
     'purge 返回每表删除数',
   );
   check(

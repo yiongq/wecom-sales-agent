@@ -182,7 +182,7 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
   const names = tables.map((r) => r.relname).join(',');
   // 07 R12：kb_chunks 两边都有；kb_vectors 要 vector 扩展，只在装了扩展的真实 PG 上建，PGlite 上没有（迁移 0016 的 DO 块）
   check(
-    `${label}迁移：01 的七张表加 02 的十二张、03 的两张、05 的四张、07 的${vector ? '两张（kb_chunks、kb_vectors）' : '一张（kb_chunks；PGlite 没有 vector 扩展，没有 kb_vectors）'}，以及 12 的 attachments`,
+    `${label}迁移：01 的七张表加 02 的十二张、03 的两张、05 的四张、07 的${vector ? '两张（kb_chunks、kb_vectors）' : '一张（kb_chunks；PGlite 没有 vector 扩展，没有 kb_vectors）'}，以及 12 的 attachments、11 的两张 ERP 表`,
     names ===
       [
         'attachments',
@@ -194,6 +194,8 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
         'channel_inbox',
         'consents',
         'conversations',
+        'erp_connectors',
+        'erp_item_links',
         'guard_events',
         'jobs',
         'kb_chunks',
@@ -280,7 +282,7 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
   }
   // 列级授权：真实 PG 的逐格表用 has_table_privilege，只看表级，多出来的列级 GRANT 它看不见。public 下带列级授权的
   // 只能是 tenants 的三个保留期列、品牌列、Host 与预算列（只给 agent_platform 的 UPDATE，02 spec 授权表），与 channel_accounts 的九列（只给 agent_app 的
-  // UPDATE，03 spec 授权表），以及 guard_verdicts（agent_app 的 SELECT、INSERT，04 R8）。按 JS 顺序比。
+  // UPDATE，03 spec 授权表）、ERP 的七列（11 R3），以及 guard_verdicts（agent_app 的 SELECT、INSERT，04 R8）。按 JS 顺序比。
   const colAcl = await run<{ acl: string }>(
     `select c.relname || '.' || a.attname || ' ' || coalesce(r.rolname, 'PUBLIC') || ' ' || x.privilege_type as acl
        from pg_attribute a join pg_class c on c.oid = a.attrelid
@@ -290,7 +292,7 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
       order by 1`,
   );
   check(
-    `${label}授权：列级授权仅为 tenants 保留期/品牌/Host/预算 UPDATE、channel_accounts 九列 UPDATE、附件结果两列 UPDATE 与 guard_verdicts SELECT/INSERT`,
+    `${label}授权：列级授权仅为 tenants 保留期/品牌/Host/预算 UPDATE、channel_accounts 九列 UPDATE、附件结果两列 UPDATE、ERP 七列 UPDATE 与 guard_verdicts SELECT/INSERT`,
     colAcl
       .map((r) => r.acl)
       .toSorted()
@@ -300,6 +302,9 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
           (c) => `tenants.${c} agent_platform UPDATE`,
         ),
         ...CHANNEL_ACCOUNT_UPDATABLE.map((c) => `channel_accounts.${c} agent_app UPDATE`),
+        ...['status', 'base_url', 'database', 'settings', 'secrets_ct', 'secrets_key_id', 'updated_at'].map(
+          (c) => `erp_connectors.${c} agent_app UPDATE`,
+        ),
         'attachments.intake_id agent_app UPDATE',
         'attachments.result agent_app UPDATE',
         'turn_traces.guard_verdicts agent_app INSERT',
@@ -4874,6 +4879,8 @@ async function realPostgres(superUrl: string): Promise<void> {
       privacy_notices: { agent_app: 'SELECT', agent_platform: 'SELECT,INSERT' },
       // 03 spec「数据库」的授权表：channel_accounts 的 UPDATE 是列级的（下面单独核），表级只有 SELECT、INSERT
       channel_accounts: { agent_app: 'SELECT,INSERT', agent_platform: '' },
+      erp_connectors: { agent_app: 'SELECT,INSERT', agent_platform: '' },
+      erp_item_links: { agent_app: 'SELECT,INSERT,UPDATE,DELETE', agent_platform: '' },
       channel_inbox: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       // 07 R11：派生数据，agent_app 有 DELETE（可以重建），agent_platform 什么都没有；kb_vectors 只在装了 vector 扩展时有
       kb_chunks: { agent_app: 'SELECT,INSERT,UPDATE,DELETE', agent_platform: '' },
