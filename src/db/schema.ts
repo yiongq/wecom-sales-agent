@@ -988,3 +988,66 @@ export const sopGateRuns = pgTable(
       .where(sql`${t.status} IN ('queued','running')`),
   ],
 );
+
+/** 11 R3：连接器设置，不含凭据；地址与数据库名也不得打印。 */
+export interface ErpConnectorSettings {
+  locationId: number;
+  uom: Record<string, number>;
+  keyExpiresAt: string;
+}
+
+export const erpConnectors = pgTable(
+  'erp_connectors',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: text('kind', { enum: ['odoo'] }).notNull(),
+    status: text('status', { enum: ['active', 'disabled'] })
+      .notNull()
+      .default('active'),
+    baseUrl: text('base_url').notNull(),
+    database: text('database'),
+    settings: jsonb('settings').$type<ErpConnectorSettings>().notNull(),
+    secretsCt: bytea('secrets_ct').notNull(),
+    secretsKeyId: text('secrets_key_id').notNull(),
+    createdAt: tstz('created_at').notNull().defaultNow(),
+    updatedAt: tstz('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    unique('erp_connectors_tenant_id_unique').on(t.tenantId),
+    unique('erp_connectors_tenant_id_id_unique').on(t.tenantId, t.id),
+    check('erp_connectors_kind_check', sql`${t.kind} IN ('odoo')`),
+    check('erp_connectors_status_check', sql`${t.status} IN ('active', 'disabled')`),
+    check('erp_connectors_database_check', sql`${t.database} ~ '^[A-Za-z0-9_.-]{1,63}$'`),
+  ],
+);
+
+export const erpItemLinks = pgTable(
+  'erp_item_links',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    connectorId: uuid('connector_id').notNull(),
+    kind: text('kind').notNull(),
+    code: text('code').notNull(),
+    remoteId: integer('remote_id').notNull(),
+    remoteCode: text('remote_code').notNull(),
+    remoteUomId: integer('remote_uom_id').notNull(),
+    source: text('source', { enum: ['auto', 'manual'] }).notNull(),
+    checkedAt: tstz('checked_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.connectorId, t.kind, t.code] }),
+    foreignKey({
+      name: 'erp_item_links_connector_fk',
+      columns: [t.tenantId, t.connectorId],
+      foreignColumns: [erpConnectors.tenantId, erpConnectors.id],
+    }),
+    check('erp_item_links_remote_id_check', sql`${t.remoteId} > 0`),
+    check('erp_item_links_remote_uom_id_check', sql`${t.remoteUomId} > 0`),
+    check('erp_item_links_source_check', sql`${t.source} IN ('auto', 'manual')`),
+  ],
+);
