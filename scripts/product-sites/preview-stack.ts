@@ -253,7 +253,7 @@ async function verify(state: PreviewState) {
     return response.json();
   };
   const me = await get('me');
-  if (me.tenantSlug !== 'preview-industrial' || me.role !== 'owner') throw new Error('preview_identity_failed');
+  if (me.tenantSlug !== 'preview-industrial' || me.role !== 'owner' || me.sharedTrial !== true) throw new Error('preview_identity_failed');
   const usage = await get('usage');
   const conversations = await get('conversations');
   const orders = await get('orders?status=pending_payment&limit=100');
@@ -275,6 +275,7 @@ async function verify(state: PreviewState) {
     body: JSON.stringify(state.agent),
   });
   if (agent.status !== 200) throw new Error('preview_agent_login_failed');
+  if ((await agent.json()).sharedTrial !== true) throw new Error('preview_trial_notice_missing');
   if (
     (await request('/api/console/usage', { headers: { cookie: previewCookie(agent.headers.get('set-cookie'), state.url) } })).status !== 403
   )
@@ -376,6 +377,7 @@ async function up() {
       VAR_DIR: path.join(dir, 'state'),
       PUBLIC_BASE_URL: `http://127.0.0.1:${state.port}`,
       ADMIN_PASS: randomBytes(24).toString('hex'),
+      TRIAL_TENANT_ALLOWLIST: fs.readFileSync(path.join(dir, 'trial-allowlist.json'), 'utf8'),
     };
     const service = spawn(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url), 'serve'], {
       cwd: dir,
@@ -427,7 +429,12 @@ async function main(command: string | undefined) {
     await runMigrations(process.env.DATABASE_OWNER_URL!);
     const { seedPreview } = await import('./preview-data.js');
     const state = JSON.parse(fs.readFileSync(STATE, 'utf8')) as PreviewState;
-    await seedPreview({ app: process.env.DATABASE_URL!, platform: process.env.DATABASE_PLATFORM_URL! }, state);
+    const tenantId = await seedPreview({ app: process.env.DATABASE_URL!, platform: process.env.DATABASE_PLATFORM_URL! }, state);
+    fs.writeFileSync(
+      path.join(runtimeDir(state), 'trial-allowlist.json'),
+      JSON.stringify([{ tenantId, slug: 'preview-industrial', packId: 'industrial', kind: 'standard', isHost: false }]),
+      { mode: 0o600 },
+    );
   } else if (command === 'build') {
     const vite = createRequire(new URL('../../console/package.json', import.meta.url)).resolve('vite');
     await (

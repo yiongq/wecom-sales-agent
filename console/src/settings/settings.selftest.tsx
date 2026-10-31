@@ -185,6 +185,8 @@ async function mount(path: string) {
       ),
     ),
   );
+  // 等待真实懒加载路由完成；仅等 QueryClient 会在路由 chunk 到达前误认页面已就绪。
+  await act(async () => router.load());
   await settle(qc, 100);
   return {
     qc,
@@ -226,6 +228,18 @@ try {
     try {
       const viewer = m.qc.getQueryData<Viewer>(VIEWER_KEY);
       assert.equal(viewer?.kind, 'member');
+      if (process.env.SETTINGS_TEST_TRIAL === '1') {
+        assert.equal(logged.sharedTrial, true);
+        assert.ok(document.querySelector('.trial-banner')?.textContent?.includes('请不要发送个人信息'));
+        assert.ok(document.querySelector('.trial-banner')?.textContent?.includes('7'));
+        const value = await unwrap(api.usage.$get());
+        assert.ok(value.replies.used > 0);
+        await navigate(m, 'usage');
+        assert.equal(document.querySelector('[data-usage="replies"]')?.textContent, `${value.replies.used}次`);
+        assert.ok(document.querySelector('.usage-table'));
+        await navigate(m, 'organization');
+        console.log(`15 验收 9 REAL UI PASS: authenticated whitelist notice and actual usage page ${value.replies.used}`);
+      }
       if (realUsage) {
         const checkUsage = async () => {
           const value = await unwrap(api.usage.$get());
@@ -285,6 +299,16 @@ try {
       await m.close();
     }
   } else {
+    me = { ...BASE_ME, sharedTrial: true };
+    const trial = await mount('/console/settings/organization');
+    assert.ok(document.querySelector('.trial-banner')?.textContent?.includes('请不要发送个人信息'));
+    assert.ok(document.querySelector('.trial-banner')?.textContent?.includes('7'));
+    await trial.close();
+    me = { ...BASE_ME };
+    const regular = await mount('/console/settings/organization');
+    assert.equal(document.querySelector('.trial-banner'), null);
+    await regular.close();
+    console.log('15 验收 9 PASS: server boolean controls persistent shell banner; other members have none');
     // 深链接、加载、三页真实路由、筛选、空列表、状态、重试。
     holdPage = 'organization';
     const m = await mount('/console/settings/organization');
@@ -532,6 +556,7 @@ try {
       const overviewStyle = document.createElement('style');
       overviewStyle.textContent = readFileSync('console/src/overview/overview.css', 'utf8');
       document.head.append(overviewStyle);
+      assert.ok(document.querySelector('.onboarding-list'), `onboarding missing: ${document.body.textContent}`);
       assert.equal(win.getComputedStyle(document.querySelector('.onboarding-list') as never).gridTemplateColumns, '1fr');
       overviewStyle.remove();
       assert.ok(document.querySelector('.onboarding-list li[data-state="todo"]'));

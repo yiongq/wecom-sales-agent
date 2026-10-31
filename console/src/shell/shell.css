@@ -13,6 +13,16 @@
 .shell-hidden {
   flex-direction: column;
 }
+.trial-banner.ant-alert {
+  flex: 0 0 auto;
+  margin: 12px 16px 0;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 991px) {
+  .trial-banner.ant-alert {
+    margin: 8px 8px 0;
+  }
+}
 .shell-panel {
   position: relative;
   display: flex;

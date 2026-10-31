@@ -7,6 +7,7 @@ import { createCipheriv, randomBytes, randomUUID } from 'node:crypto';
 import { fork, type ChildProcess } from 'node:child_process';
 import { createServer } from 'node:net';
 import { request as httpRequest } from 'node:http';
+import type { UsageView } from '../shared/console-api.js';
 import type { KfMessage } from '../adapters/wecom-state.js';
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -54,7 +55,10 @@ async function child(): Promise<void> {
   const { tenantRuntimes, withTenantScope } = await import('./runtime.js');
   const { limitVerdict } = await import('./limits.js');
   const { loadedAccounts } = await import('../channels/accounts.js');
-  process.on('message', (message: { id: number; op: string; kf?: string; messages?: KfMessage[] }) => {
+  process.on('message', async (message: { id: number; op: string; kf?: string; messages?: KfMessage[] }) => {
+    if (message.op === 'flushUsage')
+      for (const rt of tenantRuntimes())
+        await withTenantScope(rt, () => import('../trace/usage-daily.js').then((m) => m.flushUsageDaily()));
     if (message.op === 'queue') incoming.set(message.kf!, message.messages!);
     const snapshot: Snapshot = {
       tenants: tenantRuntimes().map((rt) => ({
@@ -197,6 +201,9 @@ async function parent(superUrl: string): Promise<void> {
       WECOM_CALLBACK_AES_KEY: aes.toString('base64').replace(/=$/, ''),
       WECOM_POLL_INTERVAL_MS: '3600000',
       FOLLOWUP_ENABLED: '1',
+      TRIAL_TENANT_ALLOWLIST: JSON.stringify([
+        { tenantId: industryId, slug: 'surface-industrial', packId: 'industrial', kind: 'standard', isHost: false },
+      ]),
       FOLLOWUP_QUIET_START: '0',
       FOLLOWUP_QUIET_END: '0',
       [CHANNEL_KEY_ENV]: `fixture:${key.toString('base64')}`,
@@ -267,6 +274,30 @@ async function parent(superUrl: string): Promise<void> {
       nonce: 'synthetic-nonce',
       msg_signature: computeSignature(callbackToken, timestamp, 'synthetic-nonce', encrypt),
     });
+    if (msgNo === 1) {
+      const priorCursor = (await fx.query<{ cursor: string }>('select cursor from channel_accounts where id=$1', [accountId]))[0]!.cursor;
+      for (const badKey of [accountId, ownerId]) {
+        const rejected = await request(host, `/wecom/callback/${badKey}?${q}`, {
+          method: 'POST',
+          body: `<xml><Encrypt><![CDATA[${encrypt}]]></Encrypt></xml>`,
+        });
+        assert.equal(rejected.status, 200, '回调 POST 固定确认，必须检查无副作用');
+      }
+      const badSignature = new URLSearchParams(q);
+      badSignature.set('msg_signature', 'invalid');
+      await request(host, `/wecom/callback/${accountKey}?${badSignature}`, {
+        method: 'POST',
+        body: `<xml><Encrypt><![CDATA[${encrypt}]]></Encrypt></xml>`,
+      });
+      await sleep(300);
+      assert.equal(
+        (await fx.query<{ cursor: string }>('select cursor from channel_accounts where id=$1', [accountId]))[0]!.cursor,
+        priorCursor,
+      );
+      assert.equal((await fx.query('select 1 from channel_inbox where tenant_id=$1', [industryId])).length, 0);
+      assert.deepEqual((await rpc()).sent, []);
+      console.log('PASS 15 验收 9：错 key/accountId/userId 与坏签名虽 ACK 200，cursor/inbox/外发均零变化，随后正确签名重试');
+    }
     const r = await request(host, `/wecom/callback${industrial ? `/${accountKey}` : ''}?${q}`, {
       method: 'POST',
       body: `<xml><Encrypt><![CDATA[${encrypt}]]></Encrypt></xml>`,
@@ -282,6 +313,35 @@ async function parent(superUrl: string): Promise<void> {
   const sent = async (kf: string, uid: string) =>
     (await rpc()).sent.filter((s) => s.open_kfid === kf && s.touser === uid).map((s) => s.text?.content);
   let industryId = '';
+  let ownerId = '';
+  let ownerCookie = '';
+  async function usage(): Promise<UsageView> {
+    await rpc('flushUsage');
+    const r = await request(industryHost, '/api/console/usage', { headers: { cookie: ownerCookie } });
+    assert.equal(r.status, 200);
+    return r.json() as Promise<UsageView>;
+  }
+  async function checkUi() {
+    const ui = fork(path.join(root, 'console/src/settings/settings.selftest.tsx'), ['--real-api'], {
+      cwd: root,
+      execArgv: ['--import', 'tsx'],
+      silent: true,
+      env: {
+        PATH: process.env.PATH,
+        NODE_ENV: 'test',
+        TSX_TSCONFIG_PATH: path.join(root, 'console/tsconfig.json'),
+        SETTINGS_TEST_ORIGIN: `http://127.0.0.1:${port}`,
+        SETTINGS_TEST_TRIAL: '1',
+      },
+    });
+    let out = '';
+    ui.stdout!.on('data', (b) => (out += b));
+    ui.stderr!.on('data', (b) => (out += b));
+    const timer = setTimeout(() => ui.kill('SIGKILL'), 90000);
+    const code = await new Promise((resolve) => ui.once('exit', resolve)).finally(() => clearTimeout(timer));
+    assert.equal(code, 0, out);
+    console.log('PASS 15 验收 9：实际前端 harness 登录→白名单横幅→只读设置→入站引导→真实用量');
+  }
   try {
     await fx.query('update tenants set public_host=$2 where id=$1', [fx.tenantId, travelHost]);
     industryId = (
@@ -317,6 +377,15 @@ async function parent(superUrl: string): Promise<void> {
       });
       assert.equal(resultUser.code, 0, resultUser.message);
     }
+    const createdOwner = await createUser(platform.db, {
+      tenantSlug: 'surface-industrial',
+      email: 'owner@settings.example.test',
+      name: '合成所有者',
+      role: 'owner',
+      password: async () => 'synthetic-member-password',
+    });
+    assert.equal(createdOwner.code, 0);
+    ownerId = (await fx.query<{ id: string }>("select id from users where email='owner@settings.example.test'"))[0]!.id;
     // 同意/行权路径按 02 契约只在已发布隐私说明时启用；由真实启动读取，不能用 __privacyTest 注入。
     for (const id of [fx.tenantId, industryId])
       await fx.query("insert into privacy_notices(tenant_id,version,body) values ($1,1,'合成隐私说明')", [id]);
@@ -364,10 +433,37 @@ async function parent(superUrl: string): Promise<void> {
     const travelLogin = await login(travelHost, 'surface-travel@erp.example.test');
     assert.equal(travelLogin.status, 200);
     const travelCookie = cookie(travelLogin);
+    assert.equal((await travelLogin.json()).sharedTrial, false, '15 验收 9：非白名单租户无共享提示');
+    ownerCookie = cookie(await login(industryHost, 'owner@settings.example.test'));
+    const beforeUsage = await usage();
+    assert.equal(beforeUsage.replies.used, 0);
+    assert.equal((await login(industryHost, 'owner@settings.example.test', 'wrong-password')).status, 401);
+    assert.equal((await request(industryHost, '/api/console/me', { headers: { cookie: '__Host-sid=invalid' } })).status, 401);
     const industryLogin = await login(industryHost, 'surface-industrial@erp.example.test');
     assert.equal(industryLogin.status, 200);
     const industryCookie = cookie(industryLogin);
-    const industryIdentity = (await industryLogin.json()) as { csrf: string };
+    const industryIdentity = (await industryLogin.json()) as { csrf: string; userId: string; sharedTrial: boolean };
+    assert.equal(industryIdentity.sharedTrial, true);
+    assert.equal(
+      industryIdentity.userId,
+      (await fx.query<{ id: string }>("select id from users where email='surface-industrial@erp.example.test'"))[0]!.id,
+      '15 验收 9：/me userId 必须是认证用户 UUID',
+    );
+    assert.notEqual(industryIdentity.userId, accountId);
+    assert.notEqual(industryIdentity.userId, accountKey);
+    // 故意把用户 UUID 当 cookie、把渠道 UUID/用户 UUID 当回调 key，必须由真实授权/路由拒绝。
+    assert.equal(
+      (await request(industryHost, '/api/console/me', { headers: { cookie: `__Host-sid=${industryIdentity.userId}` } })).status,
+      401,
+    );
+    for (const wrongKey of [accountId, industryIdentity.userId, 'missing-key'])
+      assert.equal((await request(industryHost, `/wecom/callback/${wrongKey}`)).status, 404);
+    const listed = await request(industryHost, '/api/console/settings/channels', { headers: { cookie: ownerCookie } });
+    const configured = (await listed.json()).items.find((a: { accountId: string }) => a.accountId === accountId);
+    assert.ok(configured, '15 验收 9：accountId 必须是渠道 UUID');
+    assert.equal(configured.key, accountKey, '15 验收 9：key 必须是渠道业务 key');
+    assert.notEqual(configured.accountId, configured.key);
+    assert.equal((await rpc()).accounts.find((a) => a.id === accountId)?.key, accountKey);
     assert.equal((await request(industryHost, '/api/console/conversations', { headers: { cookie: industryCookie } })).status, 200);
     for (const [url, method] of [
       ['/api/console/sop/draft/check', 'POST'],
@@ -388,6 +484,15 @@ async function parent(superUrl: string): Promise<void> {
     }
     await message(industryHost, 'wmSurfaceI', '你好，我要询价');
     await until(async () => (await sent('industrial-kf', 'wmSurfaceI')).length > 0, 'industrial engine outbound');
+    const counted = await usage();
+    assert.equal(counted.replies.used, 1, '15 验收 9：真实回调引擎计数 0→1');
+    assert.ok(counted.days.some((d) => d.replies === 1));
+    await checkUi();
+    await fx.query("update memberships set role='agent' where tenant_id=$1 and user_id=$2", [industryId, ownerId]);
+    assert.equal((await request(industryHost, '/api/console/settings/members', { headers: { cookie: ownerCookie } })).status, 403);
+    assert.equal((await request(industryHost, '/api/console/usage', { headers: { cookie: ownerCookie } })).status, 403);
+    await fx.query("update memberships set role='owner' where tenant_id=$1 and user_id=$2", [industryId, ownerId]);
+    console.log('PASS 15 验收 9：accountId/key/userId 错配拒绝、错误登录/失效 cookie/即时降权，真实计数与前端贯穿');
     console.log('PASS 0.2: industrial Host login + authenticated conversations + signed callback/inbox/engine/outbound');
     const paths = [
       '/admin.html',
@@ -492,6 +597,8 @@ async function parent(superUrl: string): Promise<void> {
     const freshIndustry = await login(industryHost, 'surface-industrial@erp.example.test');
     const industryView = await request(industryHost, '/api/console/conversations', { headers: { cookie: cookie(freshIndustry) } });
     const viewText = await industryView.text();
+    const ownerView = await request(industryHost, '/api/console/conversations', { headers: { cookie: ownerCookie } });
+    assert.ok((await ownerView.text()).includes('wmSurfaceI'), '15 验收 9：同租户两个成员共享试用会话');
     assert.ok(viewText.includes('wmSurfaceI'));
     assert.ok(!viewText.includes('wmPaused'));
     await fx.query("update tenants set status='active' where id=$1", [fx.tenantId]);
@@ -505,6 +612,7 @@ async function parent(superUrl: string): Promise<void> {
     assert.equal((await request(travelHost, '/api/console/conversations', { headers: { cookie: cookie(freshIndustry) } })).status, 401);
     console.log('PASS 0.6: bilateral PG/console/cookie isolation; active restored via real timer and travel replies again');
     await stop();
+    await fx.query("update tenants set status='suspended' where id=$1", [fx.tenantId]);
     const { withTenant } = await import('../db/client.js');
     const { updateRetention } = await import('../db/repo/tenants.js');
     const { trialBaseline, trialConversations, trialOrderIds, readTrialBatches } = await import('../db/repo/trial-reset.js');
@@ -618,6 +726,20 @@ async function parent(superUrl: string): Promise<void> {
     );
     assert.deepEqual((await rpc()).sent, [], '15 验收 6 PG 种子启动后零客户外发');
     console.log('PASS 15 验收 2/6/7：真实 CLI 重置→prod 重启→新密码/旧 cookie/identity map/种子报价链接/跨租户/零外发');
+    assert.equal((await fx.query<{ status: string }>('select status from tenants where id=$1', [fx.tenantId]))[0]!.status, 'suspended');
+    assert.ok(!seedText.includes('wmSurfaceI'), '15 验收 9：重置后不复活已清试用消息');
+    await message(industryHost, 'wmAfterReset', '重置后试用询价');
+    await until(async () => (await sent('industrial-kf', 'wmAfterReset')).length > 0, '15 验收 9：CLI 重置重启后真实引擎发送');
+    assert.ok(
+      (await (await request(industryHost, '/api/console/conversations', { headers: { cookie: cookie(newLogin) } })).text()).includes(
+        'wmAfterReset',
+      ),
+    );
+    ownerCookie = cookie(await login(industryHost, 'owner@settings.example.test'));
+    await checkUi();
+    assert.ok((await usage()).replies.used >= 4, '15 验收 9：重置/重启保留真实用量并继续计数');
+    console.log('PASS 15 验收 9：普通认证/设置→CLI 重置→重启→新签名入站/引擎/发送→共享会话/实际前端/引导/用量闭环');
+    console.log('PASS 15 验收 9：两段上线后保持旅游 suspended，重置/重试/重启保留用量且不复活消息');
     console.log('PRODUCT SURFACE SELFTEST PASS: 15 step 0 real PG + production boot');
   } catch (error) {
     console.error(logs);
