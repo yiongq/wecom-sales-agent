@@ -1011,8 +1011,8 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
   });
 
   const sv = shellViewerOf(viewer);
-  const label = q.data ? conversationLabel(q.data.row, pack).join(' · ') : '会话工作台';
-  useDocumentTitle(sv ? documentTitle([label, '会话工作台'], sv) : label);
+  const label = q.data ? conversationLabel(q.data.row, pack).join(' · ') : null;
+  useDocumentTitle(sv ? documentTitle(label ? [label, '会话工作台'] : ['会话工作台'], sv) : (label ?? '会话工作台'));
 
   const back = (): void => void navigate({ to: '/conversations' });
 

@@ -290,7 +290,7 @@ function openRow(e: MouseEvent, id: string, navigate: ReturnType<typeof useNavig
 }
 
 /** 首列宽：设计宽度下 300；<992 横滚时首列固定，300 会占满整个视口，收成放得下「企微客户 · F01」的宽度 */
-const FIRST_COL = { wide: 300, narrow: 176 } as const;
+const FIRST_COL = { wide: 260, narrow: 176 } as const;
 
 function ConversationTable({ rows, total, search }: { rows: RowView[]; total: number; search: ConversationsSearch }) {
   const navigate = useNavigate();
@@ -304,7 +304,7 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
       aria-label={tableAria(total)}
       // 窄屏在自己的容器里横滚，首列固定（spec「可访问性与响应式」375 宽）。翻页时 antd 默认把表格的滚动容器动画滚回顶上，
       // 这个容器只横滚、没有什么可滚的，动画白跑（它按 Date.now 算时长，时钟钉住时停不下来），关掉
-      scroll={{ x: 960, scrollToFirstRowOnChange: false }}
+      scroll={{ x: 880, scrollToFirstRowOnChange: false }}
       onRow={(r) => ({ onClick: (e) => openRow(e, r.id, navigate), className: 'cv-row' })}
       pagination={
         total > PAGE_SIZE && {
@@ -360,7 +360,7 @@ function ConversationTable({ rows, total, search }: { rows: RowView[]; total: nu
               <Icon of={ChevronDown} size={12} />
             </span>
           ),
-          width: 160,
+          width: 152,
           onHeaderCell: () => ({ 'aria-sort': 'descending' }),
           render: (_, r) => (
             <time className={r.waitDanger ? 'cv-when is-danger' : 'cv-when'} dateTime={r.at} title={r.whenFull}>

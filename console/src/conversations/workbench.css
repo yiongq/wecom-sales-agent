@@ -497,6 +497,7 @@
 }
 .wb-order-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   margin-top: 8px;
 }
@@ -641,17 +642,29 @@
   margin-top: 24px;
 }
 
-/* <1280（侧栏收成图标栏或隐藏）：三栏放不下，落成单栏竖排，列表与右栏限高自己滚（同 detail.css 的副栏窄屏处理） */
+/* <1280（侧栏收成图标栏）：收窄三栏。报价审批在右栏，不能挤到对话下面 */
 @media (max-width: 1279px) {
+  .wb-list {
+    width: 260px;
+  }
+  .wb-side {
+    width: 280px;
+  }
+}
+/* <992（外壳隐藏侧栏）：三栏放不下，落成单栏竖排。列表限高自己滚，右栏完整展开（同 detail.css 的副栏窄屏处理） */
+@media (max-width: 991px) {
   .wb-root {
     flex-direction: column;
     height: auto;
     overflow-y: auto;
   }
-  .wb-list,
-  .wb-side {
+  .wb-list {
     width: auto;
     max-height: 320px;
+  }
+  .wb-side {
+    width: auto;
+    overflow: visible;
   }
   .wb-conv {
     min-height: 480px;
