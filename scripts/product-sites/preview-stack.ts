@@ -3,11 +3,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
-import { createServer as createHttpsServer, request as httpsRequest } from 'node:https';
 import { request as httpRequest } from 'node:http';
 import { randomBytes } from 'node:crypto';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { createConnection, createServer } from 'node:net';
+import { createConnection, createServer, Server } from 'node:net';
 import { setTimeout as delay } from 'node:timers/promises';
 import type { PreviewAccount } from './preview-data.js';
 
@@ -21,7 +20,6 @@ export interface PreviewState {
   serverPid: number | null;
   url: string;
   port: number;
-  appPort: number;
   postgresPort: number;
   controlPort: number;
   owner: PreviewAccount;
@@ -30,6 +28,31 @@ export interface PreviewState {
 export function previewNames(runId: string) {
   if (!/^[a-f0-9]{12}$/.test(runId)) throw new Error('preview_invalid_id');
   return { container: `wsa15-preview-${runId}`, directory: `preview-${runId}` };
+}
+/** 仅预览 app 子进程安装；Node/Hono 未指定 host 时也只能绑定 loopback。 */
+export function previewListenArgs(args: readonly unknown[]): unknown[] {
+  const port = args[0];
+  if (port && typeof port === 'object' && 'port' in port) return [{ ...port, host: '127.0.0.1' }, ...args.slice(1)];
+  if (typeof port !== 'number') throw new Error('preview_listen_port_required');
+  return [port, '127.0.0.1', ...args.slice(typeof args[1] === 'string' || args[1] === undefined ? 2 : 1)];
+}
+/** 模拟 Chrome/Firefox 的 HTTP localhost cookie 例外；不改服务端响应，不代表 Safari。 */
+export function previewCookie(header: string | null, responseUrl: string, requestUrl = responseUrl): string {
+  const source = new URL(responseUrl),
+    target = new URL(requestUrl);
+  if (source.protocol !== 'http:' || source.hostname !== 'localhost' || source.origin !== target.origin)
+    throw new Error('preview_cookie_origin');
+  const [pair, ...attributes] = (header ?? '').split(';').map((part) => part.trim());
+  if (!/^__Host-sid=[A-Za-z0-9_-]{43}$/.test(pair)) throw new Error('preview_cookie_name');
+  const expected = ['httponly', 'max-age=604800', 'path=/', 'samesite=lax', 'secure'];
+  if (
+    attributes
+      .map((part) => part.toLowerCase())
+      .toSorted()
+      .join(';') !== expected.join(';')
+  )
+    throw new Error('preview_cookie_attributes');
+  return pair;
 }
 /** 子进程只接受明确列出的环境，不继承模型/数据库/渠道/告警配置。 */
 export function previewEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
@@ -115,37 +138,13 @@ async function stopChild(child: ChildProcess) {
 }
 async function serve() {
   const state = JSON.parse(fs.readFileSync(STATE, 'utf8')) as PreviewState;
-  const child = spawn(process.execPath, ['--import', 'tsx', path.join(ROOT, 'src/server.ts')], {
+  const child = spawn(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url), 'app'], {
     cwd: runtimeDir(state),
     env: process.env,
     // 账号、地址及端口仅保留在私有状态文件；不转存服务端的启动信息和详细诊断。
     stdio: ['ignore', 'ignore', 'ignore'],
   });
-  const tls = createHttpsServer(
-    { key: fs.readFileSync(path.join(runtimeDir(state), 'key.pem')), cert: fs.readFileSync(path.join(runtimeDir(state), 'cert.pem')) },
-    (request, response) => {
-      const upstream = httpRequest(
-        { hostname: '127.0.0.1', port: state.appPort, path: request.url, method: request.method, headers: request.headers },
-        (result) => {
-          response.writeHead(result.statusCode!, result.headers);
-          result.pipe(response);
-        },
-      );
-      upstream.setTimeout(60_000, () => upstream.destroy());
-      upstream.on('error', () => {
-        if (!response.headersSent) response.writeHead(502);
-        response.end();
-      });
-      response.on('close', () => upstream.destroy());
-      request.pipe(upstream);
-    },
-  );
-  tls.listen(state.port, '127.0.0.1');
-  const shutdown = async () => {
-    await stopChild(child);
-    tls.closeAllConnections();
-    await new Promise<void>((resolve) => tls.close(() => resolve()));
-  };
+  const shutdown = () => stopChild(child);
   const control = createServer((socket) => {
     socket.setTimeout(2000, () => socket.destroy());
     let message = '';
@@ -173,8 +172,6 @@ async function serve() {
   control.listen(state.controlPort, '127.0.0.1');
   child.once('exit', () => {
     if (!closing) {
-      tls.closeAllConnections();
-      tls.close();
       control.close();
       process.exit(1);
     }
@@ -215,14 +212,12 @@ async function down() {
 }
 function previewRequest(state: PreviewState, p: string, init?: RequestInit) {
   return new Promise<Response>((resolve, reject) => {
-    const req = httpsRequest(
+    const req = httpRequest(
       {
         hostname: '127.0.0.1',
-        servername: 'localhost',
         port: state.port,
         path: new URL(p, state.url).pathname + new URL(p, state.url).search,
         method: init?.method ?? 'GET',
-        ca: fs.readFileSync(path.join(runtimeDir(state), 'cert.pem')),
         headers: { ...Object.fromEntries(new Headers(init?.headers)), host: `localhost:${state.port}` },
         timeout: 5000,
       },
@@ -250,7 +245,7 @@ async function verify(state: PreviewState) {
     body: JSON.stringify(state.owner),
   });
   if (login.status !== 200) throw new Error('preview_login_failed');
-  const cookie = login.headers.get('set-cookie')!.split(';')[0];
+  const cookie = previewCookie(login.headers.get('set-cookie'), new URL('/api/console/auth/login', state.url).href, state.url);
   if ((await request('/console/', { headers: { cookie } })).status !== 200) throw new Error('preview_console_failed');
   const get = async (p: string) => {
     const response = await request(`/api/console/${p}`, { headers: { cookie } });
@@ -280,7 +275,9 @@ async function verify(state: PreviewState) {
     body: JSON.stringify(state.agent),
   });
   if (agent.status !== 200) throw new Error('preview_agent_login_failed');
-  if ((await request('/api/console/usage', { headers: { cookie: agent.headers.get('set-cookie')!.split(';')[0] } })).status !== 403)
+  if (
+    (await request('/api/console/usage', { headers: { cookie: previewCookie(agent.headers.get('set-cookie'), state.url) } })).status !== 403
+  )
     throw new Error('preview_agent_permission_failed');
 }
 async function up() {
@@ -293,13 +290,12 @@ async function up() {
     serverPid: null,
     url: '',
     port: await freePort(),
-    appPort: await freePort(),
     controlPort: await freePort(),
     postgresPort: 0,
     owner: { email: `owner-${randomBytes(4).toString('hex')}@preview.example.test`, password: randomBytes(24).toString('base64url') },
     agent: { email: `agent-${randomBytes(4).toString('hex')}@preview.example.test`, password: randomBytes(24).toString('base64url') },
   };
-  state.url = `https://localhost:${state.port}/console/`;
+  state.url = `http://localhost:${state.port}/console/`;
   fs.mkdirSync(path.dirname(STATE), { recursive: true });
   writeState(state);
   let phase = 'container';
@@ -362,30 +358,6 @@ async function up() {
     const dir = runtimeDir(state);
     fs.mkdirSync(dir, { mode: 0o700 });
     for (const name of ['data', 'public', 'console']) fs.symlinkSync(path.join(ROOT, name), path.join(dir, name));
-    phase = 'certificate';
-    await run(
-      'openssl',
-      [
-        'req',
-        '-x509',
-        '-newkey',
-        'rsa:2048',
-        '-nodes',
-        '-days',
-        '1',
-        '-subj',
-        '/CN=localhost',
-        '-addext',
-        'subjectAltName=DNS:localhost,IP:127.0.0.1',
-        '-keyout',
-        'key.pem',
-        '-out',
-        'cert.pem',
-      ],
-      previewEnv(process.env),
-      dir,
-    );
-    fs.chmodSync(path.join(dir, 'key.pem'), 0o600);
     const common = {
       ...previewEnv(process.env),
       DATABASE_URL: url('agent_app', pw.app, 'preview'),
@@ -400,9 +372,9 @@ async function up() {
     const serviceEnv = {
       ...previewEnv(process.env),
       DATABASE_URL: common.DATABASE_URL,
-      PORT: String(state.appPort),
+      PORT: String(state.port),
       VAR_DIR: path.join(dir, 'state'),
-      PUBLIC_BASE_URL: `http://127.0.0.1:${state.appPort}`,
+      PUBLIC_BASE_URL: `http://127.0.0.1:${state.port}`,
       ADMIN_PASS: randomBytes(24).toString('hex'),
     };
     const service = spawn(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url), 'serve'], {
@@ -430,7 +402,9 @@ async function up() {
     }
     if (!healthy) throw new Error(readinessError);
     await verify(state);
-    console.log('[preview-stack] ready：prod + LLM_MOCK + DB；登录、/me、/usage HTTP 200。账号与地址见 var/preview-stack.json。');
+    console.log(
+      '[preview-stack] ready：HTTP loopback + prod + LLM_MOCK + DB；Secure cookie 属性保持；登录、/me、/usage 200。账号与地址见 var/preview-stack.json。',
+    );
   } catch (error) {
     await down();
     throw error instanceof Error && /^preview_[a-z_]+$/.test(error.message) ? error : new Error(`preview_up_${phase}`);
@@ -442,7 +416,13 @@ async function main(command: string | undefined) {
     await down();
     console.log('[preview-stack] stopped：服务、容器及卷已清理。');
   } else if (command === 'serve') await serve();
-  else if (command === 'seed') {
+  else if (command === 'app') {
+    const listen = Server.prototype.listen;
+    Server.prototype.listen = function (this: Server, ...args: unknown[]): Server {
+      return Reflect.apply(listen, this, previewListenArgs(args));
+    };
+    await import('../../src/server.js');
+  } else if (command === 'seed') {
     const { runMigrations } = await import('../../src/db/migrate.js');
     await runMigrations(process.env.DATABASE_OWNER_URL!);
     const { seedPreview } = await import('./preview-data.js');
