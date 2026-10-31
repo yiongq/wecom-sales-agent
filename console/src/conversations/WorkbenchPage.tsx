@@ -41,7 +41,7 @@ import { cjk } from '../typography.js';
 import { refreshSandboxProgress, usePack, useViewer } from '../viewer.js';
 import { OwnConversationTag, SimulatorLink } from '../sandbox/Sandbox.js';
 import { stageLabel } from './model.js';
-import { QuoteActions, type QuoteAction, type QuoteActionProps } from './QuoteActions.js';
+import { QUOTE_STATE_LABEL, QuoteActions, type QuoteAction, type QuoteActionProps } from './QuoteActions.js';
 import { QuickRepliesCard } from './QuickReplies.js';
 import { TraceTab } from './TraceDetail.js';
 import {
@@ -693,11 +693,11 @@ function ReplyBox({
 export function ProfileCard({ cd, now }: { cd: Pick<ConversationDetail, 'profileCard' | 'need'>; now: number }) {
   if (cd.profileCard) {
     const card = cd.profileCard;
+    if (!card.title && card.rows.length === 0) return null;
     return (
       <div className="wb-card">
         <h3 className="wb-card-title">客户信息</h3>
         {card.title ? <p>{cjk(card.title)}</p> : null}
-        {!card.title && card.rows.length === 0 ? <p className="wb-card-empty">还没有客户信息</p> : null}
         <dl className="wb-profile-rows">
           {card.rows.map((row, i) => (
             <div key={i}>
@@ -780,6 +780,11 @@ export function OrderRow({
   const quote = 'approval' in o && o.approval ? o : null;
   return (
     <div className={quote?.quoteState === 'pending' ? 'wb-order is-quote-pending' : 'wb-order'}>
+      {quote && quoteActions && (
+        <p className="wb-order-status wb-quote-state" data-state={quote.quoteState ?? undefined}>
+          {quote.quoteState ? QUOTE_STATE_LABEL[quote.quoteState] : '报价单'}
+        </p>
+      )}
       {'display' in o ? (
         <div className="wb-order-display">
           <p className="wb-order-line">{cjk(o.display.title)}</p>
@@ -787,7 +792,8 @@ export function OrderRow({
           <ul className="wb-order-lines">
             {o.display.lines.map((line, i) => (
               <li key={i}>
-                <p className="wb-order-line">{cjk(line.title)}</p>
+                {/* 只有一行时标题已在卡片头，不重复 */}
+                {o.display.lines.length > 1 && <p className="wb-order-line">{cjk(line.title)}</p>}
                 <p>{cjk(`${line.qtyText} · 单价${line.unitPriceText}`)}</p>
                 <p>{cjk(`小计${line.amountText}`)}</p>
                 {Object.entries(line.attrs ?? {}).map(([key, value]) => (
@@ -1056,6 +1062,53 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
     );
   };
 
+  // 有订单时报价单就是这一屏的待办：转人工、订单排在最前，工业包「最近报价」与报价单重复，不再单列。
+  const hasOrders = detail.orders.length > 0;
+  const ordersCard = (
+    <div className="wb-card">
+      <h3 className="wb-card-title">订单与付款</h3>
+      {hasQuotes && (q.isFetching || q.error) ? (
+        <StateView pending={q.isFetching} error={q.error} onRetry={() => void q.refetch()} />
+      ) : detail.orders.length === 0 ? (
+        <p className="wb-side-empty">还没有订单</p>
+      ) : (
+        detail.orders.map((o) => (
+          <OrderRow
+            key={o.id}
+            o={o}
+            quoteActions={{
+              can: detail.can,
+              window: detail.sendWindow,
+              now,
+              pending: quoteOrder.isPending || q.isFetching,
+              onRetry: () => {
+                if (quoteOrder.variables) quoteOrder.mutate(quoteOrder.variables);
+              },
+              error: quoteOrder.variables?.orderId === o.id ? quoteOrder.error : null,
+              onAction: (action, reason) => {
+                if (quoteOrder.variables?.orderId === o.id && quoteError?.status === 403) return;
+                quoteOrder.mutate({ orderId: o.id, action, reason });
+              },
+            }}
+            canConfirm={detail.can.confirmOrder}
+            canMarkPaid={detail.can.markPaid}
+            onConfirm={() => confirmOrder.mutate(o.id)}
+            onMarkPaid={() => markPaid.mutate(o.id)}
+            onCancel={(reason) => cancelOrder.mutate({ orderId: o.id, reason })}
+            confirmError={confirmOrder.error}
+            markPaidError={markPaid.error}
+            cancelError={cancelOrder.error}
+            role={me.role}
+            mode={detail.paymentMode}
+            onRefund={(action, reason) => refundOrder.mutate({ orderId: o.id, action, reason })}
+            refundError={refundOrder.variables?.orderId === o.id ? refundOrder.error : null}
+            refundPending={refundOrder.isPending}
+          />
+        ))
+      )}
+    </div>
+  );
+
   return (
     <>
       <div className="wb-conv">
@@ -1152,54 +1205,6 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
           <TraceTab id={id} turnId={selectedTurnId} />
         ) : (
           <>
-            <ProfileCard cd={detail} now={now} />
-            {hasQuotes && (q.isFetching || q.error) ? (
-              <StateView pending={q.isFetching} error={q.error} onRetry={() => void q.refetch()} />
-            ) : (
-              <QuoteCard cd={detail} />
-            )}
-            <div className="wb-card">
-              <h3 className="wb-card-title">订单与付款</h3>
-              {hasQuotes && (q.isFetching || q.error) ? (
-                <StateView pending={q.isFetching} error={q.error} onRetry={() => void q.refetch()} />
-              ) : detail.orders.length === 0 ? (
-                <p className="wb-side-empty">还没有订单</p>
-              ) : (
-                detail.orders.map((o) => (
-                  <OrderRow
-                    key={o.id}
-                    o={o}
-                    quoteActions={{
-                      can: detail.can,
-                      window: detail.sendWindow,
-                      now,
-                      pending: quoteOrder.isPending || q.isFetching,
-                      onRetry: () => {
-                        if (quoteOrder.variables) quoteOrder.mutate(quoteOrder.variables);
-                      },
-                      error: quoteOrder.variables?.orderId === o.id ? quoteOrder.error : null,
-                      onAction: (action, reason) => {
-                        if (quoteOrder.variables?.orderId === o.id && quoteError?.status === 403) return;
-                        quoteOrder.mutate({ orderId: o.id, action, reason });
-                      },
-                    }}
-                    canConfirm={detail.can.confirmOrder}
-                    canMarkPaid={detail.can.markPaid}
-                    onConfirm={() => confirmOrder.mutate(o.id)}
-                    onMarkPaid={() => markPaid.mutate(o.id)}
-                    onCancel={(reason) => cancelOrder.mutate({ orderId: o.id, reason })}
-                    confirmError={confirmOrder.error}
-                    markPaidError={markPaid.error}
-                    cancelError={cancelOrder.error}
-                    role={me.role}
-                    mode={detail.paymentMode}
-                    onRefund={(action, reason) => refundOrder.mutate({ orderId: o.id, action, reason })}
-                    refundError={refundOrder.variables?.orderId === o.id ? refundOrder.error : null}
-                    refundPending={refundOrder.isPending}
-                  />
-                ))
-              )}
-            </div>
             {detail.handoffCard && (
               <div className="wb-card">
                 <h3 className="wb-card-title">转人工</h3>
@@ -1208,6 +1213,16 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
                 <p>{`由谁处理：${detail.handoffCard.assigneeName ?? '还没人接手'}`}</p>
               </div>
             )}
+            {hasOrders && ordersCard}
+            <ProfileCard cd={detail} now={now} />
+            {!(hasOrders && detail.quoteCard) &&
+              (hasQuotes || detail.quoteCard || detail.quote) &&
+              (hasQuotes && (q.isFetching || q.error) ? (
+                <StateView pending={q.isFetching} error={q.error} onRetry={() => void q.refetch()} />
+              ) : (
+                <QuoteCard cd={detail} />
+              ))}
+            {!hasOrders && ordersCard}
             <QuickRepliesCard
               onInsert={(body) => setReplyText((t) => (t ? `${t}\n${body}` : body))}
               canManage={CAN_MANAGE_REPLIES_ROLES.has(me.role)}

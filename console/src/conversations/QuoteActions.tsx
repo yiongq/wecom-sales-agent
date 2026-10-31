@@ -52,9 +52,6 @@ export function QuoteActions({
   const sendNote = warning ?? (view?.text ? cjk(view.text) : null);
   return (
     <>
-      <p className="wb-order-status wb-quote-state" data-state={state ?? undefined}>
-        {state ? QUOTE_STATE_LABEL[state] : '报价单'}
-      </p>
       {order.approval?.reason && <p>{`原因：${order.approval.reason}`}</p>}
       {order.approval?.decidedBy && <p>{`审批人：${order.approval.decidedBy.name}`}</p>}
       {(state === 'pending' || state === 'approved' || state === 'expired') && (

@@ -489,15 +489,11 @@
 }
 .wb-quote-state[data-state='pending'] {
   width: fit-content;
+  margin-bottom: 8px;
   padding: 2px 8px;
   border-radius: 6px;
   color: var(--warning);
   background: var(--warning-bg);
-}
-.wb-card-empty {
-  margin: 0;
-  font-size: 13px;
-  color: var(--text-3);
 }
 .wb-order-actions {
   display: flex;
@@ -670,8 +666,12 @@
   display: grid;
   gap: 8px;
 }
-.wb-order-total {
+.wb-card .wb-order-total {
+  margin: 8px 0 0;
+  font-size: 18px;
+  line-height: 26px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   color: var(--text);
 }
 .wb-profile-rows {

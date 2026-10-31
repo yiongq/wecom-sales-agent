@@ -15,6 +15,7 @@ import { ConfirmDanger } from '../parts/ConfirmDanger.js';
 import { errorLine } from '../parts/ErrorAlert.js';
 import { PrimaryButton } from '../parts/PrimaryButton.js';
 import { IconButton } from '../shell/IconButton.js';
+import { StateView } from '../parts/StateView.js';
 import { cjk } from '../typography.js';
 import { QUICK_REPLIES_KEY } from './workbench.js';
 
@@ -51,19 +52,22 @@ export function QuickRepliesCard({ onInsert, canManage }: { onInsert: (body: str
           </Button>
         )}
       </div>
-      {items.length === 0 ? (
-        <p className="wb-side-empty">还没有快捷回复</p>
-      ) : (
-        <ul className="wb-quick-list">
-          {items.map((r) => (
-            <li key={r.id}>
-              <button type="button" className="wb-quick-btn" onClick={() => onInsert(r.body)}>
-                {cjk(r.title)}
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
+      {/* 加载中和读取失败不能说成「还没有」 */}
+      <StateView level={3} pending={q.isPending} error={q.error} onRetry={() => void q.refetch()}>
+        {items.length === 0 ? (
+          <p className="wb-side-empty">还没有快捷回复</p>
+        ) : (
+          <ul className="wb-quick-list">
+            {items.map((r) => (
+              <li key={r.id}>
+                <button type="button" className="wb-quick-btn" onClick={() => onInsert(r.body)}>
+                  {cjk(r.title)}
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </StateView>
       {canManage && <QuickRepliesDrawer open={drawerOpen} onClose={() => setDrawerOpen(false)} />}
     </div>
   );
