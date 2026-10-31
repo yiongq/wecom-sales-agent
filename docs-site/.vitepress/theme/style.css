@@ -1,0 +1,90 @@
+@import url('/fonts/fonts.css');
+:root {
+  --vp-font-family-base: 'Geist', 'Noto Sans SC', sans-serif;
+  --vp-font-family-mono: 'Geist Mono', 'Noto Sans SC', monospace;
+  --vp-c-brand-1: #255cdf;
+  --vp-c-brand-2: #2b63e6;
+  --vp-c-brand-3: #18181b;
+  --vp-c-bg: #fff;
+  --vp-c-bg-alt: #f6f6f7;
+  --vp-c-text-1: #18181b;
+  --vp-c-text-2: #4d4d55;
+  font-synthesis: none;
+}
+h1,
+h2,
+h3,
+strong,
+b {
+  font-weight: 600 !important;
+}
+:focus-visible {
+  outline: 3px solid #2b63e6;
+  outline-offset: 3px;
+}
+.guide-search {
+  margin-right: 24px;
+  font-size: 14px;
+}
+.guide-search summary {
+  cursor: pointer;
+  padding: 10px 0;
+}
+.search-panel {
+  position: absolute;
+  top: 64px;
+  right: 20px;
+  width: min(480px, calc(100vw - 40px));
+  max-height: 75vh;
+  overflow: auto;
+  padding: 24px;
+  background: #fff;
+  color: #18181b;
+  border-radius: 8px;
+  box-shadow:
+    0 0 0 1px rgb(9 9 11 / 12%),
+    0 16px 24px -8px rgb(9 9 11 / 12%);
+}
+.search-panel label {
+  display: block;
+  margin-bottom: 12px;
+}
+.search-panel input {
+  width: 100%;
+  padding: 10px;
+  border: 1px solid #88888f;
+  border-radius: 4px;
+}
+.search-panel button {
+  color: #255cdf;
+  text-decoration: underline;
+  padding: 10px 0;
+}
+.search-panel p {
+  color: #4d4d55;
+  margin: 12px 0;
+}
+.search-panel li {
+  margin-top: 20px;
+}
+.search-panel a {
+  color: #255cdf;
+  text-decoration: underline;
+}
+.plain-directory {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 20px;
+  margin: 0 0 32px;
+  font-size: 13px;
+}
+.plain-directory a {
+  color: #255cdf;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+.not-found {
+  max-width: 720px;
+  margin: 100px auto;
+  padding: 24px;
+}

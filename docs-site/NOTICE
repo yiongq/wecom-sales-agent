@@ -1,0 +1,10 @@
+文档构建与第三方许可
+==================
+
+VitePress 1.6.4（MIT）及其默认主题用于生成文档。
+产物 licenses/VitePress-MIT.txt 附上游许可原文。
+Vue 与 VueUse（MIT）由该独立锁文件固定，构建时同时附其许可原文。
+默认主题引用的 @docsearch/css（MIT，Algolia, Inc. and contributors）保留原版权许可头；本项目使用自有本地搜索，不连接 Algolia 服务。
+字体沿用仓库 NOTICE 所列 Geist、Geist Mono、Noto Sans SC，原文随 fonts/licenses 分发。
+
+本项目新编写的软件代码遵循根目录 MIT 许可；单来名称与标识不在软件授权内，见 BRAND.md。
