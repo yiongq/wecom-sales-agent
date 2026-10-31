@@ -2603,6 +2603,21 @@ await expectWhy([
     JSON.stringify(usage),
   );
 
+  // 14 R8：平台新增的 SELECT 同样受 FORCE RLS 约束，不能靠 where 指向其他租户。
+  const [otherUsageTenant] = await q<{ id: string }>(
+    "insert into tenants(slug,name,pack_id) values ('platform-usage-other','合成租户','travel') returning id",
+  );
+  await q("insert into usage_daily(tenant_id,day,model,purpose,calls) values ($1,'2025-01-01','-','reply',9)", [otherUsageTenant!.id]);
+  const platformUsage = await asPlatform(R, async (tx) => ({
+    own: rowsOf<{ tenant_id: string }>(await tx.execute(sql`select tenant_id from usage_daily`)),
+    cross: rowsOf(await tx.execute(sql`select tenant_id from usage_daily where tenant_id=${otherUsageTenant!.id}`)),
+  }));
+  check(
+    '14 平台用量 SELECT：PGlite 冒烟只读当前租户，显式查询其他租户仍为空',
+    platformUsage.own.length === 2 && platformUsage.own.every((row) => row.tenant_id === R) && platformUsage.cross.length === 0,
+    JSON.stringify(platformUsage),
+  );
+
   // 任务：入队、认领、改状态、取消
   const now = Date.now();
   const key = 'followup:wecom:wm-1:discovery';
@@ -4880,7 +4895,7 @@ async function realPostgres(superUrl: string): Promise<void> {
       guard_events: { agent_app: 'SELECT,INSERT', agent_platform: '' },
       consents: { agent_app: 'SELECT,INSERT', agent_platform: '' },
       catalog_item_versions: { agent_app: 'SELECT,INSERT', agent_platform: '' },
-      usage_daily: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
+      usage_daily: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: 'SELECT' },
       jobs: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       outbound_sends: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       quick_replies: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
@@ -5448,6 +5463,14 @@ async function realPostgres(superUrl: string): Promise<void> {
       platformNotices.length === 1 && platformNotices[0]?.tenant_id === A,
       JSON.stringify(platformNotices),
     );
+    const platformUsage = await asRole<{ tenant_id: string }>('agent_platform', A, 'select tenant_id from usage_daily');
+    check(
+      '14 真实 PG：FORCE RLS 下平台只读当前租户 A 的用量',
+      platformUsage.length === 1 && platformUsage[0]?.tenant_id === A,
+      JSON.stringify(platformUsage),
+    );
+    const crossUsage = await asRole('agent_platform', A, 'select tenant_id from usage_daily where tenant_id=$1', [B]);
+    check('14 真实 PG：平台在 A 作用域显式查询 B 的用量也读不到', crossUsage.length === 0, JSON.stringify(crossUsage));
     // 消息只追加（验收 5、不变量 5）：设了租户也一样，报的是 permission denied 而不是 0 行
     for (const [what, text] of [
       ['UPDATE', `update messages set content = '改过'`],
