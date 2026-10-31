@@ -6,6 +6,7 @@ Revisions: 2026-10-29 起草期评审（一路 Claude Opus，只读，对照代�
 Revisions: 2026-10-29 owner 定开放问题 1–5，全部照推荐：只支持 Odoo 19、20 的 JSON-2；客户料号 / 竞品料号对照不放进 11；工业演示租户不接 Odoo，验收在本机一次性容器上做；连接器凭据共用 `CHANNEL_SECRETS_KEY`；这一轮取不到新鲜值时退回产品库的值，同时不自动批准、给顾问留系统消息。
 Revisions: 2026-10-29 owner 定 `ready`。同一 docs PR 把 R3、R4 的两条规则原文写进 AGENTS.md，给 ADR-003 与 10 加反向的 `Superseded in part by:`（10 的那一行一并写 R9 的收紧），给 03、04、05、08 加 `Amended by:`，主参考「阶段 8」加一条。
 Revisions: 2026-10-31 第 0 步本机实测（Odoo `19.0-20261015`、`20.0-20261015`）之后就地修订，尚无代码依赖；都是事实修正或补细节，不改决定：R6 删去「`read` 遇已删 id 会整批报错」这条不成立的理由（两版实测都只是省略），仍用 `search_read`；R6 补 `check()` 的五次调用，公司取机器人默认公司（原文没说多公司取哪家）；R5 分页固定 `id asc`；R6 错误表之后补「错字段、错参数也可能是 500」；R8 写明保活取决于服务入口（Odoo 内置 HTTP 服务每次都 `Connection: close`）；「安全」写明最小内置组 `stock.group_stock_user` 不是严格只读。跨地区实测仍待 owner 授权。
+Revisions: 2026-10-31 实现期就地补细节（第 5、6 步），不改决定：`PackSources.erp` 的 `code` 写明是产品库条目 code，`erp.key` 只用于映射时比对（原文没写，两步实现各取一边，所有查询都对不上，见 plan 第 6 步记录）；加同步的 `mapped()`，R7 的系统消息收窄到已映射的型号（未映射是常态，不该提醒）；`settings` 加可选的 `lastCheck`（R9 的 `show` 要显示最近一次检查结论，原文没写存哪）。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8「按信号再定」；[10](../10-industrial-rfq-pack/spec.md)「后续」第 1 条。
 Depends on: [12 · 客户发来的图片与文件](../12-customer-files/spec.md) 已 implemented（R7 要改的工业包文件与 12 重叠）；[09](../09-quote-approval/spec.md)、[10](../10-industrial-rfq-pack/spec.md) 已 implemented；[03](../03-channels-v2/spec.md) R9 的密钥环与加密存库；[05](../05-tenancy-sandbox/spec.md) R5 的租户状态登记与 R12 的沙箱回收。
 Supersedes in part: [10](../10-industrial-rfq-pack/spec.md) 的两处，理由都是「接了 ERP 的租户，库存以 ERP 的新鲜值为准」：（1）R4「行属性」里判现货用的「库存」；（2）R6 自动批准条件（2）「每一行在建单这一刻都是库存 ≥ 数量」。新条文见 R7，没有启用连接器的租户仍按原文。[ADR-003](../../adr/adr-003-open-core-boundary.md) 决策 2「不进任何仓库」一格的「凭据：只放服务器上的 env 文件（01 起按 compose 服务拆分），不写进日志」：改为按租户的渠道凭据（03 引入，当时没有在 ADR 落档）与外部业务系统凭据（本 spec）可以加密存库，密钥环只在 env 文件（R3）。10 与 ADR-003 在本 spec 翻 `ready` 时加反向的 `Superseded in part by:` 行。
@@ -106,7 +107,7 @@ export interface ErpConnector {
 **包怎么用。** 包不 import `src/connectors/`，只经 `PackSources.erp`（组合根 `src/core/engine/sources.ts` 装上）：
 
 ```ts
-// src/core/pack-api.ts（PackSources 新增）
+// src/core/pack-api.ts（PackSources 新增）；code 一律是产品库条目 code（工业包是 part.id）
 erp: {
   /** 本租户有启用的连接器、且这个产品种类就是包声明的 erp.kind */
   active(kind: string): boolean;
@@ -114,6 +115,8 @@ erp: {
   availability(kind: string, codes: readonly string[]): Promise<ReadonlyMap<string, Availability>>;
   /** 同步读新鲜值（R6 的唯一定义）；没有就返回 undefined */
   fresh(kind: string, code: string): Availability | undefined;
+  /** 这个编号有映射；用来区分「没映射」和「映射了但这轮没取到」 */
+  mapped(kind: string, code: string): boolean;
 };
 
 // src/core/pack-api.ts（PackRuntime 新增可选声明；没有它，连接器对这个包不生效）
@@ -148,7 +151,8 @@ erp_connectors: {
     locationId: number;
     uom: Record<string, number>;
     keyExpiresAt: string;
-  } // json：库位、我方单位 → Odoo uom id、key 到期日
+    lastCheck?: { at: string; result: string };
+  } // json：库位、我方单位 → Odoo uom id、key 到期日、最近一次检查结论（只存固定词）
   secretsCt: Uint8Array;
   secretsKeyId: string;
   createdAt: Date;
@@ -260,7 +264,7 @@ export type EgressCode =
 - **建单。** `create_quote_sheet`（`src/packs/industrial/tools.ts:186-207`）建单前调一次 `availability()`；`runtime.priceLine` 包一层 `live(item, fresh(...))`（`src/packs/industrial/runtime.ts:39`），订单行冻结的「交期」与本轮工具结果一致。
 - **自动批准**（部分取代 10 R6 (2)）：新条文是「每一行在建单这一刻都有新鲜值，且新鲜值 ≥ 数量」；有一行没有新鲜值就不自动批准，转人审（`src/packs/industrial/quotes.ts:18-28`）。没有连接器时仍按原文读产品库。
 - **护栏证据**（`src/packs/industrial/guards.ts:34-44`，主回复与跟进共用）：由 `rfqDraft` 推出的库存证据改为按 `live(part, fresh())` 算；没有新鲜值时，这一行只提供替代型号，不提供库存与交期证据。本轮工具结果仍是证据。效果：后来没调工具的回合、以及跟进，复述「现货」时拿不到新鲜值，主回复换成「库存和交期以顾问确认为准」，跟进删句（`src/packs/industrial/guards.ts:223`）。
-- **退回产品库值时告诉顾问。** 本轮有精确型号因为没取到新鲜值而按产品库值回答时，工具在会话里加一条系统消息「ERP 这次没查到 N 个型号的库存，按产品库的库存回答」，同一会话 30 分钟内至多一条。系统消息工作台照常显示，不进模型历史（`src/core/engine/index.ts:771`），不发给客户。
+- **退回产品库值时告诉顾问。** 本轮有已映射的精确型号因为没取到新鲜值而按产品库值回答时，工具在会话里加一条系统消息「ERP 这次没查到 N 个型号的库存，按产品库的库存回答」，同一会话 30 分钟内至多一条。系统消息工作台照常显示，不进模型历史（`src/core/engine/index.ts:771`），不发给客户。
 - **不变的。** 型号匹配、`rfqDraft`、确定性回复、预取的判定条件不改。多个候选时「有现货在前」的排序（`src/packs/industrial/match.ts:9`）仍按产品库的库存，只影响列候选的顺序，不是库存说法。
 - **ERP 返回的东西进到哪里。** 只有可售量这一个整数，经 `priceLine` 的行属性与工具结果进到对客文字。Odoo 的品名、`default_code` 等字符串不进模型、不进对客文字。
 

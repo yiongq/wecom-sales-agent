@@ -36,7 +36,7 @@
     - owner 授权后，从线上服务器所在地区测到一台远端 Odoo（境内另一地区云主机上的一次性容器；Odoo Online 试用库若开放外部接口也测）：DNS、TLS 握手、首个请求、保活连接上后续请求的耗时。
   - 验：结果记进实施记录；与 spec 假设不符的（尤其 R8 的 1 秒截止时间对远端 Odoo 是否够用），先修订 spec（`Revisions:`）或记进 Open。
   - 依赖：无。
-- [ ] 1. 出站防护（R4）与边界检查（R2）。
+- [x] 1. 出站防护（R4）与边界检查（R2）。
   - 文件：`src/net/egress.ts`、`src/net/egress.selftest.ts`、`scripts/check-boundaries.ts` 与其自测、`package.json`。
   - 做：`createEgress`、`normalizeBaseUrl`；字面量预检与 `lookup` 钩子里的解析校验；带超时的 c-ares 解析器；放行范围；不跟随重定向；截止时刻、大小上限；保活 `Agent`；只记错误码；R2 的四条边界检查。
   - 验：
@@ -44,7 +44,7 @@
     - 注入的解析器给一公一私时整次拒绝；连接用的是校验过的地址；保活连接复用；
     - 边界检查的正反例（验收 10）。
   - 依赖：0。
-- [ ] 2. 凭据封装与迁移（R3、R5、R11）。
+- [x] 2. 凭据封装与迁移（R3、R5、R11）。
   - 文件：`src/channels/secrets.ts`、`src/connectors/secrets.ts`、新迁移与 journal、`src/db/schema.ts`、`src/db/repo/erp.ts`、`src/db/erp.selftest.ts`、`package.json`。
   - 做：
     - `sealJson` / `openJson`，渠道账号的两个函数改为薄封装、密文格式不变；连接器凭据的封装与解封；
@@ -54,12 +54,12 @@
     - 03 的渠道自测原样通过；连接器密文与渠道密文互相解不开；
     - 真实 PG 上 RLS、列级授权、`erp_connectors` 无 DELETE、`erp_item_links` 有 DELETE 通过；`src/db/sandbox.selftest.ts` 的覆盖检查通过；迁移检查通过。
   - 依赖：0。
-- [ ] 3. Odoo 客户端与模拟 Odoo（R2、R6）。
+- [x] 3. Odoo 客户端与模拟 Odoo（R2、R6）。
   - 文件：`src/connectors/types.ts`、`src/connectors/odoo.ts`、`src/connectors/odoo-mock.ts`、`src/connectors/connectors.selftest.ts`、`package.json`。
   - 做：照第 0 步实测的形状构造 `search_read`、`products`、`check` 的请求；按状态码与媒体类型归类错误；数值校验；`database` 字符集。模拟 Odoo 可注入延迟、超时、401、403、404、500、HTML 502、已删产品、坏数值。
   - 验：请求头与请求体逐字段；R6 错误表逐行；模拟 Odoo 与第 0 步实测的形状一致。
   - 依赖：1。
-- [ ] 4. 装载、新鲜值、截止时间与包门面（R2、R3、R6、R10）。
+- [x] 4. 装载、新鲜值、截止时间与包门面（R2、R3、R6、R10）。
   - 文件：`src/connectors/registry.ts`、`src/core/pack-api.ts`、`src/core/engine/sources.ts`、`src/core/engine/index.ts`（每轮作用域）、`src/boot.ts`（启动装载，与 `initChannels` 同处）、`src/tenancy/state-manifest.ts`、`src/ops/alert.ts`、`src/packs/industrial/runtime.ts`（只加 `erp` 声明：`kind`、`key`、`remoteKey`、`unit`）。
   - 做：
     - 启动按租户装载并解密，解不开按停用并告警；沙箱与文件存储下不装；
@@ -71,7 +71,7 @@
     - 严格租户模式下两个租户的缓存互不串；
     - 没有连接器时 `active` 恒为假，旅游与工业自测原样通过。
   - 依赖：2、3。
-- [ ] 5. 产品映射与命令行（R5、R9）。
+- [x] 5. 产品映射与命令行（R5、R9）。
   - 文件：`src/connectors/mapping.ts`、`src/cli/erp-connector.ts`、`src/cli/erp-connector.selftest.ts`、`package.json`。
   - 做：映射的自动、手工与删除；`show`、`add-odoo`、`set`、`set-secrets`、`check`、`map`、`rekey`；拒绝沙箱租户与文件存储；凭据文件规则同 `channel-account`；`--key-expires` 必填。
   - 验：
@@ -79,14 +79,14 @@
     - 子进程测：输出与报错扫不到地址、API key、密文；地址校验；到期日校验；
     - `rekey` 前后都能解（验收 8 的一部分）。
   - 依赖：4。
-- [ ] 6. 工业包接入（R7）。
+- [x] 6. 工业包接入（R7）。
   - 文件：`src/packs/industrial/live.ts`、`src/packs/industrial/tools.ts`、`src/packs/industrial/runtime.ts`（`priceLine` 包一层）、`src/packs/industrial/quotes.ts`、`src/packs/industrial/guards.ts`、`src/packs/industrial/turn.ts`（预热）、`src/industrial-erp.selftest.ts`、`package.json`。
   - 做：`live()`；预取一次预热；三个工具取新鲜值；`priceLine` 与自动批准只认 `fresh()`；护栏证据（主回复与跟进）改按新鲜值；退回产品库值时的系统消息（30 分钟去重）。
   - 验：
     - 验收 1（工具结果、订单与护栏输出逐字节对照 11 之前）、验收 2、3，验收 4 的预热部分；
     - v2 文件与 PGlite 两条全过，对当时的快照 0 差异；工业 10 套自测与 `eval/sim/industrial` 自测原样通过。
   - 依赖：4（与第 5 步可并行，只同改 `package.json`）。
-- [ ] 7. 本机集成（R12）。
+- [x] 7. 本机集成（R12）。
   - 文件：`scripts/odoo-integration.ts`（不进 `pnpm test`）。
   - 做：起 `odoo:19`、`odoo:20` 一次性容器，建机器人用户、scope 为 `rpc` 的 key、合成产品与库存；进程内用 `createEgress(baseUrl, { allowLoopback: true })` 构造连接器，跑 `check`、映射、`stock` 与门面的 `availability`；20 上再用一把空 scope 的 key 验 401；在 Odoo 前放一层一次性 nginx（回环 HTTP），确认连接确实复用，记复用率（第 0 步测得 Odoo 直连不复用，R8）；记耗时；外层超时，结束删容器。
   - 验：验收 9；结束后 `docker ps -a` 与 `ps` 没有残留。
@@ -226,6 +226,41 @@
 
 本步验证：两版样本断言通过（库存、归档 / 删除、分页、权限、scope / 到期、错误形状、检查调用与每版 20 + 20 次耗时），143 个 JSON 样本完成脱敏检查；其余 plan 小节与复选框逐字节未改。`pnpm -s format:check` 通过，`git diff --check` 通过；相对 `origin/dev` 的新增行无本机绝对路径或超长假企微 id。按本任务只跑格式门禁，lint / typecheck / test / test:locked 未跑；无新增或受影响自测。临时探针与日志已清理，只保留脱敏样本。
 
+### 第 1–6 步（2026-10-31，Codex 执行，协调者审查）
+
+都按 plan 的「验」通过；全量测试由各 PR 的 CI 跑。协调者审查时另外修的，自测当时没有发现：
+
+| 步骤 | PR   | 问题                                                                                                                                                                                           | 修法                                                                                                                                |
+| ---- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| 1    | #386 | `agent.on('free')` 设 30 秒空闲计时，排在 Node 自己的监听器之后，盖掉了服务端 `Keep-Alive: timeout=N` 算出的更短计时，会复用已被对端关闭的连接                                                 | 改用 Agent 的 `timeout` 选项，自测验提示 `timeout=5` 时空闲计时是 4 秒                                                              |
+| 2    | #385 | 任务说明不许改 `state-manifest`，lint 却要求登记两张表与两组列                                                                                                                                 | 协调者补 4 条静态登记                                                                                                               |
+| 4    | #388 | 单个产品读不到被算成连接器故障，含它与不含它的批次会来回「不可用 / 已恢复」                                                                                                                    | 只计数告警，不进健康状态                                                                                                            |
+| 5、6 | #390 | 映射按条目 code 存链接，工业包按 `normalizePartNo(partNo)` 查，两路各自的假门面用的键都和调用方一致，合起来所有查询都对不上：静默退回产品库值、自动批准全转人审、不告警；spec 没写 code 的语义 | `sources.erp` 的 code 一律是条目 code；新增贯穿用例「ERP SEAM」，走真实映射、真实客户端、registry、工业工具，键改回旧写法时它会失败 |
+
+第 5、6 步在 spec 里补的细节见 2026-10-31 的第二条 `Revisions:`。
+
+### 第 7 步 · 本机集成（2026-10-31，Codex 执行，协调者审查）
+
+本机部分完成，协调者已审查：真 Odoo 与客户端、模拟 Odoo 没有不一致。新增 `scripts/odoo-integration.ts`，未改 `src/`、spec、依赖、CI 或测试链。运行命令：`DOCKER_HOST=unix://$HOME/.colima/default/docker.sock pnpm exec tsx scripts/odoo-integration.ts`，最终退出码 0，输出 `INTEGRATION PASS: Odoo 19 + 20` 与 `CLEANUP PASS`。下一步为第 8 步审查；第 0 步跨地区实测仍等 owner 授权，本步没有进行。
+
+**环境与断言。** Node 22.22.0；Odoo 分别为 `19.0-20261015`、`20.0-20261015`，使用 `postgres:17`（这三个镜像与第 0 步的 digest 相同）；代理使用 `nginx:latest`，实际版本 `1.31.3`，镜像 id `sha256:fa25dc4482506b0786a17a167b25348e6ca303ae0213404416db35441c75af29`。仅用本机已有镜像，全部端口只绑回环。两版各装 `sale_management`、`stock`，初始化用布尔开关 `--without-demo`；机器人只指定 `stock.group_stock_user`，断言无系统管理员与库存经理组，key 的 scope 为 `rpc`。key 只在内存中传递，不落盘、不输出。
+
+每版创建 34 个合成 Odoo 产品与 34 个我方条目：30 个正常产品、2 个同料号 `6206-2RS`、1 个单位不符 `6207-2RS`、1 个归档 `6208-2RS`；我方另有不存在的 `6209-2RS`。两版 `autoMapProducts` 均断言已映射 30、未映射 2、冲突 1、单位不符 1，且链接里的整数 id 与 fixture 一致。首个产品 A 库位实物 12.5、预留 3，ORM 断言 `free_qty=9.5`，真实客户端返回取整后的 9；B 库位 `free_qty=21.25`，返回 21。按 id 读取归档产品得到 `active=false`。经真实 registry → `packSources().erp.availability` 返回 30 个我方编号对应的库存，逐项与 fixture 一致；`check` 均为 `CNY`、`locationOk=true`。20 的空 scope key 调 `check` 得 `ErpError('auth')`（客户端由 HTTP 401 归类）。未发现需要改产品代码的 Odoo 契约差异；fixture 只在 19 调 `registry.signal_changes()`，20 无此方法。
+
+**耗时。** 全为本机回环 HTTP，不含 TLS 或跨地区网络；每次读 30 个产品，客户端新建 Agent 的首个请求单列，后续 20 次按最近秩法统计，相邻请求间隔 1,100 ms，每次库存请求截止时间 1 秒。以下单位均为毫秒：
+
+| 入口                    | 首个请求 | 后续 p50 | 后续 p90 | 后续最大值 |
+| ----------------------- | -------: | -------: | -------: | ---------: |
+| Odoo 19 直连            |    31.04 |    27.16 |    32.63 |      71.59 |
+| Odoo 20 直连            |    37.38 |    16.66 |    30.38 |      34.02 |
+| Odoo 20 经 nginx 1.31.3 |    43.86 |    29.83 |    32.77 |      44.76 |
+
+**保活。** nginx 明确配置 `keepalive_timeout 4s`；专用日志仅记 `$connection $connection_requests $status`。21 个库存请求的连接号相同、请求序号为 1–21、状态均为 200，复用 20/21（95.24%），后续 20 次复用率 100%。同一客户端随后空闲 5,500 ms，再请求为新连接、序号 1、200，耗时 26.71 ms，`ok`，无 `network` 错误。这些数据只证明本机代理入口的保活，不能据此断定远端 R8 目标成立。
+
+**清理与验证。** 脚本工作总限时 15 分钟，每条 Docker 命令另有限时，`finally` 按本次登记的确切名称删除容器（含匿名卷）、数据卷与网络，并核对列表及在途子进程计数。开发中的信号探针发现应用导入期的默认停机处理会提前退出，探针资源已单独清理；独立集成脚本随后接管信号，SIGINT、SIGTERM 两次子进程演练均退出 1、`cleanup=true`，正常集成与普通失败路径也通过清理。最终 `docker ps -a`、`docker volume ls`、`docker network ls` 的 `wsa11-it-` 结果均为空。独立的 `/bin/ps` 被执行环境拒绝（`operation not permitted`），无法补做全局进程列表核对；脚本登记的 Docker 子进程计数为 0，演练进程均已退出。
+
+门禁：`pnpm -s format:check`、`pnpm -s lint`、`pnpm -s typecheck` 均通过；路径检索只命中 `scripts/check-boundaries.selftest.ts`，额外运行通过 270 项。`git diff --check` 通过，新增行无本机绝对路径或超长假企微 id；锁定文件未改。按本步例外不跑 `pnpm test`、`test:locked` 或产品自测；未调用真实模型、真实 ERP、浏览器或生产服务，未提交、推送或开 PR。
+
 ## Open
 
 - 第 0 步的跨地区实测等 owner 授权并提供一台远端主机（本机部分已完成）。它决定 R8 的目标对远端 Odoo 是否成立，不挡第 1–8 步；验收 9 要把它记进 plan，所以第 10 步之前要做完。
@@ -273,3 +308,9 @@
 - 12 的预取已拆成 `textPrefetch`、`confirmPrefetch` 与总入口，第 6 步按当前行号改，不按 spec 里的旧行号。
 - 响应样本（143 个脱敏 JSON）在协调者本机、不进仓库，第 3 步派活时交给 Codex。
 - 下一步：合入第 1、2 步，再派第 3 步。
+
+### 交接（2026-10-31，第 1–7 步）
+
+- 第 1–7 步完成，见「实施记录」。第 0 步的框还没勾，等 owner 定跨地区实测怎么做（「Open」）。
+- 第 7 步脚本 `scripts/odoo-integration.ts` 能重跑，一行命令写在脚本头部；镜像留在本机。
+- 下一步：第 8 步中期审查与回滚演练。
