@@ -199,6 +199,20 @@ fi
 # 以文件是否存在为准；无文件时不启用 profile，也不改变宿主与备份路径。
 SANDBOX_ENABLED=$(ssh "${SERVER}" "if [ -f ${REMOTE_DIR}/.env.sandbox ]; then echo 1; else echo 0; fi")
 case "$SANDBOX_ENABLED" in 0 | 1) ;; *) echo "错误：无法确认沙箱是否启用，中止部署。" >&2; exit 1 ;; esac
+# 15：prod 不能因遗留 env 或容器复活沙箱。demo 部署仍沿用 05 的可选沙箱能力。
+if ! ssh "${SERVER}" bash -s -- "${REMOTE_DIR}/.env" "${REMOTE_DIR}/.env.sandbox" "${NAME}-sandbox" <<'PRODUCT_SANDBOX'
+set -euo pipefail
+if grep -q '^DEPLOY_PROFILE=prod$' "$1"; then
+  if [ -f "$2" ] || docker container inspect "$3" >/dev/null 2>&1; then
+    echo 'product-surface: prod 要求完成 05 长期停用，仍有沙箱 env 或容器；拒绝部署' >&2
+    exit 1
+  fi
+fi
+PRODUCT_SANDBOX
+then
+  echo "错误：prod/沙箱预检失败，中止部署。" >&2
+  exit 1
+fi
 SANDBOX_PORT="${SANDBOX_PORT:-3211}"
 if [ "$SANDBOX_ENABLED" = 1 ] && { [[ ! "$SANDBOX_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || ((SANDBOX_PORT > 65535)) || [[ "$SANDBOX_PORT" = "$HOST_PORT" ]]; }; then
   echo "错误：SANDBOX_PORT 必须是与 HOST_PORT 不同的有效端口。" >&2

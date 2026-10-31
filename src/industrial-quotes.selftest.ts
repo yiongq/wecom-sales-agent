@@ -174,6 +174,21 @@ try {
   assert.equal(coreReuse.order.id, pending.order.id);
   console.log('INDUSTRIAL REUSE PASS: 默认人审、pending复用、人工批准、approved复用原id/链接/金额，不重审/通知');
 
+  {
+    const id = 'ord_seed_0123456789abcdef-0123456789abcdef01234567';
+    const seed = structuredClone(store.getAnyOrder(pending.order.id)!) as LineOrder;
+    seed.id = id;
+    (rt.store.orders as unknown as Map<string, AnyOrder>).set(id, seed);
+    const def = runtime.siteLinks![0]!;
+    assert.equal(def.pattern.test(`/quote/${id}`), true);
+    assert.equal(def.resources![0]!.pattern.test(`/api/quotes/${id}`), true);
+    assert.equal(def.allowed(manual, `/quote/${id}`), true);
+    assert.equal(def.allowed({ ...manual, id: 'wecom:wmOther' }, `/quote/${id}`), false);
+    seed.approval!.state = 'pending';
+    assert.equal(def.allowed(manual, `/quote/${id}`), false);
+    rt.store.orders.delete(id);
+    console.log('PASS 15 验收 6：精确种子报价格式仍校验关联会话与审批状态');
+  }
   // 新建自动批准三个条件分别失败；实际当前库存无法读取时也不放行。
   setPolicy({ autoApproveMaxFen: 100000 });
   const auto = fresh();
@@ -204,7 +219,7 @@ try {
   assert.equal(link.allowed(auto, `/quote/${pending.order.id}`), false);
   assert.deepEqual(
     link.resources?.map((resource) => [resource.pattern.source, resource.methods]),
-    [['^\\/api\\/quotes\\/ord_[0-9a-f]{24}$', ['GET']]],
+    [['^\\/api\\/quotes\\/ord_(?:[0-9a-f]{24}|seed_[0-9a-f]{16}-[0-9a-f]{24})$', ['GET']]],
   );
   assert.deepEqual(link.card!(approved.result.quoteUrl, auto), {
     title: '合成零件商店报价单 · 1 项',

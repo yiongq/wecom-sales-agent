@@ -46,8 +46,8 @@ export function quoteSiteLinks(): NonNullable<PackRuntime['siteLinks']> {
   return [
     {
       linkKind: 'quote',
-      pattern: /^\/quote\/ord_[0-9a-f]{24}$/,
-      resources: [{ pattern: /^\/api\/quotes\/ord_[0-9a-f]{24}$/, methods: ['GET'] }],
+      pattern: /^\/quote\/ord_(?:[0-9a-f]{24}|seed_[0-9a-f]{16}-[0-9a-f]{24})$/,
+      resources: [{ pattern: /^\/api\/quotes\/ord_(?:[0-9a-f]{24}|seed_[0-9a-f]{16}-[0-9a-f]{24})$/, methods: ['GET'] }],
       allowed: quoteLinkAllowed,
       partTitle: (path, session) => title(path, session)?.title ?? null,
       card(path, session) {
