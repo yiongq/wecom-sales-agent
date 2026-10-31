@@ -24,7 +24,7 @@ async function rejects(fn: () => Promise<unknown>, code: string): Promise<void> 
   passed++;
 }
 const ctx = (tenantId: string) => ({ tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } });
-const tables = ['sandbox_pool_daily', 'sandbox_wechat', 'sandbox_wecom_state', 'sandbox_process_epoch'];
+const tables = ['sandbox_pool_daily', 'sandbox_wechat', 'sandbox_wecom_state', 'sandbox_process_epoch', 'usage_daily'];
 const functions = [
   'sandbox_tenant_create(text,uuid,json,bytea,inet,text)',
   'sandbox_session_resolve(bytea)',
@@ -420,7 +420,8 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
             role === 'agent_owner' ||
             (role === 'agent_app' &&
               ['SELECT', 'INSERT', 'UPDATE'].includes(privilege) &&
-              !(table === 'sandbox_process_epoch' && privilege === 'INSERT'));
+              !(table === 'sandbox_process_epoch' && privilege === 'INSERT')) ||
+            (role === 'agent_platform' && table === 'usage_daily' && privilege === 'SELECT');
           check(grant?.ok === expected, `${role} ${table} ${privilege}`);
         }
       }

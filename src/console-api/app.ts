@@ -77,6 +77,9 @@ import {
 import { isUniqueViolation, withTenant, type TenantCtx, type Tx } from '../db/client.js';
 import { listAttachmentMetadata as listAttachmentRows, type AttachmentMetadata } from '../db/repo/attachments.js';
 import { writeAudit } from '../db/repo/audit.js';
+import { readTenantLimits } from '../db/repo/tenants.js';
+import { readUsageMonth } from '../db/repo/usage.js';
+import { todayIso } from '../env.js';
 import { readMessagesBefore } from '../db/repo/messages.js';
 import { readOutboundForSeqs, type OutboundSendRow } from '../db/repo/outbound.js';
 import {
@@ -174,6 +177,7 @@ import {
   type MessagesPage,
   type MessageView,
   type MetricsView,
+  type UsageView,
   type OrderPage,
   type OrderSummary,
   type OrderView,
@@ -320,6 +324,11 @@ const canEdit = ownerOrAdmin;
 const canAudit = ownerOrAdmin;
 /** 钱与运行数字（02 spec「后台接口」权限表：本月成交额、运行数字）：只有 owner / admin */
 const canSeeMoney = ownerOrAdmin;
+/** 14 R9：匿名（包括 demo）与沙箱均为 403，其余复用成员权限。 */
+const canSeeUsage: MiddlewareHandler<ConsoleEnv> = async (c, next) => {
+  if (!c.var.user || currentRuntime().kind === 'sandbox') return fail(c, 403, { error: 'forbidden' });
+  return ownerOrAdmin(c, next);
+};
 /** trace 原文（原稿、参数、耗时、模型、前缀）：只有 owner / admin */
 const canSeeTraces = ownerOrAdmin;
 
@@ -1191,6 +1200,24 @@ export const consoleApi = new Hono<ConsoleEnv>()
   })
 
   // ---------------- 运行数字（02 spec「可观测性与告警 · 运行数字」） ----------------
+  .get('/usage', canSeeUsage, async (c) => {
+    if (sessionStoreMode() !== 'db') throw new StoreFileModeError();
+    const day = todayIso(new Date(clock()));
+    const month = day.slice(0, 7);
+    const body: UsageView = await readTx(c, async (tx) => {
+      const limits = await readTenantLimits(tx, c.var.user!.tenantId);
+      if (!limits) throw new ConfigNotReadyError();
+      const days = await readUsageMonth(tx, month);
+      return {
+        status: limits.status,
+        month,
+        replies: { used: days.reduce((sum, row) => sum + row.replies, 0), quota: limits.monthlyQuota },
+        daily: { costMilli: days.find((row) => row.day === day)?.costMilli ?? 0, capMilli: limits.dailyCapMilli },
+        days,
+      };
+    });
+    return c.json(body, 200);
+  })
   // 只在 db 存储下有（trace 只在那时入库）：文件存储 503 store_file_mode。权限先于它：角色不够照样 403
   .get('/metrics', canSeeMoney, zValidator('query', MetricsQuery, badRequest), async (c) => {
     if (sessionStoreMode() !== 'db') {
