@@ -334,6 +334,30 @@ async function suite(db: Db, query: Query, label: string, appUrl?: string): Prom
     await query('insert into privacy_notices(tenant_id,version,body) values ($1,1,$2)', [priorityTenant.id, '合成隐私说明']);
     await scope(priorityTenant, () => initPrivacy({ strict: true }));
     scope(priorityTenant, () => observeRequests(() => calls++));
+    // 限制回合遇到敏感词也不能额外发同意菜单或消耗询问次数。
+    for (const mode of ['suspended', 'quota', 'rate', 'dailyCap'] as const) {
+      await edit(
+        priorityTenant,
+        `status='${mode === 'suspended' ? 'suspended' : 'active'}', monthly_reply_quota=${mode === 'quota' ? '0' : 'null'}, llm_daily_cap_milli=${mode === 'dailyCap' ? '0' : 'null'}`,
+      );
+      process.env.CUSTOMER_RATE_PER_MIN = mode === 'rate' ? '1' : '';
+      const sid = `wecom:menu-${mode}`;
+      if (mode === 'rate') await turn(priorityTenant, sid, '你好');
+      process.env.LLM_MOCK = mode === 'dailyCap' ? '0' : '1';
+      await turn(priorityTenant, sid, '孩子今年8岁');
+      const s = session(priorityTenant, sid);
+      assert.equal(s.consentAskCount, undefined, `14 验收 7：${mode} 不改变同意询问次数`);
+      assert.equal(s.consent, undefined);
+      await scope(priorityTenant, () => store.flushSession(sid));
+      assert.equal((await query('select * from consents where tenant_id=$1 and conversation_id=$2', [priorityTenant.id, sid])).length, 0);
+      assert.equal(s.messages.filter((m) => m.role === 'agent').length, mode === 'rate' ? 2 : 1, '只有原回复和闸门句，没有同意菜单');
+      console.log(`14 验收 7 ${label}：${mode} 回合不发同意菜单、不改询问状态`);
+    }
+    process.env.LLM_MOCK = '1';
+    await edit(priorityTenant, 'llm_daily_cap_milli=null');
+    process.env.CUSTOMER_RATE_PER_MIN = '';
+    await turn(priorityTenant, 'wecom:menu-active', '孩子今年8岁');
+    assert.equal(session(priorityTenant, 'wecom:menu-active').consentAskCount?.minor, 1, '未受限对照仍询问同意');
     const priorityErrors: Error[] = [];
     for (const mode of ['suspended', 'quota', 'rate'] as const) {
       await edit(

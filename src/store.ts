@@ -991,7 +991,7 @@ export function saveSession(s: Session, touch = true): void {
   if (b !== state.pgBackend) return;
   const rt = currentRuntime();
   // 新消息分配 seq 的唯一落点，重复保存、分段推送不重复记；固定闸门话术不计。
-  if (rt.kind === 'standard' && rt.config.loaded && !state.pgBackend.isPoisoned(s.id))
+  if (rt.kind === 'standard' && rt.config.loaded)
     for (const m of unseq) {
       const author = authorOf(m);
       if (

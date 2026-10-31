@@ -22,16 +22,24 @@ function today(): string {
   const date = new Date(deps.now());
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
-async function read(rt: TenantRuntime, month: string): Promise<TenantLimits> {
+async function read(rt: TenantRuntime, _month: string): Promise<Omit<TenantLimits, 'monthlyUsed'>> {
   return withTenant(
     rt.config.loaded!.deps.db,
     { tenantId: rt.id, actor: { kind: 'system', userId: null, name: null, ip: null } },
     async (tx) => {
       const limits = await readTenantLimits(tx, rt.id);
       if (!limits) throw new Error('tenant_limits_missing');
-      return { ...limits, monthlyUsed: await readMonthlyReplyCount(tx, month) };
+      return limits;
     },
     { readOnly: true, isolation: 'repeatable read' },
+  );
+}
+async function readCount(rt: TenantRuntime, month: string): Promise<number> {
+  return withTenant(
+    rt.config.loaded!.deps.db,
+    { tenantId: rt.id, actor: { kind: 'system', userId: null, name: null, ip: null } },
+    (tx) => readMonthlyReplyCount(tx, month),
+    { readOnly: true },
   );
 }
 function notify(rt: TenantRuntime, percent: number, month: string): void {
@@ -44,7 +52,7 @@ function notify(rt: TenantRuntime, percent: number, month: string): void {
     })
     .catch(() => console.warn('[limits] usage_limit_alert_failed'));
 }
-const deps = { now: () => Date.now(), read, alert: notify };
+const deps = { now: () => Date.now(), read, readCount, alert: notify };
 interface State {
   value: TenantLimits;
   month: string;
@@ -68,7 +76,7 @@ function enabled(rt: TenantRuntime): boolean {
 function state(): State {
   const bucket = tenantState.get();
   return (bucket.current ??= {
-    value: { status: 'active', monthlyQuota: null, monthlyUsed: 0, dailyCapMilli: null },
+    value: { status: currentRuntime().config.loaded!.tenantStatus, monthlyQuota: null, monthlyUsed: 0, dailyCapMilli: null },
     month: today().slice(0, 7),
     localReplies: 0,
     baselineReplies: 0,
@@ -136,15 +144,25 @@ export function initializeTenantLimits(rt = currentRuntime()): Promise<void> {
     if (s.loading) return s.loading;
     const day = today();
     const month = s.month;
-    const work = withUsageDailySnapshot(day, async (_persistedMilli, persistedReplies) => {
-      const value = await deps.read(rt, month);
-      if (s.closed || !enabled(rt) || s.month !== month || today().slice(0, 7) !== month) return;
-      // 本运行时的 localReplies 包括已经提交的回复；与 writer 串行读，扣掉提交部分，避免重复计数。
-      s.baselineReplies = Math.max(0, value.monthlyUsed - persistedReplies);
-      s.value = { ...value, monthlyUsed: s.baselineReplies + s.localReplies };
-    })
+    const current = () => !s.closed && enabled(rt) && s.month === month && today().slice(0, 7) === month;
+    const work = (async () => {
+      // 先独立安装状态与上限；月计数故障不能丢掉已读取的停用状态。
+      try {
+        const value = await deps.read(rt, month);
+        if (current()) s.value = { ...value, monthlyUsed: s.value.monthlyUsed };
+      } catch {
+        if (current()) console.error('[limits] tenant_limits_poll_failed');
+      }
+      await withUsageDailySnapshot(day, async (_persistedMilli, persistedReplies) => {
+        const monthlyUsed = await deps.readCount(rt, month);
+        if (!current()) return;
+        // 与 writer 串行读，扣掉本进程已提交部分，避免重复计数。
+        s.baselineReplies = Math.max(0, monthlyUsed - persistedReplies);
+        s.value.monthlyUsed = s.baselineReplies + s.localReplies;
+      });
+    })()
       .catch(() => {
-        if (!s.closed && enabled(rt)) console.warn('[limits] tenant_limits_poll_failed');
+        if (current()) console.error('[limits] tenant_reply_count_poll_failed');
       })
       .finally(() => {
         s.loading = null;
@@ -173,11 +191,12 @@ export const __limitsTest = {
     Object.assign(deps, input);
   },
   reader: () => deps.read,
+  countReader: () => deps.readCount,
   poll: pollTenantLimits,
   timer: () => pollTimer,
   reset(): void {
     stopTenantLimits();
     tenantState.registration('current').reset();
-    Object.assign(deps, { now: () => Date.now(), read, alert: notify });
+    Object.assign(deps, { now: () => Date.now(), read, readCount, alert: notify });
   },
 };

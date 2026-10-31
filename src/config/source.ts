@@ -935,6 +935,7 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
       deps: d,
       tenantId: tenant.id,
       tenantName: tenant.name,
+      tenantStatus: tenant.status,
       pack,
       lock: held,
       imageSections: deepFreeze(imageSections),

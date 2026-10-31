@@ -335,6 +335,12 @@ async function sendAfterLedger(a: {
   } finally {
     release();
   }
+  if (!ok && limitVerdict() !== 'ok') {
+    // token、提交或重试等待期间触发闸门：适配器取消剩余发送，按跳过结束，不重新排任务。
+    delete meta.pendingAt;
+    saveWith(fresh, [statusOp(job, 'abandoned', 'sending', { lastError: 'tenant_limit' })]);
+    return { status: 'handled' };
+  }
   if (!ok && mayHaveDelivered(sid, message)) {
     // 企微超时、网络异常（发送账本里记 unknown）或只发出去一部分：同样是结果不明，按已发处理（02 第 12 步）
     console.error(`[followup] 跟进 ${short(sid)} 推送结果不明（超时或网络异常），按已发处理、不再重试`);
