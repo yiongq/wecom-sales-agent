@@ -1349,8 +1349,8 @@ const member = (role: Role, pack = TRAVEL): Viewer => ({ kind: 'member', me: me(
   };
   requests = [];
   const m = await mountOverview(member('owner'));
-  eq('所有者：区块顺序', m.texts('h2'), ['需要你处理', '成交与转人工', '最近变更', '客户停在哪一步']);
-  eq('所有者：标签页标题', document.title, '总览 · 云途定制旅行');
+  eq('所有者：区块顺序', m.texts('h2'), ['新手清单', '需要你处理', '成交与转人工', '最近变更', '客户停在哪一步']);
+  eq('所有者：标签页标题', document.title, '总览 · 云途定制旅行 · 单来');
   eq('所有者：页头状态句是租户名与日期', m.texts('.page-status'), ['云途定制旅行·9月26日 周六']);
   eq('需要你处理：7项（等人接手2 + 已成交客户要人工1 + 待付款1 + 话术草稿1 + 待上架2）', m.texts('.ov-count')[0], '7项');
   eq(
@@ -1705,7 +1705,7 @@ async function failing(fail: RegExp) {
   eq('匿名：只有在售一格', [m.texts('.ov-kpi-label'), m.texts('.ov-kpi-value'), m.$('.ov-kpi-detail').length], [['在售产品'], ['43'], 0]);
   eq('匿名：只取产品库列表', [...new Set(requests)].sort(), ['GET /api/console/catalog/hotel', 'GET /api/console/catalog/route']);
   check('匿名：演示横幅；页头不写租户名', m.$('.anon-banner').length === 1 && m.texts('.page-status')[0] === '9月26日 周六');
-  eq('匿名：标签页标题', document.title, '总览 · 演示');
+  eq('匿名：标签页标题', document.title, '总览 · 演示 · 单来');
   await m.unmount();
 }
 
@@ -2235,7 +2235,7 @@ for (const w of BANNED) {
       eq(
         `${sandbox ? '沙箱' : '宿主'}总览：标签页与状态句`,
         [document.title, m.texts('.page-status')],
-        [`总览 · ${name}`, [`${name}·9月26日 周六`]],
+        [sandbox ? '总览 · 单来' : `总览 · ${name} · 单来`, [`${name}·9月26日 周六`]],
       );
       eq(`${sandbox ? '沙箱' : '宿主'}总览：最近变更访客头像`, m.texts('.ov-tl-row .avatar')[0], sandbox ? '访' : '体');
       for (const selector of ['.ov-kpi-caption', '.ov-kpi-detail']) {

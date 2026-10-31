@@ -728,6 +728,7 @@ async function sendLinkCard(
  *  客户对话主链路与后台推送共用这一条路径——此前卡片逻辑只写在 push() 里，
  *  而客户消息的回复走的是 handleCustomerMessage → sendText，卡片代码对客户而言是死代码。 */
 async function sendRich(rt: SendRuntime, cfg: WecomConfig, uid: string, body: string, ctx: SendCtx): Promise<boolean> {
+  if (getSession(rt.prefix + uid)?.seed === true) return false;
   if (rt instanceof SandboxWecomRuntime) {
     try {
       rt.assertLinks(body);
@@ -773,6 +774,7 @@ async function sendRich(rt: SendRuntime, cfg: WecomConfig, uid: string, body: st
  * 返回 false 时分不清「明确没送达」与「结果不明」，要分的调用方看账本的 mayHaveDelivered
  */
 async function sendText(rt: SendRuntime, cfg: WecomConfig, externalUserId: string, text: string, ctx: SendCtx): Promise<boolean> {
+  if (getSession(rt.prefix + externalUserId)?.seed === true) return false;
   let allOk = true;
   let anyAccepted = false;
   for (const chunk of splitForWecom(text, rt instanceof SandboxWecomRuntime ? (value) => rt.textBytes(value) : undefined)) {
@@ -854,6 +856,7 @@ async function sendMenu(
   headContent: string,
   category: SensitiveCategory,
 ): Promise<boolean> {
+  if (getSession(rt.prefix + externalUserId)?.seed === true) return false;
   const entry = recordRuntimeSend(rt, rt.prefix + externalUserId, 'menu', null);
   let outcome: SendResult | null = null;
   let errcode: number | undefined;
@@ -1225,6 +1228,7 @@ async function runGroup(g: OutGroup): Promise<GroupOutcome> {
  * 再走 sendSegment。卡片发失败补「标题 + 链接」（运行时才补的段）
  */
 async function sendGroup(g: OutGroup): Promise<GroupOutcome> {
+  if (getSession(g.sessionId)?.seed === true) return { ok: false, stop: null };
   const committed = await commitOutbound(g.intents);
   if (committed === 'deferred') return { ok: false, stop: 'deferred' };
   for (const i of g.intents) if (!g.commit.has(i.msgid)) g.commit.set(i.msgid, committed);
@@ -3208,6 +3212,7 @@ export const wecomAdapter: ChannelAdapter = {
    * 库里的企微账号走 03 的先落库后发送：给了 prepare 的句柄就发那一组，否则在这里切分、排 pending、等提交再发
    */
   async push(sessionId: string, text: string, opts?: PushOpts): Promise<boolean> {
+    if (getSession(sessionId)?.seed === true) return false;
     // prepared 会绕过 pushRoute，必须在读取句柄之前同样拒绝沙箱。
     if (currentRuntime().kind === 'sandbox') {
       if (process.env.APP_ROLE === 'sandbox' && sandboxRuntime) return sandboxRuntime.push(sessionId, text, opts);

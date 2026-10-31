@@ -188,7 +188,7 @@ check(
 const shape0 = (pack: IndustryPack, v: ShellViewer): string[] =>
   buildNav(pack, v).map((g) => `${g.title ?? '-'}:${g.items.map((i) => `${i.label}${i.entity ? `(${i.entity})` : ''}`).join(',')}`);
 const shape = (v: ShellViewer): string[] => shape0(PACK, v);
-const EDITOR_NAV = ['-:总览,销售话术', '产品库:线路(route),酒店(hotel)', '运营:会话,AI记录,审计日志'];
+const EDITOR_NAV = ['-:总览,销售话术', '产品库:线路(route),酒店(hotel)', '运营:会话,AI记录,审计日志', '-:设置'];
 eq('侧栏：所有者', shape(member('owner')), EDITOR_NAV);
 eq('侧栏：管理员', shape(member('admin')), EDITOR_NAV);
 for (const r of ['supervisor', 'agent', 'viewer'] as const) {
@@ -257,17 +257,17 @@ eq('侧栏：匿名没有会话、AI 记录、审计入口（也没有「运营�
 
   // 标签页标题：「页名 · 租户名」，各页互不相同；匿名以「 · 演示」结尾
   const titles = items.map((i) => documentTitle([i.label], member('owner')));
-  eq('标题：成员', titles.slice(0, 2), ['总览 · 云途定制旅行', '销售话术 · 云途定制旅行']);
+  eq('标题：成员', titles.slice(0, 2), ['总览 · 云途定制旅行 · 单来', '销售话术 · 云途定制旅行 · 单来']);
   check('标题：各页互不相同', new Set(titles).size === titles.length, JSON.stringify(titles));
   check(
     '标题：以「 · 租户名」结尾',
-    titles.every((t) => t.endsWith(' · 云途定制旅行')),
+    titles.every((t) => t.endsWith(' · 云途定制旅行 · 单来')),
   );
-  eq('标题：匿名', documentTitle(['线路'], ANON), '线路 · 演示');
+  eq('标题：匿名', documentTitle(['线路'], ANON), '线路 · 演示 · 单来');
   eq(
     '标题：详情页',
     documentTitle(['贵州 小七孔·西江千户苗寨 5 日', '线路'], member('admin')),
-    '贵州 小七孔·西江千户苗寨 5 日 · 线路 · 云途定制旅行',
+    '贵州 小七孔·西江千户苗寨 5 日 · 线路 · 云途定制旅行 · 单来',
   );
 }
 eq('搜索占位：成员', searchPlaceholder(PACK, member('agent')), '搜索线路、酒店、会话…');
@@ -284,6 +284,7 @@ eq('搜索占位：匿名没有会话', searchPlaceholder(PACK, ANON), '搜索�
     '-:总览,销售话术',
     '产品库:装修套餐(package),主材(material)',
     '运营:会话,AI记录,审计日志',
+    '-:设置',
   ]);
   eq('别的行业包：搜索占位', searchPlaceholder(home, member('owner')), '搜索装修套餐、主材、会话…');
   eq(

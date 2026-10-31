@@ -511,7 +511,7 @@ const convRequests = (): string[] => requests.filter((r) => r.startsWith('GET /a
     'GET /api/console/conversations?state=human',
     'GET /api/console/conversations?limit=20&offset=0&order=waiting_first',
   ]);
-  eq('标签页标题', document.title, '会话 · 云途定制旅行');
+  eq('标签页标题', document.title, '会话 · 云途定制旅行 · 单来');
   eq('页头：标题与状态句', [m.texts('h1'), m.texts('.page-status')], [['会话'], ['企业微信里的客户会话·在工作台里接手和回复']]);
   const primary = m.$('.page-actions button')[0];
   eq(

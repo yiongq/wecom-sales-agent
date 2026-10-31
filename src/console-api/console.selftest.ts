@@ -3399,7 +3399,15 @@ async function workbenchSuite(): Promise<void> {
       .map((r) => `${r.method} ${r.path.replace(/^\/api\/console/, '')}`),
   );
   // 05 R23 新增的公开入口配置；其余路由仍必须登记在既有权限清单里。
-  const known = new Set([...ROUTES_01, 'GET /entry', ...MATRIX.map((m) => m.route)]);
+  const known = new Set([
+    ...ROUTES_01,
+    'GET /entry',
+    'GET /settings/organization',
+    'GET /settings/members',
+    'GET /settings/channels',
+    'GET /settings/onboarding',
+    ...MATRIX.map((m) => m.route),
+  ]);
   check(
     '路由枚举：consoleApi 的每个路由都在 01 清单、05 入口或第 13 步权限矩阵里（漏挂权限的新路由在这里现形）',
     [...registered].every((r) => known.has(r)),

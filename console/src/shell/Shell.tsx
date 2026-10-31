@@ -1,3 +1,4 @@
+import { useSettingsCache } from '../settings/cache.js';
 // 外壳（spec「逐页设计 · 外壳」，设计系统 §4）：侧栏 240（收起 56）加一块内嵌的内容面板，没有全宽页头。
 // - 启动：并发取 /me 与 /pack，两个都回来才渲染侧栏和路由；没回来时 300ms 后出骨架；出错整页说明（判定在 boot.ts）。
 // - 成员与 demo 匿名进同一个外壳；匿名没有铃铛、会话和审计入口，每页页头下挂横幅（PageHeader）。成员身份下挂就地登录框
@@ -50,7 +51,7 @@ import { Sidebar, TenantRow } from './Sidebar.js';
  * landmark-one-main）；它自己没有标题时（启动出错：Alert 或中性的说明）放一个看不见的 h1「后台」，说明的标题接着排 h2
  */
 function Whole({ heading, children }: { heading?: string; children: ReactNode }) {
-  useDocumentTitle('后台');
+  useDocumentTitle('后台 · 单来');
   return (
     <main id="main" tabIndex={-1} className="boot-whole">
       {heading && <h1 className="boot-sr">{heading}</h1>}
@@ -61,7 +62,7 @@ function Whole({ heading, children }: { heading?: string; children: ReactNode })
 
 /** 启动时两个请求都没回来：侧栏骨架（租户行、搜索、6 行导航）加面板骨架，延迟 300ms 出现 */
 function BootSkeleton() {
-  useDocumentTitle('wecom-sales-agent · 企业微信AI销售助手');
+  useDocumentTitle('单来');
   return (
     <div className="shell shell-expanded state-skeleton" role="status" aria-label="正在载入">
       <div className="sidebar boot-sidebar" aria-hidden="true">
@@ -86,6 +87,7 @@ function BootSkeleton() {
 }
 
 export function Shell() {
+  useSettingsCache();
   const viewer = useViewer();
   const v = viewer.data;
   if (v === undefined) {
@@ -226,6 +228,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
         else if (item.key === '/conversations') void navigate({ to: '/conversations' });
         else if (item.key === '/traces') void navigate({ to: '/traces' });
         else if (item.key === '/audit') void navigate({ to: '/audit' });
+        else if (item.key === '/settings') void navigate({ to: '/settings' });
         else if (item.key === '/') void navigate({ to: '/' });
         else void navigate({ to: '/sop' });
       };

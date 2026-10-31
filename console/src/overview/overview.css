@@ -633,3 +633,65 @@ a.ov-stage:hover {
   white-space: normal;
   text-wrap: pretty;
 }
+
+/* 15：新手清单，沿用面板和中性色令牌。 */
+.onboarding {
+  padding: 20px;
+  margin: 0 0 24px;
+  border-radius: var(--r-sm);
+  box-shadow: inset 0 0 0 1px var(--divider);
+}
+.onboarding-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.onboarding-head h2 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+}
+.onboarding-list {
+  padding: 0;
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px 24px;
+  margin-bottom: 0;
+}
+.onboarding-list li {
+  min-width: 0;
+}
+.onboarding-state {
+  display: block;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.onboarding-list p,
+.onboarding-advisor,
+.onboarding-unknown {
+  color: var(--text-3);
+  font-size: 13px;
+  line-height: 20px;
+}
+.onboarding-list p {
+  margin: 4px 0 0;
+}
+.onboarding-unknown ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  list-style: none;
+  padding: 0;
+}
+@media (max-width: 600px) {
+  .onboarding-list {
+    grid-template-columns: 1fr;
+  }
+  .onboarding {
+    padding: 16px;
+  }
+}

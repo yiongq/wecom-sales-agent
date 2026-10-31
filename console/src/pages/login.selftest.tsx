@@ -310,9 +310,13 @@ async function mount(path: string, pages: { path: string; component: () => React
   // 1. 版式与文案
   eq('prod：启动只取 /me、/pack 各一次', [count('GET /api/console/me'), count('GET /api/console/pack')], [1, 1]);
   check('prod：是登录页，没有外壳（侧栏）', m.$('.login-page') !== null && document.querySelector('.sidebar') === null);
-  eq('prod：main 地标里只有一栏，h1 是「登录」', [m.$$('main').length, m.$$('h1').map(m.text)], [1, ['登录']]);
+  eq('prod：main 地标里只有一栏，h1 是「登录」', [m.$$('main').length, m.$$('h1').map(m.text)], [1, ['单来']]);
   check('prod：h1 用登录页标题样式', m.$('h1')?.className === 'login-title');
-  eq('prod：一句说明（中文与字母之间不打空格）', m.text(m.$('.login-lead')), 'AI在企业微信里接待客户，你在这里管话术、产品和会话。');
+  eq(
+    'prod：一句说明（中文与字母之间不打空格）',
+    m.text(m.$('.login-lead')),
+    '在企业微信里接收工业询价，匹配产品、试算报价、审批与人工接手。',
+  );
   const loginStyle = document.createElement('style');
   loginStyle.textContent = readFileSync(new URL('../login.css', import.meta.url), 'utf8');
   document.head.append(loginStyle);
@@ -337,7 +341,7 @@ async function mount(path: string, pages: { path: string; component: () => React
     eq(
       `登录 ${width}：说明使用 pretty，逗号后断行，后半句完整`,
       [computed('.login-lead').getPropertyValue('text-wrap'), m.$('.login-lead br')?.nextSibling?.textContent],
-      ['pretty', '你在这里管话术、产品和会话。'],
+      ['pretty', '匹配产品、试算报价、审批与人工接手。'],
     );
   }
   loginStyle.remove();
@@ -360,7 +364,7 @@ async function mount(path: string, pages: { path: string; component: () => React
   check('prod：焦点在邮箱上', document.activeElement === m.email());
   eq('prod：没点「登录」之前不写原因', [m.fieldErrors(), m.email()?.getAttribute('aria-invalid') ?? null], [[], null]);
   check('prod：没有「只看演示数据」', m.$('.login-back') === null && !m.box.textContent!.includes('只看演示数据'));
-  eq('prod：标签页标题是产品名', document.title, 'AI销售工作台');
+  eq('15 验收 2 prod：平台标题', document.title, '登录 · 单来');
   check('prod：没有体验按钮', m.$('.login-try') === null);
   check('prod：没有产品标志和右栏', !m.$('img') && !m.$('.entry-showcase'));
   eq(
@@ -609,7 +613,7 @@ async function mount(path: string, pages: { path: string; component: () => React
     ['只看演示数据', true],
   );
   eq('demo：「只看演示数据」是指向当前地址的链接（带 /console 与 search）', back()?.getAttribute('href'), '/console/?view=demo');
-  eq('demo：标签页标题是产品名', document.title, 'AI销售工作台');
+  eq('demo：标签页标题是产品名', document.title, '登录 · 单来');
   check('demo：焦点在邮箱上', document.activeElement === m.email());
 
   // 点「只看演示数据」：prevented 记下页面自己拦没拦（document 上的监听在 React 之后跑，记完替浏览器拦住，不真的跳转）。
@@ -747,9 +751,9 @@ for (const demo of [true, false]) {
   };
   server = { demo, brand, loggedIn: false, login: 'check' };
   const m = await mount('/console/');
-  eq('公开品牌：名称来自entry', m.$('.entry-wordmark')?.textContent, brand.name);
-  eq('公开品牌：副标题来自entry', m.$('.login-lead')?.textContent, brand.subtitle);
-  eq('公开品牌：文档标题', document.title, brand.name);
+  eq('15 验收 2 平台名与组织名分层', m.$('.entry-wordmark')?.textContent, '单来');
+  eq('公开品牌：副标题来自entry', m.$('.login-lead')?.textContent, brand.name);
+  eq('公开品牌：文档标题', document.title, `登录 · ${brand.name} · 单来`);
   check('公开品牌：HTML字符已转义，无标签注入', !m.$('img') && !m.$('script') && !m.$('[onerror]'));
   check('公开品牌：image null不回退旧showcase', !m.$('.entry-showcase'));
   eq('公开品牌：demo与prod仍遵循入口权限', !!m.$('.login-back a'), demo);
@@ -757,8 +761,8 @@ for (const demo of [true, false]) {
     await m.click(m.$('.login-back a'));
     check('公开品牌：匿名只读入口仍可用', !!m.$('.sidebar'));
     await m.click(m.$('.sb-login'));
-    eq('公开品牌：匿名返回登录保留名称', m.$('.entry-wordmark')?.textContent, brand.name);
-    eq('公开品牌：匿名返回登录保留副标题', m.$('.login-lead')?.textContent, brand.subtitle);
+    eq('公开品牌：匿名返回登录保留名称', m.$('.entry-wordmark')?.textContent, '单来');
+    eq('公开品牌：匿名返回登录保留副标题', m.$('.login-lead')?.textContent, brand.name);
   }
   await m.unmount();
 }
@@ -1071,7 +1075,7 @@ const banners = (): Element[] =>
     eq(
       '沙箱侧栏：产品名与体验Tag，没有租户头像',
       [m.text(m.$('.tenant-name')), m.text(m.$('.sb-tenant .ant-tag')), !!m.$('.tenant-logo')],
-      ['AI销售工作台', '体验', false],
+      ['单来', '体验', false],
     );
     eq(
       '沙箱用户行：访客头像、名字、不显示角色',
@@ -1118,7 +1122,7 @@ const banners = (): Element[] =>
       await settle(m.qc);
       eq(`沙箱 ${width}px：换页重置实际滚动容器`, [reset, scroller.scrollTop], [true, 0]);
       eq(`沙箱 ${width}px：非总览页没有常驻清单栏`, m.$('.sandbox-body > .sandbox-checklist'), null);
-      eq(`沙箱 ${width}px：页名加产品名`, document.title, '话术页 · AI销售工作台');
+      eq(`沙箱 ${width}px：页名加产品名`, document.title, '话术页 · 单来');
       const trigger = document.querySelector<HTMLButtonElement>(
         width < 768 ? '.sandbox-mobile-checklist button' : '.sandbox-banner .sandbox-checklist-trigger',
       )!;

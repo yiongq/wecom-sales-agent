@@ -113,6 +113,7 @@ export async function runHandoffNotifyJob(job: JobRow, now: number): Promise<Job
   const own = state();
   const p = payloadOf(job.payload);
   if (!p) return done('bad_payload');
+  if (getSession(p.sessionId)?.seed === true) return done('seed');
   if (p.reason === 'intake_unmatched') {
     if (
       typeof p.intakeId !== 'string' ||
@@ -221,6 +222,7 @@ const codeOf = (e: unknown): string => (e instanceof NotifySendError ? e.code : 
 
 function noteUnsaved(ev: HandoffStartedEvent): void {
   if (currentRuntime().kind === 'sandbox') return;
+  if (getSession(ev.id)?.seed === true) return;
   const own = state();
   const key = unsavedKey(ev.id, ev.at);
   if (own.unsaved.has(key) || own.waiting.has(key)) return;
@@ -253,6 +255,7 @@ function noteCommitted(ev: HandoffStartedEvent): void {
 }
 
 async function fireUnsaved(ev: HandoffStartedEvent, key: string): Promise<void> {
+  if (getSession(ev.id)?.seed === true) return;
   const own = state();
   const now = Date.now();
   for (const [k, v] of own.unsaved) if (v.state === 'sent' && now - v.at > KEEP_MS) own.unsaved.delete(k);
@@ -267,6 +270,10 @@ async function fireUnsaved(ev: HandoffStartedEvent, key: string): Promise<void> 
   }
   for (let i = 0; ; i++) {
     try {
+      if (getSession(ev.id)?.seed === true) {
+        own.unsaved.delete(key);
+        return;
+      }
       await notifier().send(n);
       break;
     } catch (e) {

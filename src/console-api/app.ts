@@ -1,3 +1,4 @@
+import { createSettingsApi } from './settings.js';
 import { SandboxLimitError } from '../tenancy/sandbox/limits.js';
 import { sandboxWechatIndex } from '../tenancy/sandbox/outbound.js';
 import { BudgetExhausted } from '../llm-gate.js';
@@ -1200,6 +1201,7 @@ export const consoleApi = new Hono<ConsoleEnv>()
   })
 
   // ---------------- 运行数字（02 spec「可观测性与告警 · 运行数字」） ----------------
+  .route('/settings', createSettingsApi())
   .get('/usage', canSeeUsage, async (c) => {
     if (sessionStoreMode() !== 'db') throw new StoreFileModeError();
     const day = todayIso(new Date(clock()));

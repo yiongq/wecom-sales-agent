@@ -362,7 +362,7 @@ async function childSuite(rig: Rig): Promise<void> {
   const { enterHandoff, HANDOFF_REASON } = await withoutTenantScope(() => import('../handoff/record.js'));
   const { orderUnconfirmedNotifyOps, HANDOFF_UNCLAIMED_MS, WINDOW_NOTICE_MS } = await withoutTenantScope(() => import('../jobs/notify.js'));
   const { sendWindow, recordSend } = await withoutTenantScope(() => import('../quota/ledger.js'));
-  const { __handoffNotifyTest } = await withoutTenantScope(() => import('./handoff.js'));
+  const { __handoffNotifyTest, runHandoffNotifyJob } = await withoutTenantScope(() => import('./handoff.js'));
   const { __notifierTest } = await withoutTenantScope(() => import('./notifier.js'));
   const { deliverHandoffUnsaved } = await withoutTenantScope(() => import('../store/events.js'));
   const pushes: string[] = [];
@@ -440,6 +440,27 @@ async function childSuite(rig: Rig): Promise<void> {
     await flush(s.id);
   };
   const LINK = 'https://console.example.test/console/conversations?state=human';
+
+  {
+    const seed = seeded('Seed15', H);
+    seed.seed = true;
+    const before = hits.length;
+    for (const reason of ['started', 'unclaimed', 'window', 'order_unconfirmed', 'quote_pending', 'quote_accepted', 'intake_unmatched']) {
+      const result = await runHandoffNotifyJob(
+        { payload: { sessionId: seed.id, reason } } as import('../jobs/runner.js').JobRow,
+        Date.now(),
+      );
+      check(`15 验收 6：seed ${reason} 不进顾问通知`, result.status === 'done' && result.lastError === 'seed');
+    }
+    deliverHandoffUnsaved([
+      { type: 'handoff.started', id: seed.id, kind: 'emergency', at: Date.now(), escalated: true, paidCustomer: false, assigned: false },
+    ]);
+    await sleep(100);
+    check('15 验收 6：seed 写入失败紧急通知外发记录为零', hits.length === before);
+    const { wecomAdapter } = await withoutTenantScope(() => import('../adapters/wecom.js'));
+    check('15 验收 6：seed 人工客户发送守卫拒绝', (await wecomAdapter.push(seed.id, '合成回复', { kind: 'human' })) === false);
+    check('15 验收 6：两个外发通道均为零', hits.length === before);
+  }
 
   // ---- started 立即发：类型、短码、时间、链接；没有客户原话、external_userid 与会话原 id（不变量 32） ----
   {

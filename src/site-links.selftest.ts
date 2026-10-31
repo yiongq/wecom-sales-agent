@@ -55,6 +55,16 @@ travelRt.pack = travel;
 registerRuntime(travelRt);
 process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
 try {
+  const { runtimeById } = await import('./packs/registry.js');
+  const { packSources } = await import('./config/source.js');
+  const industrialLinks = runtimeById('industrial', packSources())!.siteLinks![0]!;
+  const seed = 'ord_seed_0123456789abcdef-0123456789abcdef01234567';
+  assert.equal(industrialLinks.pattern.test(`/quote/${seed}`), true);
+  for (const bad of [seed.slice(0, -1), `${seed}a`, seed.replace('seed_', 'seed-'), `${seed}/extra`, seed.toUpperCase()]) {
+    assert.equal(industrialLinks.pattern.test(`/quote/${bad}`), false);
+    assert.equal(industrialLinks.resources![0]!.pattern.test(`/api/quotes/${bad}`), false);
+  }
+  console.log('PASS 15 验收 6：种子报价及资源只认精确批次格式');
   // 模式与方法集合逐项对照 spec 沙箱清单，而不是只测几个正例。
   const rules = siteLinks().flatMap((def) => [
     { pattern: def.pattern.source, methods: ['GET', 'HEAD'] },
