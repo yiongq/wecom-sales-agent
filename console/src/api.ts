@@ -6,7 +6,25 @@ import { hc } from 'hono/client';
 import type { ConsoleApp } from '../../src/console-api/app.js';
 import type { CatalogKind } from '../../src/shared/catalog.js';
 import type { ApiError } from '../../src/shared/console-api.js';
-import { csrfHeader, sessionFetch } from './session.js';
+import { csrfHeader, createSessionFetch } from './session.js';
+
+// 在就地重登等待之前通知敏感页面清缓存，不改变既有请求的认证及重放规则。
+const accessListeners = new Set<(status: 401 | 403, path: string) => void>();
+export function subscribeConsoleAccess(listener: (status: 401 | 403, path: string) => void): () => void {
+  accessListeners.add(listener);
+  return () => void accessListeners.delete(listener);
+}
+const sessionFetch = createSessionFetch(async (input, init) => {
+  const response = await fetch(input, init);
+  if (response.status === 401 || response.status === 403) {
+    const path = new URL(
+      input instanceof Request ? input.url : String(input),
+      typeof window === 'undefined' ? 'https://console.invalid' : window.location.origin,
+    ).pathname;
+    for (const listener of accessListeners) listener(response.status, path);
+  }
+  return response;
+});
 
 export const api = hc<ConsoleApp>('/', { fetch: sessionFetch as typeof fetch, headers: csrfHeader }).api.console;
 

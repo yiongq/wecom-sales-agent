@@ -1,3 +1,4 @@
+import { Onboarding } from './Onboarding.js';
 // 总览（spec「逐页设计 · 总览（A 页）」与 02 spec「后台页面 · 总览 A2」「可观测性与告警 · 运行数字」，
 // 设计系统 §5.10、§5.11、§6.7、§10.2 A 页与「02 后端到位后 · A2」）：回答两个问题，现在要处理什么，业务怎么样。
 // 从上到下：需要你处理（含 A2 的等人接手/已成交客户要人工/待付款 + 本月成交额）→ 运行数字 → 成交与转人工（07 R23，带来源视图，
@@ -930,6 +931,7 @@ export function OverviewPage() {
     <>
       {/* 状态句包成一段：页头的状态行是 flex，Sep 拆成单独的项会多出 8 的间隔 */}
       <PageHeader title="总览" status={<span>{cjk([viewer.me.sandbox ? 'AI销售工作台' : viewer.me.tenantName, date])}</span>} />
+      <Onboarding />
       <TodoBlock pack={pack} editor={editor} canHandle={canHandle} now={now} view={view} onSettled={showBelow} />
       <MetricsBlock editor={editor} />
       <DealsBlock editor={editor} view={view} onView={setView} />

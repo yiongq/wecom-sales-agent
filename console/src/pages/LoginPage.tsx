@@ -7,7 +7,7 @@ import { useRouterState } from '@tanstack/react-router';
 import { type MouseEvent, useEffect, useRef } from 'react';
 import { LoginForm } from '../LoginForm.js';
 import { useDocumentTitle } from '../shell/hooks.js';
-import { SHOWCASE_COPY, type PublicEntryBrand, type Showcase } from '../../../src/shared/entry-ui.js';
+import { type PublicEntryBrand, type Showcase } from '../../../src/shared/entry-ui.js';
 import { cjk } from '../typography.js';
 import { type AnonViewer, type Viewer, VIEWER_KEY } from '../viewer.js';
 
@@ -26,7 +26,7 @@ export function LoginPage({
 }) {
   const qc = useQueryClient();
   const href = useRouterState({ select: (s) => s.location.publicHref });
-  useDocumentTitle(brand?.name ?? 'AI销售工作台');
+  useDocumentTitle(brand?.name ? `登录 · ${brand.name} · 单来` : '登录 · 单来');
   const image = brand ? brand.image : showcase;
   // 进入匿名视图时链接随登录页卸载，焦点放到已挂载的外壳 main。
   const returning = useRef(false);
@@ -48,17 +48,17 @@ export function LoginPage({
   return (
     <div className={`login-page ${demo ? 'login-demo' : 'login-prod'}`}>
       <main id="main" className="login-panel">
-        <div className="entry-wordmark">{brand?.name ?? 'AI销售工作台'}</div>
+        <div className="entry-wordmark">单来</div>
         <div className="login-column">
-          <h1 className="login-title">登录</h1>
+          <h1 className="login-title">单来</h1>
           <p className="login-lead">
             {brand ? (
-              cjk(brand.subtitle)
+              cjk(brand.name)
             ) : (
               <>
-                {cjk('AI在企业微信里接待客户，')}
+                {cjk('在企业微信里接收工业询价，')}
                 <br />
-                {cjk('你在这里管话术、产品和会话。')}
+                {cjk('匹配产品、试算报价、审批与人工接手。')}
               </>
             )}
           </p>
@@ -90,8 +90,8 @@ export function LoginPage({
         <aside className="entry-showcase" aria-label="产品画面">
           <div className="entry-showcase-content">
             <img src={image.src} alt={image.alt} width="460" />
-            <h2>{brand?.name ?? SHOWCASE_COPY.title}</h2>
-            <p>{brand?.subtitle ?? SHOWCASE_COPY.description}</p>
+            <h2>单来</h2>
+            <p>接收工业询价，匹配产品、试算报价、审批与人工接手</p>
           </div>
         </aside>
       )}

@@ -2,6 +2,7 @@
 // 徽标、头像取色、会话标签、视口三档。不依赖 React，shell.selftest.ts 直接 import。
 // 角色的中文名在 src/shared/ui-labels.ts，相对时间在 src/shared/format.ts。
 // 界面代码不认行业：实体名、图标名、产品库分组名、客户的叫法都取自 /pack 下发的行业包（spec「行业包通用架构 · 下发」）
+import { canReadSettings } from '../settings/model.js';
 import type { ConversationRow, Me } from '../../../src/shared/console-api.js';
 import { shortIdOf } from '../../../src/shared/conversation.js';
 import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
@@ -15,7 +16,7 @@ export const isEditor = (v: ShellViewer): boolean => v.kind === 'member' && (v.m
 // ---------------- 侧栏 ----------------
 
 /** 导航项的图标：固定页面用自己的图标，实体用行业包给的 lucide 名称 */
-export type NavIcon = { page: 'overview' | 'sop' | 'conversations' | 'traces' | 'audit' } | { entity: string };
+export type NavIcon = { page: 'overview' | 'sop' | 'conversations' | 'traces' | 'audit' | 'settings' } | { entity: string };
 
 export interface NavItem {
   /** 按它匹配当前路由：不带 /console 的路径 */
@@ -70,6 +71,8 @@ export function buildNav(pack: IndustryPack, viewer: ShellViewer): NavGroup[] {
   if (isEditor(viewer)) ops.push({ key: '/traces', label: 'AI记录', icon: { page: 'traces' } });
   if (isEditor(viewer)) ops.push({ key: '/audit', label: '审计日志', icon: { page: 'audit' } });
   if (ops.length) groups.push({ key: 'ops', title: '运营', items: ops });
+  if (viewer.kind === 'member' && canReadSettings({ ...viewer, pack }))
+    groups.push({ key: 'settings', title: null, items: [{ key: '/settings', label: '设置', icon: { page: 'settings' } }] });
   return groups.filter((g) => g.items.length > 0);
 }
 
@@ -110,10 +113,11 @@ export function searchPlaceholder(pack: IndustryPack, viewer: ShellViewer): stri
 // ---------------- 租户、标题 ----------------
 
 /** 侧栏租户行与标签页标题里的租户名；匿名不显示租户名，写「演示」（开放问题 5） */
-export const tenantLabel = (v: ShellViewer): string => (v.kind === 'member' ? (v.me.sandbox ? 'AI销售工作台' : v.me.tenantName) : '演示');
+export const tenantLabel = (v: ShellViewer): string => (v.kind === 'member' ? (v.me.sandbox ? '单来' : v.me.tenantName) : '演示');
 
 /** 标签页标题：「页名 · 租户名」，详情页「条目名 · 实体名 · 租户名」（spec「信息架构」，不变量 23） */
-export const documentTitle = (page: readonly string[], v: ShellViewer): string => [...page, tenantLabel(v)].join(' · ');
+export const documentTitle = (page: readonly string[], v: ShellViewer): string =>
+  [...page, v.kind === 'member' && v.me.sandbox ? '' : tenantLabel(v), '单来'].filter(Boolean).join(' · ');
 
 /** 首字：租户 logo 的兜底与头像里的字 */
 export const firstChar = (name: string): string => Array.from(name.trim())[0] ?? '';

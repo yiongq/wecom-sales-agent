@@ -8,7 +8,7 @@
 
 - 新设置接口均 GET；以 Host 与真实会话确定租户，不接收自报 tenantId/actor/role。owner/admin 可用；supervisor/agent/viewer、沙箱、匿名只读模式 403。prod 未登录或失效会话 401；既有 usage 的匿名 403 按 14 原样保留。
 - 错误体沿用 ApiError：unauthorized 401、forbidden 403、db_disabled/store_file_mode 503、internal 500。不可把查询异常吞成空列表；不把 SQL/凭据放进 detail。没有新增写入错误或占位成功响应。
-- 查询键 `['settings', tenantId, userId, page]` 只用于内存缓存，身份从真实认证结果取得；登出、401/403、切组织清 settings 前缀。用量 30 秒重取、页面隐藏暂停；其他配置在重新打开与聚焦时重取。
+- 查询键 `['settings', tenantSlug, userId, page]` 只用于内存缓存，`tenantSlug` 取自真实认证的 `/me`（第 2、5 步修正，原写 tenantId，`Me` 不含此字段）；身份从真实认证结果取得；登出、401/403、切组织清 settings 前缀。用量 30 秒重取、页面隐藏暂停；其他配置在重新打开与聚焦时重取。
 - 已发布品牌取启动的发布快照，待生效标记比较发布快照与持久配置。渠道 enabled 与 loaded 分开；env accountId 为 null，kind 从 wecom_kf 投影为 wecom，缺入站证据 lastInboundAt=null；不可序列化渠道行或凭据对象。
 - onboarding 的 team/catalog/sop/channel 分别看另一有效成员、包定义的可用上架条目、已发布话术、实际装载企微账号且有入站记录。href 仅取 ONBOARDING_HREFS：产品库把 `:kind` 替换为当前包已登记且编码后的实体 kind；不输出模板占位符，不接收外部 URL。reason 为用户可读原因，不能放运维秘密。
 

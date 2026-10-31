@@ -80,6 +80,13 @@ const traces = createRoute({ getParentRoute: () => root, path: '/traces', valida
   import('./pages/traces.lazy.js').then((m) => m.Route),
 );
 
+const settings = createRoute({ getParentRoute: () => root, path: '/settings' }).lazy(() =>
+  import('./settings/settings.lazy.js').then((m) => m.IndexRoute),
+);
+const settingsPage = createRoute({ getParentRoute: () => root, path: '/settings/$page' }).lazy(() =>
+  import('./settings/settings.lazy.js').then((m) => m.PageRoute),
+);
+
 const specimenSearch = (s: Record<string, unknown>): { theme?: 'light' | 'dark' } =>
   s.theme === 'light' || s.theme === 'dark' ? { theme: s.theme } : {};
 const fieldsSpecimenSearch = (s: Record<string, unknown>): { theme?: 'light' | 'dark'; kind?: string; code?: string; as?: string } => ({
@@ -114,6 +121,8 @@ export const router = createRouter({
     conversationWorkbench,
     traces,
     audit,
+    settings,
+    settingsPage,
     ...specimen,
   ]),
   basepath: '/console',

@@ -1,0 +1,75 @@
+.settings-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 24px;
+}
+.settings-tabs a {
+  color: var(--text-2);
+  padding: 8px 12px;
+  border-radius: var(--r-sm);
+}
+.settings-tabs a[aria-current='page'] {
+  background: var(--selected);
+  color: var(--text);
+}
+.settings-tabs a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.settings-details {
+  display: grid;
+  grid-template-columns: minmax(80px, 120px) minmax(0, 1fr);
+  gap: 12px 20px;
+  margin: 0;
+}
+.settings-details dt,
+.settings-help {
+  color: var(--text-3);
+}
+.settings-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.settings-help {
+  margin: 16px 0;
+  font-size: 13px;
+  line-height: 20px;
+}
+.settings-list {
+  list-style: none;
+  padding: 0;
+  margin: 16px 0;
+  display: grid;
+  gap: 16px;
+}
+.settings-list li,
+.settings-section {
+  background: var(--panel);
+  border-radius: var(--r-sm);
+  box-shadow: inset 0 0 0 1px var(--divider);
+  padding: 20px;
+  min-width: 0;
+}
+.settings-list h2 {
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+.settings-email {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .settings-details {
+    grid-template-columns: 1fr;
+    gap: 6px;
+  }
+  .settings-details dd {
+    margin-bottom: 12px;
+  }
+  .settings-list li,
+  .settings-section {
+    padding: 16px;
+  }
+}
