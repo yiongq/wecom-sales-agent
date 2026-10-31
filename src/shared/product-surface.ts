@@ -35,7 +35,7 @@ export interface TrialTenantAllowlistEntry {
 }
 /** 全部合成，素材由 C 路建立；不存个人信息、不接 ERP，不携带实际报价金额。 */
 export const TRIAL_SEED_MANIFEST = [
-  { key: 'inquiry', scenario: '规格不完整，等待补充型号或数量', order: 'none' },
+  { key: 'inquiry', scenario: '规格不完整，等待客户提供型号或数量', order: 'none' },
   { key: 'matching', scenario: '候选产品匹配与替代型号比较', order: 'none' },
   { key: 'quote-pending', scenario: '报价待人工审批', order: 'pending' },
   { key: 'quote-approved', scenario: '已批准报价与客户只读链接', order: 'approved' },
