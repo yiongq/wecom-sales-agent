@@ -406,10 +406,11 @@ for (const version of [19, 20] as const) {
     throw error;
   }
   // 默认 sleep 也用真实时钟验证；其余时限用上面的注入时钟逐字段覆盖。
+  // 定时器可比 Date.now() 早 1 毫秒触发，留 10 毫秒余量；精确的 1000 由注入时钟的用例断言。
   const paced = await startOdooMock({ version });
   try {
     await createOdooConnector({ send: createEgress(paced.url, { allowLoopback: true, resolver }), apiKey, locationId: 10 }).check();
-    for (let i = 1; i < paced.requests.length; i++) assert.ok(paced.requests[i].at - paced.requests[i - 1].at >= 1000);
+    for (let i = 1; i < paced.requests.length; i++) assert.ok(paced.requests[i].at - paced.requests[i - 1].at >= 990);
     pass(version, '默认 sleep 的真实请求间隔不少于 1 秒');
   } finally {
     await paced.close();

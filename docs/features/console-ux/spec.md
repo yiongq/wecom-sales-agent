@@ -1,6 +1,8 @@
 # 后台 UX 重做：「利落」与行业包通用界面
 
 Status: implemented
+Superseded in part by: [15 · 产品门面：单来官网、文档与设置中心](../../architecture/15-product-surface/spec.md) — 「信息架构」的标题格式与不变量 23 的标题结尾一句，改为「页面 · 组织名 · 单来」，组织名为空时为「页面 · 单来」（15 R11）。
+Amended by: [15 · 产品门面：单来官网、文档与设置中心](../../architecture/15-product-surface/spec.md) — 新增只读设置导航、组织/成员/渠道投影、消费 14 R9 的用量页与新手清单；沿用风格 A，不新增成员/渠道网页写操作（15 R4–R9）。
 Superseded in part by: [05 · 同部署多租户 + 一键体验沙箱](../../architecture/05-tenancy-sandbox/spec.md) — 「外壳 · 启动」表的 demo 匿名入口、「行业包通用架构 · 下发」的 demo 匿名外壳一句、「登录」的返回演示链接（05 R23、开放问题 15）。
 Amended by: [05 · 同部署多租户 + 一键体验沙箱](../../architecture/05-tenancy-sandbox/spec.md)（Me 新增 sandbox，console 新增匿名接口 GET /api/console/entry，见 05 R10、R22、R23）。
 Superseded in part by: [02 · 会话入库 + 坐席工作台](../../architecture/02-conversations-workbench/spec.md) — 不变量 27 的最后一句（「会话接口的响应里没有客户画像字段和消息正文」）；「外壳」铃铛弹层行尾「打开工作台」新标签打开 `admin.html#s=<id>`，与「计数刷新」的 30 秒轮询（改由 SSE 驱动）；「会话列表（I 页）」的状态句「接手和回复目前在工作台里完成」，主按钮、点一行与「打开工作台」新标签打开 `/admin.html`（`#s=<id>`）；验收 20 的「点一行，新标签页打开工作台并选中该会话」（改为在当前标签打开 J 页并选中该会话）与同条「带 `ADMIN_PASS` 时，对一个真实会话再走一次：登录框走完后仍然选中」（随之不再适用）。按 02 的 plan 落地，改写后的条文见 02「与 01、后台 UX spec 的关系」，原因见 02 顶部 `Supersedes in part:`

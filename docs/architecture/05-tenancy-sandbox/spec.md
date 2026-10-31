@@ -1,6 +1,8 @@
 # 05 · 同部署多租户 + 一键体验沙箱
 
 Status: implemented
+Superseded in part by: [15 · 产品门面：单来官网、文档与设置中心](../15-product-surface/spec.md) — R23、界面「登录页」、验收 17 的通用产品标题及本项目线上免登录体验入口部署选择；线上改 prod 普通登录并按原 plan 长期停用沙箱，源码 demo 档免登录、匿名只读、自动准备和沙箱安全契约保留（15 R10、R11）。
+Amended by: [15 · 产品门面：单来官网、文档与设置中心](../15-product-surface/spec.md) — 专用 standard 试用公司运维约束：复用工业租户、普通共享 agent，合成种子加试用者消息、7 天保留、共享告知与白名单手动重置；不扩展沙箱权限（15 R10、R12）。
 Amended by: [11 · 外部业务系统连接器：Odoo 实时库存（只读）](../11-erp-connector/spec.md)（只做新增：R5 的进程内状态清单加连接器的租户状态，R12 `sandbox_tenant_purge` 的删除清单加 `erp_connectors`、`erp_item_links`；见 11 R3、R5、R11）
 Amended by: [12 · 客户发来的图片与文件：询价单识别与确认](../12-customer-files/spec.md)（只做新增：`sandbox_tenant_purge` 加附件表，用量 `purpose` 加 `vision`；全文见该 spec 顶部 `Amends:`）
 Superseded in part by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md) — R21「微信里点开的链接」中固定三类公开页及其接口的白名单：改由核心登记与本租户包的 SiteLinkDef 登记合并生成，页面与 resources 的方法 / 路径按 09 R10；旅游白名单逐项相同，令牌、cookie 优先级、同源与限频规则不变。
