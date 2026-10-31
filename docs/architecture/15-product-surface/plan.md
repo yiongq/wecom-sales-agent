@@ -5,13 +5,13 @@ Revisions: 2026-10-31 owner 对「宿主和定位都按推荐定吗」答「都�
 Revisions: 2026-10-31 owner 明确批准「按推荐，15 改 ready」；落实共享试用消息与 7 天保留/手动清理、复用工业租户并保留停用旅游数据、旧旅游支付页不对外且字节不改。当时首步方案由本次不换宿主修订取代，14 R6 依赖保留；并行仍最多三路。
 Revisions: 2026-10-31 按 owner 定案重排第 1 批：线上 prod、普通共享试用账号与手动白名单重置；移除成员邀请、渠道网页提交及在线演示的实现步骤，组织/成员/渠道只读；按最多三路划分依赖，用量页最后接 14 R9，补上 prod 与存量迁移/回退核对。原计划未开工，本次允许按新范围重新编号。
 
-对应 [spec.md](./spec.md)。本文件是唯一进度与交接面；R 与验收均指本 spec。产品选择及本次宿主与定位均已定，owner 已点名批准 15 ready；第 0 步已有静态核对结论、动态验证待做，实施代码尚未开始。
+对应 [spec.md](./spec.md)。本文件是唯一进度与交接面；R 与验收均指本 spec。产品选择及本次宿主与定位均已定，owner 已点名批准 15 ready；第 0 步动态验证已通过；第 1 步共享契约、最小权限迁移与贯穿骨架已落地，本轮最终门禁与交接见下文。第 2 步及之后尚未实现。
 
 ## 开工条件
 
 1. **已 ready**：owner 于 2026-10-31 明确批准，原话「按推荐，15 改 ready」。本次 owner 又对「宿主和定位都按推荐定吗」答「都按推荐」。旅游保持 DEFAULT_TENANT_SLUG 与宿主身份、工业非宿主唯一映射 app；第 0 步验证停用宿主仍能服务工业，走不通即停止报告，不自行换宿主、新建租户或改旧支付页。
-2. 01/03/05/10/后台 UX 已加顶部反向标记，主参考阶段 8 已登记；08 的旧旅游字节契约不变，无需给 08 加取代标记。Caddy/VitePress 选型 ADR 在实施第 1 步登记；不改 AGENTS.md。
-3. 11 代码与发布边界就绪；14 已 ready、核心已有合入，但完整 R6/R9 实现与验收仍是依赖：第 0 步待完整 R6 合入后验证宿主 suspended、工业 app 正常服务，未通过时不勾完成；第 7 步必须等 R9 真实接口与计数链路。后续三路从第 0–1 步通过后的同一合入点分出。
+2. 01/03/05/10/后台 UX 已加顶部反向标记，主参考阶段 8 已登记；08 的旧旅游字节契约不变，无需给 08 加取代标记。Caddy/VitePress 选型已登记 ADR-006；不改 AGENTS.md。
+3. 11 代码与发布边界就绪；本轮基线 f7b2d877 已含 14 R6/R9 与评审修复，第 0 步已验证宿主 suspended、工业 app 正常服务。第 7 步仍须接 R9 真实接口与计数链路，不以本轮宿主验证替代用量验收。后续三路从第 0–1 步通过后的同一合入点分出。
 
 4. 实施阶段可运行四门禁、一次性真实 PG、本地 HTTPS/浏览器及假企微传输端；真实 PG 使用当次专用 pgvector/pgvector:pg17，限时执行并清理，不碰已有容器。
 5. 发布前实际域名映射、正式素材、法律正文、账号和渠道配置在私有记录就绪；11/14/15 联合发布须 owner 当次授权。未满足时保留本地结果，不声称上线或 implemented。
@@ -26,14 +26,14 @@ Revisions: 2026-10-31 按 owner 定案重排第 1 批：线上 prod、普通共�
 
 ## 第 1 批步骤
 
-- [ ] 0. 不换宿主的静态核对与停用宿主动态验证。
+- [x] 0. 不换宿主的静态核对与停用宿主动态验证。
   - 静态结论已核实：只有宿主读 env 企微账号，非宿主旧入口受 hostOnlyPath 限制（src/channels/registry.ts:297、src/tenancy/hosts.ts:74）；旅游继续拥有 DEFAULT_TENANT_SLUG、env、var 与 JSON，工业只改 public_host 到 app，不迁账号、不切双目录、不恢复 JSON。非宿主 publicBase 从 public_host 生成新链接（src/tenancy/hosts.ts:61），旧工业域固定上游 Host 改写兼容；旅游旧 Host 只留批准回调。
   - 静态结论已核实：文件后端仅宿主可用，演示类 id 不入 PG（src/store.ts:190、src/store/project.ts:17）；工业种子采用 R10 的 PG 契约，增加保留期豁免与通知守卫。旅游保留不等于冻结，原保留期/访客清理继续；共享 spill、恢复哨兵、锁、05 停沙箱及 11/14 回退约束仍在。
   - 静态风险已记录：旅游仍承担宿主文件、env、配置校验与健康详情，/healthz 不能证明工业可用（src/server.ts:398）；Basic 旧接口不因 suspended 自动关闭，/api/orders/:id/pay 不在 hostOnlyPath 中，仍要代理或代码收口。逐项覆盖 hostRuntime 调用方、告警、调度、文件写入、ADMIN_PASS、登录、拨测；14 R6 的启动/引擎/恢复覆盖以最终实现与验收为准，不能用核心合入代替。
-  - 动态待验证：依赖完整 14 R6 合入，在一次性环境验证「宿主 suspended、工业在 app 上正常服务」，包括启动、普通登录/真实收发、旅游停用阻断、恢复路径与隔离。演练先发 R6 镜像且旅游 active、稳定后再 suspended；后续回退目标必须支持 R6，保持宿主/env/var 归属。
+  - 动态已验证：真实 pgvector/pgvector:pg17、prod/db/db 生产 server 路径下，旅游 active 启动，真实轮询 29287ms 内 suspended 生效，停用重启成功；工业普通登录/后台读取/签名回调/引擎回复、旅游停用优先级/跟进阻断、恢复与隔离均通过。镜像切换、代理与 live 仍留第 9–10 步；先发 R6 镜像且旅游 active、稳定后再 suspended，后续回退目标必须支持 R6，保持宿主/env/var 归属。
   - 数据待核实：工业只含合成或试用者消息，既有保留期、行权删除/附件清理路径可用；实际映射、配置、存量正式数据与发布窗口另记，未访问服务器，不把静态审查当成线上证据。
   - 验：上述动态链路通过、有独立工业拨测证据且不串租户才勾完成；R6 不可用、验证失败或发现无法归类的正式数据即停止报告，不清数据绕过。依赖开工条件 1–3；静态核对不构成完成。
-- [ ] 1. 共享契约与贯穿用例骨架（R1、R4、R6–R10、R12）。
+- [x] 1. 共享契约与贯穿用例骨架（R1、R4、R6–R10、R12）。
   - 固定只读 DTO、URL、错误码、角色能力、query keys、受限成员读函数及最小授权；14 R9 类型直接引用，不另设计 UsageView。
   - 固定工业询价对外主线、静态产物/内容白名单、平台品牌输入、旧路径分类、工业旧域固定 Host 代理与旅游仅回调放行规则；登记已定静态选型 ADR。
   - 冻结非宿主工业 UUID/slug/pack 白名单、trialseed 批次随机 id、simulator/seed=true/无渠道绑定、订单批次随机 id、合成种子清单；不使用或扩展 isDemoClassId。明确真实消息三类 7 天、readPurgeCandidates 跳过 seed=true、手动一起清、共享告知与种子不外发/不通知。
@@ -132,10 +132,10 @@ Revisions: 2026-10-31 按 owner 定案重排第 1 批：线上 prod、普通共�
 
 ## Open
 
-- 无产品决定待确认；第 0 步已有静态结论，宿主 suspended、工业 app 正常服务的动态验证尚未执行，依赖完整 14 R6 合入。若验证失败停止报告，不改 owner 已定方案。
-- 14 核心合入不能代替 R6/R9 完整验收；第 0 步与第 7 步分别受其约束，联合发布不能以 mock 完成。
-- 工业实际数据归类、Host/配置与存量状态未核实，发布窗口确认；真实映射、法律正文、正式素材和上线当次授权仍是前置，真实值另记。PG 重置批次承载与读取、阶段恢复契约按第 1 步冻结，不得宣称跨身份单事务。
-- 首版 test 超时记录待实施阶段按合适环境/限时跑完整门禁。
+- 无产品决定待确认；第 0 步已在包含完整 R6 的基线上通过真实 PG/生产启动验证，不换宿主可继续。第 2 步及以后尚未实现，真实代理、镜像与 live 证据未取得。
+- 14 R6/R9 已在当前基线；第 7 步须接真实 UsageView 与计数链路，联合发布不能用模型/传输替身替代 live。
+- 工业实际数据归类、Host/配置与存量状态未核实，发布窗口确认；真实映射、法律正文、正式素材和上线当次授权仍是前置，真实值另记。PG 重置复用追加 audit_log 的批次承载、启动读取与阶段恢复契约已在第 1 步冻结，待 C 路实现，不得宣称跨身份单事务。
+- 本轮按任务只跑新增/受影响套件与指定门禁，不跑完整 pnpm test；全量由 CI 承担，历史超时不算通过。
 
 ## 已定
 
@@ -169,9 +169,41 @@ Revisions: 2026-10-31 按 owner 定案重排第 1 批：线上 prod、普通共�
 - 阻塞：无产品决定待确认；当时的 R6/R9、首步部署验证及上线材料/当次授权尚未就绪；首步方案已由下条取代。
 - 下一步原为协调者提交与第 0 步验证；本次按下条不换宿主方案继续，不恢复旧迁移子任务。
 
-### 交接（2026-10-31，不换宿主、对外专注工业询价）
+### 交接（2026-10-31，不换宿主、对外专注工业询价，历史）
 
 - 已完成：owner 定案与连带项落入 15 spec/plan、主参考；第 0 步静态结论已记录，删去宿主迁移、env 迁离、双目录切换、JSON 恢复及回退恢复宿主子任务，新增 PG 种子/重置/保留期与通知保护、两段上线及业务拨测契约。
 - 半成品状态：仅文档改动，无实现代码；步骤 0–13 均未勾，第 0 步只完成静态部分。检查结果见本轮实施记录，不跑完整 test、不提交，提交由协调者完成。
 - 阻塞：无产品决定待确认；完整 14 R6 合入及第 0 步动态验证、14 R9 接入验收、实际数据归类和发布材料/当次授权尚待完成。
 - 下一步：协调者审阅提交；待完整 R6 合入，在一次性环境验证宿主 suspended、工业 app 正常服务，通过第 0–1 步后按原 A（2→5）、B（3）、C（4→6）三路推进；7 最后接用量，再串行贯穿/演练，按 R12 两段联合上线。
+
+### 第 0–1 步实施记录（2026-10-31）
+
+- 基线 f7b2d877（含 14 R6/R9 与评审修复），新增 product-surface 自测并串入 package.json；真实 pgvector/pgvector:pg17、prod/db/db 完整 server 启动，普通 HTTP 登录与签名回调，只有模型/企微外部传输替身。第 0 步六项通过，30 秒生产轮询最终复跑实测 29287ms，未手动刷新 limits。
+- 工业普通 agent 登录、后台会话读取、真实回调/inbox/引擎回复通过；旅游 suspended 后登录失效、消息入库、固定句跨重启只发一次，紧急与撤回同意优先、到期跟进 cancelled/tenant_limit 且零外发；恢复 active 后旅游恢复，两向消息/cookie 隔离通过。隐私说明是既有行权前置，夹具经 PG 发布并由真实 boot 读取，没有替换隐私状态。
+- env 账号只归旅游，工业 DB 账号的 UUID/key/userId 各不同。hostOnlyPath 代表路径均 404；/try.html 仍 200，旧支付 POST 匿名 404、有效 Basic 仍进入订单处理器，保留第 6 步显式收口要求。
+- 第 1 步冻结 `src/shared/console-api.ts` 的只读 DTO/URL/角色/错误/query keys（直接引用 UsageView），`src/shared/product-surface.ts` 的公开白名单/私有品牌输入/工业白名单/种子清单与批次阶段。Host 分类、PG 写入/行权与两身份恢复/启动读取见 `contracts.md`；Caddy/VitePress 见 ADR-006。没有第 2 步及之后的 handler、页面、CLI 或假成功接口。
+- 0025 成员投影与 journal 接在 0024 后：仅 agent_app 执行，验证真实 token hash、当前权限/有效期/standard/启停；返回五字段，未扩大登录表直读权限。新增 console-members 自测在 PGlite 与真实 PG 均通过，含 owner/admin、低权限、沙箱、跨租户、过期/撤销/降权、临时表遮蔽与 FORCE RLS；两份新增套件已串入 test 末尾。
+- PG 批次冻结为追加 audit_log 检查点（内部 ref + 合成 id），全程锁与 spill/哨兵检查，agent_platform 撤销会话/改密/逐项行权，agent_app 写种子，未完成批次启动拒绝；不是跨身份单事务。实际 guard/CLI 留第 4 步，现有工业报价白名单须由 C 路精确兼容种子订单格式，不能扩大客户授权。
+- 动态复现：为本次一次性 PG 设置 PG_TEST_URL 后执行 `pnpm exec tsx src/tenancy/product-surface.selftest.ts`；输出六项 PASS 与 PRODUCT SURFACE SELFTEST PASS。成员投影执行 `pnpm exec tsx src/db/console-members.selftest.ts`，PGlite/real-pg 均 PASS。生产 timer 未替换，数据库、认证、渠道、引擎与发送账本真实，模型和企微网络为外部替身。
+- 四哈希断言通过：prompt `cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b48713900`；tools `59e071568f5dd730398ac4b848a9ccdccc40633d3ae6698e0c1a7840f6793cdd`；prefix `6630127f79d7854ec7d3abe96f1eae65e7acbed09f12a5b1bc22b539fd17e19e`；sop `1f850038290b202f66573695faee972bd0b03a3da9ec3e62e665ff5fa6b81ba3`。锁定八文件与 spec 对 HEAD 字节一致。
+- 文件/PGlite v2 最终复跑：分别执行 `CONFIG_SOURCE=file LLM_MOCK=1 pnpm exec tsx eval/run.ts` 与另加 `CONFIG_TEST_DB=pglite` 的同命令；各 923/923、9015 断言、快照 0 差异，DB 22 个请求的前缀与 healthz 0 差异。完整 pnpm test 未运行。
+- 已通过 `pnpm -s format:check`（990 文件）、lint、typecheck，改前/改后 test:locked，以及 `pnpm exec tsx scripts/ci-shard.ts --check 4`（235 units、27 strict suites）与 `git diff --check`。首次 lint/类型检查指出新契约数组需不可变声明、测试 SQL 结果需明确投影类型，修正后通过，没有修改门禁或既有生产逻辑。数据库总套件随后指出新函数未列入既有权限白名单；已在 `src/db/db.selftest.ts` 精确登记成员函数及其签名的 app 专用权限，未知函数默认拒绝保持，重跑结果见最终交接。
+- 按改动路径及新增导出名检索命中超过 15 套，采用通用约定的路径命中集：`scripts/ci-shard.selftest.ts`；`console/src/session.selftest.ts`、`console/src/parts/errors.selftest.ts`、`console/src/shell/shell.selftest.ts`；`src/ops/ops.selftest.ts`；`src/console-api/{console,attachments,traces}.selftest.ts`；`src/payment/legacy-bytes.selftest.ts`；`src/web/web.selftest.ts`；`src/core/link-bytes.selftest.ts`；`src/db/{attachments,db,rollback-guard}.selftest.ts`；`src/config/{gate,retrieval-kb}.selftest.ts`；`src/tenancy/events-channels.selftest.ts`；`src/{order-readers,quote-actions}.selftest.ts`；`src/tenancy/sandbox/{refund-seed,http}.selftest.ts`。共 21 套 ts；同时补跑路径命中的 10 套 tsx：`console/src/{audit/audit,conversations/conversations,conversations/pack-cards,conversations/workbench,fields/fields,overview/overview,pages/login,parts/popupRegion,sop/sop,traces/traces}.selftest.tsx`。合计 31 套既有受影响测试，各自保留 package 的时钟/tsconfig 参数，真实 PG 部分串行；本轮新增两套另跑。最终结果与清理见下方交接，未命中的全量留 CI。
+- 实际线上配置与数据盘点仍留发布窗口，本机通过不代表 live。
+
+### 三路派活文件边界（第 0–1 步合入后生效）
+
+以下是排他修改清单；其他文件只读。新文件可在列出的专属目录内按职责拆分，同名自测归同一路；公共入口变更由分路提交补丁说明，整合者串行落地。三路统一读取 `contracts.md` 和 shared 常量，不各自改合同；不得提前做第 7 步用量页。
+
+- **A：2 → 5**。可改：新建 `src/console-api/settings.ts`、`src/console-api/settings.selftest.ts`、`src/db/repo/console-settings.ts` 及其自测；新建 `console/src/settings/**`；`console/src/overview/**`（引导）、`console/src/pages/LoginPage.tsx`、`console/src/pages/login.selftest.tsx`、`console/src/LoginForm.tsx`、`console/index.html`（品牌标题）。不能改 B/C 专属文件、静态站/部署/种子/通知/保留期，也不能改下列公共文件。router、导航与 app 挂载提供待整合补丁；用真实 API，不做网页写入。
+- **B：3**。可改：新建 `site/**`、`docs-site/**`、`scripts/product-sites/**`；只新建 `docs/guides/quick-start.md`、`bind-wecom.md`、`catalog.md`、`sales-sop.md`、`faq.md`、`changelog.md`；`README.md`、`README.zh-CN.md`、新建 `BRAND.md`。不能改 console、src 业务模块、部署、其他指南/架构文档或公共文件；依赖/构建命令/锁文件提出精确变更交整合者，不能复制整个 docs。
+- **C：4 → 6**。可改：新建 `src/cli/trial-reset.ts` 及其自测、`src/tenancy/trial/**`、`src/db/repo/trial-reset.ts` 及其自测；`src/db/repo/retention.ts`、`src/privacy/privacy.selftest.ts`、`src/notify/handoff.ts`、`src/notify/notify.selftest.ts`、`src/packs/industrial/quotes.ts`、`src/industrial-quotes.selftest.ts`、`src/site-links.selftest.ts`（种子订单精确匹配）；新建 `deploy/product-surface/**`（Caddy/发布模板）、`docs/guides/product-surface-deploy.md`（非公开构建白名单）。不能改 A/B 文件、旅游包/支付页/字节基线、登录表授权或其他租户数据。启动批次 gate、现有发送链与部署入口若需接线，交整合者串行修改，禁止给 app 增加 DELETE 权限。
+- **整合者独占，A/B/C 均不直接改**：`src/shared/**`、`drizzle/**`、根及 console 的 package/lock/workspace 配置、`src/server.ts`、`src/boot.ts`、`src/config/source.ts`、`src/console-api/app.ts`、`src/store.ts`、`src/adapters/wecom.ts`、`src/quota/**`、`console/src/router.tsx`、`console/src/shell/**`、`console/src/api.ts`、`console/src/fonts/**`、已有 `deploy/**` 与 `deploy.sh`、本 spec/plan/contracts/ADR、`src/tenancy/product-surface.selftest.ts`、`src/db/console-members.selftest.ts`、`src/db/db.selftest.ts`。分路提交真实验收片段，由整合者扩展贯穿测试；不得复制占位成功接口。
+- **所有路都不能改**：AGENTS.md/CLAUDE.md、锁定八文件、旧旅游支付 HTML/字节基线；不能接触服务器、真实 env/凭据/客户资料。独立 worktree、最多三路；整合者不另开第四路并发改公共文件。
+
+### 本轮最终交接（2026-10-31）
+
+- 已完成并勾选第 0–1 步：六项真实 PG/生产启动验证、新增两套及 31 套既有受影响自测全部通过；数据库总套件同步精确权限白名单后 1346 项通过，回退保护 702 项通过。全部指定门禁与文件/PGlite v2 通过，四哈希不变。第 2–13 步未开始，Status 保持 ready；spec 原样，未提交，由协调者提交并给三路同一合入点。
+- 资源：本次 wsa15-step0-pg 容器及匿名卷已删除，docker ps -a 与 volume ls 的精确过滤结果为空；生产测试子进程已由 finally 等待退出，var 下本次运行目录为空。全机 ps 被沙箱拒绝，未声称完成全局进程核验；未碰其他容器、服务器、真实 env 或真实模型，未开浏览器。
+- 下一步：按上表 A（2→5）、B（3）、C（4→6）派活；步骤数仍为 14（0–13）、实现步骤仍为 6（2–7）、并行分组不变。共享入口由整合者串行处理，7 最后接用量，8–10 再贯穿/镜像/经授权上线。
+- 需要确认的问题：无。真实映射、材料和上线授权继续是发布前置，不是本轮静态合同的未定产品选择。
