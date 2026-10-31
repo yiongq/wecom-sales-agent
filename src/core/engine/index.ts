@@ -1,6 +1,7 @@
+import { limitHandoffReply } from '../../tenancy/limit-handoff.js';
 import { limitVerdict } from '../../tenancy/limits.js';
 import { customerRate } from '../../tenancy/customer-rate.js';
-import { LIMIT_QUOTA_REPLY, LIMIT_SUSPENDED_REPLY, LIMIT_RATE_REPLY } from '../../tenancy/limit-replies.js';
+import { LIMIT_SUSPENDED_REPLY, LIMIT_RATE_REPLY } from '../../tenancy/limit-replies.js';
 import { withErpTurn, erpTurnStats } from '../../connectors/registry.js';
 import { receiveAttachment } from './intake.js';
 import type { AttachmentItem } from '../../db/repo/attachments.js';
@@ -238,6 +239,11 @@ export interface HandleOpts {
 
 /** 这一轮写进会话的那条回复消息（02 第 12 步：渠道发送时交给发送账本，账本行据它取 seq）。不往 AgentReply 上加字段 */
 const replyMessages = new WeakMap<AgentReply, ChatMessage>();
+// 闸门回合不询问敏感信息同意，也不消耗询问次数。
+function limitedReply(state: TurnState, reply: AgentReply): AgentReply {
+  state.onLimited();
+  return reply;
+}
 
 /** handleMessage 返回的回复对应会话里的哪条消息；静默、没写进会话的没有 */
 export function replyMessageOf(r: AgentReply): ChatMessage | undefined {
@@ -296,8 +302,15 @@ export function handleMessage(sessionId: string, text: string, channel: string, 
       rt.cancel.throwIfAborted();
       if (opts.stillCurrent && !opts.stillCurrent())
         return { text: '', stage: getSession(sessionId)?.stage ?? currentPack().runtime.stages[0]!.id, silent: true };
-      const reply = await pinCatalogForTurn(() => withTurnScope(() => handleMessageInner(sessionId, text, channel, opts, receivedAt)));
-      if (currentRuntime().cancel.aborted) return reply;
+      let limited = false;
+      const reply = await pinCatalogForTurn(() =>
+        withTurnScope(() =>
+          handleMessageInner(sessionId, text, channel, opts, receivedAt, () => {
+            limited = true;
+          }),
+        ),
+      );
+      if (currentRuntime().cancel.aborted || limited) return reply;
       try {
         await maybeAskConsent(sessionId, text, opts.stillCurrent);
       } catch (e) {
@@ -314,8 +327,9 @@ async function handleMessageInner(
   channel: string,
   opts: HandleOpts,
   receivedAt: number,
+  onLimited: () => void,
 ): Promise<AgentReply> {
-  const state = beginTurn(sessionId, text, channel, opts, receivedAt);
+  const state = beginTurn(sessionId, text, channel, opts, receivedAt, onLimited);
   const early = await preflight(state);
   if (early) return early;
   const { session, runtime, calls, answerIdentity, done } = state;
@@ -429,6 +443,7 @@ function applyTurnEffects(session: Session, runtime: PackBinding['runtime'], eff
 }
 
 interface TurnState {
+  onLimited(): void;
   prefetchEffects?: PrefetchResult['effects'];
   sessionId: string;
   text: string;
@@ -450,7 +465,14 @@ interface TurnState {
   receivedAt: number;
 }
 
-function beginTurn(sessionId: string, text: string, channel: string, opts: HandleOpts, receivedAt: number): TurnState {
+function beginTurn(
+  sessionId: string,
+  text: string,
+  channel: string,
+  opts: HandleOpts,
+  receivedAt: number,
+  onLimited: () => void,
+): TurnState {
   const binding = currentPack();
   const { runtime } = binding;
   const { policy, policyHash } = currentPolicy();
@@ -487,6 +509,7 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
     text,
     channel,
     opts,
+    onLimited,
     session,
     binding,
     runtime,
@@ -502,14 +525,9 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
   };
 }
 
-// 使用旧镜像认识的 failure kind；新原因是普通字符串，回滚仍能展示与通知。
 function limitHandoff(state: TurnState, reason: 'quota' | 'dailyCap'): AgentReply {
-  const { session, done } = state;
-  enterHandoff(session, { kind: 'failure', reason: HANDOFF_REASON[reason], at: Date.now() });
-  const msg: ChatMessage = { role: 'agent', content: LIMIT_QUOTA_REPLY, at: Date.now() };
-  session.messages.push(msg);
-  saveSession(session);
-  return done('budget', { text: msg.content, stage: session.stage, handoff: true }, msg);
+  const msg = limitHandoffReply(state.session, reason);
+  return limitedReply(state, state.done('budget', { text: msg.content, stage: state.session.stage, handoff: true }, msg));
 }
 
 function priorityHandoff(state: TurnState): AgentReply | null {
@@ -681,21 +699,22 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
     const verdict = limitVerdict();
     if (verdict === 'suspended') {
       // 固定句在会话中持久化，重启和重新停用也不重复发送。
-      if (session.suspendedReplyAt !== undefined) return done('silent', { text: '', stage: session.stage, silent: true });
+      if (session.suspendedReplyAt !== undefined)
+        return limitedReply(state, done('silent', { text: '', stage: session.stage, silent: true }));
       const msg: ChatMessage = { role: 'agent', content: LIMIT_SUSPENDED_REPLY, at: Date.now() };
       session.suspendedReplyAt = msg.at;
       session.messages.push(msg);
       saveSession(session);
-      return done('silent', { text: msg.content, stage: session.stage }, msg);
+      return limitedReply(state, done('silent', { text: msg.content, stage: session.stage }, msg));
     }
     if (verdict === 'quota') return limitHandoff(state, 'quota');
     const rate = customerRate(session.id, state.channel);
     if (rate !== 'ok') {
-      if (rate === 'silent') return done('silent', { text: '', stage: session.stage, silent: true });
+      if (rate === 'silent') return limitedReply(state, done('silent', { text: '', stage: session.stage, silent: true }));
       const msg: ChatMessage = { role: 'agent', content: LIMIT_RATE_REPLY, at: Date.now() };
       session.messages.push(msg);
       saveSession(session);
-      return done('silent', { text: msg.content, stage: session.stage }, msg);
+      return limitedReply(state, done('silent', { text: msg.content, stage: session.stage }, msg));
     }
   }
 

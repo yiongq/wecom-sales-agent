@@ -15,6 +15,11 @@ Object.assign(process.env, {
   LLM_MOCK: '1',
   SOP_PATH: 'data/packs/__fixture/sop.md',
   SERVER_SELFTEST: '1',
+  CUSTOMER_RATE_PER_MIN: '',
+  CUSTOMER_RATE_PER_HOUR: '',
+  FOLLOWUP_ENABLED: '1',
+  FOLLOWUP_QUIET_START: '0',
+  FOLLOWUP_QUIET_END: '0',
 });
 const tenancy = await import('../tenancy/runtime.js');
 const { enterTenantScopeForTest } = await import('../tenancy/testing.js');
@@ -24,7 +29,7 @@ const testing = await import('../db/testing.js');
 const store = await import('../store.js');
 const config = await import('../config/source.js');
 const limits = await import('../tenancy/limits.js');
-const { LIMIT_SUSPENDED_REPLY } = await import('../tenancy/limit-replies.js');
+const { LIMIT_SUSPENDED_REPLY, LIMIT_QUOTA_REPLY } = await import('../tenancy/limit-replies.js');
 const { bindPack } = await import('../core/pack-api.js');
 const { createFixtureRuntime } = await import('../packs/__fixture/runtime.js');
 const { withFixtureIntake } = await import('../packs/__fixture/intake.js');
@@ -32,15 +37,35 @@ const { sealSecrets } = await import('../channels/secrets.js');
 const channels = await import('../channels/registry.js');
 const wecom = await import('./wecom.js');
 const { __ledgerTest } = await import('../quota/ledger.js');
-const t = await testing.openTestDb();
-await testing.installSeededConfig(t, { slug: rt.slug });
-const tenantId = rt.id;
-await store.initSessionStore({ db: t.db, tenantId, tenantSlug: rt.slug, varDir: dir });
-const query = <T = Record<string, unknown>>(sql: string, params: unknown[] = []) =>
-  t.pg.transaction(async (tx) => {
-    await tx.exec('SET LOCAL ROLE NONE');
-    return (await tx.query<T>(sql, params)).rows;
+const { openDb } = await import('../db/client.js');
+const { importConfig } = await import('../config/transfer.js');
+const { __jobsTest, runJobsOnce } = await import('../jobs/runner.js');
+const fx = process.env.PG_TEST_URL ? await testing.createRealPgFixture(process.env.PG_TEST_URL, { slug: rt.slug }) : null;
+const app = fx ? await openDb(fx.urls.app) : null;
+const t = app ? null : await testing.openTestDb();
+const db = app?.db ?? t!.db;
+if (t) await testing.installSeededConfig(t, { slug: rt.slug });
+else {
+  const deps = testing.testConfigDeps({ db }, { tenantSlug: rt.slug });
+  const result = await importConfig({
+    db,
+    tenantSlug: rt.slug,
+    dataDir: 'data',
+    imageSop: deps.imageSop,
+    lock: async () => testing.fakeLock(),
   });
+  assert.equal(result.code, 0, result.message);
+  await config.initConfig(deps);
+}
+const tenantId = rt.id;
+await store.initSessionStore({ db, tenantId, tenantSlug: rt.slug, varDir: dir });
+const query = <T = Record<string, unknown>>(sql: string, params: unknown[] = []): Promise<T[]> =>
+  fx
+    ? fx.query<T>(sql, params)
+    : t!.pg.transaction(async (tx) => {
+        await tx.exec('SET LOCAL ROLE NONE');
+        return (await tx.query<T>(sql, params)).rows;
+      });
 const account = randomUUID();
 const key = Buffer.alloc(32, 9);
 const ring = { current: { id: 'fixture', key }, all: new Map([['fixture', key]]) };
@@ -65,9 +90,12 @@ let serial = 0;
 let receives = 0;
 let mediaGate: Promise<void> | null = null;
 let mediaEntered = false;
+let mediaFailure = false;
+let followupRetry = false;
 let eventRetry = false;
 let tokenGate: Promise<void> | null = null;
 let tokenEntered = false;
+let tokenExpiresIn = 7200;
 let sendGate: Promise<void> | null = null;
 let sendEntered = false;
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
@@ -81,11 +109,12 @@ globalThis.fetch = async (input, init) => {
   if (url.includes('/gettoken')) {
     tokenEntered = true;
     await tokenGate;
-    return Response.json({ access_token: 'fixture-token', expires_in: 7200 });
+    return Response.json({ access_token: 'fixture-token', expires_in: tokenExpiresIn });
   }
   if (url.includes('/media/get')) {
     mediaEntered = true;
     await mediaGate;
+    if (mediaFailure) return Response.json({ errcode: 40007 });
     return new Response(Buffer.from('ffd8ffe10008457869664750ffda000273ffd9', 'hex'), { headers: { 'content-type': 'image/jpeg' } });
   }
   const body = JSON.parse(String(init?.body ?? '{}'));
@@ -96,6 +125,10 @@ globalThis.fetch = async (input, init) => {
   }
   if (url.includes('/kf/send_msg_on_event') || url.includes('/kf/send_msg?')) {
     sent.push(body);
+    if (followupRetry && body.touser) {
+      followupRetry = false;
+      return Response.json({ errcode: 40014 });
+    }
     if (eventRetry && body.code) {
       eventRetry = false;
       return Response.json({ errcode: 40014 });
@@ -118,7 +151,7 @@ const idle = async () => {
   assert.deepEqual((await store.drainStore(5000)).undrained, []);
 };
 const initChannels = async () => {
-  await channels.initChannels({ db: t.db, tenantId, tenantSlug: rt.slug, varDir: dir, keyRing: ring });
+  await channels.initChannels({ db, tenantId, tenantSlug: rt.slug, varDir: dir, keyRing: ring });
   channels.startChannels();
 };
 const status = async (suspended: boolean) => {
@@ -277,16 +310,137 @@ try {
   await send([msg('wmLimFlight', 'text'), msg('wmLimFlight', 'text')]);
   assert.deepEqual(sentTo('wmLimFlight'), ['附件已核验。', LIMIT_SUSPENDED_REPLY]);
   console.log('14 验收 7 适配器：停用瞬间已入库且请求已发出的在途回复只完成原请求，下一轮仍至多一次固定句');
+  // 非文本和下载失败都经过同一个客户窗口及额度转人工路径。
+  await status(true);
+  mediaFailure = true;
+  const pausedFailure = msg('wmLimFailS', 'image');
+  await send([pausedFailure]);
+  assert.equal(await stateOf(pausedFailure), 'done');
+  assert.deepEqual(sentTo('wmLimFailS'), []);
+  assert.equal(store.getSession('wecom:wmLimFailS')!.suspendedReplyAt, undefined);
+  await status(false);
+  await send([msg('wmLimFailOk', 'image')]);
+  assert.equal(sentTo('wmLimFailOk').length, 1, '未停用时保留附件失败原句');
+  await query('update tenants set monthly_reply_quota=0 where id=$1', [tenantId]);
+  await limits.initializeTenantLimits();
+  for (const [uid, type] of [
+    ['wmLimQuotaN', 'voice'],
+    ['wmLimQuotaF', 'image'],
+  ]) {
+    const incoming = msg(uid!, type!);
+    await send([incoming]);
+    await send([msg(uid!, type!)]);
+    assert.equal(await stateOf(incoming), 'done');
+    assert.deepEqual(sentTo(uid!), [LIMIT_QUOTA_REPLY]);
+    assert.equal(store.getSession(`wecom:${uid}`)!.handoff?.reason, '本月 AI 额度已用完');
+    assert.equal(
+      (
+        await query(
+          "select * from jobs where tenant_id=$1 and kind='handoff_notify' and payload->>'sessionId'=$2 and payload->>'reason'='started'",
+          [tenantId, `wecom:${uid}`],
+        )
+      ).length,
+      1,
+    );
+  }
+  console.log('14 验收 2、7 适配器：非文本/附件失败先记消息；停用静默，额度共用 failure 转人工与固定句/通知且不重复');
+  await query('update tenants set monthly_reply_quota=null where id=$1', [tenantId]);
+  await limits.initializeTenantLimits();
+  process.env.CUSTOMER_RATE_PER_MIN = '1';
+  for (const [uid, first, second] of [
+    ['wmLimRateNF', 'voice', 'image'],
+    ['wmLimRateFN', 'image', 'voice'],
+  ]) {
+    await send([msg(uid!, first!)]);
+    const count = sentTo(uid!).length;
+    const limited = msg(uid!, second!);
+    await send([limited]);
+    assert.equal(sentTo(uid!).length, count, '非文本和附件失败共用 customerRate，超限直接静默');
+    assert.equal(await stateOf(limited), 'done');
+    assert.equal(store.getSession(`wecom:${uid}`)!.messages.filter((m) => m.role === 'customer').length, 2);
+  }
+  process.env.CUSTOMER_RATE_PER_MIN = '';
+  mediaFailure = false;
+  console.log('14 验收 6 适配器：非文本与附件失败双向共用限速，超限静默且消息照记');
+
+  // 真实任务 → prepare/发送账本 → token 等待/刷新：暂停或耗尽后不发，也不重新排任务。
+  const followRuntime = { ...runtime, followupTemplates: { ...runtime.followupTemplates, idleMinutes: { objection: 1 } } };
+  bindPack(followRuntime, followRuntime.defaultBrand);
+  __jobsTest.reset();
+  __jobsTest.start((id, text, opts) => wecom.wecomAdapter.push(id, text, opts));
+  for (const mode of ['suspended', 'quota'] as const) {
+    for (const retry of [false, true]) {
+      await query("update tenants set status='active', monthly_reply_quota=null where id=$1", [tenantId]);
+      await limits.initializeTenantLimits();
+      const uid = `wmFol${mode === 'quota' ? 'Q' : 'S'}${retry ? 'R' : 'T'}`;
+      await send([msg(uid, 'image')]); // 客户窗口和 account_id 均由生产入站建立。
+      const s = store.getSession(`wecom:${uid}`)!;
+      s.stage = 'objection';
+      s.updatedAt = Date.now() - 180_000;
+      store.saveSession(s, false);
+      await store.flushSession(s.id);
+      // 重新装载账号使首次发送需要 token；重试场景先取得 token 再强刷。
+      channels.__channelsTest.reset();
+      await initChannels();
+      await idle();
+      if (retry) await send([event(`wmWarm${mode === 'quota' ? 'Q' : 'S'}`)]);
+      else {
+        // 传输替身给过期 token，下一次发送必须走生产 gettoken 等待；不修改运行时缓存。
+        tokenExpiresIn = 300;
+        eventRetry = true;
+        await send([event(`wmCold${mode === 'quota' ? 'Q' : 'S'}`, 'fixture-expired')]);
+        tokenExpiresIn = 7200;
+      }
+      let release!: () => void;
+      tokenGate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      tokenEntered = false;
+      followupRetry = retry;
+      const before = sentTo(uid).length;
+      const task = runJobsOnce();
+      await waitFor(() => tokenEntered);
+      await query('update tenants set status=$2, monthly_reply_quota=$3 where id=$1', [
+        tenantId,
+        mode === 'suspended' ? 'suspended' : 'active',
+        mode === 'quota' ? 0 : null,
+      ]);
+      await limits.initializeTenantLimits();
+      const attempted = sentTo(uid).length;
+      assert.equal(attempted - before, retry ? 1 : 0);
+      release();
+      tokenGate = null;
+      await task;
+      await idle();
+      assert.equal(sentTo(uid).length, attempted, '限制生效后没有新的实际请求/重试');
+      const jobs = await query<{ status: string; last_error: string | null }>(
+        "select status,last_error from jobs where tenant_id=$1 and kind='followup' and payload->>'sessionId'=$2",
+        [tenantId, s.id],
+      );
+      assert.deepEqual(jobs, [{ status: 'abandoned', last_error: 'tenant_limit' }], '跳过结束，没有重新排任务');
+      assert.equal(
+        s.messages.some((m) => m.author === 'followup'),
+        false,
+      );
+      await runJobsOnce();
+      assert.equal(sentTo(uid).length, attempted);
+      console.log(`14 验收 7 真实跟进：${mode} 在${retry ? '重试刷新' : '首次'} token 等待期间生效，无后续外发、无重排`);
+    }
+  }
+  await __jobsTest.stop();
   console.log('WECOM LIMITS SELFTEST PASS');
 } finally {
   __ledgerTest.setPlanHook(null);
+  await __jobsTest.stop();
   wecom.stopWecomAccounts();
   channels.__channelsTest.stopStatsRefresh();
   limits.stopTenantLimits();
   await store.drainStore(5000);
   await rt.store.pgBackend?.close();
   await config.closeConfig();
-  await t.close();
+  await app?.close();
+  await fx?.drop();
+  await t?.close();
   globalThis.fetch = originalFetch;
   fs.rmSync(dir, { recursive: true, force: true });
 }

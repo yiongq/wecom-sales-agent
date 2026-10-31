@@ -41,8 +41,9 @@ async function suite(db: Db, query: Query, label: string): Promise<void> {
       if (type === 'Timeout' && (resource as { _repeat?: number })._repeat === 30_000) timers.push(r.scopedRuntime()?.id);
     },
   });
-  const setup = async (slug: string): Promise<Runtime> => {
+  const setup = async (slug: string, suspended = false): Promise<Runtime> => {
     await query("insert into tenants(slug,name,pack_id) values ($1,$1,'travel') on conflict do nothing", [slug]);
+    if (suspended) await query("update tenants set status='suspended' where slug=$1", [slug]);
     const rt = r.createTenantRuntime({ id: slug, slug, isHost: slug.endsWith('-a') });
     r.registerRuntime(rt);
     runtimes.push(rt);
@@ -229,6 +230,47 @@ async function suite(db: Db, query: Query, label: string): Promise<void> {
     limits.__limitsTest.configure({ read: originalRead });
     await poll(c);
     assert.equal(value(c).monthlyUsed, 6);
+
+    const originalCountRead = limits.__limitsTest.countReader();
+    const warnings: string[] = [];
+    const originalError = console.error;
+    console.error = (...args) => {
+      warnings.push(args.join(' '));
+    };
+    try {
+      limits.__limitsTest.configure({
+        read: async () => {
+          throw new Error('synthetic_initial_failure');
+        },
+        readCount: async () => {
+          throw new Error('synthetic_count_failure');
+        },
+      });
+      const paused = await setup(`limits-${label}-paused`, true);
+      const open = await setup(`limits-${label}-open`);
+      assert.equal(verdict(paused), 'suspended', '14 验收 8：首次读取失败保留启动时已读的 suspended');
+      assert.equal(verdict(open), 'ok', '14 验收 8：首次失败不拦死正常租户');
+      assert.ok(warnings.some((line) => line.includes('tenant_limits_poll_failed')));
+      assert.ok(warnings.some((line) => line.includes('tenant_reply_count_poll_failed')));
+      limits.__limitsTest.configure({ read: originalRead });
+      await query("update tenants set status='suspended', monthly_reply_quota=0, llm_daily_cap_milli=0 where id=$1", [open.id]);
+      await poll(open);
+      assert.deepEqual(
+        value(open),
+        { status: 'suspended', monthlyQuota: 0, dailyCapMilli: 0, monthlyUsed: 0 },
+        '14 验收 7：月计数失败仍安装新状态与上限',
+      );
+      await query("update tenants set status='active', monthly_reply_quota=null where id=$1", [open.id]);
+      await poll(open);
+      assert.equal(verdict(open), 'ok', '计数失败不阻止恢复');
+      assert.equal(verdict(b), 'ok', '其他租户不受影响');
+      limits.__limitsTest.configure({ readCount: originalCountRead });
+      await poll(open);
+      console.log(`14 验收 7、8 ${label}：首次状态/计数失败有日志，已读状态保留，其他租户正常，轮询恢复`);
+    } finally {
+      console.error = originalError;
+      limits.__limitsTest.configure({ read: originalRead, readCount: originalCountRead });
+    }
 
     now = new Date(2026, 10, 1, 0, 0, 1).getTime();
     assert.equal(verdict(a), 'ok');

@@ -1,3 +1,5 @@
+import { customerRate } from '../tenancy/customer-rate.js';
+import { limitHandoffReply } from '../tenancy/limit-handoff.js';
 import { limitVerdict } from '../tenancy/limits.js';
 import { stripLink } from '../core/link-prose.js';
 import { TenantObservers } from '../tenancy/observers.js';
@@ -1072,6 +1074,7 @@ function postSendMsg(
  * （OutGroup.stillEligible）
  */
 const stillCurrent = (g: OutGroup): boolean =>
+  (g.intents[0]?.kind !== 'followup' || limitVerdict() === 'ok') &&
   (g.intents[0]?.kind !== 'welcome' || limitVerdict() !== 'suspended') &&
   (!g.checksTakeover || takeoverGen(g.sessionId) === g.gen) &&
   (!g.stillEligible || g.stillEligible());
@@ -2350,6 +2353,17 @@ async function downloadAttachment(rt: WecomRuntime, cfg: WecomConfig, msg: KfMes
   }
 }
 
+/** 已记录客户消息的引擎外路径：undefined 放行，null 静默，消息为共用的额度转人工回复。 */
+function adapterLimitReply(session: Session): ChatMessage | null | undefined {
+  if (session.handedOver) return null;
+  const verdict = limitVerdict();
+  if (verdict === 'suspended') return null;
+  if (verdict === 'quota') return limitHandoffReply(session, 'quota');
+  // 引导和附件失败也消耗同一客户窗口；超限直接静默，不另发限速提示。
+  if (customerRate(session.id, 'wecom') !== 'ok') return null;
+  return undefined;
+}
+
 /** 12 R2：下载/恢复、识别与固定失败句，所有最终回复仍经现有入站关联的出站账本。 */
 async function processAttachmentRow(
   rt: WecomRuntime,
@@ -2380,7 +2394,13 @@ async function processAttachmentRow(
       queueInboxState(sessionId, { inboxId: row.id, state: 'recorded', message: customer });
     }
     await finishAttachmentBatch(rt, sessionId);
-    if (session.handedOver || takeoverGen(sessionId) !== gen) return finishInboxRow(sessionId, row.id, 'done');
+    if (takeoverGen(sessionId) !== gen) return finishInboxRow(sessionId, row.id, 'done');
+    const gated = adapterLimitReply(session);
+    if (gated === null) return finishInboxRow(sessionId, row.id, 'done');
+    if (gated) {
+      await replyDb(rt, cfg, sessionId, { text: gated.content, stage: session.stage, message: gated }, gen, t0, row.id);
+      return;
+    }
     const reply: ChatMessage = { role: 'agent', content: text, at: Date.now() };
     session.messages.push(reply);
     saveSession(session);
@@ -2480,8 +2500,22 @@ function processNonTextRow(
       saveSession(session);
       queueInboxState(sessionId, { inboxId: row.id, state: 'recorded', message: placeholder });
     }
-    if (session.handedOver || limitVerdict() === 'suspended') {
-      console.log(`${rt.tag} 静默（${msg.msgtype} 消息，会话已转人工或租户停用）`);
+    const gated = adapterLimitReply(session);
+    if (gated !== undefined) {
+      if (gated) {
+        endTurn('budget', gated.content, stageBefore, session.stage);
+        await replyDb(
+          rt,
+          cfg,
+          sessionId,
+          { text: gated.content, stage: session.stage, message: gated },
+          takeoverGen(sessionId),
+          Date.now(),
+          row.id,
+        );
+        return;
+      }
+      console.log(`${rt.tag} 静默（${msg.msgtype} 消息，会话已转人工或用量受限）`);
       endTurn('silent', '', stageBefore, session.stage);
       await finishInboxRow(sessionId, row.id, 'done');
       return;
