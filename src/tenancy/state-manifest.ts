@@ -3,6 +3,10 @@ export const STATE_MANIFEST: Record<
   string,
   { kind: 'tenant'; state: string } | { kind: 'instance'; why: string } | { kind: 'object-keyed' }
 > = Object.freeze({
+  'src/tenancy/limits.ts:deps': { kind: 'instance', why: '自测时钟、读取与告警依赖，不保存租户快照。' },
+  'src/tenancy/limits.ts:tenantState': { kind: 'tenant', state: 'limits.current' },
+  'src/tenancy/limits.ts:pollTimer': { kind: 'instance', why: '唯一轮询定时器逐租户恢复作用域，停机清除。' },
+  'src/tenancy/limits.ts:__limitsTest': { kind: 'instance', why: '自测能力出口，状态仍按租户登记。' },
   'src/connectors/registry.ts:turns': { kind: 'object-keyed' },
   'src/connectors/registry.ts:deps': { kind: 'instance', why: '时钟与连接器工厂的自测注入，不保存租户数据。' },
   'src/connectors/registry.ts:tenantState': { kind: 'tenant', state: 'erp.registry.loaded' },

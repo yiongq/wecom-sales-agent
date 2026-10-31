@@ -446,6 +446,9 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
                   'retention_trace_days',
                   'public_host',
                   'llm_daily_alert_milli',
+                  'monthly_reply_quota',
+                  'llm_daily_cap_milli',
+                  'status',
                 ].includes(c.column_name))),
           `${role} tenants.${c.column_name} UPDATE`,
         );
