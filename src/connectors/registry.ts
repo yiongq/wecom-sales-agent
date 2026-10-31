@@ -25,12 +25,14 @@ interface Turn {
   deadline?: number;
   stats: TurnStats;
   waits: [number, number][];
+  /** 本轮 availability 给出过的结果，含没取到：同一轮工具、订单行、自动批准与护栏看到同一份（不变量 8）。 */
+  seen: Map<string, Availability | undefined>;
 }
 const turns = new AsyncLocalStorage<Turn>();
 
 /** 只由声明 erp 的包进入；截止时间从第一次缓存未命中开始，共享到整轮结束。 */
 export function withErpTurn<T>(fn: () => T): T {
-  return turns.run({ stats: { ms: 0, cacheHit: true, deadlineReached: false }, waits: [] }, fn);
+  return turns.run({ stats: { ms: 0, cacheHit: true, deadlineReached: false }, waits: [], seen: new Map() }, fn);
 }
 export function erpTurnStats(): Readonly<TurnStats> | undefined {
   const turn = turns.getStore();
@@ -206,7 +208,11 @@ function loadedFor(kind: string): Loaded | null {
   return loaded;
 }
 function fresh(kind: string, code: string): Availability | undefined {
-  const cached = loadedFor(kind)?.cache.get(`${kind}:${code}`);
+  const loaded = loadedFor(kind);
+  const key = `${kind}:${code}`;
+  const turn = turns.getStore();
+  if (loaded && turn?.seen.has(key)) return turn.seen.get(key);
+  const cached = loaded?.cache.get(key);
   return cached && deps.now() - cached.at <= 60_000 ? cached.value : undefined;
 }
 function prune(loaded: Loaded): void {
@@ -283,14 +289,14 @@ async function availability(kind: string, codes: readonly string[]): Promise<Rea
   const loaded = loadedFor(kind);
   if (!loaded) return new Map();
   const unique = [...new Set(codes)];
+  const turn = turns.getStore();
   const needed = unique
     .map((code) => `${kind}:${code}`)
     .filter((key) => {
-      if (!loaded.links.has(key)) return false;
+      if (!loaded.links.has(key) || turn?.seen.has(key)) return false;
       const cached = loaded.cache.get(key);
       return !cached || deps.now() - cached.at > (cached.value ? 30_000 : 60_000);
     });
-  const turn = turns.getStore();
   if (turn && needed.length) turn.stats.cacheHit = false;
   const start = deps.now();
   const deadline = needed.length ? (turn ? (turn.deadline ??= start + 1000) : start + 5000) : start;
@@ -335,6 +341,7 @@ async function availability(kind: string, codes: readonly string[]): Promise<Rea
   return new Map(
     unique.flatMap((code) => {
       const value = fresh(kind, code);
+      turn?.seen.set(`${kind}:${code}`, value);
       return value ? [[code, value] as const] : [];
     }),
   );
