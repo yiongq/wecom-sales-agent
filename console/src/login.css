@@ -83,29 +83,98 @@
   line-height: 22px;
   color: var(--text-2);
 }
-.login-prod {
-  background: var(--frame);
-  align-items: flex-start;
-  justify-content: center;
-  padding: clamp(40px, 12vh, 120px) 24px 48px;
-}
 .login-prod .login-panel {
-  flex: 0 1 400px;
-  padding: 32px;
-  border-radius: var(--r-xl);
-  background: var(--panel);
-  box-shadow: var(--shadow-panel);
+  display: flex;
+  flex: 1 1 480px;
+  align-items: center;
+  justify-content: center;
+  padding: 48px 32px;
+}
+.login-prod .login-column {
+  max-width: 340px;
 }
 .login-prod .login-title {
-  font-size: 24px;
-  line-height: 32px;
+  font-size: 28px;
+  line-height: 36px;
   font-weight: 600;
 }
 .login-prod .login-lead {
   margin-top: 4px;
 }
-.login-prod .entry-wordmark {
-  position: fixed;
+.login-story {
+  display: flex;
+  flex: 1 1 560px;
+  flex-direction: column;
+  justify-content: center;
+  padding: 64px clamp(40px, 7vw, 104px);
+  background: var(--frame);
+  border-left: 1px solid var(--divider);
+}
+.login-story h2 {
+  margin: 0;
+  font-size: 34px;
+  line-height: 44px;
+  font-weight: 600;
+  letter-spacing: 0;
+}
+.login-story-lead {
+  max-width: 440px;
+  margin: 12px 0 36px;
+  color: var(--text-2);
+}
+.login-story-steps {
+  display: grid;
+  max-width: 480px;
+  margin: 0;
+  padding: 8px 20px;
+  list-style: none;
+  border-radius: var(--r-xl);
+  background: var(--panel);
+  box-shadow: var(--shadow-panel);
+}
+.login-story-steps li {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 0;
+}
+.login-story-steps li + li {
+  border-top: 1px solid var(--divider);
+}
+.login-story-steps strong {
+  display: block;
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 600;
+}
+.login-story-steps span {
+  display: block;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-2);
+}
+.login-story-steps em {
+  flex: none;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 18px;
+  font-style: normal;
+  color: var(--text-3);
+}
+.login-story-steps em[data-tone='done'] {
+  color: var(--success);
+  background: var(--success-bg);
+}
+.login-story-steps em[data-tone='pending'] {
+  color: var(--warning);
+  background: var(--warning-bg);
+}
+@media (max-width: 960px) {
+  .login-story {
+    display: none;
+  }
 }
 @media (max-width: 767px) {
   .entry-showcase {
