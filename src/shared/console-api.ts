@@ -491,6 +491,15 @@ export interface AuditPage {
  * 运行数字（02 spec「可观测性与告警 · 运行数字」，R24）：GET /api/console/metrics，所有者、管理员可读，只在 db 存储下有。
  * 由 turn_traces、usage_daily 现算，内存缓存 60 秒；窗口是近 days 个自然日（含今天），受 trace 保留期限制
  */
+/** 14 R9：本月已落库的逐日用量；日期与 usage_daily 一样按服务器时区。 */
+export interface UsageView {
+  status: 'trial' | 'active' | 'suspended';
+  month: string; // YYYY-MM
+  replies: { used: number; quota: number | null };
+  daily: { costMilli: number; capMilli: number | null };
+  days: { day: string; replies: number; costMilli: number }[];
+}
+
 export interface MetricsView {
   /** 实际的统计窗口（天）：min(请求的 days（默认 7）, 这个租户的 trace 保留期)；下面几项都按它算，界面据此写「近 N 天」 */
   days: number;

@@ -3325,14 +3325,14 @@ async function workbenchSuite(): Promise<void> {
     'GET /conversations/counts',
     'GET /audit',
   ];
-  /** 02 新接口的权限表（spec「后台接口」权限）：哪些角色过得了权限这一层；匿名一律 401 */
+  /** 后台接口权限表：哪些角色过得了权限这一层；匿名 401，14 用量明确为 403。 */
   const ALL: RoleName[] = ['owner', 'admin', 'supervisor', 'agent', 'viewer'];
   const HANDLE: RoleName[] = ['owner', 'admin', 'supervisor', 'agent'];
   const MONEY: RoleName[] = ['owner', 'admin'];
   const REPLIES: RoleName[] = ['owner', 'admin', 'supervisor'];
   const S0 = 'wecom:wb13-matrix';
   mk(S0);
-  const MATRIX: { route: string; url: string; json?: unknown; allowed: RoleName[]; sse?: true }[] = [
+  const MATRIX: { route: string; url: string; json?: unknown; allowed: RoleName[]; sse?: true; anonStatus?: 403 }[] = [
     // 07 R7：先校验权限，合法成员再进入参数/目标检查，不在权限矩阵里发模型请求。
     { route: 'POST /sop/draft/gate', url: '/sop/draft/gate', json: { rev: -1 }, allowed: MONEY },
     { route: 'GET /sop/gate-runs/:id', url: '/sop/gate-runs/00000000-0000-0000-0000-000000000000', allowed: MONEY },
@@ -3389,6 +3389,8 @@ async function workbenchSuite(): Promise<void> {
     { route: 'POST /quick-replies/:id/archive', url: '/quick-replies/nosuch/archive', allowed: REPLIES },
     { route: 'POST /quick-replies/:id/move', url: '/quick-replies/nosuch/move', json: { direction: 'up' }, allowed: REPLIES },
     { route: 'GET /metrics', url: '/metrics', allowed: MONEY },
+    // 14 R9：用量仅给 owner/admin；匿名明确要求 403。
+    { route: 'GET /usage', url: '/usage', allowed: MONEY, anonStatus: 403 },
     { route: 'GET /events', url: '/events', allowed: ALL, sse: true },
   ];
   const registered = new Set(
@@ -3434,10 +3436,10 @@ async function workbenchSuite(): Promise<void> {
       if (!ok) cells.push(`${m.url} ${role} → ${r.status} ${r.text.slice(0, 80)}`);
     }
     const anon = await hit(m, null);
-    if (anon.status !== 401) cells.push(`${m.url} 匿名（demo）→ ${anon.status}`);
+    if (anon.status !== (m.anonStatus ?? 401)) cells.push(`${m.url} 匿名（demo）→ ${anon.status}`);
   }
   check(
-    '权限矩阵：第 13 步的每个新接口逐个角色过一遍（过了权限的不是 401/403，没过的是 403 forbidden，匿名 401）',
+    '权限矩阵：每个新接口逐个角色过一遍（过了权限的不是 401/403，没过的是 403 forbidden，匿名 401、14 用量为 403）',
     cells.length === 0,
     cells.join(' | '),
   );
@@ -3446,14 +3448,14 @@ async function workbenchSuite(): Promise<void> {
     const prodAnon: string[] = [];
     for (const m of MATRIX) {
       const r = await hit(m, null);
-      if (r.status !== 401) prodAnon.push(`${m.url} → ${r.status}`);
+      if (r.status !== (m.anonStatus ?? 401)) prodAnon.push(`${m.url} → ${r.status}`);
     }
-    check('权限矩阵：prod 匿名一律 401（含 /events）', prodAnon.length === 0, prodAnon.join(','));
+    check('权限矩阵：prod 匿名 401（含 /events），14 用量为 403', prodAnon.length === 0, prodAnon.join(','));
   } finally {
     __profileTest.reset();
   }
 
-  // ---- 枚举 server 与 consoleApi 的全部路由：prod 下白名单以外的匿名请求一律 401 或 404（验收 9、不变量 43） ----
+  // ---- 枚举全部路由：prod 白名单外匿名 401/404（02 验收 9、不变量 43）；14 R9 用量明确为 403 ----
   {
     const savedPass = process.env.ADMIN_PASS;
     process.env.ADMIN_PASS = 'route-enum-pass'; // prod 没配 ADMIN_PASS 起不来；配了，管理接口匿名才是 401 而不是 503
@@ -3498,10 +3500,12 @@ async function workbenchSuite(): Promise<void> {
           body,
         });
         await res.body?.cancel();
-        if (res.status !== 401 && res.status !== 404) leaks.push(`${key} → ${res.status}`);
+        if (key === 'GET /api/console/usage') {
+          if (res.status !== 403) leaks.push(`${key} → ${res.status}`);
+        } else if (res.status !== 401 && res.status !== 404) leaks.push(`${key} → ${res.status}`);
       }
       check(
-        '路由枚举：server 与 consoleApi 注册的、白名单以外的路由，prod 下匿名一律 401 或 404',
+        '路由枚举：server 与 consoleApi 注册的、白名单以外的路由，prod 下匿名 401/404，14 用量为 403',
         leaks.length === 0 && seenRoutes.size >= 50,
         `${seenRoutes.size} 个；${leaks.join(' | ')}`,
       );

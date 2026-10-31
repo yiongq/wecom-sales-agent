@@ -17,3 +17,16 @@ export async function rpcTypeFixture(): Promise<void> {
     void body.draft;
   }
 }
+
+/** 14 R9：200 的响应经 RPC 保留完整用量契约，错误响应不能冒充成功。 */
+export async function usageTypeFixture(): Promise<void> {
+  const response = await api.usage.$get();
+  if (response.status === 200) {
+    const usage: import('../../src/shared/console-api.js').UsageView = await response.json();
+    const inferred = await response.json();
+    const replies: number = inferred.replies.used;
+    void [usage, replies];
+    // @ts-expect-error 用量接口不携带会话内容
+    void inferred.messages;
+  }
+}
