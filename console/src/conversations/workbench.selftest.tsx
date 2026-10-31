@@ -753,7 +753,7 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
       // 可用时 placeholder 没传，DOM 的 .placeholder 属性（不是 attribute）取不到值时固定是空字符串，不是 undefined
       eq(`输入框可用（${label}）`, [box?.disabled, box?.placeholder], [false, '']);
     } else {
-      eq(`输入框禁用、占位提示（${label}）`, [box?.disabled, box?.placeholder], [true, '接管后在此回复，客户在企业微信中看到']);
+      eq(`输入框禁用、占位提示（${label}）`, [box?.disabled, box?.placeholder], [true, '接手后在此回复，客户在企业微信中看到']);
     }
     await m.unmount();
   }
@@ -761,14 +761,14 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
 
 // 渠道决定回复位置：同一个渠道换 id 仍然显示同样的说明；宿主企微照旧。
 for (const [id, channel, where] of [
-  ['sbx-a', 'simulator', '网页模拟器里'],
-  ['sim-a', 'simulator', '网页模拟器里'],
-  ['web:a', 'web', '网页模拟器里'],
+  ['sbx-a', 'simulator', '网页里'],
+  ['sim-a', 'simulator', '网页里'],
+  ['web:a', 'web', '网页里'],
   ['sbx-a', 'wecom', '企业微信中'],
 ] as const) {
   server = { cur: detail({ row: row({ id, channel }) }), seenClientIds: [], extraMessages: [] };
   const m = await mount(member('owner'), id);
-  eq(`回复占位按渠道（${id}/${channel}）`, (m.$('textarea')[0] as HTMLTextAreaElement)?.placeholder, `接管后在此回复，客户在${where}看到`);
+  eq(`回复占位按渠道（${id}/${channel}）`, (m.$('textarea')[0] as HTMLTextAreaElement)?.placeholder, `接手后在此回复，客户在${where}看到`);
   await m.unmount();
 }
 

@@ -670,6 +670,17 @@ a.ov-stage:hover {
   color: var(--text-2);
   font-size: 13px;
 }
+.onboarding-list li[data-state='done'] .onboarding-state {
+  color: var(--success);
+}
+.onboarding-list li[data-state='blocked'] .onboarding-state {
+  color: var(--warning);
+}
+.onboarding-progress {
+  margin: 0 0 12px;
+  color: var(--text-2);
+  font-size: 13px;
+}
 .onboarding-list p,
 .onboarding-advisor,
 .onboarding-unknown {

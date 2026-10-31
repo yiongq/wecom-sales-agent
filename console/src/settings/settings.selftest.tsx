@@ -5,12 +5,12 @@ import assert from 'node:assert/strict';
 import { register } from 'node:module';
 import { readFileSync } from 'node:fs';
 import { request as httpRequest } from 'node:http';
-import { QueryClient, QueryClientProvider, focusManager } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, focusManager, timeoutManager } from '@tanstack/react-query';
 import { createMemoryHistory, createRouter, RouterProvider } from '@tanstack/react-router';
 import { App as AntApp } from 'antd';
 import { act, createElement, StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Me, SettingsResponses } from '../../../src/shared/console-api.js';
+import type { Me, SettingsResponses, UsageView } from '../../../src/shared/console-api.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
 import acceptance from '../catalog/acceptance.fixture.json';
 import { api, unwrap } from '../api.js';
@@ -18,6 +18,7 @@ import { abandonRelogin, beginMemberSession, endMemberSession } from '../session
 import { ThemeProvider } from '../theme/ThemeProvider.js';
 import { VIEWER_KEY, type Viewer } from '../viewer.js';
 import { settingsQueryKey } from '../../../src/shared/console-api.js';
+import { usageMoney } from './UsagePage.js';
 
 register(
   `data:text/javascript,${encodeURIComponent(`export async function load(url, context, next) {
@@ -29,7 +30,8 @@ register(
 );
 const { router: appRouter } = await import('../router.js');
 const nativeFetch = globalThis.fetch;
-const real = process.argv.includes('--real-api');
+const realUsage = process.argv.includes('--real-usage');
+const real = process.argv.includes('--real-api') || realUsage;
 const calls: { path: string; method: string; cache?: RequestCache }[] = [];
 const pack = acceptance.pack as unknown as IndustryPack;
 const BASE_ME: Me = {
@@ -63,6 +65,13 @@ let onboarding: SettingsResponses['onboarding'] = {
   ],
 };
 let failure: { page: string; status: number } | null = null;
+let usage: UsageView = {
+  status: 'active',
+  month: '2026-10',
+  replies: { used: 5, quota: 20 },
+  daily: { costMilli: 123, capMilli: 500 },
+  days: [{ day: '2026-10-03', replies: 5, costMilli: 123 }],
+};
 let holdPage = '';
 let release: (() => void) | null = null;
 const pendingResponses: (() => void)[] = [];
@@ -116,6 +125,8 @@ globalThis.fetch = async (input, init) => {
   if (path === '/me') return json(me);
   if (path === '/pack') return json(pack);
   if (path === '/entry') return json({ tryUrl: null, showcase: null });
+  if (path === '/usage')
+    return failure?.page === 'usage' ? json({ error: failure.status === 403 ? 'forbidden' : 'internal' }, failure.status) : json(usage);
   if (path === '/conversations/counts')
     return json({ total: 0, byState: { ai: 0, human: 0, assigned: 0, paid: 0 }, aiByStage: {}, updatedToday: 0 });
   if (path === '/conversations') return json({ items: [], total: 0 });
@@ -211,11 +222,31 @@ try {
       api.auth.login.$post({ json: { email: 'owner@settings.example.test', password: 'synthetic-member-password' } }),
     );
     beginMemberSession(logged);
-    const m = await mount('/console/settings/organization');
+    const m = await mount(realUsage ? '/console/settings/usage' : '/console/settings/organization');
     try {
       const viewer = m.qc.getQueryData<Viewer>(VIEWER_KEY);
       assert.equal(viewer?.kind, 'member');
-      if (process.env.SETTINGS_TEST_ROLE === 'agent') {
+      if (realUsage) {
+        const checkUsage = async () => {
+          const value = await unwrap(api.usage.$get());
+          assert.equal(document.querySelector('[data-usage="replies"]')?.textContent, `${value.replies.used}次`);
+          assert.equal(document.querySelector('[data-usage="cost"]')?.textContent, `${(value.daily.costMilli / 1000).toFixed(3)}元`);
+          return value;
+        };
+        assert.equal((await checkUsage()).replies.used, 0);
+        await new Promise<void>((resolve) => {
+          process.once('message', () => resolve());
+          process.send?.({ advanceUsage: true });
+        });
+        await act(async () => {
+          await m.qc.refetchQueries({
+            queryKey: ['settings', viewer?.kind === 'member' ? viewer.me.tenantSlug : '', logged.userId, 'usage'],
+          });
+        });
+        await settle(m.qc);
+        assert.equal((await checkUsage()).replies.used, 1);
+        console.log('15 验收 5 REAL USAGE PASS: real engine reply → usage_daily → authenticated HTTP API → actual usage page 0→1');
+      } else if (process.env.SETTINGS_TEST_ROLE === 'agent') {
         assert.ok(!document.querySelector('.sb-nav a[href="/console/settings"]'));
         assert.ok(!document.querySelector('.settings-section'));
         for (const page of ['members', 'channels']) {
@@ -415,7 +446,9 @@ try {
           switched.qc.setQueryData<Viewer>(VIEWER_KEY, roleViewer);
         });
         await settle(switched.qc);
+        await navigate(switched, 'usage');
         assert.ok(!document.querySelector('.sb-nav a[href="/console/settings"]'));
+        assert.ok(!document.querySelector('[data-usage]'));
         assert.ok(!document.querySelector('.settings-list'));
         assert.equal(switched.qc.getQueriesData({ queryKey: ['settings'] }).length, 0);
       }
@@ -427,6 +460,72 @@ try {
       await switched.close();
     }
     me = { ...BASE_ME };
+    const usageTicks = new Map<ReturnType<typeof setInterval>, () => void>();
+    timeoutManager.setTimeoutProvider({
+      setTimeout: (fn, ms) => setTimeout(fn, ms),
+      clearTimeout: (id) => clearTimeout(id),
+      setInterval: (fn, ms) => {
+        const id = setInterval(fn, ms === 30_000 ? 1_000_000 : ms);
+        if (ms === 30_000) usageTicks.set(id, fn);
+        return id;
+      },
+      clearInterval: (id) => {
+        if (id !== undefined) usageTicks.delete(id);
+        clearInterval(id);
+      },
+    });
+    const usageView = await mount('/console/settings/usage');
+    try {
+      assert.equal(usageMoney(1), '0.001元');
+      assert.equal(usageMoney(1000), '1.000元');
+      assert.ok(text().includes('0.123元'));
+      assert.ok(text().includes('20次'));
+      assert.ok(document.querySelector('.usage-table'));
+      const query = usageView.qc.getQueryCache().find({ queryKey: settingsQueryKey(me.tenantSlug, me.userId, 'usage') })!;
+      assert.equal(Reflect.get(query.options, 'refetchInterval'), 30_000);
+      assert.equal(Reflect.get(query.options, 'refetchIntervalInBackground'), false);
+      focusManager.setFocused(false);
+      let before = calls.filter((r) => r.path === '/api/console/usage').length;
+      await act(async () => {
+        for (const tick of Array.from(usageTicks.values())) tick();
+      });
+      await settle(usageView.qc);
+      assert.equal(calls.filter((r) => r.path === '/api/console/usage').length, before, 'hidden interval does not fetch');
+      focusManager.setFocused(true);
+      await settle(usageView.qc);
+      before = calls.filter((r) => r.path === '/api/console/usage').length;
+      await act(async () => {
+        for (const tick of Array.from(usageTicks.values())) tick();
+      });
+      await settle(usageView.qc);
+      assert.ok(calls.filter((r) => r.path === '/api/console/usage').length > before, 'visible interval fetches real query');
+      failure = { page: 'usage', status: 500 };
+      await act(async () => {
+        await usageView.qc.refetchQueries({ queryKey: ['settings'] });
+      });
+      await settle(usageView.qc);
+      assert.ok(text().includes('未更新'));
+      assert.ok(text().includes('0.123元'));
+      failure = null;
+      usage = { status: 'trial', month: '2026-11', replies: { used: 0, quota: null }, daily: { costMilli: 0, capMilli: 0 }, days: [] };
+      await click(usageView, button('重试'));
+      assert.ok(text().includes('不限'));
+      assert.ok(text().includes('已全拦'));
+      assert.ok(text().includes('本月暂无用量'));
+      assert.ok(!text().includes('2026-10'));
+      failure = { page: 'usage', status: 403 };
+      await act(async () => {
+        await usageView.qc.refetchQueries({ queryKey: ['settings'] });
+      });
+      await settle(usageView.qc);
+      assert.ok(!document.querySelector('[data-usage]'));
+      assert.equal(usageView.qc.getQueriesData({ queryKey: ['settings'] }).length, 0);
+      console.log('15 验收 5 PASS: usage units/null/zero/empty/new month/stale retry/403 clearing and 30s visible-only query policy');
+    } finally {
+      failure = null;
+      await usageView.close();
+      timeoutManager.setTimeoutProvider({ setTimeout, clearTimeout, setInterval, clearInterval });
+    }
     win.localStorage.clear();
     const guide = await mount('/console/');
     try {

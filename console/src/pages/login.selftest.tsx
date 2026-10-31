@@ -322,19 +322,19 @@ async function mount(path: string, pages: { path: string; component: () => React
   document.head.append(loginStyle);
   const computed = (selector: string) => win.getComputedStyle(m.$(selector)! as never);
   eq(
-    'prod 卡片靠顶部开始，起点 clamp(40px, 12vh, 120px)',
-    [computed('.login-prod').alignItems, /padding: (clamp\(40px, 12vh, 120px\)) 24px 48px/.exec(loginStyle.textContent!)?.[1]],
-    ['flex-start', 'clamp(40px, 12vh, 120px)'],
+    'prod 表单垂直居中，右栏用四步流程说明产品',
+    [computed('.login-panel').alignItems, m.$$('.login-story-steps li').length],
+    ['center', 4],
   );
   eq(
-    'prod 标题 page-title 24/32/600，说明距标题4',
+    'prod 标题 28/36/600，说明距标题4',
     [
       computed('.login-title').fontSize,
       computed('.login-title').lineHeight,
       computed('.login-title').fontWeight,
       computed('.login-lead').marginTop,
     ],
-    ['24px', '32px', '600', '4px'],
+    ['28px', '36px', '600', '4px'],
   );
   for (const width of [1440, 360]) {
     win.happyDOM.setViewport({ width, height: 900 });
@@ -751,7 +751,7 @@ for (const demo of [true, false]) {
   };
   server = { demo, brand, loggedIn: false, login: 'check' };
   const m = await mount('/console/');
-  eq('15 验收 2 平台名与组织名分层', m.$('.entry-wordmark')?.textContent, '单来');
+  eq('15 验收 2 平台名与组织名分层', m.$('.login-title')?.textContent, '单来');
   eq('公开品牌：副标题来自entry', m.$('.login-lead')?.textContent, brand.name);
   eq('公开品牌：文档标题', document.title, `登录 · ${brand.name} · 单来`);
   check('公开品牌：HTML字符已转义，无标签注入', !m.$('img') && !m.$('script') && !m.$('[onerror]'));
