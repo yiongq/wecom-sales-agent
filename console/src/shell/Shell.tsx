@@ -1,4 +1,5 @@
 import { useSettingsCache } from '../settings/cache.js';
+import { TrialBanner } from './TrialBanner.js';
 // 外壳（spec「逐页设计 · 外壳」，设计系统 §4）：侧栏 240（收起 56）加一块内嵌的内容面板，没有全宽页头。
 // - 启动：并发取 /me 与 /pack，两个都回来才渲染侧栏和路由；没回来时 300ms 后出骨架；出错整页说明（判定在 boot.ts）。
 // - 成员与 demo 匿名进同一个外壳；匿名没有铃铛、会话和审计入口，每页页头下挂横幅（PageHeader）。成员身份下挂就地登录框
@@ -276,6 +277,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
 
   const panel = (
     <div className="shell-panel">
+      {v.kind === 'member' && v.me.sharedTrial === true && <TrialBanner />}
       {sandbox && <SandboxBanner sandbox={sandbox} />}
       <div className={sandbox ? 'sandbox-body' : 'shell-body'} ref={sandbox ? sandboxScrollRef : undefined}>
         {sandbox && v.kind === 'member' && (

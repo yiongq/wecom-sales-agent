@@ -27,7 +27,9 @@ app 使用分服务 env 中的 `agent_app`，不得带 platform/owner 凭据；`
 
 先通过既有 `user-create` CLI 创建唯一普通 agent，仅属于工业试用公司；独立 owner 不对外发放。用 `tenant-retention --tenant <slug> --lead 7 --customer 7 --trace 7` 设置三类保留期。不绑定真实 ERP，不把正式客户数据、凭据或其他租户成员混入。账号和客服码私下提供。
 
-后台在试用前显著显示以下文案（由 console 路集成）：
+app 服务另设私有 `TRIAL_TENANT_ALLOWLIST`，值为签收 JSON 中 `allowlist` 数组的 JSON 文本。服务端精确比较 UUID、slug、industrial、standard、非宿主；未配置、格式错误或错配时不显示，不按名称推断。`/me` 和登录响应仅下发 `sharedTrial` 布尔值，白名单内容不下发。更改后重启，并验证试用成员有提示、旅游及其他租户没有提示。这只是告知开关，不授予任何权限。
+
+后台外壳顶部常驻显示以下说明；界面以「请不要」代替「请勿」、数字间距由现有排版处理，含义相同：
 
 > 这是共享试用环境，会话可能被其他试用者看到，请勿发送个人信息。试用消息按 7 天保留设置清理；平台手动重置也会清理试用消息。合成示例会保留到下一次重置。
 
@@ -79,6 +81,40 @@ node --import tsx src/cli/trial-reset.ts \
 ## 本机验证入口
 
 使用一次性 `pgvector/pgvector:pg17` 的 `PG_TEST_URL`，执行 `src/cli/trial-reset.selftest.ts`、`src/db/repo/trial-reset.selftest.ts` 和 `src/tenancy/product-surface.selftest.ts`；`PRODUCT_CADDY_TEST=1` 执行 `src/tenancy/trial/deploy.selftest.ts` 的真实代理用例，需本机 Docker。测试只删除自己的 `wsa15-` 资源，结束核对资源已释放。该 shell 用例验证 env 改名与部署入口分支，不代替第 9 步完整镜像部署/回退演练。
+
+## 一次性镜像、HTTPS 与回退演练
+
+以下命令仅用于本机合成数据；不读取部署 env、不连接已有容器、不调用真实模型。Colima 使用独立可写 Docker 配置目录，避免 Docker CLI 写用户配置；若 compose 插件不可见，使用已安装的 `docker-compose` 可执行文件，通过 `DOCKER_COMPOSE_BIN` 传给代理自测。文档站是独立 package，安装时必须带 `--ignore-workspace`。
+
+```sh
+export DOCKER_HOST="unix://$HOME/.colima/default/docker.sock"
+mkdir -p var/step89/docker-config var/step89/r6-source
+export DOCKER_CONFIG="$PWD/var/step89/docker-config"
+pnpm --dir docs-site install --ignore-workspace --frozen-lockfile
+pnpm exec tsx scripts/product-sites/build.ts all --sample
+# R6_REF 由操作者设为已验证支持 R6、PG 种子与批次启动保护的基线提交。
+git archive "$R6_REF" | tar -x -C var/step89/r6-source
+docker build -t wsa15-step89:r6 --build-arg APP_REVISION=15-r6-local var/step89/r6-source
+docker build -t wsa15-step89:current --build-arg APP_REVISION=15-local .
+PRODUCT_CURRENT_IMAGE=wsa15-step89:current PRODUCT_R6_IMAGE=wsa15-step89:r6 \
+  perl -e 'alarm 600; exec @ARGV' pnpm exec tsx scripts/product-sites/rehearse.selftest.ts
+```
+
+本机演练使用 `*.example.test` 的 www/app/docs、新旧工业与旅游 Host，Caddy internal CA；不改系统 DNS、不安装系统证书。客户端仅信任当次 CA，同时验证不信任 CA 和未知 SNI 的握手失败。脚本真实执行 `caddy adapt --validate`、镜像启动/停止、已有渠道命令、双身份重置 CLI 与签名旧域回调；模型和企微传输为替身，认证、PG、渠道服务及计数是真实实现。普通 CI 未提供两个镜像时明确跳过镜像演练，不能据 CI 默认结果宣称完成第 9 步。
+
+脚本先发 R6 基线镜像且旅游 active，经工业 HTTPS 普通登录稳定后发当前镜像，再设旅游 suspended 并重启。之后重置种子与试用消息，新增试用消息，再模拟坏配置导致进程退出和代理 502，切回已验证 R6 镜像。回退继续 prod、旅游 suspended、不启沙箱；核对新消息、cursor、审计、用量和重置记录，旧消息/旧链接不复活、不重复发送，工业仍可收发。
+
+| 故障                                  | 可见结果               | 恢复与验证                                          |
+| ------------------------------------- | ---------------------- | --------------------------------------------------- |
+| app 配置打开受限 FLAG／切换到失败实例 | 启动退出、app 入口 502 | 换回已验证 R6 镜像，独立工业登录和收发恢复          |
+| 未信任当次 CA／未知 SNI               | TLS 握手拒绝，不到应用 | 使用正确 CA/Host 后三个入口 200，不关闭证书校验     |
+| 静态首页丢失                          | 静态请求 404           | 恢复原产物，首页 200                                |
+| 无效 Caddy 配置                       | reload 非零退出        | 旧配置仍服务，已有首页 200                          |
+| 未签收的回退镜像                      | 镜像 ID 校验失败       | 停止切换，选已动态验证的不可变镜像 ID；不能放宽签收 |
+
+正式 runbook 也应在停用旅游前记录已验证 R6 镜像的不可变 ID，回退前重新比对；tag 可能被覆盖，不能只看名字。镜像内存在某个文件不能证明 R6 正确。演练中的拒绝分支会用不支持本服务的基础镜像验证 ID 校验确实失败；既有 rollback guard 和 11/14 数据兼容测试仍必须另跑，不能被此校验代替。所有实际映射与签收 ID 另记。本轮归档的 R6 基线尚无新增 sharedTrial/横幅，演练确认其旧 DTO 可兼容；回退期间继续关闭对外试用。重新放量前必须前滚或选择同时含共享告知的已验证产物，不能仅凭登录/收发恢复就重开共享试用。
+
+脚本 finally 删除自己创建的容器、匿名卷与网络。退出后用 `docker ps -a --filter name=wsa15-rehearse-` 与对应网络过滤复核；失败中断时先查看当次合成日志，只清理该次资源。完成后可删除本次本机镜像 tag；不执行全局 prune。
 
 ## 工业品名同步
 

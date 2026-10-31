@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { openDb, holdTenantLock, withTenant } from '../../src/db/client.js';
-import { insertTenant, updatePublicHost } from '../../src/db/repo/tenants.js';
+import { insertTenant, updatePublicHost, updateRetention } from '../../src/db/repo/tenants.js';
 import { createUser } from '../../src/auth/accounts.js';
 import { findUserByEmail } from '../../src/db/repo/auth.js';
 import { importConfig, defaultDataDir } from '../../src/config/transfer.js';
@@ -53,6 +53,7 @@ export async function seedPreview(urls: { app: string; platform: string }, accou
       if (packId === 'industrial') industrialId = tenant.id;
     }
     stage = 'accounts';
+    await updateRetention(platform.db, industrialId, { leadDays: 7, customerDays: 7, traceDays: 7 });
     for (const role of ['owner', 'agent'] as const) {
       const user = await createUser(platform.db, {
         tenantSlug: 'preview-industrial',
@@ -130,6 +131,7 @@ export async function seedPreview(urls: { app: string; platform: string }, accou
         );
       },
     );
+    return industrialId;
   } catch {
     throw new Error(`preview_seed_${stage}`);
   } finally {

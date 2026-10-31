@@ -1,4 +1,5 @@
 import { createSettingsApi } from './settings.js';
+import { sharedTrial } from '../tenancy/trial/notice.js';
 import { SandboxLimitError } from '../tenancy/sandbox/limits.js';
 import { sandboxWechatIndex } from '../tenancy/sandbox/outbound.js';
 import { BudgetExhausted } from '../llm-gate.js';
@@ -411,6 +412,7 @@ function ctxOf(c: Context<ConsoleEnv>): TenantCtx {
 }
 
 const meOf = (u: AuthedUser): Me => ({
+  sharedTrial: sharedTrial(currentRuntime()),
   userId: u.userId,
   displayName: u.displayName,
   role: u.role,

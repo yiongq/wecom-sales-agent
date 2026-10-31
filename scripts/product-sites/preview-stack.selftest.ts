@@ -10,12 +10,20 @@ const env = previewEnv({
   ALERT_WEBHOOK_URL: 'forbidden',
   LLM_MOCK: '0',
   FLAG_ANON_READONLY_ADMIN: 'on',
+  TRIAL_TENANT_ALLOWLIST: 'forbidden',
 });
 assert.equal(env.LLM_MOCK, '1');
 assert.equal(env.DEPLOY_PROFILE, 'prod');
 assert.equal(env.CONFIG_SOURCE, 'db');
 assert.equal(env.SESSION_STORE, 'db');
-for (const key of ['DATABASE_URL', 'LLM_API_KEY', 'WECOM_APP_SECRET', 'ALERT_WEBHOOK_URL', 'FLAG_ANON_READONLY_ADMIN'])
+for (const key of [
+  'DATABASE_URL',
+  'LLM_API_KEY',
+  'WECOM_APP_SECRET',
+  'ALERT_WEBHOOK_URL',
+  'FLAG_ANON_READONLY_ADMIN',
+  'TRIAL_TENANT_ALLOWLIST',
+])
   assert.equal(env[key], undefined);
 assert.deepEqual(previewNames('abcdef123456'), { container: 'wsa15-preview-abcdef123456', directory: 'preview-abcdef123456' });
 for (const invalid of ['../other', 'wsa15-unrelated', '', 'A'.repeat(12)]) assert.throws(() => previewNames(invalid));

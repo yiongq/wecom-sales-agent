@@ -333,6 +333,8 @@ export interface ApiError {
 }
 
 export interface Me {
+  /** 服务端精确匹配共享试用白名单；旧客户端可忽略，前端不得按租户名称推断。 */
+  sharedTrial?: boolean;
   userId: string;
   displayName: string;
   role: Role;
@@ -969,6 +971,6 @@ export const SETTINGS_ERRORS = {
   store_file_mode: 503,
   internal: 500,
 } as const;
-/** 缓存仅进程内；tenantId/userId 来自真实 /me；登出、401、403、组织切换清理整个 settings 前缀。 */
+/** 缓存仅进程内；tenantSlug/userId 来自真实 /me；登出、401、403、组织切换清理整个 settings 前缀。 */
 export const settingsQueryKey = (tenantId: string, userId: string, page: keyof SettingsResponses) =>
   ['settings', tenantId, userId, page] as const;
