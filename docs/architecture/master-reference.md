@@ -366,6 +366,7 @@
 - 2026-10-29 owner 定 12 `ready`，spec 见 [12 · 客户发来的图片与文件：询价单识别与确认](./12-customer-files/spec.md)（[docs/architecture/12-customer-files/](./12-customer-files/)）。工业询价客户发来的 Excel / CSV 询价单与清单截图、铭牌照片：表格由代码读，图片由主模型抽型号与数量，逐行走 10 的确定性匹配，代码渲染编号清单，客户确认后才试算，未找到的行转顾问；原件存库，30 天后清除字节。部分取代 10 的四处，见该 spec 顶部。11（外部业务系统连接器）排在 12 之后。
 - 2026-10-29 owner 定 11 `ready`，spec 见 [11 · 外部业务系统连接器：Odoo 实时库存（只读）](./11-erp-connector/spec.md)（[docs/architecture/11-erp-connector/](./11-erp-connector/)）。第一家 Odoo（19、20 的 JSON-2），第一期只读：按事先映射的产品 id 实时查可售量，叠到产品库库存上，每轮花在 ERP 上至多 1 秒，取不到退回产品库值；价格、交期、报价单不变，模型碰不到 ERP；连接器凭据加密存库（AGENTS.md 密钥规则随之修订），连接器出站一律经出站防护（SSRF）。报价单写回 ERP 另起 spec。部分取代 10 R4、R6 (2) 与 ADR-003 决策 2，见该 spec 顶部。开工等 12 implemented。
 - 2026-10-31 implemented（12）：随 `demo-v11-rc1` 上线，`demo-v11-rc2` 起含网页 413 与安卓压缩照片的修复；验收 4 的企微 P90 以第 13 步引擎路径为准，由 owner 接受，见该 spec 末条 `Revisions:` 与 plan「验收记录」。发版 `demo-v11`（`main` `10f56dc5`）。
+- 2026-10-31 owner 定 14 `ready`，spec 见 [14 · 用量限制：硬额度、单客户限速与运行中停用](./14-usage-limits/spec.md)（[docs/architecture/14-usage-limits/](./14-usage-limits/)）：正式租户的月度 AI 回复额度、日费用熔断、单客户限速，停用在运行中生效。
 - 候选：
   - 第二个真实行业包：模板机制要靠它来验证。
   - 电商售后参考包。

@@ -1,8 +1,9 @@
 # 14 · 用量限制：硬额度、单客户限速与运行中停用
 
-Status: draft
+Status: ready
 Revisions: 2026-10-31 起草。
 Revisions: 2026-10-31 owner 定开放问题 1–5，全部照推荐：额度用完回固定话术并转人工；按 AI 回复条数计；限速上线值每分钟 12 条、每小时 120 条；演示租户配一个宽松的日费用上限，数值另记；停用时后台不能看，沿用 01。
+Revisions: 2026-10-31 owner 定 `ready`。同一 docs PR 给 01 加 `Superseded in part by:` 与 `Amended by:`，给 05 加 `Amended by:`，主参考「阶段 8」加一条。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8「按信号再定」。
 Depends on: [05](../05-tenancy-sandbox/spec.md) R15 的预算接口；[02](../02-conversations-workbench/spec.md) 的转人工与静默；[01](../01-pg-config-console/spec.md) 的 `tenants` 表。
 Supersedes in part: [01](../01-pg-config-console/spec.md) 启动步骤里的「拒绝 suspended」与启动错误码 `tenant_suspended`：理由是 05 起一个进程装多个 standard 租户，一个租户停用不该让整个进程起不来，新条文见 R6。
