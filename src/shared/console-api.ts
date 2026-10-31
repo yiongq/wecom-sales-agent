@@ -901,3 +901,74 @@ export interface GateRunView {
 export interface StartGateResult {
   runId: string;
 }
+
+// 15 R4/R6–R9：只读设置契约；第 2 步再接真实 handler，禁止占位成功响应。
+export interface OrganizationView {
+  name: string;
+  slug: string;
+  packId: string;
+  status: 'trial' | 'active' | 'suspended';
+  publishedBrandName: string | null;
+  pendingBrandChange: boolean;
+}
+export interface MemberView {
+  userId: string;
+  displayName: string;
+  email: string;
+  role: Role;
+  disabled: boolean;
+}
+export interface ChannelView {
+  accountId: string | null;
+  key: string;
+  name: string;
+  kind: 'wecom' | 'web';
+  source: 'db' | 'env';
+  enabled: boolean;
+  loaded: boolean;
+  blockedByProfile: boolean;
+  credentialsConfigured: boolean;
+  callbackPath: string | null;
+  lastInboundAt: string | null;
+}
+export type OnboardingKey = 'team' | 'catalog' | 'sop' | 'channel';
+export const ONBOARDING_HREFS = {
+  team: '/console/settings/members',
+  catalog: '/console/catalog/:kind',
+  sop: '/console/sop',
+  channel: '/console/settings/channels',
+} as const;
+export interface OnboardingView {
+  steps: {
+    key: OnboardingKey;
+    state: 'todo' | 'done' | 'blocked';
+    href: Exclude<(typeof ONBOARDING_HREFS)[OnboardingKey], '/console/catalog/:kind'> | `/console/catalog/${string}`;
+    reason?: string;
+  }[];
+}
+export interface SettingsResponses {
+  organization: OrganizationView;
+  members: { items: MemberView[] };
+  channels: { items: ChannelView[] };
+  onboarding: OnboardingView;
+  usage: UsageView; // 直接引用 14；不复制聚合或另造用量 DTO。
+}
+export const SETTINGS_URLS = {
+  organization: '/api/console/settings/organization',
+  members: '/api/console/settings/members',
+  channels: '/api/console/settings/channels',
+  onboarding: '/api/console/settings/onboarding',
+  usage: '/api/console/usage',
+} as const;
+export const SETTINGS_ROLES = ['owner', 'admin'] as const satisfies readonly Role[];
+/** 新设置 GET 的错误沿用 ApiError；usage 的匿名 403 保持 14 的既有契约。 */
+export const SETTINGS_ERRORS = {
+  unauthorized: 401,
+  forbidden: 403,
+  db_disabled: 503,
+  store_file_mode: 503,
+  internal: 500,
+} as const;
+/** 缓存仅进程内；tenantId/userId 来自真实 /me；登出、401、403、组织切换清理整个 settings 前缀。 */
+export const settingsQueryKey = (tenantId: string, userId: string, page: keyof SettingsResponses) =>
+  ['settings', tenantId, userId, page] as const;

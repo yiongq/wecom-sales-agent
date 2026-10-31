@@ -357,6 +357,13 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
     if (f.proname.startsWith('auth_')) {
       check(`${label}认证函数：${f.proname} 是 SECURITY DEFINER`, f.secdef);
       check(`${label}认证函数：${f.proname} 只授权给 agent_app，PUBLIC 不能执行`, f.acl.includes('agent_app=X/') && !publicExec, f.acl);
+    } else if (f.proname === 'console_members_read') {
+      check(`${label}15 成员投影：${f.proname} 是 SECURITY DEFINER`, f.secdef);
+      check(
+        `${label}15 成员投影：只授权给 agent_app，platform 与 PUBLIC 不能执行`,
+        f.acl.includes('agent_app=X/') && !f.acl.includes('agent_platform=') && !publicExec,
+        f.acl,
+      );
     } else if (SANDBOX_FNS.includes(f.proname)) {
       check(`${label}沙箱函数：${f.proname} 是 SECURITY DEFINER`, f.secdef);
       check(
@@ -5016,7 +5023,7 @@ async function realPostgres(superUrl: string): Promise<void> {
       const name = f.fn.slice(0, f.fn.indexOf('('));
       const grantee = Object.hasOwn(PURGE_FNS, name)
         ? PURGE_FNS[name]
-        : name.startsWith('auth_') || SANDBOX_FNS.includes(name)
+        : name.startsWith('auth_') || SANDBOX_FNS.includes(name) || f.fn === 'console_members_read(uuid,text)'
           ? 'agent_app'
           : null;
       const app = grantee === 'agent_app';
