@@ -298,9 +298,17 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
       .toSorted()
       .join(',') ===
       [
-        ...['brand', 'public_host', 'llm_daily_alert_milli', 'retention_customer_days', 'retention_lead_days', 'retention_trace_days'].map(
-          (c) => `tenants.${c} agent_platform UPDATE`,
-        ),
+        ...[
+          'brand',
+          'public_host',
+          'llm_daily_alert_milli',
+          'monthly_reply_quota',
+          'llm_daily_cap_milli',
+          'status',
+          'retention_customer_days',
+          'retention_lead_days',
+          'retention_trace_days',
+        ].map((c) => `tenants.${c} agent_platform UPDATE`),
         ...CHANNEL_ACCOUNT_UPDATABLE.map((c) => `channel_accounts.${c} agent_app UPDATE`),
         ...['status', 'base_url', 'database', 'settings', 'secrets_ct', 'secrets_key_id', 'updated_at'].map(
           (c) => `erp_connectors.${c} agent_app UPDATE`,
@@ -4936,14 +4944,17 @@ async function realPostgres(superUrl: string): Promise<void> {
         verdictPriv.platform === false,
       JSON.stringify(verdictPriv),
     );
-    // tenants 的保留期、品牌、公开域名与预算告警列：agent_platform 列级 UPDATE，agent_app 一列都不能改
+    // tenants 的保留期、品牌、公开域名、预算与状态列：agent_platform 列级 UPDATE，agent_app 一列都不能改
     const UPDATABLE = [
+      'status',
       'retention_lead_days',
       'retention_customer_days',
       'retention_trace_days',
       'brand',
       'public_host',
       'llm_daily_alert_milli',
+      'monthly_reply_quota',
+      'llm_daily_cap_milli',
     ];
     const colPriv = await sq<{ col: string; platform: boolean; app: boolean }>(
       `select a.attname as col, has_column_privilege('agent_platform', 'public.tenants', a.attname, 'UPDATE') as platform,
@@ -4951,7 +4962,7 @@ async function realPostgres(superUrl: string): Promise<void> {
          from pg_attribute a where a.attrelid = 'public.tenants'::regclass and a.attnum > 0 and not a.attisdropped order by a.attnum`,
     );
     check(
-      '真实 PG：agent_platform 只能 UPDATE tenants 的保留期、品牌、公开域名与预算告警列，agent_app 一列都不能',
+      '真实 PG：agent_platform 只能 UPDATE tenants 的保留期、品牌、公开域名、预算与状态列，agent_app 一列都不能',
       colPriv
         .filter((c) => c.platform)
         .map((c) => c.col)

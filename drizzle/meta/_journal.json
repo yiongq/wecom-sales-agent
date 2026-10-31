@@ -162,6 +162,13 @@
       "when": 1793404800000,
       "tag": "0022_erp_connectors",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1793404800001,
+      "tag": "0023_usage_limits",
+      "breakpoints": true
     }
   ]
 }

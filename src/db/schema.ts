@@ -66,6 +66,8 @@ export const tenants = pgTable(
     templateTenantId: uuid('template_tenant_id').references((): AnyPgColumn => tenants.id),
     publicHost: text('public_host'),
     llmDailyAlertMilli: bigint('llm_daily_alert_milli', { mode: 'number' }),
+    monthlyReplyQuota: integer('monthly_reply_quota'),
+    llmDailyCapMilli: bigint('llm_daily_cap_milli', { mode: 'number' }),
     /** 海外适配保留的缝，01 没有读方 */
     locale: text('locale').notNull().default('zh-CN'),
     region: text('region').notNull().default('CN'),
@@ -88,6 +90,12 @@ export const tenants = pgTable(
     check(
       'tenants_public_host_check',
       sql`${t.publicHost} ~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$' AND length(${t.publicHost}) <= 253`,
+    ),
+    check('tenants_monthly_reply_quota_check', sql`${t.monthlyReplyQuota} >= 0`),
+    check('tenants_llm_daily_cap_check', sql`${t.llmDailyCapMilli} >= 0`),
+    check(
+      'tenants_limits_standard_only',
+      sql`${t.kind} = 'standard' OR (${t.monthlyReplyQuota} IS NULL AND ${t.llmDailyCapMilli} IS NULL)`,
     ),
     check('tenants_llm_daily_alert_check', sql`${t.llmDailyAlertMilli} >= 0`),
     uniqueIndex('tenants_public_host_uq')
@@ -541,7 +549,9 @@ export const usageDaily = pgTable(
     /** 服务器时区（TZ）的日期，'YYYY-MM-DD' */
     day: date('day', { mode: 'string' }).notNull(),
     model: text('model').notNull(),
-    purpose: text('purpose', { enum: ['chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate', 'vision'] }).notNull(),
+    purpose: text('purpose', {
+      enum: ['chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate', 'vision', 'reply'],
+    }).notNull(),
     calls: integer('calls').notNull().default(0),
     promptTokens: bigint('prompt_tokens', { mode: 'number' }).notNull().default(0),
     completionTokens: bigint('completion_tokens', { mode: 'number' }).notNull().default(0),
@@ -554,7 +564,7 @@ export const usageDaily = pgTable(
     primaryKey({ columns: [t.tenantId, t.day, t.model, t.purpose] }),
     check(
       'usage_daily_purpose_check',
-      sql`${t.purpose} IN ('chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate', 'vision')`,
+      sql`${t.purpose} IN ('chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate', 'vision', 'reply')`,
     ),
   ],
 );

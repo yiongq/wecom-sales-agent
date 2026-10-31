@@ -32,6 +32,7 @@ import { onShutdown, onStoreIncident, storeCounters, storeHealth, type StoreHeal
 import { onTurnEnd, type FinishedTurn } from '../trace/recorder.js';
 
 export type AlertKey =
+  | 'usage_limit'
   | 'erp'
   | 'attachment_limit'
   | 'model_errors'
