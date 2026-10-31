@@ -6,7 +6,7 @@
 
 缺一条就停下，告诉 owner：
 
-1. 本 spec 已由 owner 定为 `ready`，开放问题 1–5 已定；翻 `ready` 的 docs PR 同时给 01 加 `Superseded in part by:`，给 05、01 加 `Amended by:`，主参考「阶段 8」加一条。
+1. 本 spec 已由 owner 于 2026-10-31 定为 `ready`，开放问题 1–5 已定；翻 `ready` 的 docs PR 同时给 01 加 `Superseded in part by:`，给 05、01 加 `Amended by:`，主参考「阶段 8」加一条。
 2. 11 的代码已在 `dev`（已满足）。
 3. 本机能跑四个门禁、`test:locked`、受影响的自测、v2 假模型回归（文件与 PGlite 两条），能起一次性 `pgvector/pgvector:pg17` 容器。
 
@@ -66,7 +66,7 @@
 
 ## 已定
 
-（无。）
+- 2026-10-31 owner 定开放问题 1–5，全部照推荐（spec 第二条 `Revisions:`）。演示租户日费用上限的数值上线时由 owner 给。
 
 ## 交接记录
 
@@ -74,4 +74,9 @@
 
 - spec 与本 plan 起草为 `draft`，依据：对照代码的只读调研；13 初稿里 owner 定的「按 AI 回复条数计」。
 - 起草时发现一个现存缺陷并写进 R6：任何一个 standard 租户停用都会让整个进程拒绝启动。
-- 下一步：向 owner 讲通俗版，定开放问题 1–5；是否翻 `ready` 由 owner 决定。
+- 2026-10-31 已向 owner 讲通俗版，开放问题 1–5 全部照推荐。
+
+### 交接（2026-10-31，owner 定 ready）
+
+- spec 翻 `ready`，01、05 的反向标记与主参考同一 PR 补上。
+- 下一步：第 0、1 步由 Codex 实现。
