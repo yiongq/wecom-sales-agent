@@ -1,12 +1,16 @@
 import '../../selftest-env.js';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { openTestDb } from '../testing.js';
+import fs from 'node:fs';
+import { openTestDb, fakeLock } from '../testing.js';
 import { withTenant } from '../client.js';
 import { insertTenant } from './tenants.js';
 import { writeAudit } from './audit.js';
-import { checkpointTrialReset, assertTrialResetComplete, readTrialBatches } from './trial-reset.js';
+import { checkpointTrialReset, assertTrialResetComplete, readTrialBatches, trialBaseline } from './trial-reset.js';
 import { planTrialReset } from '../../tenancy/trial/seeds.js';
+import { importConfig } from '../../config/transfer.js';
+import { readImageSop } from '../../config/brand.js';
+import { updateItemPayload } from './catalog.js';
 
 const t = await openTestDb();
 try {
@@ -45,6 +49,42 @@ try {
   );
   await assert.rejects(withTenant(t.db, ctx, assertTrialResetComplete), /trial_checkpoint_conflict/);
   console.log('PASS 15 验收 6：跳阶段与损坏审计失败关闭');
+  await t.pg.exec('RESET ROLE');
+  const catalogTenant = await insertTenant(t.db, {
+    slug: 'trial-catalog',
+    name: '虚构产品库',
+    packId: 'industrial',
+    locale: 'zh-CN',
+    region: 'CN',
+    brand: JSON.parse(fs.readFileSync('data/packs/industrial/brand.json', 'utf8')),
+  });
+  await t.pg.exec('SET ROLE agent_app');
+  const imported = await importConfig({
+    db: t.db,
+    tenantSlug: catalogTenant.slug,
+    dataDir: 'data/packs/industrial',
+    imageSop: readImageSop,
+    lock: async () => fakeLock(),
+  });
+  assert.equal(imported.code, 0, imported.message);
+  const catalogCtx = { ...ctx, tenantId: catalogTenant.id };
+  const baseline = await withTenant(t.db, catalogCtx, trialBaseline);
+  assert.equal(baseline.catalog.length, 40);
+  const row = baseline.catalog[0]!;
+  let rev = row.rev;
+  for (const certs of [['合成演示数据'], [], ['演示数据'], ['虚构演示数据']]) {
+    const updated = await withTenant(t.db, catalogCtx, (tx) =>
+      updateItemPayload(tx, row.kind, row.code, rev, { ...row.payload, certs }, { userId: null, name: 'selftest' }),
+    );
+    assert.ok(updated);
+    rev = updated.rev;
+    if (certs[0] === '合成演示数据' || certs[0] === '虚构演示数据') {
+      assert.equal((await withTenant(t.db, catalogCtx, trialBaseline)).catalog.length, 40);
+    } else {
+      await assert.rejects(withTenant(t.db, catalogCtx, trialBaseline), /trial_synthetic_catalog_required/);
+    }
+  }
+  console.log('PASS 产品改名：重置接受新旧虚构标记，无标记或泛称演示数据仍拒绝');
 } finally {
   await t.close();
 }

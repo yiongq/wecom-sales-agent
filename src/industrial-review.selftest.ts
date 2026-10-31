@@ -271,7 +271,7 @@ try {
         const goal = JSON.parse(fs.readFileSync('eval/sim/goals/industrial/quality/23-pending.json', 'utf8'));
         const pattern = goal.predicates.at(-1).pattern;
         const good =
-          '已为您查询并试算：6205-2RS（合成密封深沟球轴承，内径25mm、外径52mm）2件，单价10元，合计20元，现货。正式报价单已提交，正由顾问审核，审核通过后会与您确认后续安排。';
+          '已为您查询并试算：6205-2RS（密封深沟球轴承，内径25mm、外径52mm）2件，单价10元，合计20元，现货。正式报价单已提交，正由顾问审核，审核通过后会与您确认后续安排。';
         const bad =
           '已为您起草6205-2RS（2件）的正式报价单，现货，单价10元，合计20元（含13%税）。报价单需顾问审核，审核通过后即可确认订单。';
         const s = store.getOrCreateSession('wecom:wmGateMoney', 'wecom');
@@ -314,7 +314,7 @@ try {
       async () => {
         const s = store.getOrCreateSession('wecom:wmGateChoice', 'wecom');
         raw =
-          '好，目前查到 6205 同系列库内候选两款：\n1. 6205-2RS 合成密封深沟球轴承，内径25mm 外径52mm，库存和交期以顾问确认为准。2. 6205-ZZ 合成深沟球轴承，同尺寸金属防尘盖，无现货，库存和交期以顾问确认为准。';
+          '好，目前查到 6205 同系列库内候选两款：\n1. 6205-2RS 密封深沟球轴承，内径25mm 外径52mm，库存和交期以顾问确认为准。2. 6205-ZZ 深沟球轴承，同尺寸金属防尘盖，无现货，库存和交期以顾问确认为准。';
         prepare = async (opts) => {
           await opts.executeTool('find_parts', { query: '6205' });
         };
@@ -386,7 +386,7 @@ try {
       const pattern = new RegExp(goal.predicates.at(-1).pattern);
       for (const text of [
         '已为您查询并试算：6205-2RS 2件，单价10元，合计20元，现货。正式报价单已提交，正由顾问审核。',
-        '报价单已提交，顾问审核后会与您确认。本次试算：6205-2RS 合成密封深沟球轴承 2件，单价10元，合计20元（含税13%，运费0元），现货。',
+        '报价单已提交，顾问审核后会与您确认。本次试算：6205-2RS 密封深沟球轴承 2件，单价10元，合计20元（含税13%，运费0元），现货。',
       ])
         assert.equal(pattern.test(text), false, '09 R1 的试算金额不算待审正式金额');
       for (const text of [

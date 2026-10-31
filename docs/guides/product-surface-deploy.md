@@ -79,3 +79,12 @@ node --import tsx src/cli/trial-reset.ts \
 ## 本机验证入口
 
 使用一次性 `pgvector/pgvector:pg17` 的 `PG_TEST_URL`，执行 `src/cli/trial-reset.selftest.ts`、`src/db/repo/trial-reset.selftest.ts` 和 `src/tenancy/product-surface.selftest.ts`；`PRODUCT_CADDY_TEST=1` 执行 `src/tenancy/trial/deploy.selftest.ts` 的真实代理用例，需本机 Docker。测试只删除自己的 `wsa15-` 资源，结束核对资源已释放。该 shell 用例验证 env 改名与部署入口分支，不代替第 9 步完整镜像部署/回退演练。
+
+## 工业品名同步
+
+产品库文件的改动不会随镜像进入已有数据库，`import-config` 遇到不同内容退出 2，CSV 导入拒绝已有编码。维护窗口停 app 后，先核对数据库现状，再用 `catalog-fix` 按产品编码逐条更新 `name` 与 `certs`，保留文件之外的已有资料，然后启动 app。
+
+- 每个已上架条目会新增版本、递增 rev 并记审计，不需要重发 SOP。
+- 已有报价用订单行快照，金额、型号和历史链接不变。
+- 发布校验不会因产品库变化自动作废已通过的记录，同步后要重新运行工业发布闸。
+- 之后执行 `trial-reset` 前要重新盘点并生成签收 `baselineHash`。
