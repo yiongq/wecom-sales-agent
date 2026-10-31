@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# 主机上的巡检（02 spec「可观测性与告警 · 告警」、R24）：宿主机的 cron 每分钟跑一次，查四样，出事推到企微群机器人。
+# 主机上的巡检（02 spec「可观测性与告警 · 告警」、R24）：宿主机的 cron 每分钟跑一次，查五样，出事推到企微群机器人。
 # deploy.sh 每次部署把本脚本装到部署目录之外的 /usr/local/lib/<NAME>/watch.sh（与 backup.sh 同一个原因：回到 01 之前的版本时
 # rsync --delete 会删掉 deploy/），cron 跑那一份、把部署目录作为参数传进来，例如：
 #   * * * * *  bash /usr/local/lib/wecom-sales-agent/watch.sh /opt/wecom-sales-agent >>/var/log/wecom-watch.log 2>&1
 # 线上实际的路径、主机与 cron 另记。
 #
-# 查的四样（触发与恢复照 spec 的表）：
+# 查的五样（触发与恢复照 spec 的表）：
 #   重启      app 容器的 RestartCount 10 分钟内增加 2 次以上；30 分钟没有重启恢复
 #   健康检查  本机 curl /healthz 连续 3 分钟失败（连不上、HTTP 出错或 ok 为 false）；连续 3 分钟正常恢复
 #   磁盘      根分区或数据库数据卷的使用率 ≥ 85%，≥ 95% 再发一次；回到 80% 以下恢复
 #   备份      上次成功的备份（backup.sh 成功时写的 <BACKUP_DIR>/<项目名>/last-success）早于 26 小时；有了新的成功恢复。
 #             还没有这个文件时（这一版的 backup.sh 还没跑过）按最新的日期目录算
+#   业务拨测  工业 app 登录、核对租户、读成员资源、退出；连续 3 次失败告警，连续 3 次成功恢复
 # 同一项在条件持续期间 30 分钟内至多推一次（磁盘到 95% 那一次除外），恢复推一条「已恢复」；去重状态存在一个小文件里。
 # 推送：企微群机器人的 text 消息「[实例名] 中文说明 · 时间」，只有计数与百分比，不带地址、路径与密钥；curl 5 秒超时、至多重试
 # 2 次，推不出去只写 stderr（cron 的日志）。webhook 地址等同密钥：只在 env 文件里，这里任何输出都不打它。
@@ -26,6 +27,11 @@
 #   DISK_PATHS         另外要查的挂载点（空格分开）；根分区与数据库数据卷（<项目名>_db-data）总是查
 #   WATCH_STATE        去重状态文件，缺省 /var/lib/<项目名>/watch.state
 #   WATCH_BACKUP       设成 0 不查备份（没配备份的实例）
+#   PROBE_APP_ORIGIN   工业 app 的 origin；与下面三项全空时跳过，部分配置告警但不请求
+#   PROBE_TENANT_SLUG  工业租户 slug
+#   PROBE_EMAIL        专属普通 agent 邮箱（不是共享试用账号）
+#   PROBE_PASSWORD     专属账号口令；.env.ops 被 source，值必须用单引号
+#   PROBE_EVERY_S      健康时的间隔秒数，默认 600；失败/恢复观察时每次巡检都跑
 # 自测另用 WATCH_NOW（当作「现在」的秒数）。
 set -uo pipefail
 umask 077
@@ -221,5 +227,98 @@ if [[ "${WATCH_BACKUP:-1}" != 0 ]]; then
   fi
 fi
 
+# ---------------- 5. 工业业务拨测 ----------------
+# 单次最多四个请求，每个 8 秒（含连接），不重试、不跟随跳转；总网络期限 32 秒。
+# 所有凭据只在私有文件或 curl 配置 stdin 中；不打印响应，EXIT/信号清理也覆盖 curl 超时。
+probe_run() (
+  local csrf='' body code rc why='' slug
+  # bash 3.2 在显式 exit 前销毁 local；临时目录留在这个隔离子 shell 中供 EXIT trap 使用。
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/watch-probe.XXXXXXXX")" || { printf '登录，curl 退出码 23'; exit; }
+  trap 'rm -rf "$tmp"' EXIT
+  trap 'exit 1' HUP INT TERM
+  probe_json() {
+    local s=${1//\\/\\\\}
+    s=${s//\"/\\\"}
+    s=${s//$'\n'/\\n} s=${s//$'\r'/\\r} s=${s//$'\t'/\\t}
+    s=${s//$'\b'/\\b} s=${s//$'\f'/\\f}
+    printf '%s' "$s"
+  }
+  probe_request() {
+    local endpoint="$1" method="$2"
+    # csrf 仅接纳 API 的 base64url 令牌，不能向配置注入换行/引号。
+    code="$(
+      { [[ -z "$csrf" ]] || printf 'header = "x-csrf: %s"\n' "$csrf"; } |
+        curl -q -s --max-time 8 --connect-timeout 5 -K - -X "$method" \
+          -H 'content-type: application/json' -H "origin: ${PROBE_APP_ORIGIN%/}" \
+          -b "$tmp/cookies" -c "$tmp/cookies" -o "$tmp/body" -w '%{http_code}' \
+          ${3:+--data-binary} ${3:+@"$3"} \
+          "${PROBE_APP_ORIGIN%/}/api/console/$endpoint" 2>/dev/null
+    )"
+    rc=$?
+    if ((rc != 0)); then result="curl 退出码 ${rc}"; return 1; fi
+    result="HTTP ${code}"
+    [[ "$code" == 200 ]]
+  }
+  probe_csrf() {
+    local re='"csrf"[[:space:]]*:[[:space:]]*"([A-Za-z0-9_-]{43})"'
+    [[ "$1" =~ $re ]] && csrf=${BASH_REMATCH[1]}
+  }
+  printf '{"email":"%s","password":"%s"}' "$(probe_json "$PROBE_EMAIL")" "$(probe_json "$PROBE_PASSWORD")" >"$tmp/login"
+  # 退出没有请求体，也要发 Content-Length: 0，否则全站请求体上限回 411。
+  : >"$tmp/empty"
+  local result
+  if ! probe_request auth/login POST "$tmp/login"; then printf '登录，%s' "$result"; exit; fi
+  body="$(cat "$tmp/body")"
+  probe_csrf "$body" || why='登录，HTTP 200'
+  if [[ -z "$why" ]]; then
+    if ! probe_request me GET; then
+      why="身份，${result}"
+    else
+      body="$(cat "$tmp/body")"
+      local re='"tenantSlug"[[:space:]]*:[[:space:]]*"([a-z0-9-]+)"'
+      slug=''
+      [[ "$body" =~ $re ]] && slug=${BASH_REMATCH[1]}
+      if [[ "$slug" != "$PROBE_TENANT_SLUG" ]]; then
+        why='身份，租户不符'
+      elif ! probe_csrf "$body"; then
+        why='身份，HTTP 200'
+      elif ! probe_request conversations/counts GET; then
+        why="成员资源，${result}"
+      fi
+    fi
+  fi
+  # 即使 /me 或资源失败也用登录返回的 csrf 尽力退出；退出失败不覆盖首次失败。
+  if ! probe_request auth/logout POST "$tmp/empty"; then [[ -n "$why" ]] || why="退出，${result}"; fi
+  printf '%s' "$why"
+)
+check_probe() {
+  local configured=0 value every last why
+  for value in "${PROBE_APP_ORIGIN:-}" "${PROBE_TENANT_SLUG:-}" "${PROBE_EMAIL:-}" "${PROBE_PASSWORD:-}"; do
+    [[ -z "$value" ]] || configured=$((configured + 1))
+  done
+  ((configured > 0)) || return 0
+  if ((configured != 4)); then alert probe_config '业务拨测配置不完整'; return 0; fi
+  resolve probe_config '业务拨测配置已补齐'
+  every="${PROBE_EVERY_S:-600}"
+  [[ "$every" =~ ^[1-9][0-9]{0,7}$ ]] || every=600
+  last="$(get probe_last)"
+  if [[ -n "$last" && "$(get probe_retry)" != 1 ]] && ((NOW - last < every)); then return 0; fi
+  put probe_last "$NOW"
+  why="$(probe_run)"
+  if [[ -z "$why" ]]; then
+    put probe_bad 0
+    put probe_good $(($(get probe_good) + 1))
+    if (($(get probe_good) >= 3)); then
+      put probe_retry 0
+      resolve probe '业务拨测连续 3 次成功'
+    fi
+  else
+    put probe_retry 1
+    put probe_good 0
+    put probe_bad $(($(get probe_bad) + 1))
+    (($(get probe_bad) >= 3)) && alert probe "业务拨测连续 $(get probe_bad) 次失败（${why}）"
+  fi
+}
+check_probe
 save_state
 exit 0

@@ -8,7 +8,7 @@
 
 app 使用分服务 env 中的 `agent_app`，不得带 platform/owner 凭据；`DEPLOY_PROFILE=prod`、`APP_ROLE=host`、`CONFIG_SOURCE=db`、`SESSION_STORE=db`，非空 `ADMIN_PASS` 仍是启动前置，不作为共享账号密码。真实模型 key、渠道密钥环、迁移、已发布配置与可写目录均须就绪；七个受限 `FLAG_*` 全 off，`web_channel` 不解禁。线上不设置 `LLM_MOCK`，发布闸 required 时不能缺真实 key。必要 DB 配置缺失由既有启动校验拒绝。
 
-`deploy/product-surface/Caddyfile` 全部地址为私有占位。正式应用前填写 www/docs/app/旧工业/旅游五个不同 Host、批准的旅游渠道 key、仅本机可达的应用上游，以及 www/docs 的独立构建产物根；执行 `caddy adapt --validate` 后检查生成配置并平滑重载。静态根不能指仓库或 docs 源码。应用端口只绑定回环地址；未知 Host 在代理拒绝。新域重新登录，cookie 不扩 Domain。
+`deploy/product-surface/Caddyfile` 全部地址为私有占位。正式应用前填写根域/www/docs/app/旧工业/旅游六个不同 Host、批准的旅游渠道 key、仅本机可达的应用上游，以及 www/docs 的独立构建产物根；同机有其他站点时，把这些块合并进现有配置，不能整份替换。执行 `caddy adapt --validate` 后检查生成配置并平滑重载。静态根不能指仓库或 docs 源码。应用端口只绑定回环地址；未知 Host 在代理拒绝。app 的 `/favicon.ico` 由代理从 www 产物提供，正式图标不进镜像。新域重新登录，cookie 不扩 Domain。
 
 旧工业 Host 的代理固定上游 Host 为 app，不信任客户端 Forwarded/X-Forwarded-Host；不 rewrite、不重定向回调 POST，保留路径、query、请求体及必要资源至少 30 天，安排负责人跟踪旧链接使用情况，再决定延长。应用显式关闭 prod 非宿主的旧演示页、旧管理接口与 `/api/orders/:id/pay`，有效 Basic 也不能绕过；工业 `/quote/:id`、`/api/quotes/:id`、必要订单读接口与成员操作仍按原鉴权/租户/审批/版本规则工作。
 
@@ -16,12 +16,14 @@ app 使用分服务 env 中的 `agent_app`，不得带 platform/owner 凭据；`
 
 ## 两段上线与长期停用沙箱
 
+第一段与第二段使用同一个 tag；该 tag 必须同时支持以下全部保护，不在两段之间换版。旅游旧 Host 在第一段保持原路由，第二段才收窄；模板中的旅游白名单块只在第二段应用。
+
 1. 取得 owner 对本次操作的授权，核对 11/14/15 验收、备份及异地副本可恢复性、私有发布输入、法律正文和回退 tag。先关闭对外试用，排空在途发送与入站恢复。
-2. 按 05 长期停用：删除本实例 sandbox 容器及其匿名卷，将 `.env.sandbox` 改为 `.env.sandbox.off`；持沙箱进程锁执行既有 `sandbox purge --all`。从代理摘沙箱站点，去掉宿主体验链接与旧拨测；长期不用的体验客服在平台停用。清理失败继续关闭入口，不删除 spill/恢复哨兵来伪造成功。
-3. `deploy.sh` 的只读预检会拒绝 prod 仍有 `.env.sandbox` 或遗留 sandbox 容器（包括停止状态）。env 改名后部署不会进入沙箱启动分支；compose 默认 profile 不启动 sandbox。不要手动加 `--profile sandbox` 或把 off 文件改回原名。源码 demo 档仍可按 05 开沙箱。
-4. **先发支持完整 14 R6、PG 种子豁免、种子外发守卫和未完成批次启动检查的镜像，旅游保持 active。** 验工业 app 普通登录、真实收发、两租户渠道和历史客户链接。固定这个验证通过的回退 tag。
-5. 稳定后才把旅游改为 suspended，验证 30 秒内普通登录失效、固定停用回复与紧急/撤回优先级、重启仍可装载宿主且工业继续服务。旅游原保留期和访客清理照常，到期仍删除；不主动清旅游，不拿旅游做试用重置。
-6. 按下节准备工业试用、7 天保留和 PG 种子，再发布 www/docs 静态产物与 app 新域。确认共享提示已接入、无线上演示入口、无沙箱进程，验报价读接口、用量、隔离和独立工业拨测后放量。
+2. 按 05 长期停用：删除本实例 sandbox 容器及其匿名卷，将 `.env.sandbox` 改为 `.env.sandbox.off`；持沙箱进程锁执行既有 `sandbox purge --all`。从代理摘沙箱站点，去掉宿主体验链接与旧拨测；长期不用的体验客服在平台停用。清理失败继续关闭入口，不删除 spill/恢复哨兵来伪造成功。`deploy.sh` 的只读预检会拒绝 prod 仍有 `.env.sandbox` 或遗留 sandbox 容器（包括停止状态）；env 改名后部署不会进入沙箱启动分支，compose 默认 profile 不启动 sandbox。不要手动加 `--profile sandbox` 或把 off 文件改回原名；源码 demo 档仍可按 05 开沙箱。
+3. **第一段，旅游保持 active。** 用 `tenant-host` 把工业改到 app → 部署一个支持完整 14 R6、PG 种子豁免、种子外发守卫和未完成批次启动检查的 tag → 平滑重载代理，加根域、app、旧工业三段，旅游旧 Host 此时不收窄 → 停 app 按文末「工业品名同步」处理，再起 → 重跑工业发布闸 → 验工业 app 普通登录、真实收发、两租户渠道、历史客户链接 → 记录验证通过的回退 tag 和不可变镜像 ID。根域 301 到 www 并保留路径和 query；新域重新登录。切换窗口旧工业回调暂时失败会延迟即时拉取；按 `src/adapters/wecom.ts` 的 `startRuntimeInScope`，重启先从持久 cursor 补拉，再以至少 30 秒（默认 60 秒）的兜底轮询补回调丢失，不能据此承诺零延迟或无限期无丢失。
+4. 观察至少隔一晚，确认工业登录、真实收发、两租户渠道、历史链接与运维告警稳定，再进入第二段。
+5. **第二段，仍使用第一段同一个 tag。** 把旅游改为 suspended，同时代理把旅游旧 Host 收窄到批准回调；验证 30 秒内普通登录失效、固定停用回复与紧急/撤回优先级、重启仍可装载宿主且工业继续服务。旅游原保留期和访客清理照常，到期仍删除；不主动清旅游，不拿旅游做试用重置。核对批准回调 GET/POST 可达，其他旧页面为 410、无客户数据且不转发给工业。
+6. 按下节准备工业试用、7 天保留和 PG 种子，并通过 `privacy-publish` 发布与实际保留期一致的隐私说明；再发布 www、docs 静态产物，静态根放在部署目录之外（`deploy.sh` 的 rsync 带 `--delete`）。配置 `.env.ops` 的 PROBE 项；确认共享提示已接入、无线上演示入口、无沙箱进程，验报价读接口、用量、隔离和独立工业拨测后放量。
 
 ## 共享试用账号与签收清单
 
@@ -74,7 +76,21 @@ node --import tsx src/cli/trial-reset.ts \
 
 ## 拨测与回退
 
-不能把宿主 `/healthz` 的 200、revision 或汇总 ok 当工业可用证据。独立拨测必须请求工业 app Host：用专属受控普通账号正常登录，带其 Host-only cookie 读取会话或成员可访问资源，再退出；告警只记录结果码/耗时，不记录口令、cookie、消息或客户标识。真实收发拨测在 owner 授权后用该工业客服扫码，验证回调/拉取/入站/引擎/发送，并核对无重复发送。维护窗口按同链路拨测，不能用共享账号 token 长期替代登录。
+不能把宿主 `/healthz` 的 200、revision 或汇总 ok 当工业可用证据。[watch.sh](../../deploy/watch.sh) 复用原每分钟 cron，在第五项通过工业 app Host 正常登录 → `/api/console/me` 核对租户 → 读取普通成员可访问的 `conversations/counts` → 带 csrf 退出。中途失败也尽力退出，每请求限时 8 秒、不跳转、不关闭 TLS 验证；告警仅含步骤与 HTTP/curl 结果码，租户错配只记「租户不符」，不记响应体或配置值。
+
+拨测账号用 `user-create` 建普通 agent，只属于工业租户，单独受控，不是共享试用账号；`trial-reset` 不改它的口令。配置在服务器 `.env.ops`，文件被 `source`，口令用单引号包裹（若口令本身含单引号，按 shell 单引号转义规则处理），不在命令行传入口令：
+
+```sh
+PROBE_APP_ORIGIN='https://app.example.test'
+PROBE_TENANT_SLUG='<工业租户slug>'
+PROBE_EMAIL='<专属拨测邮箱>'
+PROBE_PASSWORD='<专属拨测口令>'
+PROBE_EVERY_S=600
+```
+
+四个必填项全空时跳过；部分配置告警「业务拨测配置不完整」且不请求。健康时默认每 10 分钟登录一次，每天约 144 行 `auth.login` 审计；失败或恢复观察时每分钟重跑，连续 3 次失败告警、连续 3 次成功恢复，持续告警沿用 30 分钟去重。临时凭据文件仅本人可读并在成功、失败、超时后删除，口令、cookie、csrf 不进进程参数。
+
+真实收发拨测在 owner 授权后用该工业客服扫码，验证回调/拉取/入站/引擎/发送，并核对无重复发送。维护窗口按同链路拨测，不能用共享账号 token 长期替代登录。
 
 旧镜像重建会话时原样保留未知的 `seedBaselineSeq` 状态字段，不会因多一个字段而启动失败；旧候选查询仍整段跳过 `seed=true`，回退期间继续关闭试用，恢复放量前须前滚到含本次保留期修复的镜像。
 
@@ -102,7 +118,7 @@ PRODUCT_CURRENT_IMAGE=wsa15-step89:current PRODUCT_R6_IMAGE=wsa15-step89:r6 \
   perl -e 'alarm 600; exec @ARGV' pnpm exec tsx scripts/product-sites/rehearse.selftest.ts
 ```
 
-本机演练使用 `*.example.test` 的 www/app/docs、新旧工业与旅游 Host，Caddy internal CA；不改系统 DNS、不安装系统证书。客户端仅信任当次 CA，同时验证不信任 CA 和未知 SNI 的握手失败。脚本真实执行 `caddy adapt --validate`、镜像启动/停止、已有渠道命令、双身份重置 CLI 与签名旧域回调；模型和企微传输为替身，认证、PG、渠道服务及计数是真实实现。普通 CI 未提供两个镜像时明确跳过镜像演练，不能据 CI 默认结果宣称完成第 9 步。
+本机演练使用 `*.example.test` 的 根域/www/app/docs、旧工业与旅游六个 Host，Caddy internal CA；不改系统 DNS、不安装系统证书。客户端仅信任当次 CA，同时验证不信任 CA 和未知 SNI 的握手失败。脚本真实执行 `caddy adapt --validate`、镜像启动/停止、已有渠道命令、双身份重置 CLI 与签名旧域回调；模型和企微传输为替身，认证、PG、渠道服务及计数是真实实现。普通 CI 未提供两个镜像时明确跳过镜像演练，不能据 CI 默认结果宣称完成第 9 步。
 
 脚本先发 R6 基线镜像且旅游 active，经工业 HTTPS 普通登录稳定后发当前镜像，再设旅游 suspended 并重启。之后重置种子与试用消息，新增试用消息，再模拟坏配置导致进程退出和代理 502，切回已验证 R6 镜像。回退继续 prod、旅游 suspended、不启沙箱；核对新消息、cursor、审计、用量和重置记录，旧消息/旧链接不复活、不重复发送，工业仍可收发。
 

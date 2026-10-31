@@ -317,3 +317,18 @@ Revisions: 2026-10-31 按 owner 定案重排第 1 批：线上 prod、普通共�
 - 公开与兼容边界：八个锁定文件与 spec 对 HEAD 逐字节不变；origin/dev 范围本机路径与长假企微标识检查零命中；gitleaks 的提交范围（2 个提交）及工作区 diff 均零命中，无新增秘密豁免。保留协调者三个 console 文件的原改动，只修改获准的工作台测试；共享提示文案与指南一致。
 - 资源清理：当次专用 pgvector:pg17 容器及其记录的匿名卷已删除，docker ps -a 的专用容器过滤为空，匿名卷 inspect 明确不存在；没有创建额外网络或浏览器。测试、服务与执行进程均已等待结束，临时 shell/运行脚本已清理，合成日志留在 gitignored 的 var。系统 ps 调用被沙箱拒绝，不能声称完成全局进程表核验。
 - 下一步：第 8 步按协调者浏览器结果与本轮修复验证勾选；第 10 步仅在 owner 当次授权后执行。未提交、push、开 PR、访问生产或调用真实模型；Status 保持 ready，spec 不改。
+
+### 上线前缺口修复（2026-11-01）
+
+- 范围：仅补既有 R10/R12 的工业业务拨测、根域跳转与发布手册；第 10 步不勾，Status 保持 ready，spec 原样不改。未访问服务器或真实 env，未调用真实模型；未修改 console/site/docs-site 与锁定套件。
+- `deploy/watch.sh` 复用每分钟 cron、状态文件和告警/恢复：四项全空跳过、部分配置不请求且告警；健康默认 600 秒，失败及恢复观察逐分钟，连续三次失败/成功触发告警/恢复并沿用 30 分钟去重。真实登录、核对 tenantSlug、读普通成员资源、带 csrf 退出；中途失败尽力退出，保留首个失败原因。四请求各 8 秒，总网络期限 32 秒；不跟随跳转且校验证书，忽略用户 curl 默认配置。凭据经私有文件/配置 stdin，临时目录由 EXIT/信号 trap 清理，兼容 bash 3.2、无 jq/node。
+- 新 `src/ops/app-probe.selftest.ts` 接入根 test 行，以工业非宿主与旅游宿主的 PGlite 配置、真实 console API、系统 curl 和真实 watch 串起全链。已确认 localhost 的真实 curl 会回传原样 Secure cookie，真实 csrf 退出通过，另租户普通账号被判租户不符。覆盖配置、间隔/重试、告警/恢复/去重、敏感值不进日志/argv、文件权限与清理、各步骤失败/保留首因、真实请求超时后退出。自测发现并修复 bash 3.2 显式 exit 前 local 变量失效造成的 EXIT 清理缺口。
+- Caddy 模板新增独立根域 301；代理自测改为当次 internal CA 的真实 HTTPS/SNI，根域保留路径/query、未知 SNI 拒绝及既有代理矩阵通过。镜像演练同步六个 Host 与根域断言；未给镜像输入的默认入口明确跳过完整镜像模式，不冒充镜像演练结果。
+- 手册明确六个 Host、同机合并配置、同 tag 两段上线、先工业 Host/镜像/代理/品名同步/发布闸再验收，隔夜后停旅游并收窄代理，最后 privacy-publish/静态产物/拨测/放量；静态根须在部署目录外。按 wecom 适配器的启动补拉与兜底轮询解释短暂回调失败的延迟后果。两份指南补专属工业 agent、trial-reset 不改其口令、source 的单引号规则、默认每天约 144 行登录审计。
+- 变异：在 `git archive HEAD` 的隔离副本覆盖本轮 watch 与新自测，分别移除租户比对、移除 csrf 头、失败阈值 3 改成 1；三次运行均退出 1 且命中预期 AssertionError（租户不符、真实退出失败、第一轮不得告警），副本 finally 删除。原工作区未做变异。
+- 已通过命令：`PRODUCT_CADDY_TEST=1 pnpm exec tsx src/tenancy/trial/deploy.selftest.ts`（专用 Docker 配置、Colima socket、已安装 compose）；`pnpm exec tsx src/ops/app-probe.selftest.ts`；`pnpm exec tsx src/ops/ops.selftest.ts`（544 项）；`pnpm -s test:locked`；`pnpm -s format:check`；`pnpm -s lint`；`pnpm -s typecheck`；`pnpm exec tsx scripts/ci-shard.ts --check 4`（248 units / 27 strict suites）。lint 未提供私有敏感词表，按原规则跳过该项。`pnpm exec tsx scripts/product-sites/rehearse.selftest.ts` 退出 0，但提示缺少 PRODUCT_CURRENT_IMAGE/PRODUCT_R6_IMAGE，只验证默认跳过入口，完整镜像模式本轮未重跑。
+- 公开边界：本轮改动文件 gitleaks 扫描零命中，提交范围扫描退出 0；新增本机路径与长假企微标识零命中，spec/AGENTS/CLAUDE/锁定套件/console/site/docs-site 与 HEAD 字节不变。真实 Caddy 容器已删除，专用名称过滤为空；未启动真实 PG 或浏览器。
+- 协调者复核：对 prod + 真实 PG 的本机预览实跑拨测，发现退出请求没有请求体，curl 不发 Content-Length，真实服务回 411。原因是贯穿用例单挂 consoleApi，绕过了 `src/server.ts` 的全站中间件。退出改发空请求体，`app-probe` 改走 `server.js` 完整入口；隔离副本去掉修复后以 411 失败。修复后对真实预览复跑：正常、10 分钟内不重复登录、错租户连续三次告警、连续三次成功恢复，临时目录无残留。
+- 根域之外补 app 的 `/favicon.ico`：由代理从 www 产物提供，正式图标不进镜像；真实 Caddy 用例验证来自静态产物、不转给应用，其余路径照常转发。
+- 跨月夹具：`src/tenancy/limits.selftest.ts` 的模型费用按真实日期记账，指标窗口却写死到 2026-10-31，11 月后失败；跨月断言也会把真实月份的费用行算进去。窗口改到真实的今天，跨月断言只比回复。按当前日期和偏移 45、400 天运行均通过。CI 用 UTC，这个问题要到北京时间 08:00 才暴露。
+- 第 10 步仍仅在 owner 当次授权后执行。
