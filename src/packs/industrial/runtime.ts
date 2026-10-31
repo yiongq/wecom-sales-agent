@@ -5,6 +5,7 @@ import {
   moneyProvenanceFollowupStep,
   type ShapePolicy,
 } from '../../core/pack-api.js';
+import { live } from './live.js';
 import { createIntake } from './intake.js';
 import { normalizePartNo } from './normalize.js';
 import { handoffVocab } from './handoff-vocab.js';
@@ -46,7 +47,10 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     intake: createIntake(sources),
     catalog: { part: partCatalog },
     maxQty: MAX_QTY,
-    priceLine,
+    priceLine(item, qty) {
+      if (!sources.erp?.active('part') || typeof item.id !== 'string') return priceLine(item, qty);
+      return priceLine(live(item, sources.erp.fresh('part', item.id)), qty);
+    },
     policy: industrialPolicy,
     quotes: quoteCapabilities(sources),
     siteLinks: quoteSiteLinks(),

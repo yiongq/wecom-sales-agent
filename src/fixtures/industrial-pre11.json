@@ -1,0 +1,14 @@
+{
+  "exact": "{\"match\":\"exact\",\"parts\":[{\"code\":\"part-0\",\"partNo\":\"HS1000\",\"name\":\"合成轴承\",\"unit\":\"件\",\"specs\":[\"内径25mm\"],\"moq\":1,\"tiers\":[{\"minQty\":1,\"unitPrice\":8}],\"stock\":\"现货\",\"leadDays\":12,\"substitutes\":[\"HS1001\"]}]}",
+  "alias": "{\"match\":\"exact\",\"parts\":[{\"code\":\"part-0\",\"partNo\":\"HS1000\",\"name\":\"合成轴承\",\"unit\":\"件\",\"specs\":[\"内径25mm\"],\"moq\":1,\"tiers\":[{\"minQty\":1,\"unitPrice\":8}],\"stock\":\"现货\",\"leadDays\":12,\"substitutes\":[\"HS1001\"]}]}",
+  "candidates": "{\"match\":\"ambiguous\",\"parts\":[{\"code\":\"part-0\",\"partNo\":\"HS1000\",\"name\":\"合成轴承\",\"unit\":\"件\",\"specs\":[\"内径25mm\"],\"moq\":1,\"tiers\":[{\"minQty\":1,\"unitPrice\":8}],\"stock\":\"现货\",\"leadDays\":12,\"substitutes\":[\"HS1001\"]},{\"code\":\"part-1\",\"partNo\":\"HS1001\",\"name\":\"合成轴承\",\"unit\":\"件\",\"specs\":[\"内径25mm\"],\"moq\":1,\"tiers\":[{\"minQty\":1,\"unitPrice\":8}],\"stock\":\"现货\",\"leadDays\":12,\"substitutes\":[]},{\"code\":\"part-2\",\"partNo\":\"HS1002\",\"name\":\"合成轴承\",\"unit\":\"件\",\"specs\":[\"内径25mm\"],\"moq\":1,\"tiers\":[{\"minQty\":1,\"unitPrice\":8}],\"stock\":\"现货\",\"leadDays\":12,\"substitutes\":[]},{\"code\":\"part-3\",\"partNo\":\"HS1003\",\"name\":\"合成轴承\",\"unit\":\"件\",\"specs\":[\"内径25mm\"],\"moq\":1,\"tiers\":[{\"minQty\":1,\"unitPrice\":8}],\"stock\":\"现货\",\"leadDays\":12,\"substitutes\":[]},{\"code\":\"part-4\",\"partNo\":\"HS1004\",\"name\":\"合成轴承\",\"unit\":\"件\",\"specs\":[\"内径25mm\"],\"moq\":1,\"tiers\":[{\"minQty\":1,\"unitPrice\":8}],\"stock\":\"现货\",\"leadDays\":12,\"substitutes\":[]}]}",
+  "estimate": "{\"lines\":[{\"query\":\"HS1000\",\"qty\":10,\"match\":\"exact\",\"code\":\"part-0\",\"partNo\":\"HS1000\",\"unitPrice\":8,\"amount\":80,\"delivery\":\"现货\"}],\"total\":80,\"unmatched\":0}",
+  "result": "{\"state\":\"approved\",\"quoteUrl\":\"/quote/ord_fixture\",\"totalText\":\"80元\"}",
+  "order": "{\"v\":2,\"sessionId\":\"erp-test-1\",\"lines\":[{\"kind\":\"part\",\"code\":\"part-0\",\"version\":1,\"title\":\"HS1000\",\"qty\":10,\"unit\":\"件\",\"unitPriceFen\":800,\"amountFen\":8000,\"attrs\":{\"交期\":\"现货\",\"起订量\":\"1\"}}],\"totalFen\":8000,\"approval\":{\"state\":\"approved\",\"requestedAt\":1792987200000,\"auto\":true,\"decidedAt\":1792987200000},\"id\":\"ord_fixture\",\"status\":\"pending_payment\",\"createdAt\":1792987200000,\"confirmedAt\":1792987200000}",
+  "guards": [
+    ["HS1000有现货。", "HS1000有现货。"],
+    ["库存和交期以顾问确认为准。", ""],
+    ["库存和交期以顾问确认为准。", ""],
+    ["HS1000可以替代HS1001。", "HS1000可以替代HS1001。"]
+  ]
+}

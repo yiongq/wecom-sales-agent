@@ -994,6 +994,7 @@ export interface ErpConnectorSettings {
   locationId: number;
   uom: Record<string, number>;
   keyExpiresAt: string;
+  lastCheck?: { at: string; result: 'ok' | import('../connectors/types.js').ErpErrorCode | 'currency' | 'location' };
 }
 
 export const erpConnectors = pgTable(

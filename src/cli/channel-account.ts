@@ -220,11 +220,8 @@ async function terminalSecrets(fields: readonly string[]): Promise<Record<string
   return out;
 }
 
-async function readSecrets(
-  file: string | undefined,
-  creating: boolean,
-): Promise<Redacted<WecomSecrets & { corpId?: string; openKfId?: string }>> {
-  const fields = creating ? CREATE_FIELDS : SECRET_FIELDS;
+/** 同一 fd 的文件校验、终端无回显与严格字段校验，供平台命令行共用。 */
+export async function readSecretFields(file: string | undefined, fields: readonly string[]): Promise<Redacted<Record<string, string>>> {
   let value: unknown;
   if (file !== undefined) {
     let fd: number | undefined;
@@ -248,7 +245,16 @@ async function readSecrets(
     fields.some((key) => typeof data[key] !== 'string' || !(data[key] as string).trim())
   )
     fail('凭据字段缺失、为空或不受支持');
-  return new Redacted(data as unknown as WecomSecrets & { corpId?: string; openKfId?: string });
+  return new Redacted(data as Record<string, string>);
+}
+
+async function readSecrets(
+  file: string | undefined,
+  creating: boolean,
+): Promise<Redacted<WecomSecrets & { corpId?: string; openKfId?: string }>> {
+  return (await readSecretFields(file, creating ? CREATE_FIELDS : SECRET_FIELDS)) as unknown as Redacted<
+    WecomSecrets & { corpId?: string; openKfId?: string }
+  >;
 }
 
 function ringRequired(env: NodeJS.ProcessEnv): KeyRing {

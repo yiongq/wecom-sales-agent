@@ -1491,7 +1491,8 @@ function liveSources(): PackSources {
 export function packSources(): PackSources {
   return {
     erp: {
-      active: (...args) => liveSources().erp.active(...args),
+      active: (...args) => runtimeSources?.erp.active(...args) ?? false,
+      mapped: (...args) => runtimeSources?.erp.mapped(...args) ?? false,
       availability: (...args) => liveSources().erp.availability(...args),
       fresh: (...args) => liveSources().erp.fresh(...args),
     },

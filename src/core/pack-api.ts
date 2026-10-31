@@ -990,7 +990,10 @@ export interface FollowupGuardContext extends GuardContext {
 /** 包工厂的存储、配置与检索能力，组合根提供，包不引用运行时模块。 */
 export interface PackSources extends Omit<TravelToolSources, 'budgetVerdict'> {
   erp: {
+    /** availability、fresh、mapped 的 code 均为产品库条目 code，不是型号的归一值。 */
     active(kind: string): boolean;
+    /** 启用连接器的启动映射中包含此编号。 */
+    mapped(kind: string, code: string): boolean;
     availability(kind: string, codes: readonly string[]): Promise<ReadonlyMap<string, import('../connectors/types.js').Availability>>;
     fresh(kind: string, code: string): import('../connectors/types.js').Availability | undefined;
   };
