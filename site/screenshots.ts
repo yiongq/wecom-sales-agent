@@ -5,7 +5,7 @@ export const SCREENSHOTS = [
     width: 1600,
     height: 1000,
     title: '询价工作台',
-    description: '合成多行询价与待补规格；显示接手入口，不含客户信息。',
+    description: '合成询价与待补规格；显示接手入口，不含客户信息。',
   },
   {
     filename: 'quote-review.webp',

@@ -1528,6 +1528,18 @@ for (const sandbox of [true, false]) {
   );
 }
 
+// 窄窗口（走查实测）：报价审批在右栏，<1280 仍要三栏同屏；到外壳隐藏侧栏（<992）才竖排，右栏完整展开。
+// 按钮行要能换行，否则右栏收窄后「撤回报价单」被挤出窗口。happy-dom 不排版，读 CSS 源码核对
+{
+  const css = fs.readFileSync(new URL('./workbench.css', import.meta.url), 'utf8');
+  const media = (width: number): string => css.split(`@media (max-width: ${width}px) {`)[1]?.split('\n}\n')[0] ?? '';
+  const side = /\.wb-side \{([^}]*)\}/.exec(media(991))?.[1] ?? '';
+  check('workbench.css：<1280 不竖排，右栏留在第一屏', media(1279) !== '' && !media(1279).includes('flex-direction: column'));
+  check('workbench.css：<992 才竖排', media(991).includes('flex-direction: column'));
+  check('workbench.css：竖排时右栏不限高', side !== '' && !side.includes('max-height'));
+  check('workbench.css：报价按钮能换行', /\.wb-order-actions \{[^}]*flex-wrap: wrap;/.test(css));
+}
+
 // 05：只有沙箱的 sbx 会话露出模拟器入口。
 for (const [sandbox, id, shown] of [
   [true, 'sbx-probe', true],

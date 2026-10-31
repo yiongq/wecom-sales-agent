@@ -139,7 +139,7 @@ function TraceTable({
       tableLayout="fixed"
       pagination={false}
       aria-label={`AI记录，共${rows.length}条`}
-      scroll={{ x: 980, scrollToFirstRowOnChange: false }}
+      scroll={{ x: 880, scrollToFirstRowOnChange: false }}
       onRow={(r) => ({
         className: r.key === selected ? 'tr-row is-selected' : 'tr-row',
         'aria-current': r.key === selected ? 'true' : undefined,
@@ -154,7 +154,7 @@ function TraceTable({
         {
           key: 'when',
           title: '时间',
-          width: 132,
+          width: 116,
           fixed: 'left',
           render: (_, r) => (
             <button
@@ -173,18 +173,18 @@ function TraceTable({
         {
           key: 'conversation',
           title: '会话',
-          width: 168,
+          width: 160,
           render: (_, r) => (
             <Link to="/conversations/$id" params={{ id: r.conversationId }} className="tr-conv">
               {cjk(r.label)}
             </Link>
           ),
         },
-        { key: 'outcome', title: '结果', width: 100, render: (_, r) => r.outcome },
+        { key: 'outcome', title: '结果', width: 88, render: (_, r) => r.outcome },
         {
           key: 'guards',
           title: '触发的护栏',
-          width: 220,
+          width: 180,
           render: (_, r) => (
             <span className={r.guardsFull ? 'tr-text' : 'tr-dim'} title={r.guardsFull || undefined}>
               {cjk(r.guards)}
@@ -194,16 +194,16 @@ function TraceTable({
         {
           key: 'handoff',
           title: '转人工原因',
-          width: 200,
+          width: 176,
           render: (_, r) => <span className={r.handoff ? 'tr-text' : 'tr-dim'}>{r.handoff ? cjk(r.handoff) : '—'}</span>,
         },
         {
           key: 'over',
           title: '回复',
-          width: 80,
+          width: 72,
           render: (_, r) => <span className={r.overLimit ? 'tr-text' : 'tr-dim'}>{r.overLimit ? '超长' : '—'}</span>,
         },
-        { key: 'took', title: '耗时', width: 96, align: 'right', render: (_, r) => <span className="tr-num">{r.took}</span> },
+        { key: 'took', title: '耗时', width: 88, align: 'right', render: (_, r) => <span className="tr-num">{r.took}</span> },
       ]}
     />
   );

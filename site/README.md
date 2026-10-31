@@ -27,7 +27,7 @@ pnpm exec tsx scripts/product-sites/build.ts all --input "$PRODUCT_PUBLISH_INPUT
 
 | 文件名                 | 尺寸        | 内容                       |
 | ---------------------- | ----------- | -------------------------- |
-| rfq-workbench.webp     | 1600 × 1000 | 多行询价、缺规格、接手入口 |
+| rfq-workbench.webp     | 1600 × 1000 | 询价、缺规格、接手入口     |
 | quote-review.webp      | 1600 × 1000 | 型号数量试算、审批前后边界 |
 | settings-readonly.webp | 1600 × 1000 | 只读组织、配置与运行状态   |
 
