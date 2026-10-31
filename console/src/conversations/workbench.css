@@ -483,6 +483,22 @@
   line-height: 18px;
   color: var(--text-2);
 }
+.wb-quote-state {
+  font-weight: 600;
+  color: var(--text);
+}
+.wb-quote-state[data-state='pending'] {
+  width: fit-content;
+  padding: 2px 8px;
+  border-radius: 6px;
+  color: var(--warning);
+  background: var(--warning-bg);
+}
+.wb-card-empty {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
 .wb-order-actions {
   display: flex;
   gap: 8px;

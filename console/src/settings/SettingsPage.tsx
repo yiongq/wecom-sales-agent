@@ -182,7 +182,7 @@ export function SettingsPage() {
 
   return (
     <>
-      <PageHeader title={`${SETTINGS_PAGES[page]}设置`} />
+      <PageHeader title="设置" docTitle={[`${SETTINGS_PAGES[page]}设置`]} />
       <SettingsAccess identity={settingsIdentity(viewer.me)}>
         <nav className="settings-tabs" aria-label="设置页面">
           {Object.entries(SETTINGS_PAGES).map(([key, label]) => (

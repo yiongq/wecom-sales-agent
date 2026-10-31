@@ -96,6 +96,9 @@
 .usage-table th:first-child {
   text-align: left;
 }
+.usage-table tbody th {
+  font-weight: 400;
+}
 .usage-table thead {
   color: var(--text-3);
 }

@@ -751,7 +751,7 @@ for (const demo of [true, false]) {
   };
   server = { demo, brand, loggedIn: false, login: 'check' };
   const m = await mount('/console/');
-  eq('15 验收 2 平台名与组织名分层', m.$('.entry-wordmark')?.textContent, '单来');
+  eq('15 验收 2 平台名与组织名分层', m.$('.login-title')?.textContent, '单来');
   eq('公开品牌：副标题来自entry', m.$('.login-lead')?.textContent, brand.name);
   eq('公开品牌：文档标题', document.title, `登录 · ${brand.name} · 单来`);
   check('公开品牌：HTML字符已转义，无标签注入', !m.$('img') && !m.$('script') && !m.$('[onerror]'));

@@ -51,9 +51,13 @@ function Checklist({ me, catalogKind }: { me: Me; catalogKind?: string }) {
       <StateView level={3} pending={query.isPending} error={query.error} onRetry={() => void query.refetch()}>
         {query.data && (
           <>
-            {query.data.steps.every((step) => step.state === 'done') && (
+            {query.data.steps.every((step) => step.state === 'done') ? (
               <p className="onboarding-complete" role="status">
                 配置已完成
+              </p>
+            ) : (
+              <p className="onboarding-progress">
+                {cjk(`已完成${query.data.steps.filter((step) => step.state === 'done').length}项，共${query.data.steps.length}项`)}
               </p>
             )}
             <ol className="onboarding-list">

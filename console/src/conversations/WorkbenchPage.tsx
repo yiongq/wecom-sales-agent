@@ -662,8 +662,8 @@ function ReplyBox({
           canReply
             ? undefined
             : channel === 'simulator' || channel === 'web'
-              ? '接管后在此回复，客户在网页模拟器里看到'
-              : '接管后在此回复，客户在企业微信中看到'
+              ? '接手后在此回复，客户在网页里看到'
+              : '接手后在此回复，客户在企业微信中看到'
         }
         onKeyDown={(e) => {
           if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) submit(e);
@@ -697,6 +697,7 @@ export function ProfileCard({ cd, now }: { cd: Pick<ConversationDetail, 'profile
       <div className="wb-card">
         <h3 className="wb-card-title">客户信息</h3>
         {card.title ? <p>{cjk(card.title)}</p> : null}
+        {!card.title && card.rows.length === 0 ? <p className="wb-card-empty">还没有客户信息</p> : null}
         <dl className="wb-profile-rows">
           {card.rows.map((row, i) => (
             <div key={i}>

@@ -48,7 +48,8 @@ export function LoginPage({
   return (
     <div className={`login-page ${demo ? 'login-demo' : 'login-prod'}`}>
       <main id="main" className="login-panel">
-        <div className="entry-wordmark">单来</div>
+        {/* prod 的卡片标题已是产品名，再放字标就重复了。 */}
+        {demo && <div className="entry-wordmark">单来</div>}
         <div className="login-column">
           <h1 className="login-title">单来</h1>
           <p className="login-lead">
