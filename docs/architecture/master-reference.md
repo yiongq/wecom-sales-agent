@@ -367,6 +367,7 @@
 - 2026-10-29 owner 定 11 `ready`，spec 见 [11 · 外部业务系统连接器：Odoo 实时库存（只读）](./11-erp-connector/spec.md)（[docs/architecture/11-erp-connector/](./11-erp-connector/)）。第一家 Odoo（19、20 的 JSON-2），第一期只读：按事先映射的产品 id 实时查可售量，叠到产品库库存上，每轮花在 ERP 上至多 1 秒，取不到退回产品库值；价格、交期、报价单不变，模型碰不到 ERP；连接器凭据加密存库（AGENTS.md 密钥规则随之修订），连接器出站一律经出站防护（SSRF）。报价单写回 ERP 另起 spec。部分取代 10 R4、R6 (2) 与 ADR-003 决策 2，见该 spec 顶部。开工等 12 implemented。
 - 2026-10-31 implemented（12）：随 `demo-v11-rc1` 上线，`demo-v11-rc2` 起含网页 413 与安卓压缩照片的修复；验收 4 的企微 P90 以第 13 步引擎路径为准，由 owner 接受，见该 spec 末条 `Revisions:` 与 plan「验收记录」。发版 `demo-v11`（`main` `10f56dc5`）。
 - 2026-10-31 owner 定 14 `ready`，spec 见 [14 · 用量限制：硬额度、单客户限速与运行中停用](./14-usage-limits/spec.md)（[docs/architecture/14-usage-limits/](./14-usage-limits/)）：正式租户的月度 AI 回复额度、日费用熔断、单客户限速，停用在运行中生效。
+- 2026-10-31 owner 定 15 `ready`，原话「按推荐，15 改 ready」，spec 见 [15 · 产品门面：单来官网、文档与设置中心](./15-product-surface/spec.md)：第 1 批官网、文档、品牌、正式登录、试用公司、只读设置与新手引导；复用工业租户，试用消息保留 7 天并可手动清理，旅游停用保留数据、旧支付页不对外；开工先核对宿主切换与 14 R6，用量最后接 14 R9，与 11/14 联合发布须 owner 当次授权。
 - 候选：
   - 第二个真实行业包：模板机制要靠它来验证。
   - 电商售后参考包。
