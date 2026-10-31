@@ -59,6 +59,7 @@ if (!current || !previous) {
   let ca: string | undefined;
   let proxyPort = 0;
   const host = {
+    root: 'example.test',
     app: 'app.example.test',
     www: 'www.example.test',
     docs: 'docs.example.test',
@@ -252,6 +253,7 @@ if(url.includes('/kf/customer/batchget'))return Response.json({customer_list:[]}
       fs.readFileSync(path.join(root, 'deploy/product-surface/Caddyfile'), 'utf8');
     fs.writeFileSync(path.join(dir, 'Caddyfile'), config);
     const caddyEnv = {
+      PRODUCT_ROOT_HOST: host.root,
       PRODUCT_WWW_HOST: host.www,
       PRODUCT_DOCS_HOST: host.docs,
       PRODUCT_APP_HOST: host.app,
@@ -331,6 +333,9 @@ if(url.includes('/kf/customer/batchget'))return Response.json({customer_list:[]}
     }, 'suspended restart');
     cookie = await login();
     for (const h of [host.www, host.docs]) assert.equal((await http(h, '/')).status, 200);
+    const rootRedirect = await http(host.root, '/path/part?x=1%2F2&y=3');
+    assert.equal(rootRedirect.status, 301);
+    assert.equal(rootRedirect.headers.location, 'https://www.example.test/path/part?x=1%2F2&y=3');
     const homepage = await http(host.www, '/');
     assert.ok(homepage.text.includes(`https://${host.app}/`));
     assert.ok(homepage.text.includes(`https://${host.docs}`));

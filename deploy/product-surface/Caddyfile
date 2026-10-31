@@ -1,5 +1,8 @@
 # 私有发布层提供全部占位值；不可直接以空环境上线。
 # 不在 www/docs 上反代 API、接触成员 cookie 或发布 docs 源目录。
+https://{$PRODUCT_ROOT_HOST} {
+  redir https://{$PRODUCT_WWW_HOST}{uri} permanent
+}
 https://{$PRODUCT_WWW_HOST} {
   root * {$PRODUCT_WWW_ROOT}
   file_server
@@ -18,7 +21,15 @@ https://{$PRODUCT_DOCS_HOST} {
   }
 }
 https://{$PRODUCT_APP_HOST} {
-  import industrial_app
+  # 正式图标是私有素材，不进镜像；后台用官网产物里的同一份。
+  handle /favicon.ico {
+    root * {$PRODUCT_WWW_ROOT}
+    rewrite * /assets/favicon.png
+    file_server
+  }
+  handle {
+    import industrial_app
+  }
 }
 # 证书与此块至少保留 30 天；无 rewrite/redir，回调 POST 与旧客户链接原样转发。
 https://{$PRODUCT_OLD_INDUSTRIAL_HOST} {

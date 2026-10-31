@@ -15,6 +15,7 @@ const r = await import('./runtime.js');
 const limits = await import('./limits.js');
 const daily = await import('../trace/usage-daily.js');
 const usage = await import('../usage.js');
+const { todayIso } = await import('../env.js');
 const store = await import('../store.js');
 const testing = await import('../db/testing.js');
 const { openDb, withTenant, pgErrorOf } = await import('../db/client.js');
@@ -78,7 +79,8 @@ async function suite(db: Db, query: Query, label: string): Promise<void> {
         readMetrics(tx, {
           since: new Date(2026, 9, 1),
           sinceDay: '2026-10-01',
-          today: '2026-10-31',
+          // 模型费用按真实日期记账，窗口要盖住真实的今天；回复行走注入时钟，留在 10 月，一并算进窗口
+          today: todayIso(),
         }),
       ),
     );
@@ -283,7 +285,11 @@ async function suite(db: Db, query: Query, label: string): Promise<void> {
       (await rows(a, '2026-10')).reduce((n, row) => n + row.replies, 0),
       15,
     );
-    assert.deepEqual(await rows(a, '2026-11'), [{ day: '2026-11-01', replies: 1, costMilli: 0 }]);
+    // 只比回复：真实日期落在 11 月时，上面那笔模型费用也在这个月
+    assert.deepEqual(
+      (await rows(a, '2026-11')).filter((row) => row.replies > 0).map(({ day, replies }) => ({ day, replies })),
+      [{ day: '2026-11-01', replies: 1 }],
+    );
 
     await query('update tenants set monthly_reply_quota=10 where id=$1', [a.id]);
     await poll(a);

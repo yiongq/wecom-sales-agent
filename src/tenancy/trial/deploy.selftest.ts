@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
-import { createServer, request } from 'node:http';
+import { createServer } from 'node:http';
+import { request } from 'node:https';
 import { productPathClosed } from './paths.js';
 import { resolveProfile } from '../../profile.js';
 import { assertTrialReplaySafe } from './startup.js';
@@ -138,7 +139,7 @@ try {
   console.log('PASS 15 评审：实际 shell 片段覆盖空白、BOM、CRLF、引号原样拒绝、重复键最后值、损坏 env 失败关闭');
   console.log('PASS 15 验收 8：部署入口 prod 沙箱 env/残留容器拒绝、env 改名通过、demo 沙箱能力保留（shell 集成）');
   if (process.env.PRODUCT_CADDY_TEST === '1') {
-    const name = 'wsa15-c-caddy';
+    const name = `wsa15-c-caddy-${path.basename(dir)}`;
     const image = 'caddy:2.11.2-alpine';
     const hits: { host: string; url: string; method: string; body: string; forwarded?: string; xfh?: string }[] = [];
     const upstream = createServer(async (req, res) => {
@@ -158,19 +159,22 @@ try {
     });
     await new Promise<void>((resolve) => upstream.listen(0, '0.0.0.0', resolve));
     const upstreamPort = (upstream.address() as { port: number }).port;
-    // 只在本地测试关 TLS 并改监听口；所有匹配器、代理与路由来自提交的模板。
+    // 使用当次 internal CA 与真实 TLS/SNI；只改监听口，路由来自提交模板。
     const raw = fs.readFileSync('deploy/product-surface/Caddyfile', 'utf8');
     const template = raw
-      .replaceAll(/https:\/\/\{\$(PRODUCT_[A-Z_]+HOST)\}/g, (_, key: string) => `http://{$${key}}:8080`)
+      .replaceAll(/^https:\/\/\{\$(PRODUCT_[A-Z_]+HOST)\}/gm, (_, key: string) => `https://{$${key}}:8443`)
       .replace('http:// {', ':8081 {')
-      .replace('https:// {', ':8080 {');
+      .replace('https:// {', 'https://:8443 {');
     const caddyfile = path.join(dir, 'Caddyfile');
-    fs.writeFileSync(caddyfile, `{\n admin off\n auto_https off\n}\n${template}`);
+    fs.writeFileSync(caddyfile, `{\n admin off\n auto_https disable_redirects\n local_certs\n}\n${template}`);
     fs.mkdirSync(path.join(dir, 'www'));
     fs.writeFileSync(path.join(dir, 'www/index.html'), '合成官网');
+    fs.mkdirSync(path.join(dir, 'www/assets'));
+    fs.writeFileSync(path.join(dir, 'www/assets/favicon.png'), '合成图标');
     fs.mkdirSync(path.join(dir, 'docs'));
     fs.writeFileSync(path.join(dir, 'docs/index.html'), '合成文档');
     const envs = {
+      PRODUCT_ROOT_HOST: 'example.test',
       PRODUCT_WWW_HOST: 'www.example.test',
       PRODUCT_DOCS_HOST: 'docs.example.test',
       PRODUCT_APP_HOST: 'app.example.test',
@@ -205,7 +209,7 @@ try {
         '--name',
         name,
         '-p',
-        '127.0.0.1::8080',
+        '127.0.0.1::8443',
         '-v',
         `${dir}:/fixture:ro`,
         ...Object.entries(envs).flatMap(([k, v]) => ['-e', `${k}=${v}`]),
@@ -218,13 +222,16 @@ try {
         'caddyfile',
       ]);
       assert.equal(started.status, 0, started.stderr);
-      const port = Number(docker(['port', name, '8080/tcp']).stdout.trim().split(':').at(-1));
+      const port = Number(docker(['port', name, '8443/tcp']).stdout.trim().split(':').at(-1));
       assert.ok(port);
+      let ca = '';
       const http = (host: string, url: string, method = 'GET', body = '') =>
-        new Promise<{ status: number; body: string }>((resolve, reject) => {
+        new Promise<{ status: number; body: string; location?: string }>((resolve, reject) => {
           const req = request(
             {
               hostname: '127.0.0.1',
+              servername: host,
+              ca,
               port,
               path: url,
               method,
@@ -239,7 +246,9 @@ try {
             (res) => {
               const chunks: Buffer[] = [];
               res.on('data', (b) => chunks.push(b));
-              res.on('end', () => resolve({ status: res.statusCode!, body: Buffer.concat(chunks).toString() }));
+              res.on('end', () =>
+                resolve({ status: res.statusCode!, body: Buffer.concat(chunks).toString(), location: res.headers.location }),
+              );
             },
           );
           req.on('error', reject);
@@ -249,7 +258,8 @@ try {
       let ready = false;
       for (let n = 0; n < 50; n++) {
         try {
-          await http('unknown.example.test', '/');
+          ca = docker(['exec', name, 'cat', '/data/caddy/pki/authorities/local/root.crt']).stdout;
+          await http('www.example.test', '/');
           ready = true;
           break;
         } catch {
@@ -298,12 +308,20 @@ try {
           assert.equal((await http('travel.example.test', url, method)).status, 410, `${method} ${url}`);
       assert.equal((await http('travel.example.test', '/wecom/callback', 'PUT')).status, 410);
       assert.equal(hits.length, before);
-      assert.equal((await http('unknown.example.test', '/api/console')).status, 421);
+      await assert.rejects(http('unknown.example.test', '/api/console'));
+      const redirected = await http('example.test', '/path/part?x=1%2F2&y=3');
+      assert.equal(redirected.status, 301);
+      assert.equal(redirected.location, 'https://www.example.test/path/part?x=1%2F2&y=3');
       assert.match((await http('www.example.test', '/')).body, /合成官网/);
       assert.equal((await http('www.example.test', '/api/console')).status, 404);
       assert.match((await http('docs.example.test', '/')).body, /合成文档/);
+      const hitsBeforeIcon = hits.length;
+      assert.equal((await http('app.example.test', '/favicon.ico')).body, '合成图标');
+      assert.equal(hits.length, hitsBeforeIcon, 'app 的图标来自官网产物，不转给应用');
+      await http('app.example.test', '/console/');
+      assert.equal(hits.length, hitsBeforeIcon + 1, 'app 其余路径仍转给应用');
       console.log(
-        'PASS 15 验收 7–8：真实 Caddy 固定 Host、旧回调 POST/query/body 原样、旅游严格白名单及路径变体、未知 Host 拒绝、静态根隔离',
+        'PASS 15 验收 7–8：真实 Caddy 固定 Host、旧回调 POST/query/body 原样、旅游严格白名单及路径变体、根域 301 保留路径/query、app 图标、未知 SNI 拒绝、静态根隔离',
       );
     } finally {
       docker(['rm', '-fv', name]);

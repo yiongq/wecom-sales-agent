@@ -15,7 +15,11 @@ DB 存储下，真实会话每轮 trace 与护栏改写落到 `turn_traces`、`g
 
 窗口按服务器时区的自然日计算，并截到租户 trace 保留期。结构化日志用 `LOG_FORMAT=json`，请求带 `req`、轮次带 `tenant` / `conv` / `turn`，prod 不记客户原话与原始会话标识；Compose 已启用 JSON 与日志轮转。
 
-应用关键故障通过 `ALERT_WEBHOOK_URL` 推企微告警群；转人工通知用独立的 `NOTIFY_WEBHOOK_URL`。宿主机 [deploy/watch.sh](../../deploy/watch.sh) 巡检重启、健康、磁盘、备份，配置在服务器 `.env.ops`，需另装每分钟 cron。线上 demo 已验过停机告警：腾讯云云拨测试用版与主机巡检均在 3 分钟内送达企微群；长期外部拨测用 UptimeRobot，每 5 分钟检测、邮件通知，只判 HTTP 200，未校验响应正文 `ok`。
+应用关键故障通过 `ALERT_WEBHOOK_URL` 推企微告警群；转人工通知用独立的 `NOTIFY_WEBHOOK_URL`。宿主机 [deploy/watch.sh](../../deploy/watch.sh) 巡检重启、健康、磁盘、备份、工业业务拨测，配置在服务器 `.env.ops`，需另装每分钟 cron。线上 demo 已验过停机告警：腾讯云云拨测试用版与主机巡检均在 3 分钟内送达企微群；长期外部拨测用 UptimeRobot，每 5 分钟检测、邮件通知，只判 HTTP 200，未校验响应正文 `ok`。
+
+工业拨测配置 `.env.ops` 的 `PROBE_APP_ORIGIN`、`PROBE_TENANT_SLUG`、`PROBE_EMAIL`、`PROBE_PASSWORD`，可选 `PROBE_EVERY_S`（默认 600 秒）。四项全空跳过，部分配置告警且不请求。账号用 `user-create` 建普通 agent，只属于工业租户，单独受控，不是共享试用账号；`trial-reset` 不改它的口令。env 文件被 `source`，口令用单引号包裹，口令内单引号按 shell 规则转义。默认每 10 分钟正常登录一次，每天约 144 行 `auth.login` 审计。
+
+第五项走工业 app 登录、`/me` 核对租户、读成员资源、带 csrf 退出；中途失败也退出，每请求限时 8 秒，校验证书。失败及恢复观察时每分钟重跑，连续 3 次失败告警、连续 3 次成功恢复，沿用原状态文件与 30 分钟去重。告警只含步骤与 HTTP/curl 结果码，错租户记「租户不符」，不含地址、邮箱、租户 slug、口令、cookie、csrf 或响应体；凭据不进进程参数，私有临时文件结束即删。完整配置与两段上线顺序见[产品门面发布手册](product-surface-deploy.md)。
 
 OpenTelemetry 默认关闭；设 `OTEL_EXPORTER_OTLP_ENDPOINT` 才加载导出器，每轮一条 trace，属性按 GenAI 约定加 Langfuse 会话属性。会话用数据库 `ref`，文件存储与 demo 类会话用进程内匿名引用；任何时候不导出真实企微用户标识。`OTEL_EXPORTER_OTLP_HEADERS` 用于鉴权，只存服务器 env；默认不导出原文，`OTEL_CAPTURE_CONTENT=1` 才导出客户原话、最终回复、工具参数，工具结果始终不导出。02 只做埋点，Langfuse 接收端尚未部署。
 
