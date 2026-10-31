@@ -96,6 +96,36 @@ try {
       PATH: `${bin}:${process.env.PATH}`,
       TRIAL_CONTAINER_MARKER: containerMarker,
     });
+  for (const raw of [
+    'DEPLOY_PROFILE=prod\n',
+    ' \tDEPLOY_PROFILE=prod\n',
+    '\ufeff  DEPLOY_PROFILE=prod\r\n',
+    '# comment\r\nDEPLOY_PROFILE=demo\r\n DEPLOY_PROFILE=prod\r\n',
+  ]) {
+    fs.writeFileSync(appEnv, raw);
+    const result = check();
+    assert.equal(result.status, 1, JSON.stringify(raw));
+    assert.match(result.stderr, /prod 要求完成 05 长期停用/);
+  }
+  for (const raw of [
+    'DEPLOY_PROFILE="prod"\n',
+    "DEPLOY_PROFILE='prod'\n",
+    'DEPLOY_PROFILE="prod\n',
+    'DEPLOY_PROFILE=prod # comment\n',
+    'DEPLOY_PROFILE =prod\n',
+    'DEPLOY_PROFILE\n',
+    'DEPLOY_PROFILE=unknown\n',
+    '\u00a0DEPLOY_PROFILE=prod\n',
+    'BROKEN KEY=value\nDEPLOY_PROFILE=demo\n',
+  ]) {
+    fs.writeFileSync(appEnv, raw);
+    const result = check();
+    assert.equal(result.status, 1, JSON.stringify(raw));
+    assert.match(result.stderr, /env\/profile 解析失败/);
+  }
+  fs.writeFileSync(appEnv, 'DEPLOY_PROFILE=prod\nDEPLOY_PROFILE=demo\n');
+  assert.equal(check().status, 0, 'raw env 重复键取最后一个，demo 保留沙箱');
+  fs.writeFileSync(appEnv, 'DEPLOY_PROFILE=prod\n');
   assert.equal(check().status, 1);
   fs.renameSync(sandboxEnv, `${sandboxEnv}.off`);
   assert.equal(check().status, 0);
@@ -105,6 +135,7 @@ try {
   fs.writeFileSync(appEnv, 'DEPLOY_PROFILE=demo\n');
   fs.writeFileSync(sandboxEnv, 'DEPLOY_PROFILE=demo\n');
   assert.equal(check().status, 0);
+  console.log('PASS 15 评审：实际 shell 片段覆盖空白、BOM、CRLF、引号原样拒绝、重复键最后值、损坏 env 失败关闭');
   console.log('PASS 15 验收 8：部署入口 prod 沙箱 env/残留容器拒绝、env 改名通过、demo 沙箱能力保留（shell 集成）');
   if (process.env.PRODUCT_CADDY_TEST === '1') {
     const name = 'wsa15-c-caddy';

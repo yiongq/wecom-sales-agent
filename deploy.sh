@@ -202,7 +202,29 @@ case "$SANDBOX_ENABLED" in 0 | 1) ;; *) echo "错误：无法确认沙箱是否�
 # 15：prod 不能因遗留 env 或容器复活沙箱。demo 部署仍沿用 05 的可选沙箱能力。
 if ! ssh "${SERVER}" bash -s -- "${REMOTE_DIR}/.env" "${REMOTE_DIR}/.env.sandbox" "${NAME}-sandbox" <<'PRODUCT_SANDBOX'
 set -euo pipefail
-if grep -q '^DEPLOY_PROFILE=prod$' "$1"; then
+# compose 的 format: raw 与 docker --env-file：去行首空白/CRLF，值保留引号、$、#，重复键最后一项生效。
+# 不 source 文件；引号包裹的 profile 在容器里也非法，必须拒绝，不能误判成 demo。
+profile=$(LC_ALL=C awk '
+  NR == 1 { sub(/^\357\273\277/, "") }
+  { sub(/\r$/, ""); sub(/^[ \t\v\f\r]+/, "") }
+  /^#/ || /^$/ { next }
+  {
+    pos = index($0, "=")
+    key = pos ? substr($0, 1, pos - 1) : $0
+    # 非 ASCII/非标准键拒绝，避免不同 locale 对 Unicode 空白的解释导致漏判。
+    if (key !~ /^[A-Za-z_][A-Za-z0-9_]*$/) { bad = 1; exit }
+    if (key == "DEPLOY_PROFILE") {
+      # 裸键会从部署 shell 继承，无法确认容器值；拒绝。
+      if (!pos) { bad = 1; exit }
+      profile = substr($0, pos + 1)
+    }
+  }
+  END {
+    if (bad || (profile != "" && profile != "demo" && profile != "prod")) exit 1
+    print (profile == "" ? "demo" : profile)
+  }
+' "$1") || { echo 'product-surface: env/profile 解析失败；拒绝部署' >&2; exit 1; }
+if [ "$profile" = prod ]; then
   if [ -f "$2" ] || docker container inspect "$3" >/dev/null 2>&1; then
     echo 'product-surface: prod 要求完成 05 长期停用，仍有沙箱 env 或容器；拒绝部署' >&2
     exit 1

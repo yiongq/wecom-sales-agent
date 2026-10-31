@@ -1062,7 +1062,7 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
     );
   };
 
-  // 有订单时报价单就是这一屏的待办：转人工、订单排在最前，工业包「最近报价」与报价单重复，不再单列。
+  // 有订单时订单就是这一屏的待办，排最前。只有带审批的报价单才与「最近报价」重复；旅游的新报价可能还没下单，要保留。
   const hasOrders = detail.orders.length > 0;
   const ordersCard = (
     <div className="wb-card">
@@ -1205,6 +1205,7 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
           <TraceTab id={id} turnId={selectedTurnId} />
         ) : (
           <>
+            {hasOrders && ordersCard}
             {detail.handoffCard && (
               <div className="wb-card">
                 <h3 className="wb-card-title">转人工</h3>
@@ -1213,9 +1214,8 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
                 <p>{`由谁处理：${detail.handoffCard.assigneeName ?? '还没人接手'}`}</p>
               </div>
             )}
-            {hasOrders && ordersCard}
             <ProfileCard cd={detail} now={now} />
-            {!(hasOrders && detail.quoteCard) &&
+            {!(hasQuotes && detail.quoteCard) &&
               (hasQuotes || detail.quoteCard || detail.quote) &&
               (hasQuotes && (q.isFetching || q.error) ? (
                 <StateView pending={q.isFetching} error={q.error} onRetry={() => void q.refetch()} />

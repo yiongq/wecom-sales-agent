@@ -88,6 +88,7 @@ export function buildTrialSeeds(
       id: seed.sessionId,
       channel: 'simulator',
       seed: true,
+      seedBaselineSeq: script.length,
       profile: {},
       stage: m.order === 'approved' ? 'closing' : m.order === 'pending' ? 'quote' : m.key === 'handoff' ? 'handoff' : 'discovery',
       messages: script.map(([role, content], n) => ({ role, content, at: at + n })),

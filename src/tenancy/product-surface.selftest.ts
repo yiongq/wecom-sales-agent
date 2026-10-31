@@ -740,6 +740,81 @@ async function parent(superUrl: string): Promise<void> {
     assert.ok((await usage()).replies.used >= 4, '15 验收 9：重置/重启保留真实用量并继续计数');
     console.log('PASS 15 验收 9：普通认证/设置→CLI 重置→重启→新签名入站/引擎/发送→共享会话/实际前端/引导/用量闭环');
     console.log('PASS 15 验收 9：两段上线后保持旅游 suspended，重置/重试/重启保留用量且不复活消息');
+    // 评审回归：真实人工回复已追加到 PG，保留 seed 守卫；仅纯合成基线豁免。
+    await stop();
+    const { readPurgeCandidates, purgeConversation } = await import('../db/repo/retention.js');
+    const missingBaseline = seeds.find((s) => s.key === 'inquiry')!.sessionId;
+    await fx.query("update conversations set state=(state::jsonb - 'seedBaselineSeq')::json where tenant_id=$1 and id=$2", [
+      industryId,
+      missingBaseline,
+    ]);
+    // 仅在一次性测试库事务内构造已过期夹具；恢复时间触发器后才运行候选与真实清理。
+    // purge 的 p_now 仍为当前时间，保留其 5 分钟偏差守卫。
+    await fx.query('begin');
+    try {
+      await fx.query('alter table conversations disable trigger conversations_guard_updated_at');
+      await fx.query(
+        "update conversations set updated_at=date_trunc('milliseconds',now())-interval '8 days' where tenant_id=$1 and state->>'seed'='true'",
+        [industryId],
+      );
+      await fx.query('alter table conversations enable trigger conversations_guard_updated_at');
+      await fx.query('commit');
+    } catch (error) {
+      await fx.query('rollback');
+      throw error;
+    }
+    const retentionNow = new Date();
+    const seedIds = new Set(seeds.map((s) => s.sessionId));
+    const expiredSeeds = (
+      await withTenant(appDb.db, trialCtx, (tx) => readPurgeCandidates(tx, new Date(retentionNow.getTime() - 7 * 86400000), null, 100))
+    ).filter((c) => seedIds.has(c.id));
+    assert.deepEqual(
+      expiredSeeds.map((c) => c.id).sort(),
+      [handoff, missingBaseline].sort(),
+      '纯种子过期不清，人工追加和缺失基线必须进入候选',
+    );
+    const humanState = await fx.query<{ seed: boolean; last_seq: number; baseline: number }>(
+      "select (state->>'seed')::boolean seed,last_seq,(state->>'seedBaselineSeq')::int baseline from conversations where tenant_id=$1 and id=$2",
+      [industryId, handoff],
+    );
+    assert.equal(humanState[0]!.seed, true);
+    assert.ok(humanState[0]!.last_seq > humanState[0]!.baseline);
+    for (const candidate of expiredSeeds)
+      assert.equal(
+        await withTenant(appDb.db, trialCtx, (tx) =>
+          purgeConversation(tx, candidate.id, retentionNow, candidate.lastSeq, candidate.updatedAt),
+        ),
+        true,
+      );
+    assert.deepEqual(
+      await fx.query('select count(*)::int n from messages where tenant_id=$1 and conversation_id=any($2)', [
+        industryId,
+        [handoff, missingBaseline],
+      ]),
+      [{ n: 0 }],
+      '整段消息级联删除',
+    );
+    await start();
+    const afterPurgeLogin = await login(industryHost, 'surface-industrial@erp.example.test', 'synthetic-reset-password');
+    assert.equal(afterPurgeLogin.status, 200);
+    const afterPurgeIdentity = (await afterPurgeLogin.json()) as { csrf: string };
+    assert.equal(
+      (
+        await request(industryHost, `/api/console/conversations/${handoff}/reply`, {
+          method: 'POST',
+          headers: {
+            cookie: cookie(afterPurgeLogin),
+            origin: `https://${industryHost}`,
+            'content-type': 'application/json',
+            'x-csrf': afterPurgeIdentity.csrf,
+          },
+          body: JSON.stringify({ text: '清理后合成回复', clientId: randomUUID() }),
+        })
+      ).status,
+      404,
+    );
+    assert.deepEqual((await rpc()).sent, [], '清理并重启后不外发，不复活已删种子');
+    console.log('PASS 15 评审保留期：真实 PG 纯种子豁免、人工回复超基线/缺基线到期整段删除、seed 不清、删除后回复404且外发零');
     console.log('PRODUCT SURFACE SELFTEST PASS: 15 step 0 real PG + production boot');
   } catch (error) {
     console.error(logs);
