@@ -29,7 +29,7 @@ assert.deepEqual(
   Object.fromEntries(['轴承', '紧固件', '气动元件', '低压电器'].map((c) => [c, parts.filter((p) => p.category === c).length])),
   { 轴承: 10, 紧固件: 10, 气动元件: 10, 低压电器: 10 },
 );
-assert.ok(parts.every((p) => p.brand === '衡石工业品' && p.certs?.includes('合成演示数据')));
+assert.ok(parts.every((p) => p.brand === '衡石工业品' && p.certs?.includes('虚构演示数据')));
 assert.ok(parts.some((p) => p.substitutes?.length) && parts.some((p) => !p.substitutes?.length));
 assert.ok(parts.some((p) => p.stock === 0) && parts.some((p) => p.stock > 0));
 for (const p of parts) {

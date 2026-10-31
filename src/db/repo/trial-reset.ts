@@ -125,7 +125,9 @@ export async function trialBaseline(tx: Tx) {
     !sop ||
     sop.packId !== 'industrial' ||
     !catalog.length ||
-    catalog.some((r) => r.kind !== 'part' || !(r.payload.certs as unknown[])?.includes('合成演示数据'))
+    catalog.some(
+      (r) => r.kind !== 'part' || !(r.payload.certs as unknown[])?.some((cert) => cert === '合成演示数据' || cert === '虚构演示数据'),
+    )
   )
     throw new Error('trial_synthetic_catalog_required');
   const hash = createHash('sha256')

@@ -88,7 +88,7 @@ try {
   const data = {
     id: 'part-a',
     partNo: '6205-2RS',
-    name: '合成深沟球轴承',
+    name: '深沟球轴承',
     brand: '合成品牌',
     category: '轴承',
     specs: ['内径25mm'],

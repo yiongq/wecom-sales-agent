@@ -2,7 +2,7 @@
   {
     "id": "bearing-01",
     "partNo": "6205-ZZ",
-    "name": "合成深沟球轴承",
+    "name": "深沟球轴承",
     "brand": "衡石工业品",
     "category": "轴承",
     "specs": ["内径25mm", "外径52mm"],
@@ -19,12 +19,12 @@
     "leadDays": 7,
     "aliases": [],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "bearing-02",
     "partNo": "6205-2RS",
-    "name": "合成密封深沟球轴承",
+    "name": "密封深沟球轴承",
     "brand": "衡石工业品",
     "category": "轴承",
     "specs": ["内径25mm", "外径52mm"],
@@ -41,12 +41,12 @@
     "leadDays": 7,
     "aliases": ["6205RS"],
     "substitutes": ["6205-ZZ"],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "fastener-01",
     "partNo": "M8×30",
-    "name": "合成六角螺栓",
+    "name": "六角螺栓",
     "brand": "衡石工业品",
     "category": "紧固件",
     "specs": ["螺纹M8", "长度30mm"],
@@ -63,12 +63,12 @@
     "leadDays": 7,
     "aliases": ["HS-BOLT8"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "pneumatic-01",
     "partNo": "HS-PV25",
-    "name": "合成气动阀",
+    "name": "气动阀",
     "brand": "衡石工业品",
     "category": "气动元件",
     "specs": ["接口G1/4", "防护IP65"],
@@ -85,12 +85,12 @@
     "leadDays": 7,
     "aliases": [],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "bearing-03",
     "partNo": "6206-2RS",
-    "name": "合成密封深沟球轴承",
+    "name": "密封深沟球轴承",
     "brand": "衡石工业品",
     "category": "轴承",
     "specs": ["内径30mm", "双面密封"],
@@ -107,12 +107,12 @@
     "leadDays": 8,
     "aliases": ["HS-BR03"],
     "substitutes": ["6205-ZZ"],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "bearing-04",
     "partNo": "6207-2RS",
-    "name": "合成密封深沟球轴承",
+    "name": "密封深沟球轴承",
     "brand": "衡石工业品",
     "category": "轴承",
     "specs": ["内径35mm", "双面密封"],
@@ -129,12 +129,12 @@
     "leadDays": 9,
     "aliases": ["HS-BR04"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "bearing-05",
     "partNo": "6208-2RS",
-    "name": "合成密封深沟球轴承",
+    "name": "密封深沟球轴承",
     "brand": "衡石工业品",
     "category": "轴承",
     "specs": ["内径40mm", "双面密封"],
@@ -151,12 +151,12 @@
     "leadDays": 10,
     "aliases": ["HS-BR05"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "bearing-06",
     "partNo": "6209-2RS",
-    "name": "合成密封深沟球轴承",
+    "name": "密封深沟球轴承",
     "brand": "衡石工业品",
     "category": "轴承",
     "specs": ["内径45mm", "双面密封"],
@@ -173,12 +173,12 @@
     "leadDays": 11,
     "aliases": ["HS-BR06"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "bearing-07",
     "partNo": "6210-2RS",
-    "name": "合成密封深沟球轴承",
+    "name": "密封深沟球轴承",
     "brand": "衡石工业品",
     "category": "轴承",
     "specs": ["内径50mm", "双面密封"],
@@ -195,12 +195,12 @@
     "leadDays": 12,
     "aliases": ["HS-BR07"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "bearing-08",
     "partNo": "6211-2RS",
-    "name": "合成密封深沟球轴承",
+    "name": "密封深沟球轴承",
     "brand": "衡石工业品",
     "category": "轴承",
     "specs": ["内径55mm", "双面密封"],
@@ -217,12 +217,12 @@
     "leadDays": 13,
     "aliases": ["HS-BR08"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "bearing-09",
     "partNo": "6212-2RS",
-    "name": "合成密封深沟球轴承",
+    "name": "密封深沟球轴承",
     "brand": "衡石工业品",
     "category": "轴承",
     "specs": ["内径60mm", "双面密封"],
@@ -239,12 +239,12 @@
     "leadDays": 14,
     "aliases": ["HS-BR09"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "bearing-10",
     "partNo": "6213-2RS",
-    "name": "合成密封深沟球轴承",
+    "name": "密封深沟球轴承",
     "brand": "衡石工业品",
     "category": "轴承",
     "specs": ["内径65mm", "双面密封"],
@@ -261,12 +261,12 @@
     "leadDays": 15,
     "aliases": ["HS-BR10"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "fastener-02",
     "partNo": "M10×30",
-    "name": "合成六角螺栓",
+    "name": "六角螺栓",
     "brand": "衡石工业品",
     "category": "紧固件",
     "specs": ["螺纹M10", "长度30mm", "强度8.8级"],
@@ -283,12 +283,12 @@
     "leadDays": 5,
     "aliases": ["HS-BOLT02"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "fastener-03",
     "partNo": "M6×35",
-    "name": "合成六角螺栓",
+    "name": "六角螺栓",
     "brand": "衡石工业品",
     "category": "紧固件",
     "specs": ["螺纹M6", "长度35mm", "强度8.8级"],
@@ -305,12 +305,12 @@
     "leadDays": 6,
     "aliases": ["HS-BOLT03"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "fastener-04",
     "partNo": "M8×40",
-    "name": "合成六角螺栓",
+    "name": "六角螺栓",
     "brand": "衡石工业品",
     "category": "紧固件",
     "specs": ["螺纹M8", "长度40mm", "强度8.8级"],
@@ -327,12 +327,12 @@
     "leadDays": 7,
     "aliases": ["HS-BOLT04"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "fastener-05",
     "partNo": "M10×45",
-    "name": "合成六角螺栓",
+    "name": "六角螺栓",
     "brand": "衡石工业品",
     "category": "紧固件",
     "specs": ["螺纹M10", "长度45mm", "强度8.8级"],
@@ -349,12 +349,12 @@
     "leadDays": 8,
     "aliases": ["HS-BOLT05"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "fastener-06",
     "partNo": "M6×50",
-    "name": "合成六角螺栓",
+    "name": "六角螺栓",
     "brand": "衡石工业品",
     "category": "紧固件",
     "specs": ["螺纹M6", "长度50mm", "强度8.8级"],
@@ -371,12 +371,12 @@
     "leadDays": 9,
     "aliases": ["HS-BOLT06"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "fastener-07",
     "partNo": "M8×55",
-    "name": "合成六角螺栓",
+    "name": "六角螺栓",
     "brand": "衡石工业品",
     "category": "紧固件",
     "specs": ["螺纹M8", "长度55mm", "强度8.8级"],
@@ -393,12 +393,12 @@
     "leadDays": 10,
     "aliases": ["HS-BOLT07"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "fastener-08",
     "partNo": "M10×60",
-    "name": "合成六角螺栓",
+    "name": "六角螺栓",
     "brand": "衡石工业品",
     "category": "紧固件",
     "specs": ["螺纹M10", "长度60mm", "强度8.8级"],
@@ -415,12 +415,12 @@
     "leadDays": 11,
     "aliases": ["HS-BOLT08"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "fastener-09",
     "partNo": "M6×65",
-    "name": "合成六角螺栓",
+    "name": "六角螺栓",
     "brand": "衡石工业品",
     "category": "紧固件",
     "specs": ["螺纹M6", "长度65mm", "强度8.8级"],
@@ -437,12 +437,12 @@
     "leadDays": 12,
     "aliases": ["HS-BOLT09"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "fastener-10",
     "partNo": "M8×70",
-    "name": "合成六角螺栓",
+    "name": "六角螺栓",
     "brand": "衡石工业品",
     "category": "紧固件",
     "specs": ["螺纹M8", "长度70mm", "强度8.8级"],
@@ -459,12 +459,12 @@
     "leadDays": 13,
     "aliases": ["HS-BOLT10"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "pneumatic-02",
     "partNo": "HS-PV27",
-    "name": "合成气动阀",
+    "name": "气动阀",
     "brand": "衡石工业品",
     "category": "气动元件",
     "specs": ["接口G1/4", "防护IP65", "公称通径6mm"],
@@ -481,12 +481,12 @@
     "leadDays": 6,
     "aliases": ["HS-VALVE02"],
     "substitutes": ["HS-PV25"],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "pneumatic-03",
     "partNo": "HS-PV28",
-    "name": "合成气动阀",
+    "name": "气动阀",
     "brand": "衡石工业品",
     "category": "气动元件",
     "specs": ["接口G1/4", "防护IP65", "公称通径7mm"],
@@ -503,12 +503,12 @@
     "leadDays": 7,
     "aliases": ["HS-VALVE03"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "pneumatic-04",
     "partNo": "HS-PV29",
-    "name": "合成气动阀",
+    "name": "气动阀",
     "brand": "衡石工业品",
     "category": "气动元件",
     "specs": ["接口G1/4", "防护IP65", "公称通径8mm"],
@@ -525,12 +525,12 @@
     "leadDays": 8,
     "aliases": ["HS-VALVE04"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "pneumatic-05",
     "partNo": "HS-PV30",
-    "name": "合成气动阀",
+    "name": "气动阀",
     "brand": "衡石工业品",
     "category": "气动元件",
     "specs": ["接口G1/4", "防护IP65", "公称通径9mm"],
@@ -547,12 +547,12 @@
     "leadDays": 9,
     "aliases": ["HS-VALVE05"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "pneumatic-06",
     "partNo": "HS-PV31",
-    "name": "合成气动阀",
+    "name": "气动阀",
     "brand": "衡石工业品",
     "category": "气动元件",
     "specs": ["接口G1/4", "防护IP65", "公称通径10mm"],
@@ -569,12 +569,12 @@
     "leadDays": 10,
     "aliases": ["HS-VALVE06"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "pneumatic-07",
     "partNo": "HS-PV32",
-    "name": "合成气动阀",
+    "name": "气动阀",
     "brand": "衡石工业品",
     "category": "气动元件",
     "specs": ["接口G1/4", "防护IP65", "公称通径11mm"],
@@ -591,12 +591,12 @@
     "leadDays": 11,
     "aliases": ["HS-VALVE07"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "pneumatic-08",
     "partNo": "HS-PV33",
-    "name": "合成气动阀",
+    "name": "气动阀",
     "brand": "衡石工业品",
     "category": "气动元件",
     "specs": ["接口G1/4", "防护IP65", "公称通径12mm"],
@@ -613,12 +613,12 @@
     "leadDays": 12,
     "aliases": ["HS-VALVE08"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "pneumatic-09",
     "partNo": "HS-PV34",
-    "name": "合成气动阀",
+    "name": "气动阀",
     "brand": "衡石工业品",
     "category": "气动元件",
     "specs": ["接口G1/4", "防护IP65", "公称通径13mm"],
@@ -635,12 +635,12 @@
     "leadDays": 13,
     "aliases": ["HS-VALVE09"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "pneumatic-10",
     "partNo": "HS-PV35",
-    "name": "合成气动阀",
+    "name": "气动阀",
     "brand": "衡石工业品",
     "category": "气动元件",
     "specs": ["接口G1/4", "防护IP65", "公称通径14mm"],
@@ -657,12 +657,12 @@
     "leadDays": 14,
     "aliases": ["HS-VALVE10"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "electric-01",
     "partNo": "HS-K01-24",
-    "name": "合成控制继电器",
+    "name": "控制继电器",
     "brand": "衡石工业品",
     "category": "低压电器",
     "specs": ["线圈DC24V", "额定电流3A", "防护IP20"],
@@ -679,12 +679,12 @@
     "leadDays": 3,
     "aliases": ["HS-RELAY01"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "electric-02",
     "partNo": "HS-K02-24",
-    "name": "合成控制继电器",
+    "name": "控制继电器",
     "brand": "衡石工业品",
     "category": "低压电器",
     "specs": ["线圈DC24V", "额定电流4A", "防护IP20"],
@@ -701,12 +701,12 @@
     "leadDays": 4,
     "aliases": ["HS-RELAY02"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "electric-03",
     "partNo": "HS-K03-24",
-    "name": "合成控制继电器",
+    "name": "控制继电器",
     "brand": "衡石工业品",
     "category": "低压电器",
     "specs": ["线圈DC24V", "额定电流5A", "防护IP20"],
@@ -723,12 +723,12 @@
     "leadDays": 5,
     "aliases": ["HS-RELAY03"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "electric-04",
     "partNo": "HS-K04-24",
-    "name": "合成控制继电器",
+    "name": "控制继电器",
     "brand": "衡石工业品",
     "category": "低压电器",
     "specs": ["线圈DC24V", "额定电流6A", "防护IP20"],
@@ -745,12 +745,12 @@
     "leadDays": 6,
     "aliases": ["HS-RELAY04"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "electric-05",
     "partNo": "HS-K05-24",
-    "name": "合成控制继电器",
+    "name": "控制继电器",
     "brand": "衡石工业品",
     "category": "低压电器",
     "specs": ["线圈DC24V", "额定电流7A", "防护IP20"],
@@ -767,12 +767,12 @@
     "leadDays": 7,
     "aliases": ["HS-RELAY05"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "electric-06",
     "partNo": "HS-K06-24",
-    "name": "合成控制继电器",
+    "name": "控制继电器",
     "brand": "衡石工业品",
     "category": "低压电器",
     "specs": ["线圈DC24V", "额定电流8A", "防护IP20"],
@@ -789,12 +789,12 @@
     "leadDays": 8,
     "aliases": ["HS-RELAY06"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "electric-07",
     "partNo": "HS-K07-24",
-    "name": "合成控制继电器",
+    "name": "控制继电器",
     "brand": "衡石工业品",
     "category": "低压电器",
     "specs": ["线圈DC24V", "额定电流9A", "防护IP20"],
@@ -811,12 +811,12 @@
     "leadDays": 9,
     "aliases": ["HS-RELAY07"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "electric-08",
     "partNo": "HS-K08-24",
-    "name": "合成控制继电器",
+    "name": "控制继电器",
     "brand": "衡石工业品",
     "category": "低压电器",
     "specs": ["线圈DC24V", "额定电流10A", "防护IP20"],
@@ -833,12 +833,12 @@
     "leadDays": 10,
     "aliases": ["HS-RELAY08"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "electric-09",
     "partNo": "HS-K09-24",
-    "name": "合成控制继电器",
+    "name": "控制继电器",
     "brand": "衡石工业品",
     "category": "低压电器",
     "specs": ["线圈DC24V", "额定电流11A", "防护IP20"],
@@ -855,12 +855,12 @@
     "leadDays": 11,
     "aliases": ["HS-RELAY09"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   },
   {
     "id": "electric-10",
     "partNo": "HS-K10-24",
-    "name": "合成控制继电器",
+    "name": "控制继电器",
     "brand": "衡石工业品",
     "category": "低压电器",
     "specs": ["线圈DC24V", "额定电流12A", "防护IP20"],
@@ -877,6 +877,6 @@
     "leadDays": 12,
     "aliases": ["HS-RELAY10"],
     "substitutes": [],
-    "certs": ["合成演示数据"]
+    "certs": ["虚构演示数据"]
   }
 ]
