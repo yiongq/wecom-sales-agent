@@ -55,7 +55,8 @@ export function watchSettingsCache(qc: QueryClient): () => void {
   const unaccess = subscribeConsoleAccess((status, path) => {
     publish(qc, status);
     clearSettings(qc);
-    if (status === 403 && path.startsWith('/api/console/settings/')) void qc.invalidateQueries({ queryKey: VIEWER_KEY });
+    if (status === 403 && (path.startsWith('/api/console/settings/') || path === '/api/console/usage'))
+      void qc.invalidateQueries({ queryKey: VIEWER_KEY });
   });
   const unsession = subscribeSession(() => {
     if (isSessionExpired() || !isMemberSession()) {

@@ -1,5 +1,13 @@
 # 官网构建
 
+## 本机后台预览
+
+从仓库根运行 `pnpm exec tsx scripts/product-sites/preview-stack.ts up`。需要本机 Docker/Colima；工具创建独立的 pgvector/pgvector:pg17，执行全部迁移，构建 console，以 prod、数据库配置/会话存储和离线模型启动服务。全部内容为合成数据，包括工业品牌、产品、话术、待审批报价、转人工会话及七天运行记录。
+
+URL、端口和随机 owner/共享 agent 账号只保存在 gitignored 的 `var/preview-stack.json`（仅当前用户可读），不会打印。使用其中的 HTTPS localhost URL，首次打开需接受当天临时自签证书，再登录；保留正式 Secure cookie，Safari 也能使用。共享 agent 不能读设置或用量。不要把该文件或运行日志用于官网产物。工具不读取真实 env、不调用真实模型，也不连接已有数据库。
+
+再次执行 `up` 会先清理上一套环境。结束后运行 `pnpm exec tsx scripts/product-sites/preview-stack.ts down`，停止服务并删除容器、卷、临时目录和账号文件。纯函数自测为 `pnpm exec tsx scripts/product-sites/preview-stack.selftest.ts`，不会启动 Docker；预览工具不接入 CI 的 test 行。
+
 官网为四类静态页面和 404，无脚本、无租户 API、无成员 cookie。字体复用仓库内有许可的 Geist、Geist Mono、思源黑体；构建时复制到产物，附字体许可。部署静态根应指向 site/dist，404 响应映射由部署层完成。
 
 从仓库根运行：

@@ -13,6 +13,7 @@ import { useViewer } from '../viewer.js';
 import { SettingsAccess } from './Access.js';
 import { canReadSettings, SETTINGS_PAGES, settingsIdentity, type SettingsPageKey } from './model.js';
 import { settingsQuery } from './queries.js';
+import { UsagePage } from './UsagePage.js';
 
 export function Organization({ value, packName }: { value: OrganizationView; packName: string }) {
   return (
@@ -150,9 +151,9 @@ function SettingsRead({
           <Organization value={query.data as OrganizationView} packName={viewer.pack.name} />
         ) : page === 'members' ? (
           <Members items={(query.data as { items: MemberView[] }).items} />
-        ) : (
+        ) : page === 'channels' ? (
           <Channels items={(query.data as { items: ChannelView[] }).items} />
-        ))}
+        ) : null)}
     </StateView>
   );
 }
@@ -163,7 +164,7 @@ export function SettingsPage() {
     if (/^(\/console)?\/settings(?:\/|$)/.test(path)) document.getElementById('main')?.focus({ preventScroll: true });
   }, [path]);
   const segment = path.replace(/\/$/, '').split('/').at(-1);
-  const page: SettingsPageKey = segment === 'members' || segment === 'channels' ? segment : 'organization';
+  const page: SettingsPageKey = segment === 'members' || segment === 'channels' || segment === 'usage' ? segment : 'organization';
   if (viewer?.kind !== 'member' || !canReadSettings(viewer))
     return (
       <>
@@ -171,7 +172,7 @@ export function SettingsPage() {
         <StateView level={2} error={new HttpError(403, { error: 'forbidden' })} />
       </>
     );
-  if (segment !== 'settings' && segment !== 'organization' && segment !== 'members' && segment !== 'channels')
+  if (segment !== 'settings' && segment !== 'organization' && segment !== 'members' && segment !== 'channels' && segment !== 'usage')
     return (
       <>
         <PageHeader title="设置" />
@@ -190,7 +191,11 @@ export function SettingsPage() {
             </Link>
           ))}
         </nav>
-        <SettingsData key={`${settingsIdentity(viewer.me)}/${page}`} page={page} />
+        {page === 'usage' ? (
+          <UsagePage key={settingsIdentity(viewer.me)} me={viewer.me} />
+        ) : (
+          <SettingsData key={`${settingsIdentity(viewer.me)}/${page}`} page={page} />
+        )}
       </SettingsAccess>
     </>
   );
