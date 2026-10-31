@@ -37,7 +37,11 @@ export async function readPurgeCandidates(
     .where(
       and(
         lt(conversations.updatedAt, cutoff),
-        sql`(${conversations.state}->'seed')::jsonb IS DISTINCT FROM 'true'::jsonb`,
+        // 只豁免未追加消息的合成基线；缺失/损坏基线失败关闭，seed 标记继续用于外发守卫。
+        sql`NOT COALESCE(
+          (${conversations.state}->'seed')::jsonb = 'true'::jsonb
+          AND jsonb_typeof((${conversations.state}->'seedBaselineSeq')::jsonb) = 'number'
+          AND (${conversations.state}->'seedBaselineSeq')::jsonb >= to_jsonb(${conversations.lastSeq}), false)`,
         afterId === null ? undefined : gt(conversations.id, afterId),
       ),
     )

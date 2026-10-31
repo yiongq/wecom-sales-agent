@@ -1657,6 +1657,40 @@ for (const remaining of [3, 0]) {
   await m.unmount();
 }
 
+// 15 评审：旅游旧订单不能遮住尚未成单的新报价。
+{
+  server = {
+    cur: detail({
+      orders: [
+        {
+          id: 'old-travel',
+          routeTitle: '旧线路A',
+          travelers: 2,
+          departDate: '2026-11-01',
+          totalPrice: 2000,
+          status: 'paid',
+          createdAt: new Date(NOW - 86400000).toISOString(),
+          paidAt: new Date(NOW).toISOString(),
+          confirmed: null,
+          handoffBeforePaid: null,
+          conversation: null,
+        },
+      ],
+      quote: { routeId: 'new-travel-b', routeTitle: '新线路B', travelers: 4, perPerson: 3000, total: 12000, departDate: '2026-12-10' },
+    }),
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  const m = await mount(member('agent'));
+  check(
+    '旅游：旧订单仍展示，未下单的新报价有「最近报价」',
+    m.box.textContent!.includes('旧线路A') &&
+      m.box.textContent!.includes('新线路B') &&
+      m.texts('.wb-card-title').filter((t) => t === '最近报价').length === 1,
+  );
+  await m.unmount();
+}
+
 // 09 D：报价按钮、发送提示、409 刷新、403 禁用、加载/空/错误态。
 {
   const order: import('../../../src/shared/console-api.js').LineOrderView = {
@@ -1678,13 +1712,15 @@ for (const remaining of [3, 0]) {
     cur: detail({
       orders: [order],
       quote: null,
+      quoteCard: { title: '合成报价', amountFen: 133000, lines: ['1项'] },
       can,
       sendWindow: { remaining: 0, closesAt: NOW - 1, lastCustomerAt: NOW - 48 * 3600000, used: 5 },
     }),
     seenClientIds: [],
     extraMessages: [],
   };
-  const m = await mount(member('agent'));
+  const m = await mount({ kind: 'member', me: me('agent'), pack: { ...TRAVEL, id: 'industrial', name: '工业询价' } });
+  check('工业：待审批订单展示一次，不重复「最近报价」', m.$('.wb-order').length === 1 && !m.texts('.wb-card-title').includes('最近报价'));
   const btn = (label: string) => m.$('.wb-order button').find((e) => e.textContent === label);
   check(
     '报价：待审高亮，只展示审批动作',

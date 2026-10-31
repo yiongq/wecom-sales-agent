@@ -299,6 +299,7 @@ if (!process.env.PG_TEST_URL) {
     const rows = await read(trialConversations);
     assert.equal(rows.length, 5);
     assert.ok(rows.every((r) => r.state.seed === true && r.state.channel === 'simulator' && !r.state.channelAccountId));
+    assert.ok(rows.every((r) => Number.isInteger(r.state.seedBaselineSeq) && Number(r.state.seedBaselineSeq) > 0));
     assert.ok(!rows.some((r) => r.id === old.id));
     const checkpoint = (await read(readTrialBatches)).get(batch!)!.checkpoint;
     const auditText = JSON.stringify(await fx.query("select diff from audit_log where action='trial_reset.checkpoint'"));
@@ -312,17 +313,29 @@ if (!process.env.PG_TEST_URL) {
     assert.equal(await snapshot(), before);
     // 超期真实消息会清，种子即使超过 7 天仍保留；独立 trace 规则不变。
     await read((tx) => writeSeedSessions(tx, [{ ...old, id: 'wecom:wmExpire' }], []));
-    await fx.query(
-      "update conversations set updated_at=now()-interval '8 days',state=jsonb_set(state::jsonb,'{updatedAt}',to_jsonb(extract(epoch from now()-interval '8 days')*1000))::json where tenant_id=$1 and state->>'seed'='true'",
-      [id],
-    );
-    const candidates = await read((tx) => readPurgeCandidates(tx, new Date(Date.now() - 7 * 86400000), null, 100));
+    // 仅在一次性测试库事务内构造已过期夹具；恢复时间触发器后才运行候选与真实清理。
+    // purge 的 p_now 仍为当前时间，保留其 5 分钟偏差守卫。
+    await fx.query('begin');
+    try {
+      await fx.query('alter table conversations disable trigger conversations_guard_updated_at');
+      await fx.query(
+        "update conversations set updated_at=date_trunc('milliseconds',now())-interval '8 days' where tenant_id=$1 and state->>'seed'='true'",
+        [id],
+      );
+      await fx.query('alter table conversations enable trigger conversations_guard_updated_at');
+      await fx.query('commit');
+    } catch (error) {
+      await fx.query('rollback');
+      throw error;
+    }
+    const retentionNow = new Date();
+    const candidates = await read((tx) => readPurgeCandidates(tx, new Date(retentionNow.getTime() - 7 * 86400000), null, 100));
     assert.deepEqual(
       candidates.map((r) => r.id),
       ['wecom:wmExpire'],
     );
     const c = candidates[0]!;
-    assert.equal(await read((tx) => purgeConversation(tx, c.id, new Date(), c.lastSeq, c.updatedAt)), true);
+    assert.equal(await read((tx) => purgeConversation(tx, c.id, retentionNow, c.lastSeq, c.updatedAt)), true);
     assert.equal((await read(trialConversations)).length, 5);
     // 新一批同时清种子与真实消息，老订单去关联留存，新链接不可复用。
     await read((tx) => writeSeedSessions(tx, [{ ...old, id: 'wecom:wmReset' }], []));

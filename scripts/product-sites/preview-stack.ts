@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { PreviewAccount } from './preview-data.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const SENSITIVE_ENV = /^(LLM_|ZHIPU_|DEEPSEEK_|ANTHROPIC_|OPENAI_|WECOM_|ALERT_|OTEL_|ADMIN_|CHANNEL_|SESSION_|ERP_)/;
 const STATE = path.join(ROOT, 'var/preview-stack.json');
 const LABEL = 'wecom-sales-agent.preview';
 export interface PreviewState {
@@ -74,6 +75,77 @@ export function previewEnv(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
 }
 function runtimeDir(state: PreviewState) {
   return path.join(ROOT, 'var', previewNames(state.runId).directory);
+}
+type InternalCommand = 'seed' | 'serve' | 'app';
+/** 当次 up 逐个签发的一次性能力；文件只在当次隔离目录内，不能从运维 shell 继承连接串。 */
+export function previewInternalEnv(command: InternalCommand, state: PreviewState, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const token = randomBytes(32).toString('hex');
+  fs.writeFileSync(path.join(runtimeDir(state), `.internal-${command}.json`), JSON.stringify({ token, env, parentPid: process.pid }), {
+    mode: 0o600,
+    flag: 'wx',
+  });
+  return { ...env, PREVIEW_INTERNAL_TOKEN: token };
+}
+export function consumePreviewInternal(
+  command: InternalCommand,
+  env: NodeJS.ProcessEnv,
+  cwd = process.cwd(),
+  stateFile = STATE,
+): PreviewState {
+  const fail = () => {
+    throw new Error('preview_internal_denied');
+  };
+  if (!/^[a-f0-9]{64}$/.test(env.PREVIEW_INTERNAL_TOKEN ?? '')) fail();
+  try {
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8')) as PreviewState;
+    const dir = runtimeDir(state);
+    if (
+      state.version !== 1 ||
+      state.container !== previewNames(state.runId).container ||
+      fs.realpathSync(cwd) !== fs.realpathSync(dir) ||
+      fs.existsSync(path.join(dir, '.env')) ||
+      !Number.isInteger(state.postgresPort) ||
+      state.postgresPort < 1 ||
+      state.postgresPort > 65535
+    )
+      fail();
+    const ticketFile = path.join(dir, `.internal-${command}.json`);
+    const ticket = JSON.parse(fs.readFileSync(ticketFile, 'utf8')) as {
+      token: string;
+      env: NodeJS.ProcessEnv;
+      parentPid: number;
+    };
+    if (ticket.token !== env.PREVIEW_INTERNAL_TOKEN || !Number.isInteger(ticket.parentPid) || ticket.parentPid < 1) fail();
+    process.kill(ticket.parentPid, 0);
+    const keys = command === 'seed' ? ['DATABASE_URL', 'DATABASE_OWNER_URL', 'DATABASE_PLATFORM_URL'] : ['DATABASE_URL'];
+    if (Object.keys(env).some((key) => key.startsWith('DATABASE_') && !keys.includes(key))) fail();
+    for (const key of keys) {
+      if (!env[key] || env[key] !== ticket.env[key]) fail();
+      const url = new URL(env[key]!);
+      const user = key === 'DATABASE_OWNER_URL' ? 'agent_owner' : key === 'DATABASE_PLATFORM_URL' ? 'agent_platform' : 'agent_app';
+      if (
+        url.protocol !== 'postgres:' ||
+        url.hostname !== '127.0.0.1' ||
+        url.port !== String(state.postgresPort) ||
+        url.pathname !== '/preview' ||
+        url.username !== user ||
+        !url.password ||
+        url.search ||
+        url.hash
+      )
+        fail();
+    }
+    // 模型、渠道这类敏感变量必须与票据一致；pnpm、tsx 会加普通变量，不能要求全部相等。
+    if (Object.entries(env).some(([key, value]) => SENSITIVE_ENV.test(key) && value !== ticket.env[key])) fail();
+    if (ticket.env.LLM_MOCK !== '1' || ticket.env.DEPLOY_PROFILE !== 'prod') fail();
+    fs.unlinkSync(ticketFile);
+    // 清空继承的环境，只装 up 签发的隔离环境。
+    for (const key of Object.keys(process.env)) delete process.env[key];
+    Object.assign(process.env, ticket.env);
+    return state;
+  } catch {
+    return fail();
+  }
 }
 function writeState(state: PreviewState) {
   fs.writeFileSync(STATE, JSON.stringify(state, null, 2), { mode: 0o600 });
@@ -140,7 +212,7 @@ async function serve() {
   const state = JSON.parse(fs.readFileSync(STATE, 'utf8')) as PreviewState;
   const child = spawn(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url), 'app'], {
     cwd: runtimeDir(state),
-    env: process.env,
+    env: previewInternalEnv('app', state, process.env),
     // 账号、地址及端口仅保留在私有状态文件；不转存服务端的启动信息和详细诊断。
     stdio: ['ignore', 'ignore', 'ignore'],
   });
@@ -366,7 +438,12 @@ async function up() {
       DATABASE_OWNER_URL: url('agent_owner', pw.owner, 'preview'),
     };
     phase = 'seed';
-    await run(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url), 'seed'], common, dir);
+    await run(
+      process.execPath,
+      ['--import', 'tsx', fileURLToPath(import.meta.url), 'seed'],
+      previewInternalEnv('seed', state, common),
+      dir,
+    );
     phase = 'build';
     await run(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url), 'build'], previewEnv(process.env), dir);
     const log = fs.openSync(path.join(dir, 'server.log'), 'a', 0o600);
@@ -381,7 +458,7 @@ async function up() {
     };
     const service = spawn(process.execPath, ['--import', 'tsx', fileURLToPath(import.meta.url), 'serve'], {
       cwd: dir,
-      env: serviceEnv,
+      env: previewInternalEnv('serve', state, serviceEnv),
       detached: true,
       stdio: ['ignore', log, log],
     });
@@ -413,6 +490,9 @@ async function up() {
   }
 }
 async function main(command: string | undefined) {
+  // 在任何业务模块 import、迁移和数据库连接之前核验并消费能力。serve 同样不能旁路签发 app。
+  const internal =
+    command === 'seed' || command === 'app' || command === 'serve' ? consumePreviewInternal(command, process.env) : undefined;
   if (command === 'up') await up();
   else if (command === 'down') {
     await down();
@@ -428,7 +508,7 @@ async function main(command: string | undefined) {
     const { runMigrations } = await import('../../src/db/migrate.js');
     await runMigrations(process.env.DATABASE_OWNER_URL!);
     const { seedPreview } = await import('./preview-data.js');
-    const state = JSON.parse(fs.readFileSync(STATE, 'utf8')) as PreviewState;
+    const state = internal!;
     const tenantId = await seedPreview({ app: process.env.DATABASE_URL!, platform: process.env.DATABASE_PLATFORM_URL! }, state);
     fs.writeFileSync(
       path.join(runtimeDir(state), 'trial-allowlist.json'),

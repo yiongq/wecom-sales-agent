@@ -183,6 +183,8 @@ export interface Session {
    * 宿主的种子靠 id 前缀 wecom:cust_ 认，不打这个标记
    */
   seed?: boolean;
+  /** 15：PG 合成种子最后一条消息的 seq；超过基线或缺基线后按普通保留期整段清理。 */
+  seedBaselineSeq?: number;
   /** 接手人：从「未转人工」进入转人工时清成 null，交还、重置时清 */
   assignee?: Assignee | null;
   /** 最近 6 轮是否失败（0 / 1，新的在后），R15；重置时清 */
@@ -210,6 +212,7 @@ export interface Session {
  */
 export const SESSION_EXPOSURE = {
   suspendedReplyAt: false,
+  seedBaselineSeq: false,
   id: true,
   channel: true,
   stage: true,
