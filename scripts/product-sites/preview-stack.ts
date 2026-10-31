@@ -11,6 +11,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { PreviewAccount } from './preview-data.js';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
+const SENSITIVE_ENV = /^(LLM_|ZHIPU_|DEEPSEEK_|ANTHROPIC_|OPENAI_|WECOM_|ALERT_|OTEL_|ADMIN_|CHANNEL_|SESSION_|ERP_)/;
 const STATE = path.join(ROOT, 'var/preview-stack.json');
 const LABEL = 'wecom-sales-agent.preview';
 export interface PreviewState {
@@ -134,10 +135,11 @@ export function consumePreviewInternal(
       )
         fail();
     }
-    // 不允许额外继承模型、渠道等环境；通过后只安装 up 签发的已隔离环境。
-    if (Object.entries(env).some(([key, value]) => key !== 'PREVIEW_INTERNAL_TOKEN' && value !== ticket.env[key])) fail();
+    // 模型、渠道这类敏感变量必须与票据一致；pnpm、tsx 会加普通变量，不能要求全部相等。
+    if (Object.entries(env).some(([key, value]) => SENSITIVE_ENV.test(key) && value !== ticket.env[key])) fail();
     if (ticket.env.LLM_MOCK !== '1' || ticket.env.DEPLOY_PROFILE !== 'prod') fail();
     fs.unlinkSync(ticketFile);
+    // 清空继承的环境，只装 up 签发的隔离环境。
     for (const key of Object.keys(process.env)) delete process.env[key];
     Object.assign(process.env, ticket.env);
     return state;

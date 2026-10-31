@@ -18,9 +18,9 @@
   margin: 12px 16px 0;
   overflow-wrap: anywhere;
 }
-.trial-banner .ant-alert-title {
+.trial-banner.ant-alert .ant-alert-title {
   font-size: 13px;
-  font-weight: 400;
+  font-weight: 400 !important;
 }
 @media (max-width: 991px) {
   .trial-banner.ant-alert {
