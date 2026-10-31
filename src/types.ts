@@ -89,6 +89,8 @@ export function profileForPrompt(p: CustomerProfile): Partial<CustomerProfile> {
 }
 
 export interface Session {
+  /** 14 R6：停用固定句每个会话至多一次；随会话 state 保存，不依赖裁剪后的消息窗口。 */
+  suspendedReplyAt?: number;
   id: string;
   channel: string; // 'simulator' | 'wecom'
   stage: SalesStage;
@@ -207,6 +209,7 @@ export interface Session {
  * 表放在 Session 旁边：它要点名旅游的九个会话字段，而 08 R5 只许 src/types.ts、旅游包与门面点名它们
  */
 export const SESSION_EXPOSURE = {
+  suspendedReplyAt: false,
   id: true,
   channel: true,
   stage: true,

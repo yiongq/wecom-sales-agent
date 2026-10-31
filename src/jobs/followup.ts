@@ -1,3 +1,4 @@
+import { limitVerdict } from '../tenancy/limits.js';
 import { noteGuard } from '../trace/recorder.js';
 import { recheckFollowupLinks } from '../core/guards/link-whitelist.js';
 import { recordQuoteStates } from '../core/message-parts.js';
@@ -193,6 +194,7 @@ export function followupQuotaAllows(s: Session, now: number): boolean {
 }
 
 async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
+  if (limitVerdict() !== 'ok') return { status: 'cancelled', lastError: 'tenant_limit' };
   const own = state();
   const p = (job.payload ?? {}) as { sessionId?: unknown; stage?: unknown };
   const sid = typeof p.sessionId === 'string' ? p.sessionId : '';
@@ -218,6 +220,7 @@ async function run(job: JobRow, now: number, ctx: JobCtx): Promise<JobOutcome> {
     return { status: 'cancelled', lastError: 'changed' };
   }
   // 生成期间额度可能被别的发送用掉（顾问在后台发了消息）：记账之前在活对象上再判一次
+  if (limitVerdict() !== 'ok') return { status: 'cancelled', lastError: 'tenant_limit' };
   if (!followupQuotaAllows(fresh, clock())) return { status: 'cancelled', lastError: 'quota' };
   // 消息对象先建好交给发送账本（送达才写进会话，写进去的是同一个对象，账本行据它取 seq）。判过额度就在同一段同步代码里占一个名额：
   // 下面要等记账落库才推送，这段时间里顾问的人工回复看得到它（不变量 34）；推送的第一个分段接过这一行，推送结束后没用上的撤掉
@@ -280,6 +283,11 @@ async function sendAfterLedger(a: {
     return { status: 'handled' };
   }
   for (;;) {
+    if (limitVerdict() !== 'ok') {
+      releasePrepared(prepared, 'aborted');
+      queueJobs(sid, [statusOp(job, 'abandoned', 'sending', { lastError: 'tenant_limit' })]);
+      return { status: 'handled' };
+    }
     if (takeoverGen(sid) !== gen0 || fresh.handedOver) {
       // 记账、等提交期间被接手（或已转人工）：不推送，账不退（已提交，多记一次是安全的一侧）、不重排，任务记 abandoned
       console.error(`[followup] 跟进 ${short(sid)} 推送前发现已被接手，不推送`);

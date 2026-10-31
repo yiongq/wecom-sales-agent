@@ -1,4 +1,9 @@
-// 05 R15：standard 只记账、每日软上限只告警，接口由第 6 步固定。
+// 05 R15 软告警与 14 R5 日费用硬上限；未配置硬上限仍走原来的记账路径。
+// limits 依赖 writer 与关闭钩子，不能反向静态引入（runtime 构造预算）。
+let dailyCapReader: () => number | null = () => null;
+export function setStandardDailyCapReader(read: () => number | null): void {
+  dailyCapReader = read;
+}
 import type { UsagePurpose } from '../db/repo/usage.js';
 import { withTenant } from '../db/client.js';
 import { todayIso } from '../env.js';
@@ -20,6 +25,8 @@ interface StandardState {
   alertMilli: number | null;
   capLoaded: boolean;
   alerted: boolean;
+  hardAlerted: boolean;
+  reservedMilli: number;
   initializedDay: string | null;
   loading: Promise<void> | null;
   dropped: boolean;
@@ -33,6 +40,8 @@ function rollDay(state: StandardState): void {
   state.dailyMilli = 0;
   state.baselineMilli = 0;
   state.alerted = false;
+  state.hardAlerted = false;
+  state.reservedMilli = 0;
   // 持租户锁的运行时是唯一写者；换天的库基数为 0，软上限保留启动快照。
   state.initializedDay = state.capLoaded ? day : null;
 }
@@ -123,6 +132,8 @@ export function createStandardBudget(): TenantBudget {
     alertMilli: null,
     capLoaded: false,
     alerted: false,
+    hardAlerted: false,
+    reservedMilli: 0,
     initializedDay: null,
     loading: null,
     dropped: false,
@@ -137,6 +148,25 @@ export function createStandardBudget(): TenantBudget {
       const rt = owner();
       rollDay(state);
       void initializeStandardBudget(rt).catch(() => console.warn('[budget] llm_daily_alert_load_cancelled'));
+      const cap = dailyCapReader();
+      const estimate = amount(estimateMilli);
+      if (cap !== null && (cap === 0 || state.baselineMilli + state.dailyMilli + state.reservedMilli + estimate > cap)) {
+        if (!state.hardAlerted) {
+          state.hardAlerted = true;
+          void import('../ops/alert.js')
+            .then(({ alert }) => {
+              if (!state.dropped && rt.state === 'serving' && !rt.cancel.aborted)
+                withTenantScope(rt, () =>
+                  alert('usage_limit', `${rt.slug} 今日 AI 用量已到上限`, { scope: `daily:${state.day}`, escalate: true }),
+                );
+            })
+            .catch(() => console.warn('[budget] usage_limit_alert_failed'));
+        }
+        return null;
+      }
+      const reservedDay = state.day;
+      // 包括上限在途变更前已开始的请求，防止并发尝试共同越过硬上限。
+      state.reservedMilli += estimate;
       state.calls++;
       let settled = false;
       return {
@@ -149,6 +179,7 @@ export function createStandardBudget(): TenantBudget {
           if (currentRuntime() !== rt) throw new Error('结算不属于当前租户');
           settled = true;
           rollDay(state);
+          if (state.day === reservedDay) state.reservedMilli = Math.max(0, state.reservedMilli - estimate);
           const cost = amount(actualMilli ?? estimateMilli);
           state.costMilli += cost;
           state.dailyMilli += cost;
@@ -185,6 +216,8 @@ registerTenantState({
           dailyMilli: 0,
           baselineMilli: 0,
           alerted: false,
+          hardAlerted: false,
+          reservedMilli: 0,
           initializedDay: null,
           capLoaded: false,
         });

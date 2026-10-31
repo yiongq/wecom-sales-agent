@@ -1,3 +1,4 @@
+import { limitVerdict } from '../tenancy/limits.js';
 import { stripLink } from '../core/link-prose.js';
 import { TenantObservers } from '../tenancy/observers.js';
 import { scopedState } from '../tenancy/scoped-state.js';
@@ -98,7 +99,16 @@ import {
 import { cleanText } from '../shared/text.js';
 import { withAdvisorPrefix } from '../shared/conversation.js';
 import { convLabel, logQuote, withConversationLog, withLogContext } from '../log.js';
-import { getOrCreateSession, getSession, onShutdown, queueInboxState, recentMsgids, saveSession, writeInboxStateNow } from '../store.js';
+import {
+  getOrCreateSession,
+  getSession,
+  onShutdown,
+  queueInboxState,
+  recentMsgids,
+  saveSession,
+  seqOf,
+  writeInboxStateNow,
+} from '../store.js';
 import { endTurn, startTurn, withTurnScope } from '../trace/recorder.js';
 import { DEFAULT_WECOM_PREFIX, ENV_ACCOUNT_ID, ENV_ACCOUNT_KEY, isEnabled, type ChannelAccount } from '../channels/accounts.js';
 import { AccountInbox, InboxRowGone, noteInboxAbandoned, type InboxRow } from '../channels/inbox.js';
@@ -518,10 +528,12 @@ async function callApi<T extends { errcode?: number; errmsg?: string }>(
   cfg: WecomConfig,
   endpoint: string,
   body: unknown,
+  beforeSend?: () => void,
 ): Promise<T> {
   if (rt instanceof SandboxWecomRuntime) return rt.callApi<T>(endpoint, body as Record<string, unknown>);
   let token = await tokenOrThrow(rt, cfg);
   for (let attempt = 0; attempt < 2; attempt++) {
+    beforeSend?.();
     const res = await fetch(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -1060,7 +1072,9 @@ function postSendMsg(
  * （OutGroup.stillEligible）
  */
 const stillCurrent = (g: OutGroup): boolean =>
-  (!g.checksTakeover || takeoverGen(g.sessionId) === g.gen) && (!g.stillEligible || g.stillEligible());
+  (g.intents[0]?.kind !== 'welcome' || limitVerdict() !== 'suspended') &&
+  (!g.checksTakeover || takeoverGen(g.sessionId) === g.gen) &&
+  (!g.stillEligible || g.stillEligible());
 
 /**
  * 这一组不再算数（被接手，或恢复补发的人工回复不再有资格）：没发的段不发。启动恢复补发的历史 sending 段（alreadySending）可能在
@@ -1350,6 +1364,8 @@ async function sendTextDb(
   let g: OutGroup;
   try {
     g = planGroup(rt, cfg, sessionId, kind, message, textPayloads(text), null, gen, inboxId);
+    // 非文本引导尚未写进会话；等 token / 提交 / 重试期间停用也不发。旧的已入库回复仍交付。
+    if (kind === 'ai' && message && seqOf(message) === undefined) g.stillEligible = () => limitVerdict() !== 'suspended';
   } catch (e) {
     planFailed(rt, sessionId, e);
     if (inboxId !== null) finishInboxRow(sessionId, inboxId, 'done');
@@ -1362,14 +1378,26 @@ async function sendTextDb(
  * 客户进入会话、尚未发消息时（send_msg 的 48h 窗口未开），用事件的 welcome_code
  * 经 send_msg_on_event 发欢迎语。code 20 秒内单次有效，须尽快调用。
  */
-async function sendWelcomeOnEvent(rt: SendRuntime, cfg: WecomConfig, code: string): Promise<void> {
-  const data = await callApi<{ errcode?: number; errmsg?: string }>(rt, cfg, 'kf/send_msg_on_event', {
-    code,
-    msgtype: 'text',
-    text: { content: withPrivacyLink(rt.welcomeText) },
-  });
-  if (data.errcode) {
-    console.error(`${rt.tag} send_msg_on_event 失败: errcode=${data.errcode}`);
+async function sendWelcomeOnEvent(rt: SendRuntime, cfg: WecomConfig, code: string): Promise<boolean> {
+  try {
+    const data = await callApi<{ errcode?: number; errmsg?: string }>(
+      rt,
+      cfg,
+      'kf/send_msg_on_event',
+      {
+        code,
+        msgtype: 'text',
+        text: { content: withPrivacyLink(rt.welcomeText) },
+      },
+      () => {
+        if (limitVerdict() === 'suspended') throw new DOMException('tenant_suspended', 'AbortError');
+      },
+    );
+    if (data.errcode) console.error(`${rt.tag} send_msg_on_event 失败: errcode=${data.errcode}`);
+    return true;
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError' && limitVerdict() === 'suspended') return false;
+    throw error;
   }
 }
 
@@ -1488,7 +1516,7 @@ async function handleMenuClick(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessag
 
 /** 客户进入会话事件：发欢迎语（本账号 API 托管，微信自带欢迎语不生效）。调用方已去重 */
 async function handleEnterSession(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage): Promise<void> {
-  if (!msg.event) return;
+  if (!msg.event || limitVerdict() === 'suspended') return;
   const uid = msg.event.external_userid || msg.external_userid;
   // 已转人工：两条路径都不发。欢迎语邀请客户跟 AI 聊，而 AI 此时不会再回复，客户照做了只会没人应
   if (uid && getSession(rt.prefix + uid)?.handedOver) {
@@ -1497,8 +1525,7 @@ async function handleEnterSession(rt: WecomRuntime, cfg: WecomConfig, msg: KfMes
   }
   const code = msg.event.welcome_code;
   if (code) {
-    await sendWelcomeOnEvent(rt, cfg, code);
-    console.log(`${rt.tag} 已发欢迎语（enter_session, welcome_code）`);
+    if (await sendWelcomeOnEvent(rt, cfg, code)) console.log(`${rt.tag} 已发欢迎语（enter_session, welcome_code）`);
   } else {
     // 企微只给「新客户 / 超 48h 未聊」下发 welcome_code；老客户再次扫码进入没有 code，
     // 会话窗口是开着的，直接 send_msg 补发一条轻量欢迎，让"扫码即有回应"始终成立
@@ -2213,16 +2240,24 @@ function attachmentBatch(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, sess
 }
 
 function armAttachmentWait(rt: WecomRuntime, cfg: WecomConfig, sessionId: string, batch: AttachmentBatch): void {
-  if (batch.recovering || batch.timer || batch.notice || getSession(sessionId)?.handedOver) return;
+  if (limitVerdict() === 'suspended' || batch.recovering || batch.timer || batch.notice || getSession(sessionId)?.handedOver) return;
   const gen = takeoverGen(sessionId);
   batch.timer = setTimeout(
     () => {
       batch.timer = null;
-      if (getSession(sessionId)?.handedOver || takeoverGen(sessionId) !== gen || rt.stopping || sendsClosed(rt)) return;
+      if (
+        limitVerdict() === 'suspended' ||
+        getSession(sessionId)?.handedOver ||
+        takeoverGen(sessionId) !== gen ||
+        rt.stopping ||
+        sendsClosed(rt)
+      )
+        return;
       // 不记为 agent 消息：恢复时不能把等待句错当作这份附件的最终回复。
       batch.notice = (async () => {
         const group = planGroup(rt, cfg, sessionId, 'notice', null, textPayloads(ATTACHMENT_WAIT), null, gen);
         group.checksTakeover = true;
+        group.stillEligible = () => limitVerdict() !== 'suspended';
         await runGroup(group);
       })().catch((err) => console.error(`${rt.tag} 附件等待提示失败:`, apiErrorCode(err)));
     },
@@ -2445,8 +2480,8 @@ function processNonTextRow(
       saveSession(session);
       queueInboxState(sessionId, { inboxId: row.id, state: 'recorded', message: placeholder });
     }
-    if (session.handedOver) {
-      console.log(`${rt.tag} 静默（${msg.msgtype} 消息，转人工后不自动回复）`);
+    if (session.handedOver || limitVerdict() === 'suspended') {
+      console.log(`${rt.tag} 静默（${msg.msgtype} 消息，会话已转人工或租户停用）`);
       endTurn('silent', '', stageBefore, session.stage);
       await finishInboxRow(sessionId, row.id, 'done');
       return;
@@ -3265,6 +3300,7 @@ export const __wecomTest = {
           recovery: rt.recovery,
           backend: rt.state.kind,
           started: rt.started,
+          attachmentWaitTimers: [...rt.attachmentBatches.values()].filter((batch) => batch.timer !== null).length,
           recordOnlyUntil: rt.state.kind === 'channel_inbox' ? rt.state.recordOnlyUntil : null,
         }
       : null;

@@ -1,6 +1,7 @@
 # 14 · 用量限制：硬额度、单客户限速与运行中停用
 
 Status: ready
+Revisions: 2026-10-31 第 7、8 步核验补充：紧急与行权优先于用量闸门；明确停用时非文本、欢迎语、附件等待及原轮回复恢复的口径；记录旧镜像拒绝停用租户的回退约束；补充 0024 平台只读授权。
 Revisions: 2026-10-31 起草。
 Revisions: 2026-10-31 owner 定开放问题 1–5，全部照推荐：额度用完回固定话术并转人工；按 AI 回复条数计；限速上线值每分钟 12 条、每小时 120 条；演示租户配一个宽松的日费用上限，数值另记；停用时后台不能看，沿用 01。
 Revisions: 2026-10-31 owner 定 `ready`。同一 docs PR 给 01 加 `Superseded in part by:` 与 `Amended by:`，给 05 加 `Amended by:`，主参考「阶段 8」加一条。
@@ -58,6 +59,8 @@ ALTER TABLE tenants
 
 `NULL` 是不限，`0` 是全拦。`usage_daily_purpose_check` 加 `reply`（`-- migration-allow:` 标注）。
 
+迁移 `0024_platform_usage_read.sql` 仅追加 `GRANT SELECT ON public.usage_daily TO agent_platform;`，供 R8 平台命令读取月度回复计数；保留 0023 不变，读取继续受 FORCE RLS 的租户作用域限制，不授予写入权限。
+
 **计数。** 不新建表，AI 回复计入 `usage_daily`：`purpose='reply'`、`model='-'`、`calls` 加 1、token 与费用为 0，走现有的累加与落库（`src/usage.ts`、`src/trace/usage-daily.ts`）。理由：不用把新表加进 `sandbox_tenant_purge`；用量页要的按天曲线顺带有了；崩溃至多丢一次落库间隔的计数，这是成本护栏，不追求精确。
 
 **什么算一条 AI 回复。** 一条落进会话、`author` 为 `ai` 或 `followup` 的消息算 1，分段发送也算 1，确定性回复也算。人工顾问的消息不算；本 spec 的三句固定话术不算。
@@ -108,7 +111,8 @@ export function noteAiReply(): void;
 `status='suspended'` 时：
 
 - **启动**：不再抛 `tenant_suspended`。租户照常装载，运行时标记为停用。企微拉取、回调照常收消息，避免 cursor 积压。
-- **运行中**：`limitVerdict()` 30 秒内变成 `suspended`。记下客户消息，每个会话至多回一次固定句「暂时无法在线回复，请稍后再联系。」，不转人工（停用时没有人值守）。跟进不发。
+- **运行中**：`limitVerdict()` 30 秒内变成 `suspended`。记下客户消息，每个会话至多回一次固定句「暂时无法在线回复，请稍后再联系。」，不转人工（停用时没有人值守）。跟进不发。这里的「不转人工」指普通消息；02 R15 的紧急情况与 R23 的行权请求优先于用量闸门及「至多一次固定句」，紧急照常升级并通知，撤回同意照常记录和回复。
+- **引擎外路径**：非文本消息在停用时静默记录，不占固定句次数；欢迎语和附件等待提示不发，已武装的等待提示在发送前仍须复核。已入库的原轮回复恢复时只交付原文，不重新生成、不重复计数。
 - **登录**：01 的规则不变，停用租户的后台会话一律无效。
 - **恢复**：状态改回之后 30 秒内恢复 AI，已转人工的会话不动。
 - `trial` 与 `active` 行为相同。
@@ -165,6 +169,7 @@ interface UsageView {
 - 旧镜像不读两个新列，等于「不限」；
 - `usage_daily` 多出 `purpose='reply'` 的行，费用为 0。实现时核对旧镜像读这张表的所有路径，并在回滚演练里验证；
 - `HANDOFF_REASON` 的新文字是普通字符串，旧镜像照常显示。
+- 回退约束：14 之前的旧镜像仍会在存在 `suspended` 租户时以 `tenant_suspended` 拒绝启动。回退前必须确认目标镜像已支持 R6，或先将停用租户改回 `active`；新增列与零费用 `reply` 行的兼容不消除此启动限制。
 
 ## 不变量
 

@@ -168,7 +168,6 @@ export type ConfigStartupReason =
   | 'schema_behind'
   | 'tenant_host_missing'
   | 'tenant_not_found'
-  | 'tenant_suspended'
   | 'pack_unknown'
   | 'lock_held'
   | 'image_sop_invalid'
@@ -768,7 +767,7 @@ function logDrift(d: ConfigDeps, merged: readonly SopSection[], imageSections: r
 
 /**
  * deps 为 null：文件模式，装配同目录品牌。否则依次执行，前 8 步只读（第 0 步校验嵌入端点，不碰库）：
- *   0 嵌入端点在境内清单里（07 R15）→ 1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝 suspended 和注册表里没有的行业包；
+ *   0 嵌入端点在境内清单里（07 R15）→ 1 连库，核对 server_encoding 为 UTF8 → 2 核对迁移 → 3 按 tenantSlug 解析租户，拒绝注册表里没有的行业包；
  *   非旅游包没有品牌拒绝（brand_required，08 R10），再读它自己的镜像（旅游的 data/sop.md 在连库之前已读） → 4 取租户锁
  *   → 5 切分并校验镜像 → 6 装载已发布 SOP，校验完整性，算出合并、渲染与契约结果 → 7 装载产品库快照（至少一条 active 线路）
  *   → 8 按节、按条目打印 DB 与镜像 data/ 的差异 → 9 需要时写入 rerender 版本 → 10 装上缓存。
@@ -863,7 +862,6 @@ async function loadConfig(deps: ConfigDeps | null): Promise<void> {
       isHost: currentRuntime().isHost,
       publicBase: currentRuntime().publicBase,
     });
-    if (tenant.status === 'suspended') throw startup('tenant_suspended', `租户「${d.tenantSlug}」已停用`);
     // 后台 UX spec「接口改动 · /pack」：包不在注册表里时拒绝启动（tenant-create 已按注册表校验，这里防手改库）
     const pack = packById(tenant.packId);
     if (!pack) throw startup('pack_unknown', `租户「${d.tenantSlug}」的行业包「${tenant.packId}」不在注册表里`);

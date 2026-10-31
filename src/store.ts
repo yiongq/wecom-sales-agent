@@ -1,3 +1,5 @@
+import { noteAiReply } from './tenancy/limits.js';
+import { LIMIT_QUOTA_REPLY, LIMIT_SUSPENDED_REPLY, LIMIT_RATE_REPLY } from './tenancy/limit-replies.js';
 import { assertSandboxNewConversation } from './tenancy/sandbox/limits.js';
 import { scopedState } from './tenancy/scoped-state.js';
 import {
@@ -988,6 +990,19 @@ export function saveSession(s: Session, touch = true): void {
   emitSaved(s, unseq);
   if (b !== state.pgBackend) return;
   const rt = currentRuntime();
+  // 新消息分配 seq 的唯一落点，重复保存、分段推送不重复记；固定闸门话术不计。
+  if (rt.kind === 'standard' && rt.config.loaded && !state.pgBackend.isPoisoned(s.id))
+    for (const m of unseq) {
+      const author = authorOf(m);
+      if (
+        seqOf(m) !== undefined &&
+        (author === 'ai' || author === 'followup') &&
+        m.content !== LIMIT_QUOTA_REPLY &&
+        m.content !== LIMIT_SUSPENDED_REPLY &&
+        m.content !== LIMIT_RATE_REPLY
+      )
+        noteAiReply();
+    }
   for (const cb of instanceSaveHooks) {
     try {
       withoutTenantScope(() => cb(rt, s));
