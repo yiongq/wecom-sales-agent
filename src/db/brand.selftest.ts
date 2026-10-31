@@ -252,8 +252,18 @@ try {
           .filter((p) => p.platform)
           .map((p) => p.col)
           .sort(),
-        ['brand', 'llm_daily_alert_milli', 'public_host', 'retention_customer_days', 'retention_lead_days', 'retention_trace_days'],
-        '真实 PG 平台只可更新品牌、原保留期列与 05 的 public_host、软上限列',
+        [
+          'brand',
+          'llm_daily_alert_milli',
+          'llm_daily_cap_milli',
+          'monthly_reply_quota',
+          'public_host',
+          'retention_customer_days',
+          'retention_lead_days',
+          'retention_trace_days',
+          'status',
+        ],
+        '真实 PG 平台只可更新品牌、原保留期列、05 的 public_host、软上限列与 14 的上限、状态列',
       );
       equal(
         permissions.every((p) => !p.app),
