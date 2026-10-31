@@ -1,6 +1,7 @@
 # 02 · 会话入库 + 坐席工作台
 
 Status: implemented
+Amended by: [17 · 可观测性增强](../17-observability/spec.md) — 新增抽检表与清理范围、每日摘要 jobs 类型及 R24 告警分级、延迟告警和安全 trace 链接；保留既有字段、权限与触发阈值（17 R2–R3、R6–R9）。
 Amended by: [12 · 客户发来的图片与文件：询价单识别与确认](../12-customer-files/spec.md)（只做新增：`MessageView` 加可选 `attachment`，`handoff_notify` 的原因加 `intake_unmatched`；全文见该 spec 顶部 `Amends:`）
 Superseded in part by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md) — R22 里 `/api/orders/:id` 的白名单投影（第 151 行）、不变量 43（第 1469 行）与验收 9 里「`order` 的键集合恰为白名单」（第 1491 行）：通用单（`data.v = 2`）改用另一份白名单 `PublicLineOrder`，旧版旅游单的键集合不变（08 R12）。按 08 的 plan 落地。
 Amended by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md)（只做新增或收紧，全文见该 spec 顶部 `Amends:`：「数据库」的 `orders` 加可空列 `total_fen` 与两个 CHECK，通用单的 `data` 是 `LineOrder`（`v: 2`）、`route_id` 写第一行的条目编号、`total_price` 写 `round(total_fen / 100)`（第 1107–1122 行，08 R3）；`/proposal/*` 与 `/api/proposal/:routeId`（第 617 行）只对声明了 `documents.proposal` 的包开放，其余包 404（08 R12））。

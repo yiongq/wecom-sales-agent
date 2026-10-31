@@ -1,6 +1,7 @@
 # 后台 UX 重做：「利落」与行业包通用界面
 
 Status: implemented
+Amended by: [17 · 可观测性增强](../../architecture/17-observability/spec.md) — 新增 AI 记录抽检与概览 7/30 天趋势、可读数据表；沿用设计系统，排在 15 第 1 批设置导航、试用公司与概览页改动之后（17 R1–R4、R10）。
 Superseded in part by: [15 · 产品门面：单来官网、文档与设置中心](../../architecture/15-product-surface/spec.md) — 「信息架构」的标题格式与不变量 23 的标题结尾一句，改为「页面 · 组织名 · 单来」，组织名为空时为「页面 · 单来」（15 R11）。
 Amended by: [15 · 产品门面：单来官网、文档与设置中心](../../architecture/15-product-surface/spec.md) — 新增只读设置导航、组织/成员/渠道投影、消费 14 R9 的用量页与新手清单；沿用风格 A，不新增成员/渠道网页写操作（15 R4–R9）。
 Superseded in part by: [05 · 同部署多租户 + 一键体验沙箱](../../architecture/05-tenancy-sandbox/spec.md) — 「外壳 · 启动」表的 demo 匿名入口、「行业包通用架构 · 下发」的 demo 匿名外壳一句、「登录」的返回演示链接（05 R23、开放问题 15）。

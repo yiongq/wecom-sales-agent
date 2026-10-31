@@ -1,6 +1,7 @@
 # 07 · 政策单一来源 + 知识库 + 售后退改
 
 Status: implemented
+Amended by: [17 · 可观测性增强](../17-observability/spec.md) — R24 新增人工抽检、评分筛选与工业 v2 回归草稿入口；保留 travel 的 goal-draft、既有权限与审计契约，真实来源评测集仍留私有层（17 R1–R4、R10）。
 Superseded in part by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md) — R11「收什么」的「每条线路一块」（第 207 行）与「数据库」DDL 里 `kb_chunks.source` 的 CHECK（第 540 行）：`source` 存 kind，库里只做格式检查，每个包至多一个可检索的 kind；旅游仍只收线路（08 R9）。按 08 的 plan 落地。
 Amended by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md)（只做新增，全文见该 spec 顶部 `Amends:`：R8 的回归集取包的 `evalGoalsDir`，旅游仍是 `eval/sim/goals/quality`（第 177 行）；R9 注入的导出目录对非旅游包写 `pack.json` 与 `catalog/*.json`（第 188 行），见 08 R11）。
 Revisions: 2026-10-22 owner 定 `ready`，开放问题 1–9、11–13、15 全部照推荐：全部留在本 spec、按文末八批做；已付订单的「我要退款」走 R18 的自助流程（A）；退改档位用 R16 的表；审批阈值 ¥30,000；核验用会话绑定加尾号选单（R17），不收手机号；定价规则本期不给租户改；policy 本期 CLI 写草稿、后台只读卡片；查不到出处不转人工，只回口径句并留「待顾问确认」备注；只有所有者能强发；预算单次 k=3 ≤¥6、k=5 ≤¥10，整份 ≤¥35，批 S 的 k=5 前后只跑回归集 20 个加报价类 6 个；锁定短语迁移留在「后续」；知识库只收线路；R25 用表里的写法。开放问题 10 先按推荐的数（单次 ≤¥2、每租户每天 ≤3 次、超时 30 分钟），第 0 步两边实测后由 owner 确认；开放问题 14 在第 0 步之后由协调者裁决；两者都写进下一条 `Revisions:`。同一个 docs PR 给 00、01、02、04、06 顶部补 `Superseded in part by:`，给 01、02、04、05 顶部补 `Amended by:`，master-reference 阶段 7 补本 spec 的链接与偏离之处。
