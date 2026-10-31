@@ -1,0 +1,53 @@
+# 私有发布层提供全部占位值；不可直接以空环境上线。
+# 不在 www/docs 上反代 API、接触成员 cookie 或发布 docs 源目录。
+https://{$PRODUCT_WWW_HOST} {
+  root * {$PRODUCT_WWW_ROOT}
+  file_server
+}
+https://{$PRODUCT_DOCS_HOST} {
+  root * {$PRODUCT_DOCS_ROOT}
+  file_server
+}
+
+(industrial_app) {
+  reverse_proxy {$PRODUCT_UPSTREAM} {
+    # 固定目的租户，绝不从外部 Forwarded/X-Forwarded-Host 选择租户。
+    header_up Host {$PRODUCT_APP_HOST}
+    header_up -Forwarded
+    header_up -X-Forwarded-Host
+  }
+}
+https://{$PRODUCT_APP_HOST} {
+  import industrial_app
+}
+# 证书与此块至少保留 30 天；无 rewrite/redir，回调 POST 与旧客户链接原样转发。
+https://{$PRODUCT_OLD_INDUSTRIAL_HOST} {
+  import industrial_app
+}
+https://{$PRODUCT_TRAVEL_HOST} {
+  # Caddy path 匹配会规范化路径；这里比原始 URI，严格区分大小写、编码、尾斜杠。
+  # 每个批准 key 单独登记，不用 /wecom/*。env 回调与批准的库内回调各一条。
+  @approved {
+    method GET POST
+    expression `{http.request.orig_uri}.split('?')[0] in ['/wecom/callback', '/wecom/callback/{$PRODUCT_TRAVEL_CALLBACK_KEY}']`
+  }
+  handle @approved {
+    reverse_proxy {$PRODUCT_UPSTREAM} {
+      header_up Host {$PRODUCT_TRAVEL_HOST}
+      header_up -Forwarded
+      header_up -X-Forwarded-Host
+    }
+  }
+  handle {
+    header Cache-Control no-store
+    header Content-Type "text/plain; charset=utf-8"
+    respond "此服务入口已停用。请联系原服务提供方。" 410
+  }
+}
+# 不把未知 Host 转给单租户回落；HTTPS 未知 SNI 没有证书，HTTP 也不会转给源站。
+https:// {
+  respond "Unknown host" 421
+}
+http:// {
+  respond "Unknown host" 421
+}

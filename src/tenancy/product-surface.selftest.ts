@@ -228,11 +228,11 @@ async function parent(superUrl: string): Promise<void> {
       }
     }, 'listener readiness');
   }
-  const login = (host: string, email: string) =>
+  const login = (host: string, email: string, password = 'synthetic-member-password') =>
     request(host, '/api/console/auth/login', {
       method: 'POST',
       headers: { 'content-type': 'application/json', origin: `https://${host}` },
-      body: JSON.stringify({ email, password: 'synthetic-member-password' }),
+      body: JSON.stringify({ email, password }),
     });
   const cookie = (r: Response): string => {
     const c = r.headers.get('set-cookie')?.split(';')[0];
@@ -367,7 +367,25 @@ async function parent(superUrl: string): Promise<void> {
     const industryLogin = await login(industryHost, 'surface-industrial@erp.example.test');
     assert.equal(industryLogin.status, 200);
     const industryCookie = cookie(industryLogin);
+    const industryIdentity = (await industryLogin.json()) as { csrf: string };
     assert.equal((await request(industryHost, '/api/console/conversations', { headers: { cookie: industryCookie } })).status, 200);
+    for (const [url, method] of [
+      ['/api/console/sop/draft/check', 'POST'],
+      ['/api/console/catalog/part', 'POST'],
+    ]) {
+      const forbidden = await request(industryHost, url!, {
+        method,
+        headers: {
+          cookie: industryCookie,
+          origin: `https://${industryHost}`,
+          'content-type': 'application/json',
+          'x-csrf': industryIdentity.csrf,
+        },
+        body: '{}',
+      });
+      assert.equal(forbidden.status, 403, `15 验收 2：agent 不可修改 ${url}`);
+      assert.equal(((await forbidden.json()) as { error: string }).error, 'forbidden', '真实角色拒绝，不能用 CSRF 拒绝代替');
+    }
     await message(industryHost, 'wmSurfaceI', '你好，我要询价');
     await until(async () => (await sent('industrial-kf', 'wmSurfaceI')).length > 0, 'industrial engine outbound');
     console.log('PASS 0.2: industrial Host login + authenticated conversations + signed callback/inbox/engine/outbound');
@@ -402,15 +420,11 @@ async function parent(superUrl: string): Promise<void> {
       headers: { authorization: `Basic ${Buffer.from('admin:synthetic-admin').toString('base64')}` },
     });
     assert.equal(legacyPay.status, 404);
-    assert.deepEqual(
-      await legacyPay.json(),
-      { error: 'order not found' },
-      'Basic still reaches business handler; needs explicit proxy/code closure',
-    );
-    assert.equal((await request(industryHost, '/try.html')).status, 200, 'legacy try remains reachable until Caddy closure');
-    console.log(
-      'PASS 0.5: hostOnlyPath matrix 404; residual /try.html=200, POST /api/orders/:id/pay reaches business handler with Basic (Caddy/code still required)',
-    );
+    assert.notEqual(await legacyPay.text(), JSON.stringify({ error: 'order not found' }), '15 验收 7：有效 Basic 也不能到旧支付处理器');
+    for (const url of ['/try.html', '/TRY.html/', '/%74ry.html', '/api/orders/synthetic/PAY/', '/api/%6frders/synthetic/pay'])
+      for (const method of ['GET', 'POST', 'HEAD'])
+        assert.equal((await request(industryHost, url, { method })).status, 404, `15 验收 7 ${method} ${url}`);
+    console.log('PASS 15 验收 7: hostOnlyPath matrix + legacy try/pay variants 404, including valid Basic');
     await message(travelHost, 'wmSurfaceT', '你好，想了解行程');
     await until(async () => (await sent('travel-kf', 'wmSurfaceT')).length > 0, 'travel active outbound');
     const changed = Date.now();
@@ -490,6 +504,120 @@ async function parent(superUrl: string): Promise<void> {
     assert.ok(!(await travelView.text()).includes('wmSurfaceI'));
     assert.equal((await request(travelHost, '/api/console/conversations', { headers: { cookie: cookie(freshIndustry) } })).status, 401);
     console.log('PASS 0.6: bilateral PG/console/cookie isolation; active restored via real timer and travel replies again');
+    await stop();
+    const { withTenant } = await import('../db/client.js');
+    const { updateRetention } = await import('../db/repo/tenants.js');
+    const { trialBaseline, trialConversations, trialOrderIds, readTrialBatches } = await import('../db/repo/trial-reset.js');
+    await updateRetention(platform.db, industryId, { leadDays: 7, customerDays: 7, traceDays: 7 });
+    const trialCtx = { tenantId: industryId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
+    const approval = await withTenant(appDb.db, trialCtx, async (tx) => ({
+      allowlist: [{ tenantId: industryId, slug: 'surface-industrial', packId: 'industrial', kind: 'standard', isHost: false }],
+      sharedEmail: 'surface-industrial@erp.example.test',
+      reviewedConversationRefs: (await trialConversations(tx)).map((r) => r.ref),
+      reviewedOrderIds: await trialOrderIds(tx),
+      baselineHash: (await trialBaseline(tx)).hash,
+    }));
+    const approvalFile = path.join(dir, 'trial-approval.json');
+    fs.writeFileSync(approvalFile, JSON.stringify(approval));
+    async function runReset(batch?: string): Promise<{ code: number | null; log: string }> {
+      const reset = fork(
+        path.join(root, 'src/cli/trial-reset.ts'),
+        [
+          '--tenant',
+          'surface-industrial',
+          '--approval',
+          approvalFile,
+          '--var',
+          path.join(dir, 'server-state'),
+          '--password-stdin',
+          ...(batch ? ['--batch', batch] : []),
+        ],
+        {
+          cwd: dir,
+          env: {
+            PATH: process.env.PATH,
+            DATABASE_URL: fx.urls.app,
+            DATABASE_PLATFORM_URL: fx.urls.platform,
+            DEFAULT_TENANT_SLUG: 'surface-travel',
+          },
+          execArgv: ['--import', 'tsx'],
+          silent: true,
+        },
+      );
+      reset.stdin!.end('synthetic-reset-password\n');
+      let resetLog = '';
+      reset.stdout!.on('data', (b) => (resetLog += b));
+      reset.stderr!.on('data', (b) => (resetLog += b));
+      const resetTimer = setTimeout(() => reset.kill('SIGKILL'), 30_000);
+      const resetCode = await new Promise<number | null>((resolve, reject) => {
+        reset.once('error', reject);
+        reset.once('exit', resolve);
+      }).finally(() => clearTimeout(resetTimer));
+      return { code: resetCode, log: resetLog };
+    }
+    await fx.query(
+      "create function surface_trial_pause() returns trigger language plpgsql as $$ begin if NEW.action='trial_reset.checkpoint' and NEW.diff->>'phase'='complete' then raise exception 'synthetic_complete_failure'; end if; return NEW; end $$",
+    );
+    await fx.query('create trigger surface_trial_failure before insert on audit_log for each row execute function surface_trial_pause()');
+    const failedReset = await runReset();
+    assert.equal(failedReset.code, 1, failedReset.log);
+    await assert.rejects(start(), /prod startup failed/);
+    await stop();
+    assert.match(logs, /trial_reset_incomplete/);
+    await fx.query('drop trigger surface_trial_failure on audit_log');
+    const pending = await withTenant(appDb.db, trialCtx, readTrialBatches);
+    const recovered = await runReset([...pending.keys()][0]!);
+    assert.equal(recovered.code, 0, recovered.log);
+    const batches = await withTenant(appDb.db, trialCtx, readTrialBatches);
+    const seeds = [...batches.values()][0]!.checkpoint.seedIds;
+    const staleSpill = path.join(dir, 'server-state', 'store-spill-stale.json');
+    const stale = JSON.stringify({ version: 1, tenant: industryId, at: 0, sessions: [{ ref: approval.reviewedConversationRefs[0] }] });
+    fs.writeFileSync(staleSpill, stale);
+    await assert.rejects(start(), /prod startup failed/);
+    await stop();
+    assert.match(logs, /trial_reset_replay_unsafe/);
+    assert.equal(fs.readFileSync(staleSpill, 'utf8'), stale, '15 验收 6：拒绝前没有回放/改名/删除旧 spill');
+    fs.unlinkSync(staleSpill); // 只移除本自测构造的探针；生产恢复材料绝不清文件绕过。
+    console.log('PASS 15 验收 6：真实 prod 在 HTTP/任务/渠道前拒绝未完成批次和旧 spill，CLI 同批恢复后才开放');
+    await start();
+    assert.equal(
+      (await request(industryHost, '/api/console/conversations', { headers: { cookie: industryCookie } })).status,
+      401,
+      '15 验收 6 旧 cookie 失效',
+    );
+    const newLogin = await login(industryHost, 'surface-industrial@erp.example.test', 'synthetic-reset-password');
+    assert.equal(newLogin.status, 200);
+    const newIdentity = (await newLogin.json()) as { csrf: string };
+    const seedView = await request(industryHost, '/api/console/conversations', { headers: { cookie: cookie(newLogin) } });
+    const seedText = await seedView.text();
+    for (const seed of seeds) assert.ok(seedText.includes(seed.sessionId), '15 验收 6 重启重建 identity map');
+    const handoff = seeds.find((s) => s.key === 'handoff')!.sessionId;
+    const replied = await request(industryHost, `/api/console/conversations/${handoff}/reply`, {
+      method: 'POST',
+      headers: {
+        cookie: cookie(newLogin),
+        origin: `https://${industryHost}`,
+        'content-type': 'application/json',
+        'x-csrf': newIdentity.csrf,
+      },
+      body: JSON.stringify({ text: '合成人工回复', clientId: randomUUID() }),
+    });
+    assert.equal(replied.status, 200, await replied.text());
+    const approved = seeds.find((s) => s.key === 'quote-approved')!.orderId!;
+    assert.equal((await request(industryHost, `/quote/${approved}`)).status, 200);
+    assert.equal((await request(industryHost, `/api/quotes/${approved}`)).status, 200);
+    assert.equal((await request(travelHost, `/quote/${approved}`)).status, 404);
+    assert.equal(
+      (
+        await request(industryHost, `/api/orders/${approved}/pay`, {
+          method: 'POST',
+          headers: { authorization: `Basic ${Buffer.from('admin:synthetic-admin').toString('base64')}` },
+        })
+      ).status,
+      404,
+    );
+    assert.deepEqual((await rpc()).sent, [], '15 验收 6 PG 种子启动后零客户外发');
+    console.log('PASS 15 验收 2/6/7：真实 CLI 重置→prod 重启→新密码/旧 cookie/identity map/种子报价链接/跨租户/零外发');
     console.log('PRODUCT SURFACE SELFTEST PASS: 15 step 0 real PG + production boot');
   } catch (error) {
     console.error(logs);

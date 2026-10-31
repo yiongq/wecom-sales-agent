@@ -34,7 +34,13 @@ export async function readPurgeCandidates(
   return tx
     .select({ id: conversations.id, lastSeq: conversations.lastSeq, updatedAt: conversations.updatedAt })
     .from(conversations)
-    .where(and(lt(conversations.updatedAt, cutoff), afterId === null ? undefined : gt(conversations.id, afterId)))
+    .where(
+      and(
+        lt(conversations.updatedAt, cutoff),
+        sql`(${conversations.state}->'seed')::jsonb IS DISTINCT FROM 'true'::jsonb`,
+        afterId === null ? undefined : gt(conversations.id, afterId),
+      ),
+    )
     .orderBy(asc(conversations.id))
     .limit(limit);
 }
