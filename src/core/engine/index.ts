@@ -1,3 +1,6 @@
+import { limitVerdict } from '../../tenancy/limits.js';
+import { customerRate } from '../../tenancy/customer-rate.js';
+import { LIMIT_QUOTA_REPLY, LIMIT_SUSPENDED_REPLY, LIMIT_RATE_REPLY } from '../../tenancy/limit-replies.js';
 import { withErpTurn, erpTurnStats } from '../../connectors/registry.js';
 import { receiveAttachment } from './intake.js';
 import type { AttachmentItem } from '../../db/repo/attachments.js';
@@ -385,6 +388,15 @@ async function handleMessageInner(
       model = await callModel(state, turnContext, tools.runTool);
     } catch (error) {
       if (currentRuntime().cancel.aborted || (opts.stillCurrent && !opts.stillCurrent())) return state.unsentTakenOver();
+      if (
+        error instanceof BudgetExhausted &&
+        currentRuntime().kind === 'standard' &&
+        currentRuntime().config.loaded &&
+        currentRuntime().store.pgBackend
+      ) {
+        if (state.takenOver()) return state.unsentTakenOver();
+        return limitHandoff(state, 'dailyCap');
+      }
       // 供应商内容审核拦截：重试也是同样结果，回包里的离题话术兜住，不抛给渠道（06 第 14 步验收）
       if (isContentFiltered(error)) {
         console.warn(`[engine] 模型供应商的内容审核拦下了这一轮，已回固定话术（会话 ${convLabel(sessionId)}）`);
@@ -490,11 +502,73 @@ function beginTurn(sessionId: string, text: string, channel: string, opts: Handl
   };
 }
 
+// 使用旧镜像认识的 failure kind；新原因是普通字符串，回滚仍能展示与通知。
+function limitHandoff(state: TurnState, reason: 'quota' | 'dailyCap'): AgentReply {
+  const { session, done } = state;
+  enterHandoff(session, { kind: 'failure', reason: HANDOFF_REASON[reason], at: Date.now() });
+  const msg: ChatMessage = { role: 'agent', content: LIMIT_QUOTA_REPLY, at: Date.now() };
+  session.messages.push(msg);
+  saveSession(session);
+  return done('budget', { text: msg.content, stage: session.stage, handoff: true }, msg);
+}
+
+function priorityHandoff(state: TurnState): AgentReply | null {
+  const { session, text, done, answerIdentity, runtime, triggers } = state;
+  const { departNoteForHandoff } = runtime.engineHooks;
+  const { emergencyOf, consentWithdrawalOf } = triggers;
+  // 紧急情况（02 spec「确定性转人工触发」、R15、不变量 29）：客户消息入库之后、「已转人工」判断之前判，本轮不调模型。
+  // 已转人工：不回话（00 不变量 14），只把记录升级为 emergency，enterHandoff 再发一次 handoff.started（升级）、db 存储下再排一个
+  // 立即的 handoff_notify，随下面静默分支的落库提交。终态会话（已付款、正在出行）照样转人工、阶段保留终态（R9）
+  const emergency = emergencyOf(text);
+  if (emergency) {
+    const wasHandedOver = session.handedOver;
+    const departNote = departNoteForHandoff(session);
+    enterHandoff(session, {
+      kind: 'emergency',
+      at: Date.now(),
+      reason: emergencyReason(emergency),
+      quote: cleanText(text, 200),
+      ...(departNote ? { departNote } : {}),
+    });
+    if (!wasHandedOver) {
+      // 同一句在问身份时先承认是 AI（00 不变量 16）
+      const reply = cleanText(answerIdentity(text, EMERGENCY_REPLY));
+      const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
+      recordQuoteStates(msg, session);
+      session.messages.push(msg);
+      saveSession(session);
+      return done('handoff', { text: reply, stage: session.stage, handoff: true }, msg);
+    }
+  }
+
+  // 撤回同意与删除请求（R23，02 第 16 步）：客户命中 consentWithdrawalOf，本轮不调模型，固定回复，转人工（kind='consent'）。
+  // 只在发布过隐私说明时判（没发布就没有同意记录可撤回，demo 永远不会走到这里，不变量 40）；已经转人工（无论什么原因）
+  // 也照样回这一句、记录撤回——这是客户的行权请求，不该被「已转人工静默」吞掉
+  if (currentPrivacyNotice() && consentWithdrawalOf(text)) {
+    withdrawConsent(session, cleanText(text, 200), currentPrivacyNotice()!.version);
+    const departNote = departNoteForHandoff(session);
+    enterHandoff(session, {
+      kind: 'consent',
+      at: Date.now(),
+      reason: CONSENT_WITHDRAWAL_REASON,
+      quote: cleanText(text, 200),
+      ...(departNote ? { departNote } : {}),
+    });
+    const msg: ChatMessage = { role: 'agent', content: CONSENT_WITHDRAWN_REPLY, at: Date.now() };
+    recordQuoteStates(msg, session);
+    session.messages.push(msg);
+    saveSession(session);
+    return done('handoff', { text: CONSENT_WITHDRAWN_REPLY, stage: session.stage, handoff: true }, msg);
+  }
+
+  return null;
+}
+
 async function preflight(state: TurnState): Promise<AgentReply | null> {
   const { text, opts, session, runtime, triggers, answerIdentity, done } = state;
   if (opts.attachmentItem && opts.attachmentAccountId) session.channelAccountId = opts.attachmentAccountId;
   const { isComplaint, isHandoffIntent, departNoteForHandoff, safetyNetKind, handoffReply } = runtime.engineHooks;
-  const { negativeLevel, pushWindow, SENTIMENT_WINDOW, emergencyOf, consentWithdrawalOf, sentimentThresholdReached } = triggers;
+  const { negativeLevel, pushWindow, SENTIMENT_WINDOW, sentimentThresholdReached } = triggers;
   // 06 R16：转人工话术按品牌快照渲染联系方式；客户同时在问身份时合并成一句
   const handoffOpts = (t: string) => ({ brand: state.binding.brand, identity: IDENTITY_QUESTION.test(t) });
   // 重置口令（演示/测试便利）：清空会话并解除转人工，从头开始。网页与企微都生效——
@@ -587,50 +661,9 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
   if (customerMsg && opts.inboxId) queueInboxState(session.id, { inboxId: opts.inboxId, state: 'recorded', message: customerMsg });
   if (customerMsg && opts.attachmentItem) queueAttachment(session.id, opts.attachmentItem);
 
-  // 紧急情况（02 spec「确定性转人工触发」、R15、不变量 29）：客户消息入库之后、「已转人工」判断之前判，本轮不调模型。
-  // 已转人工：不回话（00 不变量 14），只把记录升级为 emergency，enterHandoff 再发一次 handoff.started（升级）、db 存储下再排一个
-  // 立即的 handoff_notify，随下面静默分支的落库提交。终态会话（已付款、正在出行）照样转人工、阶段保留终态（R9）
-  const emergency = emergencyOf(text);
-  if (emergency) {
-    const wasHandedOver = session.handedOver;
-    const departNote = departNoteForHandoff(session);
-    enterHandoff(session, {
-      kind: 'emergency',
-      at: Date.now(),
-      reason: emergencyReason(emergency),
-      quote: cleanText(text, 200),
-      ...(departNote ? { departNote } : {}),
-    });
-    if (!wasHandedOver) {
-      // 同一句在问身份时先承认是 AI（00 不变量 16）
-      const reply = cleanText(answerIdentity(text, EMERGENCY_REPLY));
-      const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
-      recordQuoteStates(msg, session);
-      session.messages.push(msg);
-      saveSession(session);
-      return done('handoff', { text: reply, stage: session.stage, handoff: true }, msg);
-    }
-  }
-
-  // 撤回同意与删除请求（R23，02 第 16 步）：客户命中 consentWithdrawalOf，本轮不调模型，固定回复，转人工（kind='consent'）。
-  // 只在发布过隐私说明时判（没发布就没有同意记录可撤回，demo 永远不会走到这里，不变量 40）；已经转人工（无论什么原因）
-  // 也照样回这一句、记录撤回——这是客户的行权请求，不该被「已转人工静默」吞掉
-  if (currentPrivacyNotice() && consentWithdrawalOf(text)) {
-    withdrawConsent(session, cleanText(text, 200), currentPrivacyNotice()!.version);
-    const departNote = departNoteForHandoff(session);
-    enterHandoff(session, {
-      kind: 'consent',
-      at: Date.now(),
-      reason: CONSENT_WITHDRAWAL_REASON,
-      quote: cleanText(text, 200),
-      ...(departNote ? { departNote } : {}),
-    });
-    const msg: ChatMessage = { role: 'agent', content: CONSENT_WITHDRAWN_REPLY, at: Date.now() };
-    recordQuoteStates(msg, session);
-    session.messages.push(msg);
-    saveSession(session);
-    return done('handoff', { text: CONSENT_WITHDRAWN_REPLY, stage: session.stage, handoff: true }, msg);
-  }
+  // 紧急与行权优先于已转人工静默及用量闸门，对所有会话均保留原有顺序。
+  const priority = priorityHandoff(state);
+  if (priority) return priority;
 
   // 已转人工：AI 彻底沉默，只记录客户消息（供后台人工查看），不再自动回复。
   // 转人工的那一句确认在触发时已发过，之后重复「已转人工」既烦又不专业。
@@ -641,6 +674,29 @@ async function preflight(state: TurnState): Promise<AgentReply | null> {
     // 转人工那一句带的弱词不会隔着整段人工接待和交还后的一句凑成 2 弱（第 11 步第二轮审查 engine[2]）
     saveSession(session); // 客户消息已在上方入库
     return done('silent', { text: '', stage: session.stage, handoff: true, silent: true });
+  }
+
+  const rt = currentRuntime();
+  if (rt.kind === 'standard' && rt.config.loaded && rt.store.pgBackend) {
+    const verdict = limitVerdict();
+    if (verdict === 'suspended') {
+      // 固定句在会话中持久化，重启和重新停用也不重复发送。
+      if (session.suspendedReplyAt !== undefined) return done('silent', { text: '', stage: session.stage, silent: true });
+      const msg: ChatMessage = { role: 'agent', content: LIMIT_SUSPENDED_REPLY, at: Date.now() };
+      session.suspendedReplyAt = msg.at;
+      session.messages.push(msg);
+      saveSession(session);
+      return done('silent', { text: msg.content, stage: session.stage }, msg);
+    }
+    if (verdict === 'quota') return limitHandoff(state, 'quota');
+    const rate = customerRate(session.id, state.channel);
+    if (rate !== 'ok') {
+      if (rate === 'silent') return done('silent', { text: '', stage: session.stage, silent: true });
+      const msg: ChatMessage = { role: 'agent', content: LIMIT_RATE_REPLY, at: Date.now() };
+      session.messages.push(msg);
+      saveSession(session);
+      return done('silent', { text: msg.content, stage: session.stage }, msg);
+    }
   }
 
   // 重置口令被 reset_command 关掉（prod）：已入库、已转人工时照常静默（上面），否则回一句固定话术，

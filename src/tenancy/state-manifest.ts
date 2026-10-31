@@ -3,6 +3,11 @@ export const STATE_MANIFEST: Record<
   string,
   { kind: 'tenant'; state: string } | { kind: 'instance'; why: string } | { kind: 'object-keyed' }
 > = Object.freeze({
+  'src/tenancy/budget.ts:dailyCapReader': {
+    kind: 'instance',
+    why: '读取当前作用域快照的能力接线，不保存租户数据；避免运行时构造的导入环。',
+  },
+  'src/tenancy/customer-rate.ts:tenantState': { kind: 'tenant', state: 'customerRate.conversations' },
   'src/tenancy/limits.ts:deps': { kind: 'instance', why: '自测时钟、读取与告警依赖，不保存租户快照。' },
   'src/tenancy/limits.ts:tenantState': { kind: 'tenant', state: 'limits.current' },
   'src/tenancy/limits.ts:pollTimer': { kind: 'instance', why: '唯一轮询定时器逐租户恢复作用域，停机清除。' },

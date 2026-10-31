@@ -1,4 +1,5 @@
-// 14 R2、R3：standard 的月度回复计数与只读运行时快照；闸门调用方由后续步骤接线。
+// 14 R2、R3：standard 的月度回复计数与只读运行时快照，供引擎、预算与跟进闸门共用。
+import { setStandardDailyCapReader } from './budget.js';
 import { withTenant } from '../db/client.js';
 import { readTenantLimits } from '../db/repo/tenants.js';
 import { readMonthlyReplyCount } from '../db/repo/usage.js';
@@ -93,6 +94,9 @@ export function getTenantLimits(): TenantLimits | null {
   rollMonth(s);
   return { ...s.value };
 }
+// 单向接线避免 runtime → budget → limits → writer / shutdown 的导入环。
+setStandardDailyCapReader(() => getTenantLimits()?.dailyCapMilli ?? null);
+
 /** 同步、不读库，停用优先于额度；NULL 不限，0 全拦。 */
 export function limitVerdict(): LimitVerdict {
   const limits = getTenantLimits();
