@@ -3389,6 +3389,7 @@ async function workbenchSuite(): Promise<void> {
     { route: 'POST /quick-replies/:id/archive', url: '/quick-replies/nosuch/archive', allowed: REPLIES },
     { route: 'POST /quick-replies/:id/move', url: '/quick-replies/nosuch/move', json: { direction: 'up' }, allowed: REPLIES },
     { route: 'GET /metrics', url: '/metrics', allowed: MONEY },
+    { route: 'GET /metrics/trends', url: '/metrics/trends', allowed: MONEY },
     // 14 R9：用量仅给 owner/admin；匿名明确要求 403。
     { route: 'GET /usage', url: '/usage', allowed: MONEY, anonStatus: 403 },
     { route: 'GET /events', url: '/events', allowed: ALL, sse: true },

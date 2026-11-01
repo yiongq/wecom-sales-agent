@@ -8,6 +8,10 @@ export type Origin = 'customer' | 'visitor' | 'seed';
 /** 三类来源的固定顺序（界面、接口的键序） */
 export const ORIGINS = ['customer', 'visitor', 'seed'] as const satisfies readonly Origin[];
 
+export const SEED_SESSION_PREFIX = 'wecom:cust_';
+export const SEED_ORDER_PREFIX = 'ord_seed_';
+export const VISITOR_SESSION_PREFIX = 'sim-';
+
 /** 看板的视图：三类来源加「全部」 */
 export type OriginView = Origin | 'all';
 
@@ -18,7 +22,7 @@ export type OriginView = Origin | 'all';
  * 真实客户：standard 租户里的其余会话。种子优先于访客：沙箱里打了标的种子不算访客。
  */
 export function originOf(x: { sessionId: string; orderId?: string; seed?: boolean }, tenantKind: 'standard' | 'sandbox'): Origin {
-  if (x.seed === true || x.sessionId.startsWith('wecom:cust_') || x.orderId?.startsWith('ord_seed_')) return 'seed';
-  if (x.sessionId.startsWith('sim-') || tenantKind === 'sandbox') return 'visitor';
+  if (x.seed === true || x.sessionId.startsWith(SEED_SESSION_PREFIX) || x.orderId?.startsWith(SEED_ORDER_PREFIX)) return 'seed';
+  if (x.sessionId.startsWith(VISITOR_SESSION_PREFIX) || tenantKind === 'sandbox') return 'visitor';
   return 'customer';
 }

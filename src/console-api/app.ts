@@ -120,6 +120,7 @@ import {
 import { clientKey, isCrossSite, lookupLimit } from '../http-guards.js';
 import { requestLogContext } from '../log.js';
 import { liveOrderSummary } from '../ops/board.js';
+import { readTrendsView } from '../ops/trends.js';
 import { readMetricsView } from '../ops/metrics.js';
 import { defaultQuickRepliesOf } from '../packs/registry.js';
 import { paymentMode } from '../payment/mode.js';
@@ -153,6 +154,7 @@ import {
   LoginBody,
   MessagesQuery,
   MetricsQuery,
+  TrendsQuery,
   MoveBody,
   OrdersQuery,
   PatchItemBody,
@@ -330,6 +332,14 @@ const canSeeMoney = ownerOrAdmin;
 const canSeeUsage: MiddlewareHandler<ConsoleEnv> = async (c, next) => {
   if (!c.var.user || currentRuntime().kind === 'sandbox') return fail(c, 403, { error: 'forbidden' });
   return ownerOrAdmin(c, next);
+};
+/** 17：鉴权 → 角色 → 沙箱 → 存储，参数校验在本中间件之后。 */
+const canSeeObservability: MiddlewareHandler<ConsoleEnv> = async (c, next) => {
+  if (!c.var.user) return unauthorized(c);
+  if (!EDITORS.has(c.var.user.role)) return fail(c, 403, { error: 'forbidden' });
+  if (currentRuntime().kind === 'sandbox') return fail(c, 403, { error: 'observability_unavailable' });
+  if (sessionStoreMode() !== 'db') throw new StoreFileModeError('可观测性接口只在 SESSION_STORE=db 时有');
+  return next();
 };
 /** trace 原文（原稿、参数、耗时、模型、前缀）：只有 owner / admin */
 const canSeeTraces = ownerOrAdmin;
@@ -1230,6 +1240,11 @@ export const consoleApi = new Hono<ConsoleEnv>()
     }
     const body: MetricsView = await readMetricsView(ctxOf(c), c.req.valid('query').days ?? 7, clock());
     return c.json(body, 200);
+  })
+
+  .get('/metrics/trends', canSeeObservability, zValidator('query', TrendsQuery, badRequest), async (c) => {
+    const days = c.req.valid('query').days === '30' ? 30 : 7;
+    return c.json(await readTrendsView(ctxOf(c), days, clock()), 200);
   })
 
   // 没匹配上的路径回 JSON，不落到静态文件：成员与 demo 下的匿名 404；prod 下匿名 401（除了登录处处 401）
