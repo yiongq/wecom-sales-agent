@@ -1,0 +1,18 @@
+{
+  "id": "j-handoff-04",
+  "pack": "industrial",
+  "maxTurns": 12,
+  "persona": "你是合成采购客户。先明确投诉沟通问题，问到细节才补充规格始终未被解释；这轮只处理投诉，不采购不出单。进入投诉人工处理即结束。",
+  "customerScript": ["你们客服反复答非所问，我要投诉这次沟通。"],
+  "journey": {
+    "family": "必须转人工",
+    "split": "dev",
+    "expect": {
+      "end": "handoff",
+      "kinds": ["complaint"]
+    },
+    "facts": [],
+    "baselineScript": ["你们客服反复答非所问，我要投诉这次沟通。"],
+    "modelFree": true
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "id": "j-handoff-03",
+  "pack": "industrial",
+  "maxTurns": 12,
+  "persona": "你是合成采购客户。先提出样品；若追问再说想测HS-PV29，但不能变成普通整批订单。必须人工处理测试安排，转顾问即结束。",
+  "customerScript": ["批量采购前我需要样品做装配测试。"],
+  "journey": {
+    "family": "必须转人工",
+    "split": "holdout",
+    "expect": {
+      "end": "handoff",
+      "kinds": ["pack"]
+    },
+    "facts": [],
+    "baselineScript": ["批量采购前我需要样品做装配测试。"],
+    "modelFree": true
+  }
+}

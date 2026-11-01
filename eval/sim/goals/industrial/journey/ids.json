@@ -1,0 +1,162 @@
+[
+  {
+    "id": "j-standard-01",
+    "family": "标准成交"
+  },
+  {
+    "id": "j-standard-02",
+    "family": "标准成交"
+  },
+  {
+    "id": "j-standard-03",
+    "family": "标准成交"
+  },
+  {
+    "id": "j-standard-04",
+    "family": "标准成交"
+  },
+  {
+    "id": "j-standard-05",
+    "family": "标准成交"
+  },
+  {
+    "id": "j-writing-01",
+    "family": "写法不规范"
+  },
+  {
+    "id": "j-writing-02",
+    "family": "写法不规范"
+  },
+  {
+    "id": "j-writing-03",
+    "family": "写法不规范"
+  },
+  {
+    "id": "j-writing-04",
+    "family": "写法不规范"
+  },
+  {
+    "id": "j-list-01",
+    "family": "多行清单"
+  },
+  {
+    "id": "j-list-02",
+    "family": "多行清单"
+  },
+  {
+    "id": "j-list-03",
+    "family": "多行清单"
+  },
+  {
+    "id": "j-tier-01",
+    "family": "阶梯起订量"
+  },
+  {
+    "id": "j-tier-02",
+    "family": "阶梯起订量"
+  },
+  {
+    "id": "j-tier-03",
+    "family": "阶梯起订量"
+  },
+  {
+    "id": "j-tier-04",
+    "family": "阶梯起订量"
+  },
+  {
+    "id": "j-tier-05",
+    "family": "阶梯起订量"
+  },
+  {
+    "id": "j-stock-01",
+    "family": "库存交期"
+  },
+  {
+    "id": "j-stock-02",
+    "family": "库存交期"
+  },
+  {
+    "id": "j-stock-03",
+    "family": "库存交期"
+  },
+  {
+    "id": "j-change-01",
+    "family": "中途改需求"
+  },
+  {
+    "id": "j-change-02",
+    "family": "中途改需求"
+  },
+  {
+    "id": "j-change-03",
+    "family": "中途改需求"
+  },
+  {
+    "id": "j-bargain-01",
+    "family": "砍价施压"
+  },
+  {
+    "id": "j-bargain-02",
+    "family": "砍价施压"
+  },
+  {
+    "id": "j-bargain-03",
+    "family": "砍价施压"
+  },
+  {
+    "id": "j-handoff-01",
+    "family": "必须转人工"
+  },
+  {
+    "id": "j-handoff-02",
+    "family": "必须转人工"
+  },
+  {
+    "id": "j-handoff-03",
+    "family": "必须转人工"
+  },
+  {
+    "id": "j-handoff-04",
+    "family": "必须转人工"
+  },
+  {
+    "id": "j-handoff-05",
+    "family": "必须转人工"
+  },
+  {
+    "id": "j-outside-01",
+    "family": "库外与替代"
+  },
+  {
+    "id": "j-outside-02",
+    "family": "库外与替代"
+  },
+  {
+    "id": "j-attachment-01",
+    "family": "附件询价"
+  },
+  {
+    "id": "j-attachment-02",
+    "family": "附件询价"
+  },
+  {
+    "id": "j-injection-01",
+    "family": "注入越权"
+  },
+  {
+    "id": "j-injection-02",
+    "family": "注入越权"
+  },
+  {
+    "id": "j-injection-03",
+    "family": "注入越权"
+  },
+  {
+    "id": "j-rejection-01",
+    "family": "顾问驳回"
+  },
+  {
+    "id": "j-rejection-02",
+    "family": "顾问驳回"
+  }
+]

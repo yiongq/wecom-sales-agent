@@ -6,6 +6,7 @@ Tier: standard — 扩展评测目标与运行结果的格式，新增公开报�
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」。
 Depends on: [09](../09-quote-approval/spec.md) 的报价审批入口；[10](../10-industrial-rfq-pack/spec.md)、[12](../12-customer-files/spec.md) 的工业包与附件。实现排在 [17](../17-observability/spec.md) 之后，只对齐 17 R5 的耗时口径，不依赖其代码。
 Amends: [04](../04-industry-packs/spec.md) R11、[06](../06-reply-quality/spec.md) R2、[10](../10-industrial-rfq-pack/spec.md) R15 的模拟评测：只加新目标类型、新枚举值和新文件，现有目标、发布闸与判定不变。04、06、10 顶部已补反向标记。
+Revisions: 2026-11-01 开工时补接口缺口，不改设计：`buildReport` 没有产品库入参，审计结果要随运行存进 journal，所以 `RunResult` 加 `findings`、`runId`、`wasReplaced`、`leftSilently`，`SimDeps` 加 `catalog`。`Finding.id` 和第二种 `customer_drift` 分别靠后面三个字段。
 Revisions: 2026-11-01 owner 明确批准，原话「16 改 ready，standard」；Status 改为 ready，Tier 定为 standard。同次补主参考阶段 8 登记和 04、06、10 的反向标记。
 Revisions: 2026-11-01 owner 答「D3=A，D7=A」：D1–D8 全部定案。
 Revisions: 2026-11-01 owner 答「16 D1–D8 按推荐」：D1、D2、D4、D5、D6、D8 照 ★ 定案；D3、D7 选错难退，按规矩要各回一句，尚未定案；档位和 ready 未批。
@@ -367,9 +368,14 @@ interface RunResult {
   notices?: string[]; // 写进客户历史的卡片文字
   replaced?: RunResult; // 被整遍重跑替换掉的一遍
   failedTurn?: FinishedTurn; // 销售这一轮抛错时的 trace
+  findings?: Finding[]; // 这一遍的审计命中，含原稿计数
+  runId?: string; // 进 Finding.id
+  wasReplaced?: true; // 这一遍后来被整遍重跑替换了，进 Finding.id
+  leftSilently?: true; // 最后一轮客户只表达结束、一句话没说
 }
 interface SimDeps {
   decide?(orderId: string, d: NonNullable<JourneySpec['approver']>): Promise<{ notice: string | null; state: Snapshot }>;
+  catalog?: PartRow[]; // 审计用，直接读产品库 JSON，不经包
 }
 ```
 

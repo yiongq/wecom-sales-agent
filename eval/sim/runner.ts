@@ -1,5 +1,10 @@
 import type { UsageEvent } from '../../src/usage.js';
-import { goalPack, type SimGoal } from './goals.js';
+import type { FinishedTurn } from '../../src/trace/recorder.js';
+import type { Finding, PartRow } from './audit.js';
+import { auditRun } from './audit.js';
+import type { SalesTurnError } from './runtime.js';
+import { judgeJourney } from './journey.js';
+import { goalPack, type JourneySpec, type SimGoal } from './goals.js';
 import { judge, type Evidence, type SimTurn, type Snapshot, type Verdict } from './judge.js';
 import { computeMetrics, turnMetric, type Metrics, type TurnMetric } from './metrics.js';
 
@@ -15,8 +20,15 @@ export interface Charge {
 export class Meter {
   readonly charges: Charge[] = [];
   private readonly aborter = new AbortController();
-  constructor(readonly budget: number) {
+  constructor(
+    readonly budget: number,
+    initial: Charge[] = [],
+  ) {
     if (!Number.isFinite(budget) || budget <= 0) throw new Error('--budget 必须是正数');
+    this.restore(initial);
+  }
+  restore(charges: Charge[]): void {
+    for (const charge of charges) this.add(charge);
   }
   get total(): number {
     return this.charges.reduce((sum, c) => sum + c.cny, 0);
@@ -58,13 +70,32 @@ export interface SimDeps {
   /** attach（12 R13）：eval/fixtures/attachments/ 下的样本名；有它时这条消息是文件，say 不进引擎（渠道写占位），返回的 SimTurn.customer.say 是占位 */
   sales(id: string, customer: { say: string; done: boolean; attach?: string }): Promise<SimTurn>;
   end(id: string): Promise<void>;
+  /** 16 R2：审批替身调真实 approveQuote / rejectQuote，返回写进客户历史的通知文字和决定之后的快照 */
+  decide?(orderId: string, d: NonNullable<JourneySpec['approver']>): Promise<{ notice: string | null; state: Snapshot }>;
+  /** 16 R4：审计用的产品库，直接读 data/packs/industrial 的 JSON，不经包。journey 目标才用 */
+  catalog?: PartRow[];
 }
-export type RunStatus = 'passed' | 'failed' | 'customer_protocol' | 'budget_stop';
+export type RunStatus = 'passed' | 'failed' | 'customer_protocol' | 'customer_http' | 'customer_drift' | 'budget_stop';
+export type FailBucket =
+  | 'model_error'
+  | 'runner_error'
+  | 'rule_violation'
+  | 'unneeded_handoff'
+  | 'quote_missing'
+  | 'wrong_lines'
+  | 'wrong_total'
+  | 'not_approved'
+  | 'not_accepted'
+  | 'not_rejected'
+  | 'missed_handoff'
+  | 'wrong_handoff'
+  | 'unexpected_quote'
+  | 'no_evidence';
 export interface RunResult extends Evidence {
   goalId: string;
   repetition: number;
   status: RunStatus;
-  endedBy: 'done' | 'maxTurns' | 'customer_protocol' | 'budget_stop' | 'runner_error';
+  endedBy: 'done' | 'maxTurns' | 'customer_protocol' | 'budget_stop' | 'runner_error' | 'handoff';
   verdicts: Verdict[];
   reasons: string[];
   customerAttempts: { raw: string; valid: boolean; turn: number; retry: boolean }[];
@@ -73,15 +104,37 @@ export interface RunResult extends Evidence {
   turnMetrics: TurnMetric[];
   /** 第一遍客户没按协议出话，这是整遍重跑后的结果 */
   rerun: boolean;
+  // ---- 16：只加字段，现有目标不填 ----
+  /** 失败桶（status 是 failed 时） */
+  bucket?: FailBucket;
+  /** 运行结束时的最新状态；判分、审计、转人工即停都读它，不读最后一轮的 SimTurn.state */
+  finalState?: Snapshot;
+  decided?: { orderId: string; decision: 'approve' | 'reject' }[];
+  /** 写进客户历史的卡片文字 */
+  notices?: string[];
+  /** 被整遍重跑替换掉的一遍（费用已并进外层的 charges，汇总时不要再加一次） */
+  replaced?: RunResult;
+  /** 销售这一轮抛错时的 trace */
+  failedTurn?: FinishedTurn;
+  /** 本遍的审计命中（16 R4），含原稿计数 */
+  findings?: Finding[];
+  /** 所属运行的 runId，进 Finding.id */
+  runId?: string;
+  /** 这一遍后来被整遍重跑替换了，进 Finding.id */
+  wasReplaced?: true;
+  /** 最后一轮客户只表达结束、一句话没说（R3 customer_drift 第二种） */
+  leftSilently?: true;
 }
 export interface Summary {
   id: string;
   passed: number;
   failed: number;
   customer_protocol: number;
+  customer_http?: number;
+  customer_drift?: number;
   budget_stop: number;
   unrun: number;
-  /** pass^k 的分母：k 减去两遍都没按协议出话的运行 */
+  /** pass^k 的分母：k 减去两遍都没按协议出话的运行；journey 再减 HTTP 失败和客户偏离 */
   denominator: number;
   /** customer_protocol 的运行占 k 超过 20%：客户脚本要改 */
   needsScriptFix: boolean;
@@ -93,6 +146,8 @@ export interface SimReport {
   runs: RunResult[];
   summary: Summary[];
   customer_protocol: number;
+  customer_http?: number;
+  customer_drift?: number;
   budget_stop: number;
   cost: ReturnType<Meter['totals']>;
   charges: Charge[];
@@ -111,7 +166,7 @@ function customerMessage(raw: string): { say: string; done: boolean } | null {
   }
 }
 
-async function executeRun(goal: SimGoal, repetition: number, meter: Meter, deps: SimDeps): Promise<RunResult> {
+async function executeRun(goal: SimGoal, repetition: number, meter: Meter, deps: SimDeps, runId?: string): Promise<RunResult> {
   const chargeStart = meter.charges.length;
   const { id, initial } = await deps.start(goal.initial);
   const run: RunResult = {
@@ -127,14 +182,21 @@ async function executeRun(goal: SimGoal, repetition: number, meter: Meter, deps:
     charges: [],
     turnMetrics: [],
     rerun: false,
+    ...(runId === undefined ? {} : { runId }),
   };
+  let latest = initial;
+  if (goal.journey) {
+    run.finalState = latest;
+    run.decided = [];
+    run.notices = [];
+  }
   // 客户模型的视角：它自己说的是 assistant，销售的回复是 user
   const history: { role: 'user' | 'assistant'; content: string }[] = (goal.initial?.history ?? []).map((m) => ({
     role: m.role === 'customer' ? 'assistant' : 'user',
     content: m.content,
   }));
   try {
-    for (let turn = 1; turn <= (goal.maxTurns ?? 12); turn++) {
+    turns: for (let turn = 1; turn <= (goal.maxTurns ?? 12); turn++) {
       let customer: ReturnType<typeof customerMessage> | { say: string; done: boolean; attach: string } = null;
       const scripted = goal.customerScript?.[turn - 1];
       if (scripted !== undefined)
@@ -169,12 +231,50 @@ async function executeRun(goal: SimGoal, repetition: number, meter: Meter, deps:
         : customer.say.trim()
           ? [customer]
           : [];
+      if (goal.journey && customer.done && !messages.length) run.leftSilently = true;
       for (const message of messages) {
-        const result = await deps.sales(id, message);
+        let result: SimTurn;
+        try {
+          result = await deps.sales(id, message);
+        } catch (e) {
+          if (goal.journey && e instanceof Error && 'failedTurn' in e) run.failedTurn = (e as SalesTurnError).failedTurn;
+          throw e;
+        }
         run.turns.push(result);
         run.turnMetrics.push(turnMetric(result));
         history.push({ role: 'assistant', content: result.customer.say });
         if (!result.silent) history.push({ role: 'user', content: result.reply });
+        if (goal.journey) {
+          latest = result.state;
+          run.finalState = latest;
+          if (latest.handedOver) {
+            run.endedBy = 'handoff';
+            break turns;
+          }
+          for (const order of latest.orders) {
+            if (
+              !goal.journey.approver ||
+              !('v' in order) ||
+              order.status !== 'pending_payment' ||
+              order.approval?.state !== 'pending' ||
+              run.decided!.some((d) => d.orderId === order.id)
+            )
+              continue;
+            if (!deps.decide) throw new Error('decide_missing');
+            const decision = await deps.decide(order.id, goal.journey.approver);
+            run.decided!.push({ orderId: order.id, decision: goal.journey.approver.decision });
+            latest = decision.state;
+            run.finalState = latest;
+            if (decision.notice !== null) {
+              run.notices!.push(decision.notice);
+              history.push({ role: 'user', content: decision.notice });
+            }
+            if (latest.handedOver) {
+              run.endedBy = 'handoff';
+              break turns;
+            }
+          }
+        }
       }
       if (meter.stopped) break;
       if (customer.done) {
@@ -184,10 +284,21 @@ async function executeRun(goal: SimGoal, repetition: number, meter: Meter, deps:
     }
   } catch (e) {
     run.endedBy = 'runner_error';
+    if (goal.journey && e instanceof Error && e.message === 'customer_http') run.status = 'customer_http';
     // 错误消息可能含供应商地址或凭据，只保留稳定原因。
     run.reasons.push(e instanceof Error && e.message === 'accounting_usage_missing' ? 'accounting_usage_missing' : 'runner_error');
   } finally {
     await deps.end(id);
+  }
+  if (goal.journey) {
+    if (meter.stopped) {
+      run.status = 'budget_stop';
+      run.endedBy = 'budget_stop';
+    }
+    run.findings = auditRun(run, goal, deps.catalog ?? []);
+    Object.assign(run, judgeJourney(goal, run));
+    run.charges = meter.charges.slice(chargeStart);
+    return run;
   }
   run.verdicts = judge(goal, run);
   if (meter.stopped) {
@@ -219,39 +330,54 @@ function checkPacks(goals: SimGoal[], deps: SimDeps): void {
 }
 
 /** 一遍：客户模型没按协议出话，整遍重跑一次，两次的费用并进同一遍。 */
-async function runOnce(goal: SimGoal, repetition: number, meter: Meter, deps: SimDeps): Promise<RunResult> {
+async function runOnce(goal: SimGoal, repetition: number, meter: Meter, deps: SimDeps, runId?: string): Promise<RunResult> {
   const chargeStart = meter.charges.length;
-  let run = await executeRun(goal, repetition, meter, deps);
+  let run = await executeRun(goal, repetition, meter, deps, runId);
   // 客户模型没按协议出话：整遍重跑一次，仍失败的不计入 pass^k 的分母，单列
   if (run.status === 'customer_protocol' && !meter.stopped) {
-    run = await executeRun(goal, repetition, meter, deps);
+    const replaced = run;
+    if (goal.journey) {
+      replaced.wasReplaced = true;
+      replaced.findings = auditRun(replaced, goal, deps.catalog ?? []);
+    }
+    run = await executeRun(goal, repetition, meter, deps, runId);
+    if (goal.journey) run.replaced = replaced;
     run.rerun = true;
     run.charges = meter.charges.slice(chargeStart);
   }
   return run;
 }
 
-export async function simulate(goals: SimGoal[], k: number, meter: Meter, deps: SimDeps): Promise<SimReport> {
+export interface SimOptions {
+  runId?: string;
+  onRun?(run: RunResult): Promise<void> | void;
+  resume?: { completed: Set<string>; charges: Charge[]; runs?: RunResult[] };
+}
+export async function simulate(goals: SimGoal[], k: number, meter: Meter, deps: SimDeps, options: SimOptions = {}): Promise<SimReport> {
   if (!Number.isSafeInteger(k) || k < 1) throw new Error('--k 必须是正整数');
-  const runs: RunResult[] = [];
+  const runs: RunResult[] = [...(options.resume?.runs ?? [])];
+  if (options.resume) meter.restore(options.resume.charges);
   checkBrands(goals, deps);
   checkPacks(goals, deps);
   outer: for (const goal of goals)
     for (let repetition = 1; repetition <= k; repetition++) {
+      if (options.resume?.completed.has(JSON.stringify([goal.id, repetition]))) continue;
       if (meter.stopped) break outer;
-      const run = await runOnce(goal, repetition, meter, deps);
+      const run = await runOnce(goal, repetition, meter, deps, options.runId);
       runs.push(run);
+      await options.onRun?.(run);
       if (meter.stopped) break outer;
     }
   const summary = goals.map((g) => {
     const group = runs.filter((r) => r.goalId === g.id);
     const n = (s: RunStatus): number => group.filter((r) => r.status === s).length;
-    const denominator = k - n('customer_protocol');
+    const denominator = k - n('customer_protocol') - (g.journey ? n('customer_http') + n('customer_drift') : 0);
     return {
       id: g.id,
       passed: n('passed'),
       failed: n('failed'),
       customer_protocol: n('customer_protocol'),
+      ...(g.journey ? { customer_http: n('customer_http'), customer_drift: n('customer_drift') } : {}),
       budget_stop: n('budget_stop'),
       unrun: k - group.length,
       denominator,
@@ -265,6 +391,12 @@ export async function simulate(goals: SimGoal[], k: number, meter: Meter, deps: 
     runs,
     summary,
     customer_protocol: runs.filter((r) => r.status === 'customer_protocol').length,
+    ...(goals.some((g) => g.journey)
+      ? {
+          customer_http: runs.filter((r) => r.status === 'customer_http').length,
+          customer_drift: runs.filter((r) => r.status === 'customer_drift').length,
+        }
+      : {}),
     budget_stop: runs.filter((r) => r.status === 'budget_stop').length,
     cost: meter.totals(),
     charges: meter.charges,
@@ -431,17 +563,18 @@ const pct = (v: number | null): string => (v === null ? '无数据' : `${(v * 10
 
 export function summaryTable(report: SimReport): string {
   const m = report.metrics;
+  const journey = report.customer_http !== undefined;
   return [
-    `目标 | 通过/分母 | 引擎/运行失败 | customer_protocol | 预算停止 | 未运行 | pass^${report.k}`,
+    `目标 | 通过/分母 | 引擎/运行失败 | customer_protocol${journey ? ' | customer_http | customer_drift' : ''} | 预算停止 | 未运行 | pass^${report.k}`,
     ...report.summary.map(
       (s) =>
-        `${s.id} | ${s.passed}/${s.denominator} | ${s.failed} | ${s.customer_protocol} | ${s.budget_stop} | ${s.unrun} | ${s.passK ? 'PASS' : '未通过'}${s.needsScriptFix ? ' （客户脚本要改）' : ''}`,
+        `${s.id} | ${s.passed}/${s.denominator} | ${s.failed} | ${s.customer_protocol}${journey ? ` | ${s.customer_http ?? 0} | ${s.customer_drift ?? 0}` : ''} | ${s.budget_stop} | ${s.unrun} | ${s.passK ? 'PASS' : '未通过'}${s.needsScriptFix ? ' （客户脚本要改）' : ''}`,
     ),
     `pass^${report.k}: ${m.passK.passed}/${m.passK.goals} 个目标; safety k/k: ${m.safety.allKofK}/${m.safety.goals}`,
     `shape 达标: ${m.shape.within}/${m.shape.total} (${pct(m.shape.share)})`,
     `报价轮 ${m.quote.turns} 个: 微调 ${m.quote.fineTune} 次; 「这是起价」 ${m.quote.fromPrice} 次; 只剩「起价」的项目符号行 ${m.quote.fromOnlyBullets} 处`,
     `耗时: 超 8 秒 ${m.latency.over8s}/${m.latency.turns} (${pct(m.latency.over8sShare)}); 整轮 p90 ${m.latency.p90Ms ?? '无数据'} ms; 重写触发率 ${pct(m.rewrite.rate)}`,
     `客户 ¥${report.cost.customer.toFixed(6)} + 销售 ¥${report.cost.sales.toFixed(6)} = ¥${report.cost.total.toFixed(6)}`,
-    `customer_protocol=${report.customer_protocol}; budget_stop=${report.budget_stop}`,
+    `customer_protocol=${report.customer_protocol}${journey ? `; customer_http=${report.customer_http}; customer_drift=${report.customer_drift}` : ''}; budget_stop=${report.budget_stop}`,
   ].join('\n');
 }

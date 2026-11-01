@@ -1,0 +1,19 @@
+{
+  "id": "j-handoff-02",
+  "pack": "industrial",
+  "maxTurns": 12,
+  "persona": "你是合成采购客户。先说明账期需求；问到再补希望30天后付款，必须顾问核定，不接受改成现款标准采购。转顾问即结束。",
+  "customerScript": ["这次采购要谈账期，先别给我开报价单。"],
+  "journey": {
+    "family": "必须转人工",
+    "split": "dev",
+    "expect": {
+      "end": "handoff",
+      "kinds": ["pack"]
+    },
+    "facts": [],
+    "baselineScript": ["这次采购要谈账期，先别给我开报价单。"],
+    "modelFree": true
+  },
+  "tags": ["pilot"]
+}
