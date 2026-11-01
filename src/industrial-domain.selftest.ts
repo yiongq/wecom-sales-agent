@@ -1,5 +1,9 @@
 import './selftest-env.js';
 import assert from 'node:assert/strict';
+import { industrialReplyGuard, industrialFollowupGuard, PROMISE_FALLBACK } from './packs/industrial/guards.js';
+import { defaultIndustrialPolicy } from './packs/industrial/policy.js';
+import { fixedReplies } from './packs/industrial/fixed-replies.js';
+import type { ReplyGuardContext } from './core/pack-api.js';
 import { performance } from 'node:perf_hooks';
 import { checkItem, checkPack, type PackSources, type Session } from './core/pack-api.js';
 import { csvLabelsOf, prepareCatalogCsv, entityCsvShape, checkCsvRows, parseCatalogCsv, resolveCsvHeader } from './shared/catalog-csv.js';
@@ -282,4 +286,111 @@ assert.ok(p95 <= 50, `p95=${p95}`);
 console.log(`INDUSTRIAL MEMORY PASS: 40条 / 30行 / 1000批 p95=${p95.toFixed(3)}ms; ${process.version} ${process.platform}/${process.arch}`);
 console.log(
   `INDUSTRIAL DOMAIN PASS: 产品规则、CSV、匹配、档位、四工具声明与金额、拒绝映射、容量与历史读取；必留摘要 ${Buffer.byteLength(JSON.stringify(mandatory))} 字节`,
+);
+
+// 16 第 5 步：承诺护栏的对客契约，主回复替换、跟进只删。
+const promiseSession = { packState: {}, messages: [], orderIds: [] } as unknown as Session;
+let promisePolicy = structuredClone(defaultIndustrialPolicy);
+const promiseSources = { ...sources, currentPolicy: () => ({ policy: promisePolicy }) } as unknown as PackSources;
+async function guardPromise(text: string, followup: boolean): Promise<string> {
+  const events: string[] = [];
+  const context = {
+    session: promiseSession,
+    text,
+    inputText: '',
+    policy: promisePolicy,
+    toolSources: [],
+    recordGuard: (id: string) => events.push(id),
+  } as unknown as ReplyGuardContext;
+  const result = await (followup ? industrialFollowupGuard(promiseSources) : industrialReplyGuard(promiseSources)).run(context);
+  const output = result?.action === 'pass' ? text : result && 'text' in result ? result.text : '';
+  assert.deepEqual(events, output === text ? [] : ['industrial_claims'], text);
+  return output;
+}
+const unsafePromises = [
+  // 折扣：汉字 / 数字 / 小数与每个承诺入口。
+  '给您打九折。',
+  '这批打9折。',
+  '可以打8.5折。',
+  '享受九折优惠。',
+  '给您折扣。',
+  '这单让利。',
+  '给您抹零。',
+  '可以再优惠。',
+  '这单再减10元。',
+  '可以便宜10元。',
+  '还能再便宜10元。',
+  '优惠20元。',
+  '这单免运费。',
+  '给您包邮。',
+  '运费全免。',
+  '运费我们出。',
+  '不收运费。',
+  '满100元包邮。',
+  '赠送配件。',
+  '附赠配件。',
+  '送您配件。',
+  '这么做就送您配件。',
+  '送一个配件。',
+  '搭赠配件。',
+  '返点。',
+  '返利。',
+  '返现。',
+  '按阶梯价再减10元。',
+  '量大的话可以打九折。',
+  '如果今天下单可以包邮。',
+  '若是现在下单就送您配件。',
+];
+const safePromises = [
+  '不能打折。',
+  '不打九折。',
+  '不打9折。',
+  '没有额外折扣。',
+  '不包邮。',
+  '能打折吗',
+  '能打折吗？',
+  '能不能免运费？',
+  '是否赠送配件？',
+  '赠送配件以顾问确认为准。',
+  '打九折以顾问确认为准。',
+  '免运费需要顾问确认。',
+  '赠送配件请顾问确认。',
+  '如果包邮的话请确认。',
+  '不赠送配件。',
+  '不返现。',
+  '无额外优惠。',
+  '不提供折扣。',
+  '不再优惠。',
+  '买到100件走阶梯价，单价8元。',
+  '数量达到档位即可按档价执行。',
+  '数量档位由工具核算。',
+  '这批走阶梯优惠价。',
+  '这档价格比基础价低。',
+  PROMISE_FALLBACK,
+];
+for (const followup of [false, true]) {
+  for (const text of unsafePromises) assert.equal(await guardPromise(text, followup), followup ? '' : PROMISE_FALLBACK, text);
+  for (const prefix of ['价格按档位执行', '不能打折'])
+    assert.equal(await guardPromise(`${prefix}但送您配件。`, followup), `${prefix}${followup ? '' : PROMISE_FALLBACK}`);
+  for (const text of safePromises) assert.equal(await guardPromise(text, followup), text, text);
+  assert.equal(await guardPromise('打九折，免运费。送您配件。返现。', followup), followup ? '' : PROMISE_FALLBACK);
+  assert.equal(
+    await guardPromise('请确认数量。打九折。需要正式报价单吗？', followup),
+    `请确认数量。${followup ? '' : PROMISE_FALLBACK}需要正式报价单吗？`,
+  );
+  // feeFen=0 本身不能授权模型承诺免运费。
+  assert.equal(await guardPromise('满额免运费。', followup), followup ? '' : PROMISE_FALLBACK);
+  promisePolicy.shipping = { freeOverFen: 10000, feeFen: 1000 };
+  for (const text of ['满额包邮。', '满100元免运费。', '满100.00元包邮。', '满 100 元包邮。', '达到包邮门槛后免运费。'])
+    assert.equal(await guardPromise(text, followup), text, text);
+  for (const text of ['满50元包邮。', '未满100元也包邮。', '这单免运费。', '满100元包邮并送您配件。', '满100元包邮并打九折。'])
+    assert.equal(await guardPromise(text, followup), followup ? '' : PROMISE_FALLBACK, text);
+  promisePolicy = structuredClone(defaultIndustrialPolicy);
+}
+const promiseFixed = fixedReplies.find((reply) => reply.id === 'industrial.promise')!;
+assert.ok(promiseFixed);
+assert.deepEqual(promiseFixed.producedBy, { pipeline: 'reply', step: 'industrial_claims' });
+for (const sample of await promiseFixed.samples()) assert.equal(sample.text, PROMISE_FALLBACK);
+console.log(
+  `INDUSTRIAL PROMISE PASS: ${unsafePromises.length}条违规、${safePromises.length}条放行，主回复/跟进、整条去重、政策门槛与固定句登记通过`,
 );
