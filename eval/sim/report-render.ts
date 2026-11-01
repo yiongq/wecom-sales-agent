@@ -279,7 +279,7 @@ function success(report: JourneyReport): string {
   const swapLine = !swap
     ? '这份结果没有换客户模型的那一遍。'
     : swap.valid
-      ? `换客户模型（${swap.customerModel}）跑同一批场景：成功率 ${pct(swap.rate)}，差值 ${((swap.rate - report.success.rate) * 100).toFixed(1)} 个百分点；两次按场景的区间是 ${range(report.success.byScenes)} 和 ${range(swap.byScenes)}，重叠时差值可能只是噪声。这一遍只报不算，疑似 ${swap.suspects} 条，不裁定。`
+      ? `换客户模型（${swap.customerModel}）跑同一批场景：成功率 ${pct(swap.rate)}，差值 ${((swap.rate - report.success.rate) * 100).toFixed(1)} 个百分点；两次按场景的区间是 ${range(report.success.byScenes)} 和 ${range(swap.byScenes)}，重叠时差值可能只是噪声。这一遍只报不算，疑似 ${swap.suspects} 条，不裁定。${swap.customerModel === report.meta.salesModel ? '这个客户模型和销售是同一个模型，换用户模型的对比弱一些。' : ''}`
       : `换客户模型（${swap.customerModel}）那一遍触发了仿真不稳，对比无效。`;
   return [
     table(
