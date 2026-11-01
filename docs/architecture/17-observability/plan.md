@@ -145,6 +145,14 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 
 ## 实施与验证记录
 
+### 第 7 步前端（2026-11-01，手册页待第 6 步）
+
+- 概览 `TrendsBlock`：六张小图，每图一个单位，原生 SVG。完整日实心，今天空心、连到今天的线段是虚线，缺失日是底色带，线在缺失处断开，完整日的 0 是贴底短线。悬停或方向键选中一天时六张卡片的数字同步切换，「查看数据」展开同一份表格。
+- AI 记录：列表加评价列与「评价」「差评原因」筛选，写进地址；详情在最终回复之后放好评、差评，差评点原因才保存；409 写明并换成最新结果；差评后可下载草稿。新路由 `/console/traces/:turnId`，数据不依赖会话在内存里。
+- 浏览器走查（本机预览栈：真实 server、真实 PG、prod 档位，合成工业租户，synthetic 会话直接写库）：登录后切 7/30 天；2 天无数据显示底色带；完整日、今天、gap、deletion 的 coverage 经真实 `ops_metric_coverage` 读取；深链接打开合成 trace，点差评和原因后保存，`?review=bad` 列表筛出同一行，刷新仍在；375 宽 `scrollWidth=clientWidth`，无横向滚动；深色下取到 `--panel`、`--accent` 深色值；方向键让六张卡片同步到前一天；字体 `Geist`、`Noto Sans SC`，`check-fonts` 通过。
+- 走查限制：合成会话绕过应用写库，不在内存里，AI 记录抽屉的旧详情接口对它们报「这个会话已经不在了」，抽屉里的抽检由 `traces.selftest.tsx` 覆盖，深链接页用真实接口走查。第 9 步用真实引擎的会话再走一遍抽屉。
+- 自测：`console/src/overview/trends.selftest.tsx`、`console/src/traces/traces.selftest.tsx`（114 条）、`overview`、`errors` 通过。
+
 ### 第 2–4 步（2026-11-01）
 
 - 第 2 步：迁移 `0026`，四张表、`ops_coverage_mark_deleted`、`purge_ops_data`；四个被替换的函数逐行对比上一版，只有增补，签名不变。`purgeOnce` 接入 `purge_ops_data`。

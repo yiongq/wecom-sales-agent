@@ -13,7 +13,17 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createMemoryHistory, createRootRoute, createRoute, createRouter, Outlet, RouterProvider } from '@tanstack/react-router';
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
-import { TRACE_OUTCOMES, type Me, type Role, type TracePage, type TraceRow, type TurnTraceView } from '../../../src/shared/console-api.js';
+import {
+  TRACE_OUTCOMES,
+  type Me,
+  type Role,
+  type TracePage,
+  type TraceRow,
+  type TurnReviewInput,
+  type TurnReviewView,
+  type TurnTraceDetailView,
+  type TurnTraceView,
+} from '../../../src/shared/console-api.js';
 import { HANDOFF_NOTICE_TEXT } from '../../../src/shared/conversation.js';
 import { isHandoffKind } from '../../../src/shared/conversation-types.js';
 import type { IndustryPack } from '../../../src/shared/pack.js';
@@ -36,6 +46,7 @@ import {
   TRACE_PAGE,
   withFilter,
 } from './model.js';
+import { TraceDetailPage } from './TraceDetailPage.js';
 import { TracesPage } from './TracesPage.js';
 
 /** antd 的按钮在两个汉字之间自动插一个空格（「重 试」），比文字时去掉 */
@@ -88,7 +99,7 @@ eq(
   { range: undefined, outcome: undefined, guard: undefined, handoff: undefined, over: undefined },
 );
 eq('地址参数：over 写字符串 1 也认（地址里读出来可能是字符串）', tracesSearch({ over: '1' }).over, 1);
-eq('地址参数：键总是写出来', Object.keys(tracesSearch({})).sort(), ['guard', 'handoff', 'outcome', 'over', 'range']);
+eq('地址参数：键总是写出来', Object.keys(tracesSearch({})).sort(), ['guard', 'handoff', 'outcome', 'over', 'range', 'reason', 'review']);
 
 eq('筛选：默认是近 7 天、没有别的筛选', filtersOf({}), { range: '7d', over: false });
 eq('筛选：认得的取值留下', filtersOf({ range: '1d', outcome: 'handoff', guard: 'price', handoff: 'refund', over: 1 }), {
@@ -298,9 +309,18 @@ interface Server {
   hold?: Promise<void>;
   /** goal-draft 的响应 */
   draft?: { status: number; body: string };
+  /** 17：GET /traces/:turnId 的 reviewable，不写是 true */
+  notReviewable?: boolean;
+  /** 17：当前评分；PUT 成功时更新 */
+  review?: TurnReviewView | null;
+  /** 17：PUT 回 409 */
+  conflict?: boolean;
+  /** 17：GET /traces/:turnId 回这个状态 */
+  turnStatus?: number;
 }
 let server: Server = { rows: DATA };
 let requests: string[] = [];
+let lastBody = '';
 const json = (status: number, b: unknown): Response =>
   new Response(JSON.stringify(b), { status, headers: { 'Content-Type': 'application/json' } });
 
@@ -327,6 +347,39 @@ async function respond(method: string, url: URL): Promise<Response> {
     const page: TracePage = { items, next: from + limit < rows.length ? String(from + limit) : null };
     return json(200, page);
   }
+  const turn = /^\/traces\/([^/]+)(\/review|\/regression-draft)?$/.exec(p);
+  if (turn) {
+    const d = DETAIL[decodeURIComponent(turn[1]!)];
+    if (!d) return json(404, { error: 'not_found' });
+    if (method === 'GET' && !turn[2]) {
+      if (server.turnStatus)
+        return json(server.turnStatus, { error: server.turnStatus === 503 ? 'store_file_mode' : 'observability_unavailable' });
+      const detail: TurnTraceDetailView = {
+        ...d,
+        conversationId: 'wecom:cust_F01',
+        channel: 'wecom',
+        reviewable: !server.notReviewable,
+        review: server.review ?? null,
+      };
+      return json(200, detail);
+    }
+    if (method === 'PUT' && turn[2] === '/review') {
+      if (server.conflict) {
+        server.review = { rating: 'good', reason: null, revision: 2, updatedAt: ago(MIN), reviewer: '另一位管理员' };
+        return json(409, { error: 'review_conflict' });
+      }
+      const body = JSON.parse(lastBody) as TurnReviewInput;
+      server.review = {
+        rating: body.rating,
+        reason: body.reason,
+        revision: body.expectedRevision + 1,
+        updatedAt: ago(0),
+        reviewer: '老板',
+      };
+      return json(200, server.review);
+    }
+    if (method === 'POST' && turn[2] === '/regression-draft') return new Response('{"_draft":true}\n', { status: 200 });
+  }
   const m = /^\/conversations\/([^/]+)\/turns\/([^/]+)(\/goal-draft)?$/.exec(p);
   if (method === 'GET' && m && !m[3]) {
     const d = DETAIL[decodeURIComponent(m[2]!)];
@@ -348,9 +401,10 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
   const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url, 'http://localhost');
   const method = (init?.method ?? 'GET').toUpperCase();
   requests.push(`${method} ${url.pathname}${url.search}`);
+  if (typeof init?.body === 'string') lastBody = init.body;
   return respond(method, url);
 }) as typeof fetch;
-const listRequests = (): string[] => requests.filter((r) => r.startsWith('GET /api/console/traces'));
+const listRequests = (): string[] => requests.filter((r) => /^GET \/api\/console\/traces(\?|$)/.test(r));
 const paramsOf = (r: string): URLSearchParams => new URL(r.slice(4), 'http://localhost').searchParams;
 
 // 下载：saveText 用 Blob 加 <a download>；这里接住 Blob，不真的触发浏览器下载
@@ -401,6 +455,7 @@ async function mount(viewer: Viewer, search = '') {
   const router = createRouter({
     routeTree: root.addChildren([
       createRoute({ getParentRoute: () => root, path: '/traces', validateSearch: tracesSearch, component: TracesPage }),
+      createRoute({ getParentRoute: () => root, path: '/traces/$turnId', component: TraceDetailPage }),
       createRoute({ getParentRoute: () => root, path: '/conversations/$id', component: () => null }),
     ]),
     basepath: '/console',
@@ -453,12 +508,12 @@ async function mount(viewer: Viewer, search = '') {
     [1, '50', new Date(NOW - 7 * DAY).toISOString(), ['limit', 'since']],
   );
   eq('页头：标题', m.text(m.box.querySelector('h1')), 'AI记录');
-  eq('表头', m.texts('.tr-table thead th'), ['时间', '会话', '结果', '触发的护栏', '转人工原因', '回复', '耗时']);
-  eq('表格：近 7 天里的 4 行（第 5 行是 10 天前，服务端按 since 滤掉），一行七格', m.table(), [
-    ['30分钟前', '企微客户·F01', '转人工', '越权说法、身份说明', HANDOFF_NOTICE_TEXT.complaint, '超长', '800毫秒'],
-    ['1小时前', '企微客户·F02', 'AI回复', '价格核对', '—', '—', '1.5秒'],
-    ['昨天12:30', '演示客户·F03', '没有回复', '—', '—', '—', '1.0秒'],
-    ['9月23日', '企微客户·F04', '出错', '接手检查（前）', '—', '—', '1.0秒'],
+  eq('表头', m.texts('.tr-table thead th'), ['时间', '会话', '结果', '触发的护栏', '转人工原因', '回复', '评价', '耗时']);
+  eq('表格：近 7 天里的 4 行（第 5 行是 10 天前，服务端按 since 滤掉），一行八格', m.table(), [
+    ['30分钟前', '企微客户·F01', '转人工', '越权说法、身份说明', HANDOFF_NOTICE_TEXT.complaint, '超长', '未评', '800毫秒'],
+    ['1小时前', '企微客户·F02', 'AI回复', '价格核对', '—', '—', '未评', '1.5秒'],
+    ['昨天12:30', '演示客户·F03', '没有回复', '—', '—', '—', '未评', '1.0秒'],
+    ['9月23日', '企微客户·F04', '出错', '接手检查（前）', '—', '—', '未评', '1.0秒'],
   ]);
   check(
     '表格：时间是真正的按钮，名字是读屏念的一行，悬停是绝对时间',
@@ -507,7 +562,7 @@ async function mount(viewer: Viewer, search = '') {
       m.box.querySelector('.tr-over .ant-switch')?.getAttribute('aria-checked'),
       m.$('.tr-select .ant-select-content', m.box).map((e) => e.getAttribute('title')),
     ],
-    ['全部', 'true', ['转人工', '越权说法', HANDOFF_NOTICE_TEXT.complaint]],
+    ['全部', 'true', ['转人工', '越权说法', HANDOFF_NOTICE_TEXT.complaint, null, null]],
   );
   await m.unmount();
 
@@ -771,6 +826,104 @@ async function mount(viewer: Viewer, search = '') {
   );
   check('下载出错：页面上不露服务端的 detail', !m.text(document.body).includes('owner 和 admin'));
   await m.unmount();
+}
+
+// 2.8 抽检（17 R2、R4）：好评直接存，差评选了原因才存；后到的 409 换成最新结果；差评才有草稿；沙箱没有入口
+{
+  server = { rows: DATA };
+  requests = [];
+  const m = await mount(member('owner'));
+  await m.click(m.$('.tr-when', m.box)[0]);
+  const button = (name: string) => m.$('.tr-drawer-body button').find((b) => b.textContent?.replace(/\s/g, '') === name);
+  const puts = (): string[] => requests.filter((r) => r.startsWith('PUT '));
+  check('抽屉：先写最终回复，再是评价', m.text(document.querySelector('.tr-drawer-body')).includes('最终回复'));
+  await m.click(button('差评'));
+  check('点差评：还没选原因就不发请求', puts().length === 0, requests.join(' | '));
+  await m.click(button('内容错误'));
+  eq(
+    '选了原因才保存：差评、原因、修订号 0',
+    [puts().length, JSON.parse(lastBody)],
+    [1, { rating: 'bad', reason: 'incorrect', expectedRevision: 0 }],
+  );
+  check('保存后写明谁评的', m.text(document.querySelector('.tr-review')).includes('老板评于'));
+  check('选中靠 aria-pressed，不只靠颜色', button('内容错误')?.getAttribute('aria-pressed') === 'true');
+  downloads.length = 0;
+  await m.click(button('准备回归草稿'));
+  eq(
+    '差评可以下载草稿：走 POST，固定文件名',
+    [requests.at(-1), downloads[0]?.name],
+    ['POST /api/console/traces/tn-1/regression-draft', 'regression-draft.json'],
+  );
+  await m.click(button('遗漏'));
+  eq('改原因：带上当前修订号', JSON.parse(lastBody), { rating: 'bad', reason: 'missing', expectedRevision: 1 });
+  server.conflict = true;
+  await m.click(button('好评'));
+  await m.settle();
+  check('有人抢先：写明并换成最新的结果', m.text(document.querySelector('.tr-review')).includes('刚才有人改过'));
+  check('有人抢先：显示对方的结论，不覆盖', m.text(document.querySelector('.tr-review')).includes('另一位管理员评于'));
+  check('改成好评之后没有草稿入口', button('准备回归草稿') === undefined);
+  await m.unmount();
+}
+{
+  server = { rows: DATA, notReviewable: true };
+  const m = await mount(member('owner'));
+  await m.click(m.$('.tr-when', m.box)[0]);
+  check(
+    '没有最终回复的一轮不给评价',
+    m.text(document.querySelector('.tr-drawer-body')).includes('不用评价') && !document.querySelector('.tr-review'),
+  );
+  await m.unmount();
+}
+for (const status of [403, 503]) {
+  server = { rows: DATA, turnStatus: status };
+  const m = await mount(member('owner'));
+  await m.click(m.$('.tr-when', m.box)[0]);
+  check(
+    `接口 ${status}：抽检整块不画，不是出错`,
+    !document.querySelector('.tr-review') && !document.querySelector('.tr-drawer-body .td-error'),
+  );
+  await m.unmount();
+}
+{
+  server = { rows: DATA };
+  requests = [];
+  const sandboxed: Viewer = { kind: 'member', pack: TRAVEL, me: { ...me('owner'), sandbox: {} as Me['sandbox'] } };
+  const m = await mount(sandboxed);
+  check('沙箱：没有评价筛选', !m.$('[aria-label="按评价筛选"]', m.box).length);
+  await m.click(m.$('.tr-when', m.box)[0]);
+  check('沙箱：不请求抽检接口', !requests.some((r) => /\/traces\/tn-1/.test(r)), requests.join(' | '));
+  await m.unmount();
+}
+{
+  server = { rows: DATA };
+  requests = [];
+  const m = await mount(member('owner'), '?review=bad&reason=incorrect');
+  eq(
+    '筛选写进地址并传给接口',
+    [...paramsOf(listRequests()[0]!).entries()].filter(([k]) => k === 'review' || k === 'reason'),
+    [
+      ['review', 'bad'],
+      ['reason', 'incorrect'],
+    ],
+  );
+  await m.unmount();
+}
+// 2.9 深链接（17 R9）：登录后落到单轮记录；不存在时不说是否存在过
+{
+  server = { rows: DATA };
+  const m = await mount(member('owner'));
+  await act(async () => void (await m.router.navigate({ to: '/traces/$turnId', params: { turnId: 'tn-1' } })));
+  await m.settle();
+  check('深链接：显示这一轮，能评价', m.text(document.querySelector('h1')) === 'AI为什么这么回' && !!document.querySelector('.tr-review'));
+  await act(async () => void (await m.router.navigate({ to: '/traces/$turnId', params: { turnId: 'missing' } })));
+  await m.settle();
+  check('深链接：不存在', m.text(m.box).includes('找不到这条记录'));
+  await m.unmount();
+  const agent = await mount(member('agent'));
+  await act(async () => void (await agent.router.navigate({ to: '/traces/$turnId', params: { turnId: 'tn-1' } })));
+  await agent.settle();
+  check('深链接：坐席看不到', agent.text(agent.box).includes('你的角色看不到AI记录') && !document.querySelector('.td'));
+  await agent.unmount();
 }
 
 Date.now = realNow;
