@@ -56,6 +56,9 @@ const MODEL_PRICES: Record<string, string> = {
   'glm-5.2': '8 / 28 / 2',
   'glm-4.7-flash': '免费',
 };
+/** R9 的账单对账。账本记不到被取消的对冲请求，这条不能省 */
+const BILL_NOTE =
+  '以上是账本口径，不含被取消的对冲请求。2026-11-01 用厂商账单对过一次：账单约为账本的 1.4 倍，销售侧约 1.5 倍，这是上限，账单是整个账号的。对冲触发率随时段变化，所以倍数只作参考。';
 const CUSTOMER_ISSUES = ['customer_protocol', 'customer_http', 'customer_drift'];
 
 const pct = (v: number): string => `${(v * 100).toFixed(1)}%`;
@@ -279,7 +282,7 @@ function success(report: JourneyReport): string {
   const swapLine = !swap
     ? '这份结果没有换客户模型的那一遍。'
     : swap.valid
-      ? `换客户模型（${swap.customerModel}）跑同一批场景：成功率 ${pct(swap.rate)}，差值 ${((swap.rate - report.success.rate) * 100).toFixed(1)} 个百分点；两次按场景的区间是 ${range(report.success.byScenes)} 和 ${range(swap.byScenes)}，重叠时差值可能只是噪声。这一遍只报不算，疑似 ${swap.suspects} 条，不裁定。`
+      ? `换客户模型（${swap.customerModel}）跑同一批场景：成功率 ${pct(swap.rate)}，差值 ${((swap.rate - report.success.rate) * 100).toFixed(1)} 个百分点；两次按场景的区间是 ${range(report.success.byScenes)} 和 ${range(swap.byScenes)}，重叠时差值可能只是噪声。这一遍只报不算，疑似 ${swap.suspects} 条，不裁定。${swap.customerModel === report.meta.salesModel ? '这个客户模型和销售是同一个模型，换用户模型的对比弱一些。' : ''}`
       : `换客户模型（${swap.customerModel}）那一遍触发了仿真不稳，对比无效。`;
   return [
     table(
@@ -447,6 +450,8 @@ function cost(report: JourneyReport): string {
         ['缓存命中率', pct(c.cacheHitRate), '销售侧'],
       ],
     ),
+    '',
+    BILL_NOTE,
   ].join('\n');
 }
 

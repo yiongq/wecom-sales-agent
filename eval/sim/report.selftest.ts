@@ -491,6 +491,7 @@ try {
     assert.ok(page.includes('留出集成功率 | 85.7%（12/14）'));
     assert.ok(page.includes('保守成功率 | 60.0%（12/20）'));
     assert.ok(page.includes(`第 ${baseline.attempt} 次跑留出集`));
+    assert.ok(page.includes('账单约为账本的 1.4 倍'));
     assert.equal(page, renderReport(structuredClone(baseline)));
     assert.ok(renderReport({ ...baseline, status: 'formal' }).startsWith('# 工业询价仿真报告\n\n状态：正式'));
     assert.ok(renderReport({ ...baseline, status: 'unstable' }).includes('> 仿真不稳：'));
@@ -508,6 +509,11 @@ try {
     });
     assert.deepEqual(dev.dev, { rate: 0.5, runs: 2 });
     assert.ok(renderReport(dev).includes('开发集最后一次的成功率是 50.0%（2 遍）'));
+    const swapped = { customerModel: baseline.meta.salesModel, rate: 0.5, byScenes: { low: 0.2, high: 0.8 }, suspects: 0, valid: true };
+    assert.ok(renderReport({ ...baseline, swap: swapped }).includes('这个客户模型和销售是同一个模型'));
+    assert.ok(
+      !renderReport({ ...baseline, swap: { ...swapped, customerModel: 'other-model' } }).includes('这个客户模型和销售是同一个模型'),
+    );
     const sample = renderSample({ goalId: 'a', repetition: 1, bucket: 'not_accepted', run: run('a', 1, 'failed') });
     assert.ok(sample.includes('客户确认没记下') && sample.includes('合成'));
   });

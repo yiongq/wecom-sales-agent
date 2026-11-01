@@ -294,7 +294,7 @@ try {
   assert.ok(!has(run('没法再额外打折。'), 'discount_promise'), '没法是否定');
   assert.ok(!has(run('我这边没办法打折。'), 'discount_promise'), '没办法是否定');
   assert.ok(
-    !auditRun(run('单价：1件 12元'), goal, catalog).some((f) => f.rule === 'reply_amount' && f.detail === '单价：1'),
+    !auditRun(run('单价：10件 12元'), goal, catalog).some((f) => f.rule === 'reply_amount' && f.detail.startsWith('单价：1')),
     '单价后带数量单位的数字不是金额',
   );
   assert.ok(has(run('可以包邮，您要多少件？'), 'discount_promise'), '后面的问句不能洗掉前面的承诺');
