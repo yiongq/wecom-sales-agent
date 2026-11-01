@@ -1,6 +1,11 @@
 // 通用投诉与显式人工意图；不引入旅游话术或业务条件。
 const HANDOFF_REQUEST = /转人工|要人工|人工客服|真人客服|找真人|人工顾问|要退款|要退订|要退钱|退我钱/;
 
+// 「不用转人工」「不要人工」不是要人工：只看命中处之前同一小句的否定词。
+const NOT_REQUESTED = /[不别]$|(?:不用|不要|不需要|不接受|无需|不必|没必要|不想|先别|别)[^，,。！!；;]{0,4}$/;
+const requested = (text: string): boolean =>
+  [...text.matchAll(new RegExp(HANDOFF_REQUEST, 'g'))].some((m) => !NOT_REQUESTED.test(text.slice(0, m.index)));
+
 const HANDOFF_BARE = /^\s*我?(?:要|找|接)?(?:人工|真人)(?:服务)?\s*[!！。.~～]*\s*$/;
 
 const COMPLAINT_WORD = /差评|欺骗|骗人|骗子|被骗/;
@@ -21,5 +26,5 @@ export function isComplaint(text: string): boolean {
     );
 }
 export function isHandoffIntent(text: string): boolean {
-  return HANDOFF_REQUEST.test(text) || HANDOFF_BARE.test(text) || isComplaint(text);
+  return requested(text) || HANDOFF_BARE.test(text) || isComplaint(text);
 }
