@@ -791,6 +791,12 @@ export interface SiteLinkDef {
 
 export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   id: string;
+  erp?: {
+    kind: string;
+    key(item: Readonly<Record<string, unknown>>): string | null;
+    remoteKey(defaultCode: string): string;
+    unit(item: Readonly<Record<string, unknown>>): string;
+  };
   documents?: { proposal?: boolean };
   intake?: {
     classes: readonly AttachmentClass[];
@@ -983,6 +989,14 @@ export interface FollowupGuardContext extends GuardContext {
 
 /** 包工厂的存储、配置与检索能力，组合根提供，包不引用运行时模块。 */
 export interface PackSources extends Omit<TravelToolSources, 'budgetVerdict'> {
+  erp: {
+    /** availability、fresh、mapped 的 code 均为产品库条目 code，不是型号的归一值。 */
+    active(kind: string): boolean;
+    /** 启用连接器的启动映射中包含此编号。 */
+    mapped(kind: string, code: string): boolean;
+    availability(kind: string, codes: readonly string[]): Promise<ReadonlyMap<string, import('../connectors/types.js').Availability>>;
+    fresh(kind: string, code: string): import('../connectors/types.js').Availability | undefined;
+  };
   /** 只读当前已发布政策；不访问草稿、不写状态。 */
   readonly currentPolicy: typeof import('../config/source.js').currentPolicy;
   isConfigNotReadyError(error: unknown): boolean;

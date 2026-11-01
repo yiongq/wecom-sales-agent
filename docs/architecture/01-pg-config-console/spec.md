@@ -1,6 +1,7 @@
 # 01 · Postgres 底座 + 配置入库 + 后台 v0
 
 Status: implemented
+Amended by: [15 · 产品门面：单来官网、文档与设置中心](../15-product-surface/spec.md) — 只读成员投影及受限认证函数，保留 app 无登录表直接权限与成员变更 CLI（15 R4、R6）。
 Superseded in part by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md) — 产品库的 kind 只能是 `route` / `hotel`：「编辑规则」的 `CatalogKind`（第 564 行）、「DDL」里 `catalog_items.kind` 的 CHECK（第 781 行）、「后台 API 与页面」`/catalog/:kind` 的取值（第 1016–1021 行）、「导入、导出与回滚」`catalog-fix` 的 `--kind route|hotel`（第 1097 行）；「产品库：存储、快照、编辑、检索」导入时用 `RouteSchema` / `HotelSchema` 校验（第 550 行）；启动时没有 active 线路就拒绝：「两种模式与启动装载」第 7 步（第 236 行）、验收 8 末条（第 1244 行）与验收 13 的「没有 active 线路」（第 1283 行）。kind 改由包定义，库里只做格式检查，写入用包的 schema 校验，启动检查由包给出；旅游的取值、schema、`no_active_routes` 与文案都不变（08 R2）。按 08 的 plan 落地。
 Amended by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md)（只做新增，全文见该 spec 顶部 `Amends:`：「两种模式与启动装载」的 `CatalogSnapshot` 加 `items`，`routes` / `hotels` 保留（第 185–192 行）；`ConfigStartupError` 的原因加 `catalog_startup`（第 261–266 行），见 08 R2）。
 Superseded in part by: [07 · 政策单一来源 + 知识库 + 售后退改](../07-knowledge-aftersales/spec.md) — 「启动重渲染」第 5 步「直接用存下的行」的条件加「`policyHash` 也相同」，第 6 步的原因清单与「审计」表 `sop.rerender` 的 `causes` 枚举加 `policy`（07 R1）。
@@ -16,6 +17,8 @@ Amended by: [后台 UX 重做](../../features/console-ux/spec.md)（只做新增
 Amended by: [02 · 会话入库 + 坐席工作台](../02-conversations-workbench/spec.md)（只做新增，或执行本 spec 写明「由 02 定 / 02 之后」的条款，全文见该 spec 顶部 `Amends:`：「两种模式与启动装载」的 `SESSION_STORE` 校验、条目版本的启动补写与 `/healthz` 的新字段；「数据库」的新表、`tenants` 三个保留期列与 `catalog_items.version`；「withTenant」的 `longRunning` 选项与 `inTenantTx()`；「产品库 · 编辑规则」的 `LOCKED_WHEN_ACTIVE` 去掉五个计价与条款字段；「审计」的新动作与 `writeAuditAs`；「后台 API 与页面」的新接口）
 Amended by: [03 · 渠道层 v2](../03-channels-v2/spec.md)（只做新增，全文见该 spec 顶部 `Amends:`：「审计」的新动作）
 Revisions: 2026-09-25 首版草稿经多角度对抗审查后就地修订（尚无代码依赖）。主要改动：DB 模式改为 `CONFIG_SOURCE=db` 显式开启（原为看有没有 `DATABASE_URL`），并要求显式写 `DEPLOY_PROFILE`；启动顺序写死在 `src/boot.ts`（R18）；锁连接断开先进入 lost 状态、后台重取（原为立即退出）；`renderSystemPrompt` 不读 profile（原随 `ai_disclosure` 变化）；哈希由一个扩为四个；版本号在发布时分配（原在建草稿时）；检索改为失效后全量重建（原为按条向量缓存，推到 03）；产品库编辑改为字段级 PATCH 加递归键序合并，计价、识别与条款字段锁定；凭据按 compose 服务隔离（R19）；备份改由超级用户在 db 容器里导出并加密；验收 21 改为前缀哈希自动断言加真实模型 p90 绝对阈值；恢复演练的结论记进 plan，细节另记（原为整条另记）。2026-09-25 owner 确认后翻为 ready，同时定下开放问题 1（`test` 多串三组自测）。
+Superseded in part by: [14 · 用量限制](../14-usage-limits/spec.md) — 启动步骤里的「拒绝 suspended」与启动错误码 `tenant_suspended`：05 起一个进程装多个 standard 租户，一个租户停用不该让整个进程起不来。
+Amended by: [14 · 用量限制](../14-usage-limits/spec.md) — `tenants` 加 `monthly_reply_quota`、`llm_daily_cap_milli`，`usage_daily.purpose` 加 `reply`。
 
 Revisions: 2026-09-26 实现期修订（owner 确认）：后台页面的 CSP 在原来那条之外加 `style-src 'self' 'nonce-…'`，每个响应现生成（第 12 步实测 Ant Design 与 CodeMirror 在原 CSP 下没有样式）；`/api/console/*` 的 CSP 不变。见「后台 API 与页面 · 安全头」。
 

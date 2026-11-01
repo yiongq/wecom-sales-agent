@@ -89,7 +89,10 @@ async function upgradeSuite(real?: Awaited<ReturnType<typeof createRealPgFixture
     await q("insert into usage_daily (tenant_id,day,model,purpose,calls) values ($1,current_date,'mock','chat',2)", [tenantId]);
     await migrateFrom('drizzle');
     await migrateFrom('drizzle');
-    assert.equal((await q<{ n: number }>('select count(*)::int as n from drizzle.__drizzle_migrations'))[0]!.n, journal.entries.length + 1);
+    assert.equal(
+      (await q<{ n: number }>('select count(*)::int as n from drizzle.__drizzle_migrations'))[0]!.n,
+      JSON.parse(fs.readFileSync('drizzle/meta/_journal.json', 'utf8')).entries.length,
+    );
     await q(
       "insert into usage_daily (tenant_id,day,model,purpose,calls) values ($1,current_date,'mock-old','chat',1),($1,current_date,'mock','vision',1)",
       [tenantId],

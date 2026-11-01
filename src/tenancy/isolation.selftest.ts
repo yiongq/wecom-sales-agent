@@ -342,12 +342,14 @@ try {
     inside(rt, ledger.noteUnsafeSend);
     assert.equal(inside(rt, ledger.unsafeSendsIn10m), 1, '未落库发送计数按租户隔离');
     const received = usageSeen.filter((record) => record.subscriber === rt);
-    assert.equal(received.length, 2, '租户观测回调只收到自己的两轮用量');
+    const modelCalls = received.filter((record) => record.event.purpose !== 'reply');
+    assert.equal(modelCalls.length, 2, '租户观测回调只收到自己的两轮用量');
+    assert.equal(received.length - modelCalls.length, 2, '14 回复计数事件同样只到自己的观测回调');
     for (const record of received) {
       assert.equal(record.actual, rt);
       assert.equal(record.event.tenantId, rt.id);
-      assert.equal(record.event.sessionId, same);
     }
+    for (const record of modelCalls) assert.equal(record.event.sessionId, same);
     assert.equal(state.tenantKeys(rt.id)['usage.usageListeners'], 1);
   }
   for (const record of pushesSeen) {
@@ -508,12 +510,15 @@ try {
   }
   for (const rt of [a, b]) {
     const received = usageSeen.filter((record) => record.subscriber === rt);
-    assert.equal(received.length, 3, '各租户用量恰为两轮对话加一轮网页请求');
+    const modelCalls = received.filter((record) => record.event.purpose !== 'reply');
+    assert.equal(modelCalls.length, 3, '各租户用量恰为两轮对话加一轮网页请求');
+    // 14：回复计数按落进会话的 AI 消息算，这里还有两条支付确认。
+    assert.equal(received.length - modelCalls.length, 5, '三轮回复加两条支付确认各计一次');
     for (const record of received) {
       assert.equal(record.actual, rt);
       assert.equal(record.event.tenantId, rt.id);
-      assert.ok([same, webIds.get(rt)!].includes(record.event.sessionId!));
     }
+    for (const record of modelCalls) assert.ok([same, webIds.get(rt)!].includes(record.event.sessionId!));
   }
   for (const record of pushesSeen) {
     assert.equal(record.actual, record.subscriber);

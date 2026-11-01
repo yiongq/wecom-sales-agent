@@ -1,5 +1,6 @@
 import type { DeterministicReply, TurnContext, PackSources, PrefetchResult, TurnToolContext } from '../../core/pack-api.js';
 import { latestQuoteCandidate, expiredQuoteAwaitingConfirmation } from './quote-candidate.js';
+import { refreshParts } from './live.js';
 import { PartSchema } from './catalog.js';
 import { matchInMemory } from './match.js';
 import { FIXED, inquiryLines } from './inquiry.js';
@@ -166,6 +167,22 @@ async function confirmPrefetch(ctx: TurnContext, sources: PackSources): Promise<
 }
 export async function prefetch(ctx: TurnContext, sources: PackSources): Promise<PrefetchResult | null> {
   const intake = readState(ctx.session).rfqIntake;
+  if (sources.erp?.active('part')) {
+    const parts = intakeParts(sources);
+    const exact = mentionedParts(ctx.text, sources).flatMap((mention) => (mention.match === 'exact' ? mention.parts : []));
+    if (confirmsIntake(ctx.session, ctx.text)) {
+      for (const item of intakeQuoteLines(pendingIntake(ctx.session)!, parts).items) exact.push(...matchInMemory(item.query, parts).parts);
+    } else if (!intake || intake.status === 'superseded' || intake.status === 'confirmed') {
+      const candidate = latestQuoteCandidate(ctx.session, Date.now());
+      if (candidate?.kind === 'quote' && candidate.state === 'expired' && /确认|重新|续算/.test(ctx.text)) {
+        for (const line of candidate.order.lines) {
+          const part = parts.find((part) => part.id === line.code);
+          if (part) exact.push(part);
+        }
+      }
+    }
+    await refreshParts(sources, exact);
+  }
   if (!intake || intake.status === 'superseded') return textPrefetch(ctx, sources, true);
   if (confirmsIntake(ctx.session, ctx.text)) return confirmPrefetch(ctx, sources);
   const result = await textPrefetch(ctx, sources, intake.status === 'confirmed');

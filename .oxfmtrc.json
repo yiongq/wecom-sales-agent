@@ -4,5 +4,15 @@
   "singleQuote": true,
   "semi": true,
   "sortPackageJson": false,
-  "ignorePatterns": ["data/sop.md", "pnpm-lock.yaml", "public/*.html", "drizzle/meta/**", "console/src/fonts/fonts.css"]
+  "ignorePatterns": [
+    "data/sop.md",
+    "pnpm-lock.yaml",
+    "public/*.html",
+    "drizzle/meta/**",
+    "console/src/fonts/fonts.css",
+    "docs-site/pnpm-lock.yaml",
+    "docs-site/.stage/**",
+    "site/dist/**",
+    "docs-site/dist/**"
+  ]
 }

@@ -13,6 +13,20 @@
 .shell-hidden {
   flex-direction: column;
 }
+.trial-banner.ant-alert {
+  flex: 0 0 auto;
+  margin: 12px 16px 0;
+  overflow-wrap: anywhere;
+}
+.trial-banner.ant-alert .ant-alert-title {
+  font-size: 13px;
+  font-weight: 400 !important;
+}
+@media (max-width: 991px) {
+  .trial-banner.ant-alert {
+    margin: 8px 8px 0;
+  }
+}
 .shell-panel {
   position: relative;
   display: flex;
@@ -1006,4 +1020,13 @@ a.nav-item:hover {
   .shell-expanded.state-skeleton .shell-panel {
     margin: 8px;
   }
+}
+
+.tenant-organization {
+  display: block;
+  color: var(--text-3);
+  font-size: 12px;
+  line-height: 16px;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

@@ -1,10 +1,15 @@
 # 11 · 外部业务系统连接器：Odoo 实时库存（只读）
 
-Status: ready
+Status: implemented
+Revisions: 2026-11-01 owner 确认验收，原话「11 14 15 改 implemented」，翻 `implemented`：随 `demo-v12-rc1` 上线，线上不配连接器，验收 2–8 只有本机证据，跨地区实测 owner 定推迟到第一家真实商家，见 plan「第 9–11 步」。
 Revisions: 2026-10-29 起草；依据 10「后续」第 1 条与工业品询价调研（另记）。
 Revisions: 2026-10-29 起草期评审（一路 Claude Opus，只读，对照代码并核对 Odoo 文档与源码）之后就地修订，尚无代码依赖；owner 当日定开放问题 1：第一期只读，写回整段移出 11、另起 spec（理由见「非目标」「被否决的方案」）。按评审改：出站防护补上 IP 字面量（Node 遇字面量不调 `lookup`），AGENTS.md 规则原文随之修改；交期不再取 Odoo 的 `sale_delay`（语义不同）；「新鲜值」只有一个定义，工具结果、`priceLine`、自动批准与护栏证据（含跟进）共用；每轮共享一个 ERP 截止时间、预取一次预热、每个连接器一条保活连接，按 10 第 21 步的实测重算时延；API key 到期日必填并提前告警，Odoo 20 只认 scope 为 `rpc` 的 key；不再加 pre-11 回滚档（R11）；头部改为部分取代 10 R4、R6 (2) 与 ADR-003 决策 2；集成脚本进程内注入出站；补齐边界规则、计划依赖、`package.json` 与 `sandbox_tenant_purge`；单路请求加每秒限速、401 与 403 分开、`search_read` 带 `active_test`、地址改白名单式等次要项；砍掉并发池、可调时限与连接器 key。开放问题由 7 条减为 5 条。
 Revisions: 2026-10-29 owner 定开放问题 1–5，全部照推荐：只支持 Odoo 19、20 的 JSON-2；客户料号 / 竞品料号对照不放进 11；工业演示租户不接 Odoo，验收在本机一次性容器上做；连接器凭据共用 `CHANNEL_SECRETS_KEY`；这一轮取不到新鲜值时退回产品库的值，同时不自动批准、给顾问留系统消息。
 Revisions: 2026-10-29 owner 定 `ready`。同一 docs PR 把 R3、R4 的两条规则原文写进 AGENTS.md，给 ADR-003 与 10 加反向的 `Superseded in part by:`（10 的那一行一并写 R9 的收紧），给 03、04、05、08 加 `Amended by:`，主参考「阶段 8」加一条。
+Revisions: 2026-10-31 第 0 步本机实测（Odoo `19.0-20261015`、`20.0-20261015`）之后就地修订，尚无代码依赖；都是事实修正或补细节，不改决定：R6 删去「`read` 遇已删 id 会整批报错」这条不成立的理由（两版实测都只是省略），仍用 `search_read`；R6 补 `check()` 的五次调用，公司取机器人默认公司（原文没说多公司取哪家）；R5 分页固定 `id asc`；R6 错误表之后补「错字段、错参数也可能是 500」；R8 写明保活取决于服务入口（Odoo 内置 HTTP 服务每次都 `Connection: close`）；「安全」写明最小内置组 `stock.group_stock_user` 不是严格只读。跨地区实测仍待 owner 授权。
+Revisions: 2026-10-31 实现期就地补细节（第 5、6 步），不改决定：`PackSources.erp` 的 `code` 写明是产品库条目 code，`erp.key` 只用于映射时比对（原文没写，两步实现各取一边，所有查询都对不上，见 plan 第 6 步记录）；加同步的 `mapped()`，R7 的系统消息收窄到已映射的型号（未映射是常态，不该提醒）；`settings` 加可选的 `lastCheck`（R9 的 `show` 要显示最近一次检查结论，原文没写存哪）。
+Revisions: 2026-10-31 第 8 步只读审查之后就地修订，不改决定：R6 补「同一轮固定已读到的值」（原文说交出去的值够一轮用完，但缓存 29 秒时不会预热，模型思考几秒后建单会被刷新，同一轮两份不同的值，违反不变量 8）；R6 把「冷却期内 `availability()` 直接返回空」改成「不发请求，只返回还在 60 秒内的值」（原文与「新鲜值的唯一定义」冲突：工具与护栏读的是 `fresh()`，返回空也不改变它们看到的值；60 秒内的 ERP 值比产品库更准，也在 spec 接受的窗口内）。
+Revisions: 2026-10-31 owner 定：跨地区实测不在 11 里做，推迟到接第一家真实商家时，在它的真实入口上测。原因：现在没有真实的远端 Odoo，专门造一台测到的地区与入口都是假设；演示租户不接 Odoo（开放问题 3），上线不配连接器；1 秒上限与退路已兜住最慢的情况，这个数字只决定配异地 Odoo 时要不要提示风险，不改设计。改动：「前置条件」去掉这一条，R8 与验收 9 相应改写，「后续」加一条。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」——阶段 8「按信号再定」；[10](../10-industrial-rfq-pack/spec.md)「后续」第 1 条。
 Depends on: [12 · 客户发来的图片与文件](../12-customer-files/spec.md) 已 implemented（R7 要改的工业包文件与 12 重叠）；[09](../09-quote-approval/spec.md)、[10](../10-industrial-rfq-pack/spec.md) 已 implemented；[03](../03-channels-v2/spec.md) R9 的密钥环与加密存库；[05](../05-tenancy-sandbox/spec.md) R5 的租户状态登记与 R12 的沙箱回收。
 Supersedes in part: [10](../10-industrial-rfq-pack/spec.md) 的两处，理由都是「接了 ERP 的租户，库存以 ERP 的新鲜值为准」：（1）R4「行属性」里判现货用的「库存」；（2）R6 自动批准条件（2）「每一行在建单这一刻都是库存 ≥ 数量」。新条文见 R7，没有启用连接器的租户仍按原文。[ADR-003](../../adr/adr-003-open-core-boundary.md) 决策 2「不进任何仓库」一格的「凭据：只放服务器上的 env 文件（01 起按 compose 服务拆分），不写进日志」：改为按租户的渠道凭据（03 引入，当时没有在 ADR 落档）与外部业务系统凭据（本 spec）可以加密存库，密钥环只在 env 文件（R3）。10 与 ADR-003 在本 spec 翻 `ready` 时加反向的 `Superseded in part by:` 行。
@@ -62,7 +67,6 @@ Amends: 只新增，原有成员与行为不变。[03](../03-channels-v2/spec.md
 - 开工第 0 步落进 plan：
   - 对照本 spec 引用的行号核对现状（12 合入后行号会动）；
   - 在本机一次性 Odoo 19 与 20 容器上实测：JSON-2 的请求、错误与 `Content-Type` 形状；many2one 的返回形状；`product.product/search_read` 带 `context.location` 与 `active_test: false` 读 `free_qty`、`uom_id`、`active`；20 上空 scope 的 key 被拒；机器人用户读产品与库存所需的最小组；读 30 个产品的耗时；
-  - 由 owner 授权，从线上服务器所在地区测到一台远端 Odoo（境内另一地区云主机上的一次性容器；Odoo Online 试用库若开放外部接口也测一次）：DNS、TLS 握手、首个请求、保活连接上后续请求的耗时；
   - 实测与本 spec 的假设不符时，停下来修订本 spec（`Revisions:`），再开工。
 
 ## 现状与方案
@@ -105,7 +109,7 @@ export interface ErpConnector {
 **包怎么用。** 包不 import `src/connectors/`，只经 `PackSources.erp`（组合根 `src/core/engine/sources.ts` 装上）：
 
 ```ts
-// src/core/pack-api.ts（PackSources 新增）
+// src/core/pack-api.ts（PackSources 新增）；code 一律是产品库条目 code（工业包是 part.id）
 erp: {
   /** 本租户有启用的连接器、且这个产品种类就是包声明的 erp.kind */
   active(kind: string): boolean;
@@ -113,6 +117,8 @@ erp: {
   availability(kind: string, codes: readonly string[]): Promise<ReadonlyMap<string, Availability>>;
   /** 同步读新鲜值（R6 的唯一定义）；没有就返回 undefined */
   fresh(kind: string, code: string): Availability | undefined;
+  /** 这个编号有映射；用来区分「没映射」和「映射了但这轮没取到」 */
+  mapped(kind: string, code: string): boolean;
 };
 
 // src/core/pack-api.ts（PackRuntime 新增可选声明；没有它，连接器对这个包不生效）
@@ -147,7 +153,8 @@ erp_connectors: {
     locationId: number;
     uom: Record<string, number>;
     keyExpiresAt: string;
-  } // json：库位、我方单位 → Odoo uom id、key 到期日
+    lastCheck?: { at: string; result: string };
+  } // json：库位、我方单位 → Odoo uom id、key 到期日、最近一次检查结论（只存固定词）
   secretsCt: Uint8Array;
   secretsKeyId: string;
   createdAt: Date;
@@ -215,7 +222,7 @@ export type EgressCode =
 
 - 新表 `erp_item_links`（`tenant_id`、FORCE RLS）：主键 `(tenant_id, connector_id, kind, code)`，存 `remote_id`、`remote_code`、`remote_uom_id`、`source: 'auto' | 'manual'`、`checked_at`。`agent_app` 有 SELECT、INSERT、UPDATE、DELETE（`map --unset` 要删），写操作记审计 `erp.map`。产品库本身不加字段。
 - **自动映射**（命令行 `map --auto`，可 `--dry-run`）：
-  - 分页读 Odoo 里 `default_code` 非空、`sale_ok` 为真的 `product.product`，每页 500，单页时限 15 秒、至多 2 MiB；
+  - 分页读 Odoo 里 `default_code` 非空、`sale_ok` 为真的 `product.product`，保留默认的归档过滤，按 `id asc` 排序，每页 500，单页时限 15 秒、至多 2 MiB；
   - 包的 `erp.remoteKey(default_code)` 与 `erp.key(item)` 全等才算对上；工业包两边都用 `normalizePartNo`，所以 `6205 2RS` 与 `6205-2RS` 对得上；
   - 恰好一个 → 建链接；没有 → 未映射；多于一个（`default_code` 在 Odoo 不唯一）→ 冲突，不建；
   - 单位必须对上：Odoo 的 `uom_id` 等于 `settings.uom[erp.unit(item)]`，否则单位不符，不建；
@@ -226,9 +233,11 @@ export type EgressCode =
 
 ### R6 · 实时可售量、新鲜值与时限
 
-**读法。** 一次请求：`POST /json/2/product.product/search_read`，`domain` 为 `[["id", "in", ids]]`（至多 30 个），`fields` 为 `free_qty`、`uom_id`、`active`，`context` 为 `{ "location": settings.locationId, "active_test": false }`。用 `search_read` 而不是 `read`：有一个 id 已被删时 `read` 会整批报错。many2one 只取 id。`free_qty` 必须是有限数，向下取整、负数记 0。
+**读法。** 一次请求：`POST /json/2/product.product/search_read`，`domain` 为 `[["id", "in", ids]]`（至多 30 个），`fields` 为 `free_qty`、`uom_id`、`active`，`context` 为 `{ "location": settings.locationId, "active_test": false }`。用 `search_read` 而不是 `read`：按条件取，已删的 id 只是不在结果里，这正是要的语义，不依赖 `read` 对缺失 id 的处理。many2one 只取 id。`free_qty` 必须是有限数，向下取整、负数记 0。
 
-**新鲜值（唯一定义）。** 本进程从 ERP 取到、`at` 距现在不超过 60 秒的值。`PackSources.erp.fresh()` 只按这一条返回；`availability()` 对超过 30 秒的值重新取，所以它交出去的值至少还新鲜 30 秒，够一轮用完。工具结果、`priceLine`、自动批准与护栏证据都只认 `fresh()`（R7）。
+**检查。** `check()` 依次发五次只读调用：`res.users/context_get` 取 `uid`；`res.users/read` 取 `company_id`（机器人的默认公司，多公司时只看这一家）；`res.company/read` 取 `currency_id`；`res.currency/read` 取 `name` 作为 `companyCurrency`，不用 many2one 的展示字符串；`stock.location/search_read` 按 `id` 查库位，命中才算 `locationOk`。只在命令行跑，不走每轮截止时间。
+
+**新鲜值（唯一定义）。** 本进程从 ERP 取到、`at` 距现在不超过 60 秒的值。`PackSources.erp.fresh()` 只按这一条返回；`availability()` 对超过 30 秒的值重新取，所以它交出去的值至少还新鲜 30 秒。工具结果、`priceLine`、自动批准与护栏证据都只认 `fresh()`（R7）。同一轮里，一个编号第一次经 `availability()` 得到的结果（含没取到）固定到本轮结束，之后不再刷新，`fresh()` 也返回这一份，所以模型思考几秒之后建单，看到的和本轮工具结果相同（不变量 8）。
 
 **每轮截止时间。** 引擎在每轮开始时开一个 `AsyncLocalStorage` 作用域（`src/core/engine/index.ts` 第 821 行 `prefetch` 之前）。本轮第一次真正向 ERP 发请求时定下截止时刻：发起时刻加 1 秒；本轮之后的请求、包括排队等待，都只等到它为止，到点按「没取到」返回。作用域外（命令行、映射）每次请求用自己的时限。所以一轮花在 ERP 上的时间至多 1 秒，不论慢而成功还是超时。
 
@@ -244,7 +253,9 @@ export type EgressCode =
 | 404、400、422                                                                    | `not_found` / `invalid`                          | 10 分钟 | 「连接器配置与 Odoo 不符」                 |
 | 超时、网络错误、出站防护拒绝、5xx、非 JSON（如代理的 502 页面）                  | `timeout` / `egress` / `server` / `bad_response` | 30 秒   | 从正常转为失败时推一次                     |
 
-冷却期内 `availability()` 不发请求，直接返回空（`cooldown`）。
+错字段、错参数在 Odoo 上常是 500 而不是 422（19、20 实测），一律按状态码归 `server`，不按响应文字猜成配置错误；我们只发固定的调用，这种情况只会在 Odoo 字段变化时出现。
+
+冷却期内 `availability()` 不发请求（`cooldown`），只返回还在 60 秒内的值，与 `fresh()` 一致。
 
 ### R7 · 工业包怎么用
 
@@ -255,7 +266,7 @@ export type EgressCode =
 - **建单。** `create_quote_sheet`（`src/packs/industrial/tools.ts:186-207`）建单前调一次 `availability()`；`runtime.priceLine` 包一层 `live(item, fresh(...))`（`src/packs/industrial/runtime.ts:39`），订单行冻结的「交期」与本轮工具结果一致。
 - **自动批准**（部分取代 10 R6 (2)）：新条文是「每一行在建单这一刻都有新鲜值，且新鲜值 ≥ 数量」；有一行没有新鲜值就不自动批准，转人审（`src/packs/industrial/quotes.ts:18-28`）。没有连接器时仍按原文读产品库。
 - **护栏证据**（`src/packs/industrial/guards.ts:34-44`，主回复与跟进共用）：由 `rfqDraft` 推出的库存证据改为按 `live(part, fresh())` 算；没有新鲜值时，这一行只提供替代型号，不提供库存与交期证据。本轮工具结果仍是证据。效果：后来没调工具的回合、以及跟进，复述「现货」时拿不到新鲜值，主回复换成「库存和交期以顾问确认为准」，跟进删句（`src/packs/industrial/guards.ts:223`）。
-- **退回产品库值时告诉顾问。** 本轮有精确型号因为没取到新鲜值而按产品库值回答时，工具在会话里加一条系统消息「ERP 这次没查到 N 个型号的库存，按产品库的库存回答」，同一会话 30 分钟内至多一条。系统消息工作台照常显示，不进模型历史（`src/core/engine/index.ts:771`），不发给客户。
+- **退回产品库值时告诉顾问。** 本轮有已映射的精确型号因为没取到新鲜值而按产品库值回答时，工具在会话里加一条系统消息「ERP 这次没查到 N 个型号的库存，按产品库的库存回答」，同一会话 30 分钟内至多一条。系统消息工作台照常显示，不进模型历史（`src/core/engine/index.ts:771`），不发给客户。
 - **不变的。** 型号匹配、`rfqDraft`、确定性回复、预取的判定条件不改。多个候选时「有现货在前」的排序（`src/packs/industrial/match.ts:9`）仍按产品库的库存，只影响列候选的顺序，不是库存说法。
 - **ERP 返回的东西进到哪里。** 只有可售量这一个整数，经 `priceLine` 的行属性与工具结果进到对客文字。Odoo 的品名、`default_code` 等字符串不进模型、不进对客文字。
 
@@ -268,7 +279,8 @@ export type EgressCode =
 | 12 确认轮（一次预取 `quote_items`） | 照 10 第 21 步                        | 预热一次，至多 +1 秒                                         |
 
 - 目标：同地区、保活连接命中时，ERP 段 p90 ≤ 300 毫秒；任何情况下一轮 ≤ 1 秒。
-- 跨地区或到境外托管的 Odoo，第一次 TLS 握手可能就接近 1 秒，这一轮会退回产品库值；保活连接复用之后才快。第 0 步的跨地区实测决定这个目标对远端 Odoo 是否成立，不成立就在 plan「Open」里请 owner 定（例如对远端 Odoo 只在命令行建连接器时提示风险）。
+- 保活取决于服务入口。Odoo 内置 HTTP 服务每次响应都是 `Connection: close`（19、20 实测），连接不复用；R4 只许 HTTPS，真实入口都在 TLS 终结层之后（nginx、Odoo.sh 等），能不能复用看这一层。入口不支持保活时每次请求都要重新建连和握手，p90 目标不成立，只剩 1 秒上限与退路兜底。第 7 步经 nginx 验证复用。
+- 跨地区或到境外托管的 Odoo，第一次 TLS 握手可能就接近 1 秒，这一轮会退回产品库值；保活连接复用之后才快。这个目标对远端 Odoo 是否成立，接第一家真实商家时在它的真实入口上测（「后续」），不成立再请 owner 定（例如对远端 Odoo 只在命令行建连接器时提示风险）。
 
 ### R9 · 平台命令行
 
@@ -351,7 +363,7 @@ export type EgressCode =
 
 - **SSRF**：R4；配置入口只有平台命令行（运维执行），以后若开放给商家在后台自助配置，同一道防护照用。
 - **注入**：Odoo 的检索条件只由整数 id 组成；ERP 返回的字符串不进模型。
-- **最小权限**：Odoo 侧用专用机器人用户，只给读产品与库存所需的组；`check` 不需要管理员。key 到期前告警，换 key 用 `set-secrets`。
+- **最小权限**：Odoo 侧用专用机器人用户，只给读产品与库存所需的组；`check` 不需要管理员。实测（19、20）最小内置组是 `stock.group_stock_user`（隐含内部用户），只有内部用户时读 `free_qty` 得 403。这个组对 `stock.quant`、`stock.move` 有读、写、建权限，不是严格只读：我们的客户端只发只读调用，但 key 泄露时风险大于纯只读账号；要凭据本身只读，商家在 Odoo 里自建只读组。key 到期前告警，换 key 用 `set-secrets`。
 - **隐私**：只读，不向 ERP 发送任何客户信息；请求里只有产品 id、库位 id 与字段名。
 - **许可**：只调用 Odoo 的公开接口；不复制 Odoo 的代码与文档；集成用的官方镜像只在本机下载运行，不进仓库、不随产品分发。
 - **性能**：R8；映射在命令行里跑，不在请求路径上。
@@ -366,7 +378,7 @@ export type EgressCode =
 6. **映射**：`map --auto` 对合成产品给出已映射、未映射、冲突（`default_code` 重复）、单位不符四类，条数与样本真值一致；未映射的型号照常按产品库值报价；`map --set` 按 id 指定后生效。
 7. **出站防护**：地址或解析结果是 127.0.0.1、`2130706433`、10.x、169.254.169.254、100.100.100.200、`[::1]`、`[::ffff:a00:1]`、`[64:ff9b::a00:1]`、解析到私网的域名、一次公网一次私网的解析、302 跳到内网、`http://`、带用户名密码、端口 22：命令行配置时拒绝；绕过命令行直接往库里写 IP 字面量或私网域名的，运行时请求也被拒绝；错误码与日志里都没有地址。
 8. **凭据与到期**：命令行输出、日志、审计、告警、`/healthz` 与 trace 里扫不到 API key 的明文、密文的 base64 与 hex；渠道账号的密文换到连接器行解不开，反之亦然；`rekey` 前后都能解；`--key-expires` 缺失或已过被拒；到期前 14 天、3 天各告警一次。
-9. **本机集成**：`scripts/odoo-integration.ts` 在一次性 Odoo 19 与 20 容器上跑通映射、实时库存与 `check`；20 上空 scope 的 key 得到 401；结束后没有残留容器与进程；耗时与第 0 步的跨地区实测记进 plan。
+9. **本机集成**：`scripts/odoo-integration.ts` 在一次性 Odoo 19 与 20 容器上跑通映射、实时库存与 `check`；20 上空 scope 的 key 得到 401；结束后没有残留容器与进程；耗时记进 plan。
 10. **边界**：在 `src/connectors/` 的非自测文件里加一处 `fetch(`、在非自测文件里 import `odoo-mock.ts`、在应用代码里写 `allowLoopback`、在包里 import 连接器，`pnpm lint` 都失败。
 11. **沙箱与回滚**：`sandbox_tenant_purge` 的覆盖检查通过；命令行拒绝沙箱租户。本机一次性容器演练：库里有连接器与映射时退到 12 的 tag，旧镜像照常启动、按产品库值回答；再前滚，连接器照常工作。
 
@@ -420,6 +432,7 @@ export type EgressCode =
 
 ## 后续
 
+- **跨地区实测**（2026-10-31 owner 定推迟到这里）：接第一家真实商家时，`check` 跑通之后，从线上服务器到它的真实入口测 DNS、TLS 握手、首个请求、保活连接上后续请求的耗时与实际复用率，确认 R8 的目标成立，结果记进那份接入的记录。
 - **报价单写回 ERP**（另起 spec）。要先解决：Odoo 自算的税与折扣（显式传 `discount: 0`、按租户配置传税或声明不含税，读回再比 `discount`、`price_total`、`amount_total`）；价目表币种核对；机器人用户的记录规则（要能看到全部销售单，否则按 `origin` 查重会漏）；客户怎么挂（占位客户还是建客户）；重试用完、重启中断之后的收尾与通知；回滚期间漏写的补写。
 - ERP 补货期作为缺货交期（如 `product.supplierinfo.delay`）。
 - 第二家 ERP（金蝶云星空、用友等），以及 Odoo 18（开放问题 1 的 B）。

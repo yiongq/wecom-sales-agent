@@ -1,0 +1,11 @@
+{
+  "name": "danlai-docs-site",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "vitepress": "1.6.4"
+  },
+  "scripts": {
+    "build": "node ../node_modules/tsx/dist/cli.mjs ../scripts/product-sites/build.ts docs"
+  }
+}

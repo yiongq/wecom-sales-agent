@@ -3023,7 +3023,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     ],
     ['SPAN', '/catalog/route', [SICHUAN.title]],
   );
-  eq('标签页标题「条目名 · 实体名 · 租户名」（不变量 23）', document.title, `${String(SICHUAN.title)} · 线路 · 云途定制旅行`);
+  eq('标签页标题「条目名 · 实体名 · 租户名 · 单来」（不变量 23）', document.title, `${String(SICHUAN.title)} · 线路 · 云途定制旅行 · 单来`);
   eq(
     '卡片按 groups 的顺序',
     groupsOf(e.box),
@@ -3263,7 +3263,7 @@ const lists = { route: ROUTE_ROWS, hotel: HOTEL_ROWS };
     [header(n.box), document.title, n.box.querySelectorAll('[data-field-key="$code"] input').length],
     [
       { crumb: ['产品库', '线路', '新建线路'], title: '新建线路', titleStatus: null, status: '上架后13项会锁定' },
-      '新建线路 · 云途定制旅行',
+      '新建线路 · 云途定制旅行 · 单来',
       1,
     ],
   );

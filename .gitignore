@@ -22,3 +22,7 @@ Thumbs.db
 !.claude/settings.json
 !.claude/hooks/
 # lockfile (pnpm-lock.yaml) must stay committed; never add it here
+
+# 产品静态构建：只发布 dist，不发布暂存指南与私有构建输入
+docs-site/.stage/
+docs-site/.vitepress/cache/

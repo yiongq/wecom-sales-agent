@@ -98,3 +98,19 @@ export async function standardTenants(db: Db): Promise<{ id: string; slug: strin
     .from(tenants)
     .where(eq(tenants.kind, 'standard'));
 }
+
+/** 14 R3：轮询只读取状态与上限，不携带租户的其他配置。 */
+export async function readTenantLimits(
+  db: Db | Tx,
+  tenantId: string,
+): Promise<{
+  status: TenantRow['status'];
+  monthlyQuota: number | null;
+  dailyCapMilli: number | null;
+} | null> {
+  const [row] = await db
+    .select({ status: tenants.status, monthlyQuota: tenants.monthlyReplyQuota, dailyCapMilli: tenants.llmDailyCapMilli })
+    .from(tenants)
+    .where(eq(tenants.id, tenantId));
+  return row ?? null;
+}

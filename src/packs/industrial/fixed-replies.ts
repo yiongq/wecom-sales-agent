@@ -86,7 +86,7 @@ export const fixedReplies: readonly FixedReply[] = [
       FIXED_REPLY_MODES.map((mode) => ({
         mode,
         text: renderBrandTemplate(text, {
-          brandName: '衡石工业品（虚构）',
+          brandName: '衡石工业品（演示）',
           advisorTitle: '顾问',
           aiTitle: 'AI 询价顾问',
           scopeNoun: '工业品询价',

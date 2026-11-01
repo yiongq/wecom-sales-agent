@@ -12,6 +12,7 @@ import { mentionedParts, unresolvedParts, FIXED } from './turn.js';
 import { draftParts, readState } from './state.js';
 import { MAX_QTY, priceLine } from './catalog.js';
 import { normalizePartNo } from './normalize.js';
+import { live } from './live.js';
 import { IndustrialPolicySchema, taxInvoiceText } from './policy.js';
 
 export const INVENTORY_FALLBACK = '库存和交期以顾问确认为准';
@@ -38,7 +39,13 @@ function evidence(ctx: FollowupGuardContext, sources: PackSources): Evidence[] {
   const entries: Evidence[] = parts.flatMap((part) => {
     const line = state.rfqDraft?.lines.find((line) => line.match === 'exact' && line.code === part.id);
     if (!line || !Number.isSafeInteger(line.qty) || line.qty < 1 || line.qty > MAX_QTY) return [];
-    const priced = priceLine(part, line.qty);
+    let current = part;
+    if (sources.erp?.active('part')) {
+      const value = sources.erp.fresh('part', part.id);
+      if (!value) return [{ partNo: part.partNo, substitutes: part.substitutes }];
+      current = live(part, value);
+    }
+    const priced = priceLine(current, line.qty);
     if ('reject' in priced) return [];
     return [{ partNo: part.partNo, delivery: priced.attrs?.['交期'], substitutes: part.substitutes }];
   });

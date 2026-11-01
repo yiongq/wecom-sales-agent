@@ -181,7 +181,7 @@ export function sandboxCostOf(model: string, promptTokens: number, completionTok
 }
 
 /** 这次调用的用途（02 spec「逐轮 trace、护栏事件与用量」）：usage_daily 按它分列，与库里 purpose 的 CHECK 同一组值 */
-export type UsagePurpose = 'chat' | 'followup' | 'insight' | 'suggestion' | 'draft' | 'embedding' | 'gate' | 'vision';
+export type UsagePurpose = 'chat' | 'followup' | 'insight' | 'suggestion' | 'draft' | 'embedding' | 'gate' | 'vision' | 'reply';
 
 /** recordUsage 记下的一笔，交给 onUsage 的订阅者（轮次的 trace、usage_daily 的累加器）。token 是夹过上下界之后计入 usage.json 的那份 */
 export interface UsageEvent {
@@ -219,6 +219,10 @@ export function recordUsage(
   purpose: UsagePurpose = 'chat',
   accountedMilli?: number,
 ): void {
+  if (purpose === 'reply') {
+    recordReplyUsage();
+    return;
+  }
   const rt = currentRuntime();
   if (rt.state === 'closed') return;
   const entry = hostUsage();
@@ -261,6 +265,10 @@ export function recordUsage(
     reasoningTokens: reasoning,
     cny,
   };
+  publishUsage(ev);
+}
+
+function publishUsage(ev: UsageEvent): void {
   for (const cb of usageListeners) {
     try {
       cb(ev);
@@ -322,4 +330,21 @@ export function usageToday(): {
 /** 某个会话累计花了多少（后台会话详情展示） */
 export function sessionCost(sessionId: string): { calls: number; cny: number } {
   return hostUsage()?.state.bySession[sessionId] ?? { calls: 0, cny: 0 };
+}
+
+/** AI 回复仅发给 usage_daily 累加器；不进入 usage.json、sessionCost 或模型调用统计。 */
+export function recordReplyUsage(day = today()): void {
+  const rt = currentRuntime();
+  if (rt.kind !== 'standard' || !rt.config.loaded || !rt.store.pgBackend || rt.state === 'closed' || rt.cancel.aborted) return;
+  publishUsage({
+    tenantId: rt.id,
+    day,
+    model: '-',
+    purpose: 'reply',
+    promptTokens: 0,
+    completionTokens: 0,
+    cachedTokens: 0,
+    reasoningTokens: 0,
+    cny: 0,
+  });
 }

@@ -33,6 +33,7 @@ import {
   Ticket,
   Utensils,
   Wrench,
+  Settings,
 } from 'lucide-react';
 import type { EntityIcon } from '../../../src/shared/pack.js';
 import type { NavIcon } from './model.js';
@@ -69,12 +70,13 @@ const ENTITY_ICON_COMPONENTS: Readonly<Record<EntityIcon, LucideIcon>> = {
 export const ENTITY_ICON_NAMES: readonly string[] = Object.keys(ENTITY_ICON_COMPONENTS);
 
 /** 固定页面的图标：总览 / 销售话术 / 会话 / AI记录 / 审计日志 */
-const PAGE_ICONS: Readonly<Record<'overview' | 'sop' | 'conversations' | 'traces' | 'audit', LucideIcon>> = {
+const PAGE_ICONS: Readonly<Record<'overview' | 'sop' | 'conversations' | 'traces' | 'audit' | 'settings', LucideIcon>> = {
   overview: LayoutDashboard,
   sop: MessageSquareText,
   conversations: MessagesSquare,
   traces: ScrollText,
   audit: History,
+  settings: Settings,
 };
 
 export const entityIcon = (name: string): LucideIcon =>

@@ -45,6 +45,8 @@ interface DailyState {
   /** 本运行时已提交的当日金额；与库快照在同一写队列里核对，防止软上限重复计费。 */
   persistedDay: string;
   persistedMilli: number;
+  /** 最近两个月已提交的本进程回复数，供启动重试扣除；跨月在途批次可同时存在。 */
+  persistedReplies: Map<string, number>;
   flushingAt: number | null;
 }
 const states = new Map<string, DailyState>();
@@ -77,6 +79,7 @@ function daily(): DailyState {
       nextAt: 0,
       persistedDay: '',
       persistedMilli: 0,
+      persistedReplies: new Map(),
       flushingAt: null,
     };
     states.set(rt.id, state);
@@ -174,7 +177,14 @@ async function flushOnce(rt: TenantRuntime, state: DailyState): Promise<void> {
     state.persistedDay = day;
     state.persistedMilli = 0;
   }
-  for (const { d } of batch) if (d.day === day) state.persistedMilli += d.costMilliCny;
+  for (const { d } of batch) {
+    if (d.day === day) state.persistedMilli += d.costMilliCny;
+    if (d.purpose === 'reply') {
+      const month = d.day.slice(0, 7);
+      state.persistedReplies.set(month, (state.persistedReplies.get(month) ?? 0) + d.calls);
+    }
+  }
+  for (const month of [...state.persistedReplies.keys()].toSorted().slice(0, -2)) state.persistedReplies.delete(month);
   // 写完的、前一天的只剩零头（不到 1 厘）的项不再留着
   for (const [k, a] of acc) if (!a.calls && a.day !== state.lastDay) acc.delete(k);
 }
@@ -191,12 +201,14 @@ setSandboxUsageLagReader(() => {
 });
 
 /** 与 writer 串行读库；传入库快照中已包含的本运行时金额（只计成功提交）。 */
-export function withUsageDailySnapshot<T>(day: string, read: (persistedMilli: number) => Promise<T>): Promise<T> {
+export function withUsageDailySnapshot<T>(day: string, read: (persistedMilli: number, persistedReplies: number) => Promise<T>): Promise<T> {
   const rt = currentRuntime();
   const state = daily();
   state.queued++;
   const run = state.chain.then(() =>
-    withTenantScope(rt, () => read(state.owner === rt && state.persistedDay === day ? state.persistedMilli : 0)),
+    withTenantScope(rt, () =>
+      read(state.owner === rt && state.persistedDay === day ? state.persistedMilli : 0, state.persistedReplies.get(day.slice(0, 7)) ?? 0),
+    ),
   );
   state.chain = run
     .then(
@@ -240,7 +252,10 @@ export function startUsageDaily(write: (deltas: UsageDailyDelta[]) => Promise<vo
   state.writer = write;
   state.intervalMs = intervalMs;
   state.nextAt = Date.now() + intervalMs;
-  const ready = initializeStandardBudget(rt);
+  const ready = Promise.all([
+    initializeStandardBudget(rt),
+    import('../tenancy/limits.js').then(({ initializeTenantLimits }) => initializeTenantLimits(rt)),
+  ]).then(() => undefined);
   arm();
   return ready;
 }

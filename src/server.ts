@@ -6,6 +6,10 @@ import { isSiteHtml } from './core/site-links.js';
 import './env.js'; // 必须第一个 import：加载 .env（此前 .env 从未被读取，README 的跑法照做即挂）
 import './profile-boot.js'; // 紧接着解析部署 profile：配置错误时打一行原因退出，必须排在任何会 import store 的模块之前
 import { publicHostMiddleware, publicBase } from './tenancy/hosts.js';
+import { assertTrialResetComplete } from './db/repo/trial-reset.js';
+import { withTenant } from './db/client.js';
+import { productPathClosed } from './tenancy/trial/paths.js';
+import { assertTrialReplaySafe } from './tenancy/trial/startup.js';
 import {
   hostRuntime,
   tenantRuntimes,
@@ -125,6 +129,9 @@ const sandbox = process.env.APP_ROLE === 'sandbox' ? new SandboxProcess(process.
 // 每个请求一个 req（响应头 x-request-id），两个角色都在任何路由分派之前建立日志上下文。
 app.use('/*', requestLogContext);
 app.use('/*', publicHostMiddleware);
+app.use('/*', async (c, next) =>
+  profile().name === 'prod' && !currentRuntime().isHost && productPathClosed(c.req.path) ? c.notFound() : next(),
+);
 
 // channel 来自落盘的会话 JSON：数据改坏、或加了新渠道漏接这里，都会落到兜底。兜底此前是模拟器，
 // 没有 SSE 连接时它的 push 返回 true，后台显示「已回复」，实际什么也没发出去。现在兜底一律推送失败，
@@ -1333,6 +1340,17 @@ if (!SELFTEST && !sandbox) {
     // SESSION_STORE 的取值已由 initConfigFromEnv 校验；db 存储要求 DB 配置模式，库与租户取自装好的配置源
     initSessionStore: async () => {
       if (process.env.SESSION_STORE !== 'db') return withTenantScope(hostRuntime(), () => initSessionStore(null));
+      // 先对全部租户做只读预检，避免宿主先处理共享目录中的旧恢复材料。
+      for (const rt of tenantRuntimes())
+        await withTenantScope(rt, async () => {
+          const { db, tenantId } = configRuntime();
+          const batches = await withTenant(
+            db,
+            { tenantId, actor: { kind: 'system', userId: null, name: 'trial-reset-boot', ip: null } },
+            assertTrialResetComplete,
+          );
+          assertTrialReplaySafe(batches, tenantId, varDir());
+        });
       for (const rt of tenantRuntimes())
         await withTenantScope(rt, () => {
           const { db, tenantId, deps } = configRuntime();

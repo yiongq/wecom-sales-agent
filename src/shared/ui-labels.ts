@@ -98,6 +98,9 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'sandbox.end': { label: '结束体验', group: 'platform', icon: 'log-out' },
   'tenant.brand_set': { label: '设置企业信息', group: 'platform', icon: 'building' },
   'tenant.brand_clear': { label: '清除企业信息', group: 'platform', icon: 'building' },
+  'tenant.quota_update': { label: '修改月度回复额度', group: 'platform', icon: 'gauge' },
+  'tenant.cap_update': { label: '修改每日费用上限', group: 'platform', icon: 'gauge' },
+  'tenant.status_update': { label: '修改租户状态', group: 'platform', icon: 'building' },
   'platform.tenant_create': { label: '建租户', group: 'platform', icon: 'building' },
   'platform.user_create': { label: '建账号', group: 'account', icon: 'user-plus' },
   'platform.user_password': { label: '重设密码', group: 'account', icon: 'key-round' },
@@ -139,6 +142,12 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   // 使用 UI 优先字体片已有的字；认证信息包含三项凭据，加密设置指数据库加密密钥的轮换。
   'channel.secrets_update': { label: '更新入口认证信息', group: 'platform', icon: 'key-round' },
   'channel.rekey': { label: '轮换入口加密设置', group: 'platform', icon: 'refresh-cw' },
+  'erp.create': { label: '新建业务系统连接', group: 'platform', icon: 'plus' },
+  'erp.update': { label: '修改业务系统连接', group: 'platform', icon: 'pencil-line' },
+  'erp.secrets_update': { label: '更新业务系统认证信息', group: 'platform', icon: 'key-round' },
+  'erp.rekey': { label: '轮换业务系统加密设置', group: 'platform', icon: 'refresh-cw' },
+  'erp.check': { label: '检查业务系统连接', group: 'platform', icon: 'check' },
+  'erp.map': { label: '设置业务系统产品对应关系', group: 'platform', icon: 'link' },
   'channel.import': { label: '导入入口状态', group: 'platform', icon: 'refresh-cw' },
   'channel.export': { label: '导出入口状态', group: 'platform', icon: 'refresh-cw' },
   // 03 第 12 步 restore-cutoff：从备份恢复之后设截止点、取消截止点之前没发的（「截止」两字不在 UI 优先片里）

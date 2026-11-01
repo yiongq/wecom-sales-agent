@@ -66,6 +66,8 @@ export const tenants = pgTable(
     templateTenantId: uuid('template_tenant_id').references((): AnyPgColumn => tenants.id),
     publicHost: text('public_host'),
     llmDailyAlertMilli: bigint('llm_daily_alert_milli', { mode: 'number' }),
+    monthlyReplyQuota: integer('monthly_reply_quota'),
+    llmDailyCapMilli: bigint('llm_daily_cap_milli', { mode: 'number' }),
     /** 海外适配保留的缝，01 没有读方 */
     locale: text('locale').notNull().default('zh-CN'),
     region: text('region').notNull().default('CN'),
@@ -88,6 +90,12 @@ export const tenants = pgTable(
     check(
       'tenants_public_host_check',
       sql`${t.publicHost} ~ '^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)*$' AND length(${t.publicHost}) <= 253`,
+    ),
+    check('tenants_monthly_reply_quota_check', sql`${t.monthlyReplyQuota} >= 0`),
+    check('tenants_llm_daily_cap_check', sql`${t.llmDailyCapMilli} >= 0`),
+    check(
+      'tenants_limits_standard_only',
+      sql`${t.kind} = 'standard' OR (${t.monthlyReplyQuota} IS NULL AND ${t.llmDailyCapMilli} IS NULL)`,
     ),
     check('tenants_llm_daily_alert_check', sql`${t.llmDailyAlertMilli} >= 0`),
     uniqueIndex('tenants_public_host_uq')
@@ -541,7 +549,9 @@ export const usageDaily = pgTable(
     /** 服务器时区（TZ）的日期，'YYYY-MM-DD' */
     day: date('day', { mode: 'string' }).notNull(),
     model: text('model').notNull(),
-    purpose: text('purpose', { enum: ['chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate', 'vision'] }).notNull(),
+    purpose: text('purpose', {
+      enum: ['chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate', 'vision', 'reply'],
+    }).notNull(),
     calls: integer('calls').notNull().default(0),
     promptTokens: bigint('prompt_tokens', { mode: 'number' }).notNull().default(0),
     completionTokens: bigint('completion_tokens', { mode: 'number' }).notNull().default(0),
@@ -554,7 +564,7 @@ export const usageDaily = pgTable(
     primaryKey({ columns: [t.tenantId, t.day, t.model, t.purpose] }),
     check(
       'usage_daily_purpose_check',
-      sql`${t.purpose} IN ('chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate', 'vision')`,
+      sql`${t.purpose} IN ('chat', 'followup', 'insight', 'suggestion', 'draft', 'embedding', 'gate', 'vision', 'reply')`,
     ),
   ],
 );
@@ -986,5 +996,69 @@ export const sopGateRuns = pgTable(
     uniqueIndex('sop_gate_one_active')
       .on(t.tenantId)
       .where(sql`${t.status} IN ('queued','running')`),
+  ],
+);
+
+/** 11 R3：连接器设置，不含凭据；地址与数据库名也不得打印。 */
+export interface ErpConnectorSettings {
+  locationId: number;
+  uom: Record<string, number>;
+  keyExpiresAt: string;
+  lastCheck?: { at: string; result: 'ok' | import('../connectors/types.js').ErpErrorCode | 'currency' | 'location' };
+}
+
+export const erpConnectors = pgTable(
+  'erp_connectors',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    id: uuid('id').primaryKey().defaultRandom(),
+    kind: text('kind', { enum: ['odoo'] }).notNull(),
+    status: text('status', { enum: ['active', 'disabled'] })
+      .notNull()
+      .default('active'),
+    baseUrl: text('base_url').notNull(),
+    database: text('database'),
+    settings: jsonb('settings').$type<ErpConnectorSettings>().notNull(),
+    secretsCt: bytea('secrets_ct').notNull(),
+    secretsKeyId: text('secrets_key_id').notNull(),
+    createdAt: tstz('created_at').notNull().defaultNow(),
+    updatedAt: tstz('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    unique('erp_connectors_tenant_id_unique').on(t.tenantId),
+    unique('erp_connectors_tenant_id_id_unique').on(t.tenantId, t.id),
+    check('erp_connectors_kind_check', sql`${t.kind} IN ('odoo')`),
+    check('erp_connectors_status_check', sql`${t.status} IN ('active', 'disabled')`),
+    check('erp_connectors_database_check', sql`${t.database} ~ '^[A-Za-z0-9_.-]{1,63}$'`),
+  ],
+);
+
+export const erpItemLinks = pgTable(
+  'erp_item_links',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    connectorId: uuid('connector_id').notNull(),
+    kind: text('kind').notNull(),
+    code: text('code').notNull(),
+    remoteId: integer('remote_id').notNull(),
+    remoteCode: text('remote_code').notNull(),
+    remoteUomId: integer('remote_uom_id').notNull(),
+    source: text('source', { enum: ['auto', 'manual'] }).notNull(),
+    checkedAt: tstz('checked_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.connectorId, t.kind, t.code] }),
+    foreignKey({
+      name: 'erp_item_links_connector_fk',
+      columns: [t.tenantId, t.connectorId],
+      foreignColumns: [erpConnectors.tenantId, erpConnectors.id],
+    }),
+    check('erp_item_links_remote_id_check', sql`${t.remoteId} > 0`),
+    check('erp_item_links_remote_uom_id_check', sql`${t.remoteUomId} > 0`),
+    check('erp_item_links_source_check', sql`${t.source} IN ('auto', 'manual')`),
   ],
 );

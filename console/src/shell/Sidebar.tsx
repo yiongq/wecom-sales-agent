@@ -98,6 +98,10 @@ function NavLink({ item, selected, collapsed }: { item: NavItem; selected: boole
     <Link to="/audit" {...common}>
       {body}
     </Link>
+  ) : item.key === '/settings' ? (
+    <Link to="/settings" {...common}>
+      {body}
+    </Link>
   ) : item.key === '/' ? (
     <Link to="/" {...common}>
       {body}
@@ -137,13 +141,15 @@ export function TenantRow({
       {collapsed ? (
         <Tooltip title={tenant} placement="right">
           <span className="tenant" role="img" tabIndex={0} aria-label={tenant}>
-            {viewer.kind === 'member' && viewer.me.sandbox ? <Tag>体验</Tag> : <TenantMark name={tenant} />}
+            {viewer.kind === 'member' && viewer.me.sandbox ? <Tag>体验</Tag> : <TenantMark name="单来" />}
           </span>
         </Tooltip>
       ) : (
         <span className="tenant">
-          {!(viewer.kind === 'member' && viewer.me.sandbox) && <TenantMark name={tenant} />}
-          <span className="tenant-name">{tenant}</span>
+          {!(viewer.kind === 'member' && viewer.me.sandbox) && <TenantMark name="单来" />}
+          <span className="tenant-name">
+            单来{!(viewer.kind === 'member' && viewer.me.sandbox) && <span className="tenant-organization">{tenant}</span>}
+          </span>
           {viewer.kind === 'member' && viewer.me.sandbox && <Tag>体验</Tag>}
         </span>
       )}

@@ -6,8 +6,8 @@
   "tags": ["regression", "acceptance-10"],
   "severity": "quality",
   "customerScript": [
-    "请查询库内的合成六角螺栓，型号M8×30，螺纹M8、长度30mm；有没有产品库登记的替代型号？",
-    "就是目录里的M8×30合成六角螺栓，只核对登记替代，不要推测通用性。"
+    "请查询库内的六角螺栓，型号M8×30，螺纹M8、长度30mm；有没有产品库登记的替代型号？",
+    "就是目录里的M8×30六角螺栓，只核对登记替代，不要推测通用性。"
   ],
   "allowedTools": ["find_parts"],
   "forbidden": [],

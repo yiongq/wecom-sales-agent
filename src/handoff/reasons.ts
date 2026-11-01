@@ -7,6 +7,8 @@ import type { HandoffKind } from '../types.js';
  */
 // pack 的实际原因由包的确定性回复给出，不登记固定原因。
 export const HANDOFF_REASON = {
+  quota: '本月 AI 额度已用完',
+  dailyCap: '今日 AI 用量已到上限',
   request: '客户要找顾问',
   complaint: '客户投诉',
   refund: '客户要退款或改订单',
@@ -18,4 +20,4 @@ export const HANDOFF_REASON = {
   failure: '客户的问题 AI 几轮都没答上',
   sentiment: '客户情绪不满',
   consent: '客户不同意处理敏感个人信息',
-} as const satisfies Partial<Record<HandoffKind, string>>;
+} as const satisfies Partial<Record<HandoffKind | 'quota' | 'dailyCap', string>>;

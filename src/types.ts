@@ -89,6 +89,8 @@ export function profileForPrompt(p: CustomerProfile): Partial<CustomerProfile> {
 }
 
 export interface Session {
+  /** 14 R6：停用固定句每个会话至多一次；随会话 state 保存，不依赖裁剪后的消息窗口。 */
+  suspendedReplyAt?: number;
   id: string;
   channel: string; // 'simulator' | 'wecom'
   stage: SalesStage;
@@ -181,6 +183,8 @@ export interface Session {
    * 宿主的种子靠 id 前缀 wecom:cust_ 认，不打这个标记
    */
   seed?: boolean;
+  /** 15：PG 合成种子最后一条消息的 seq；超过基线或缺基线后按普通保留期整段清理。 */
+  seedBaselineSeq?: number;
   /** 接手人：从「未转人工」进入转人工时清成 null，交还、重置时清 */
   assignee?: Assignee | null;
   /** 最近 6 轮是否失败（0 / 1，新的在后），R15；重置时清 */
@@ -207,6 +211,8 @@ export interface Session {
  * 表放在 Session 旁边：它要点名旅游的九个会话字段，而 08 R5 只许 src/types.ts、旅游包与门面点名它们
  */
 export const SESSION_EXPOSURE = {
+  suspendedReplyAt: false,
+  seedBaselineSeq: false,
   id: true,
   channel: true,
   stage: true,

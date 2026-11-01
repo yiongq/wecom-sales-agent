@@ -17,7 +17,7 @@ export function AboutDialog({ open, onClose }: { open: boolean; onClose: () => v
     <Modal
       open={open}
       width={480}
-      title="关于"
+      title="关于单来"
       onCancel={onClose}
       closeIcon={<Icon of={X} />}
       afterOpenChange={(visible) => {
@@ -29,6 +29,7 @@ export function AboutDialog({ open, onClose }: { open: boolean; onClose: () => v
         </Button>
       }
     >
+      <p className="about-line">{cjk('单来：工业询价工作台。单来名称与标识不在MIT许可内，代码许可不变。')}</p>
       <p className="about-line">
         {cjk('字体：Geist、Geist Mono（Vercel），思源黑体Noto Sans SC（Adobe、Google）。都按SIL Open Font License 1.1使用。')}
       </p>

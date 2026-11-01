@@ -158,13 +158,13 @@ try {
   assert.match(web, /AI 询价顾问 · 可转真人/);
   assert.match(web, /placeholder="请告诉我型号和数量…"/);
   const webConfig = JSON.parse(/id="web-config">([\s\S]*?)<\/script>/.exec(web)![1]!);
-  assert.equal((webConfig.welcome.match(/虚构/g) ?? []).length, 1);
+  assert.equal((webConfig.welcome.match(/演示/g) ?? []).length, 1);
   assert.match(webConfig.welcome, /AI/);
   assert.match(webConfig.welcome, /人工/);
   for (const url of [`/quote/${quote.id}`, '/quote.html']) {
     const html = await (await request(url)).text();
-    assert.match(html, /<title>报价单 · 衡石工业品（虚构）<\/title>/);
-    assert.match(html, /property="og:title" content="报价单 · 衡石工业品（虚构）"/);
+    assert.match(html, /<title>报价单 · 衡石工业品（演示）<\/title>/);
+    assert.match(html, /property="og:title" content="报价单 · 衡石工业品（演示）"/);
   }
   const custom = { ...brand, brandName: '合成<商家>"&', aiTitle: 'AI <顾问>' };
   for (const page of ['web', 'quote']) {
@@ -177,7 +177,7 @@ try {
   const neutral = renderBrandPage(fs.readFileSync('public/web.html', 'utf8'), 'web', noSlots, brand);
   assert.match(neutral, /请描述您的需求…/);
   assert.doesNotMatch(neutral, travelWords);
-  assert.equal((brandTexts(binding.runtime, brand).webWelcome.match(/虚构/g) ?? []).length, 1);
+  assert.equal((brandTexts(binding.runtime, brand).webWelcome.match(/演示/g) ?? []).length, 1);
   // 旅游品牌为空：静态 HTML 与网页 HTML（仅注入配置）必须与原文件逐字相同。
   assert.equal(host.pack!.brand, null);
   for (const page of ['pay', 'proposal', 'chat', 'web']) {
@@ -220,7 +220,7 @@ try {
     try {
       await approveQuote(quote.id, { userId: null, name: '合成顾问', role: 'supervisor' });
       const raw = `/quote/${quote.id}`;
-      const title = '衡石工业品（虚构）报价单 · 1 项';
+      const title = '衡石工业品（演示）报价单 · 1 项';
       const parts = [{ kind: 'link', linkKind: 'quote', url: raw, title }];
       assert.deepEqual(events.at(-1), { type: 'push', text: '', parts }, '批准推送只有卡片');
       assert.equal(session.messages.at(-1)!.content, raw, '批准通知原文仍是链接');

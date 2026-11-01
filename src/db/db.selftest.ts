@@ -182,7 +182,7 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
   const names = tables.map((r) => r.relname).join(',');
   // 07 R12：kb_chunks 两边都有；kb_vectors 要 vector 扩展，只在装了扩展的真实 PG 上建，PGlite 上没有（迁移 0016 的 DO 块）
   check(
-    `${label}迁移：01 的七张表加 02 的十二张、03 的两张、05 的四张、07 的${vector ? '两张（kb_chunks、kb_vectors）' : '一张（kb_chunks；PGlite 没有 vector 扩展，没有 kb_vectors）'}，以及 12 的 attachments`,
+    `${label}迁移：01 的七张表加 02 的十二张、03 的两张、05 的四张、07 的${vector ? '两张（kb_chunks、kb_vectors）' : '一张（kb_chunks；PGlite 没有 vector 扩展，没有 kb_vectors）'}，以及 12 的 attachments、11 的两张 ERP 表`,
     names ===
       [
         'attachments',
@@ -194,6 +194,8 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
         'channel_inbox',
         'consents',
         'conversations',
+        'erp_connectors',
+        'erp_item_links',
         'guard_events',
         'jobs',
         'kb_chunks',
@@ -280,7 +282,7 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
   }
   // 列级授权：真实 PG 的逐格表用 has_table_privilege，只看表级，多出来的列级 GRANT 它看不见。public 下带列级授权的
   // 只能是 tenants 的三个保留期列、品牌列、Host 与预算列（只给 agent_platform 的 UPDATE，02 spec 授权表），与 channel_accounts 的九列（只给 agent_app 的
-  // UPDATE，03 spec 授权表），以及 guard_verdicts（agent_app 的 SELECT、INSERT，04 R8）。按 JS 顺序比。
+  // UPDATE，03 spec 授权表）、ERP 的七列（11 R3），以及 guard_verdicts（agent_app 的 SELECT、INSERT，04 R8）。按 JS 顺序比。
   const colAcl = await run<{ acl: string }>(
     `select c.relname || '.' || a.attname || ' ' || coalesce(r.rolname, 'PUBLIC') || ' ' || x.privilege_type as acl
        from pg_attribute a join pg_class c on c.oid = a.attrelid
@@ -290,16 +292,27 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
       order by 1`,
   );
   check(
-    `${label}授权：列级授权仅为 tenants 保留期/品牌/Host/预算 UPDATE、channel_accounts 九列 UPDATE、附件结果两列 UPDATE 与 guard_verdicts SELECT/INSERT`,
+    `${label}授权：列级授权仅为 tenants 保留期/品牌/Host/预算 UPDATE、channel_accounts 九列 UPDATE、附件结果两列 UPDATE、ERP 七列 UPDATE 与 guard_verdicts SELECT/INSERT`,
     colAcl
       .map((r) => r.acl)
       .toSorted()
       .join(',') ===
       [
-        ...['brand', 'public_host', 'llm_daily_alert_milli', 'retention_customer_days', 'retention_lead_days', 'retention_trace_days'].map(
-          (c) => `tenants.${c} agent_platform UPDATE`,
-        ),
+        ...[
+          'brand',
+          'public_host',
+          'llm_daily_alert_milli',
+          'monthly_reply_quota',
+          'llm_daily_cap_milli',
+          'status',
+          'retention_customer_days',
+          'retention_lead_days',
+          'retention_trace_days',
+        ].map((c) => `tenants.${c} agent_platform UPDATE`),
         ...CHANNEL_ACCOUNT_UPDATABLE.map((c) => `channel_accounts.${c} agent_app UPDATE`),
+        ...['status', 'base_url', 'database', 'settings', 'secrets_ct', 'secrets_key_id', 'updated_at'].map(
+          (c) => `erp_connectors.${c} agent_app UPDATE`,
+        ),
         'attachments.intake_id agent_app UPDATE',
         'attachments.result agent_app UPDATE',
         'turn_traces.guard_verdicts agent_app INSERT',
@@ -344,6 +357,13 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
     if (f.proname.startsWith('auth_')) {
       check(`${label}认证函数：${f.proname} 是 SECURITY DEFINER`, f.secdef);
       check(`${label}认证函数：${f.proname} 只授权给 agent_app，PUBLIC 不能执行`, f.acl.includes('agent_app=X/') && !publicExec, f.acl);
+    } else if (f.proname === 'console_members_read') {
+      check(`${label}15 成员投影：${f.proname} 是 SECURITY DEFINER`, f.secdef);
+      check(
+        `${label}15 成员投影：只授权给 agent_app，platform 与 PUBLIC 不能执行`,
+        f.acl.includes('agent_app=X/') && !f.acl.includes('agent_platform=') && !publicExec,
+        f.acl,
+      );
     } else if (SANDBOX_FNS.includes(f.proname)) {
       check(`${label}沙箱函数：${f.proname} 是 SECURITY DEFINER`, f.secdef);
       check(
@@ -2588,6 +2608,21 @@ await expectWhy([
     '仓储：用量按（天、模型、用途）累加，同一批里重复的键先合并',
     JSON.stringify(usage) === '[{"purpose":"chat","calls":4,"p":300,"c":24},{"purpose":"embedding","calls":1,"p":100,"c":7}]',
     JSON.stringify(usage),
+  );
+
+  // 14 R8：平台新增的 SELECT 同样受 FORCE RLS 约束，不能靠 where 指向其他租户。
+  const [otherUsageTenant] = await q<{ id: string }>(
+    "insert into tenants(slug,name,pack_id) values ('platform-usage-other','合成租户','travel') returning id",
+  );
+  await q("insert into usage_daily(tenant_id,day,model,purpose,calls) values ($1,'2025-01-01','-','reply',9)", [otherUsageTenant!.id]);
+  const platformUsage = await asPlatform(R, async (tx) => ({
+    own: rowsOf<{ tenant_id: string }>(await tx.execute(sql`select tenant_id from usage_daily`)),
+    cross: rowsOf(await tx.execute(sql`select tenant_id from usage_daily where tenant_id=${otherUsageTenant!.id}`)),
+  }));
+  check(
+    '14 平台用量 SELECT：PGlite 冒烟只读当前租户，显式查询其他租户仍为空',
+    platformUsage.own.length === 2 && platformUsage.own.every((row) => row.tenant_id === R) && platformUsage.cross.length === 0,
+    JSON.stringify(platformUsage),
   );
 
   // 任务：入队、认领、改状态、取消
@@ -4867,13 +4902,15 @@ async function realPostgres(superUrl: string): Promise<void> {
       guard_events: { agent_app: 'SELECT,INSERT', agent_platform: '' },
       consents: { agent_app: 'SELECT,INSERT', agent_platform: '' },
       catalog_item_versions: { agent_app: 'SELECT,INSERT', agent_platform: '' },
-      usage_daily: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
+      usage_daily: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: 'SELECT' },
       jobs: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       outbound_sends: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       quick_replies: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       privacy_notices: { agent_app: 'SELECT', agent_platform: 'SELECT,INSERT' },
       // 03 spec「数据库」的授权表：channel_accounts 的 UPDATE 是列级的（下面单独核），表级只有 SELECT、INSERT
       channel_accounts: { agent_app: 'SELECT,INSERT', agent_platform: '' },
+      erp_connectors: { agent_app: 'SELECT,INSERT', agent_platform: '' },
+      erp_item_links: { agent_app: 'SELECT,INSERT,UPDATE,DELETE', agent_platform: '' },
       channel_inbox: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       // 07 R11：派生数据，agent_app 有 DELETE（可以重建），agent_platform 什么都没有；kb_vectors 只在装了 vector 扩展时有
       kb_chunks: { agent_app: 'SELECT,INSERT,UPDATE,DELETE', agent_platform: '' },
@@ -4929,14 +4966,17 @@ async function realPostgres(superUrl: string): Promise<void> {
         verdictPriv.platform === false,
       JSON.stringify(verdictPriv),
     );
-    // tenants 的保留期、品牌、公开域名与预算告警列：agent_platform 列级 UPDATE，agent_app 一列都不能改
+    // tenants 的保留期、品牌、公开域名、预算与状态列：agent_platform 列级 UPDATE，agent_app 一列都不能改
     const UPDATABLE = [
+      'status',
       'retention_lead_days',
       'retention_customer_days',
       'retention_trace_days',
       'brand',
       'public_host',
       'llm_daily_alert_milli',
+      'monthly_reply_quota',
+      'llm_daily_cap_milli',
     ];
     const colPriv = await sq<{ col: string; platform: boolean; app: boolean }>(
       `select a.attname as col, has_column_privilege('agent_platform', 'public.tenants', a.attname, 'UPDATE') as platform,
@@ -4944,7 +4984,7 @@ async function realPostgres(superUrl: string): Promise<void> {
          from pg_attribute a where a.attrelid = 'public.tenants'::regclass and a.attnum > 0 and not a.attisdropped order by a.attnum`,
     );
     check(
-      '真实 PG：agent_platform 只能 UPDATE tenants 的保留期、品牌、公开域名与预算告警列，agent_app 一列都不能',
+      '真实 PG：agent_platform 只能 UPDATE tenants 的保留期、品牌、公开域名、预算与状态列，agent_app 一列都不能',
       colPriv
         .filter((c) => c.platform)
         .map((c) => c.col)
@@ -4983,7 +5023,7 @@ async function realPostgres(superUrl: string): Promise<void> {
       const name = f.fn.slice(0, f.fn.indexOf('('));
       const grantee = Object.hasOwn(PURGE_FNS, name)
         ? PURGE_FNS[name]
-        : name.startsWith('auth_') || SANDBOX_FNS.includes(name)
+        : name.startsWith('auth_') || SANDBOX_FNS.includes(name) || f.fn === 'console_members_read(uuid,text)'
           ? 'agent_app'
           : null;
       const app = grantee === 'agent_app';
@@ -5430,6 +5470,14 @@ async function realPostgres(superUrl: string): Promise<void> {
       platformNotices.length === 1 && platformNotices[0]?.tenant_id === A,
       JSON.stringify(platformNotices),
     );
+    const platformUsage = await asRole<{ tenant_id: string }>('agent_platform', A, 'select tenant_id from usage_daily');
+    check(
+      '14 真实 PG：FORCE RLS 下平台只读当前租户 A 的用量',
+      platformUsage.length === 1 && platformUsage[0]?.tenant_id === A,
+      JSON.stringify(platformUsage),
+    );
+    const crossUsage = await asRole('agent_platform', A, 'select tenant_id from usage_daily where tenant_id=$1', [B]);
+    check('14 真实 PG：平台在 A 作用域显式查询 B 的用量也读不到', crossUsage.length === 0, JSON.stringify(crossUsage));
     // 消息只追加（验收 5、不变量 5）：设了租户也一样，报的是 permission denied 而不是 0 行
     for (const [what, text] of [
       ['UPDATE', `update messages set content = '改过'`],

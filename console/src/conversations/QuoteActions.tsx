@@ -49,19 +49,19 @@ export function QuoteActions({
   const conflict = error instanceof HttpError && error.status === 409;
   const disabled = pending || forbidden;
   const label = action === 'approve' ? '批准报价单' : action === 'reject' ? '驳回报价单' : '撤回报价单';
+  const sendNote = warning ?? (view?.text ? cjk(view.text) : null);
   return (
     <>
-      <p className="wb-order-status">{state ? QUOTE_STATE_LABEL[state] : '报价单'}</p>
       {order.approval?.reason && <p>{`原因：${order.approval.reason}`}</p>}
       {order.approval?.decidedBy && <p>{`审批人：${order.approval.decidedBy.name}`}</p>}
       {(state === 'pending' || state === 'approved' || state === 'expired') && (
         <>
-          <p className="wb-order-status">{warning ?? (view?.text ? cjk(view.text) : '网页会话可发送')}</p>
+          {sendNote && <p className="wb-order-status">{sendNote}</p>}
           <div className="wb-order-actions">
             {state === 'pending' && can.approveQuote && (
-              <Button size="small" disabled={disabled} onClick={() => setAction('approve')}>
+              <PrimaryButton size="small" disabled={disabled} onClick={() => setAction('approve')}>
                 批准报价单
-              </Button>
+              </PrimaryButton>
             )}
             {state === 'pending' && can.rejectQuote && (
               <Button size="small" disabled={disabled} onClick={() => setAction('reject')}>

@@ -333,6 +333,8 @@ export interface ApiError {
 }
 
 export interface Me {
+  /** 服务端精确匹配共享试用白名单；旧客户端可忽略，前端不得按租户名称推断。 */
+  sharedTrial?: boolean;
   userId: string;
   displayName: string;
   role: Role;
@@ -491,6 +493,15 @@ export interface AuditPage {
  * 运行数字（02 spec「可观测性与告警 · 运行数字」，R24）：GET /api/console/metrics，所有者、管理员可读，只在 db 存储下有。
  * 由 turn_traces、usage_daily 现算，内存缓存 60 秒；窗口是近 days 个自然日（含今天），受 trace 保留期限制
  */
+/** 14 R9：本月已落库的逐日用量；日期与 usage_daily 一样按服务器时区。 */
+export interface UsageView {
+  status: 'trial' | 'active' | 'suspended';
+  month: string; // YYYY-MM
+  replies: { used: number; quota: number | null };
+  daily: { costMilli: number; capMilli: number | null };
+  days: { day: string; replies: number; costMilli: number }[];
+}
+
 export interface MetricsView {
   /** 实际的统计窗口（天）：min(请求的 days（默认 7）, 这个租户的 trace 保留期)；下面几项都按它算，界面据此写「近 N 天」 */
   days: number;
@@ -892,3 +903,74 @@ export interface GateRunView {
 export interface StartGateResult {
   runId: string;
 }
+
+// 15 R4/R6–R9：只读设置契约；第 2 步再接真实 handler，禁止占位成功响应。
+export interface OrganizationView {
+  name: string;
+  slug: string;
+  packId: string;
+  status: 'trial' | 'active' | 'suspended';
+  publishedBrandName: string | null;
+  pendingBrandChange: boolean;
+}
+export interface MemberView {
+  userId: string;
+  displayName: string;
+  email: string;
+  role: Role;
+  disabled: boolean;
+}
+export interface ChannelView {
+  accountId: string | null;
+  key: string;
+  name: string;
+  kind: 'wecom' | 'web';
+  source: 'db' | 'env';
+  enabled: boolean;
+  loaded: boolean;
+  blockedByProfile: boolean;
+  credentialsConfigured: boolean;
+  callbackPath: string | null;
+  lastInboundAt: string | null;
+}
+export type OnboardingKey = 'team' | 'catalog' | 'sop' | 'channel';
+export const ONBOARDING_HREFS = {
+  team: '/console/settings/members',
+  catalog: '/console/catalog/:kind',
+  sop: '/console/sop',
+  channel: '/console/settings/channels',
+} as const;
+export interface OnboardingView {
+  steps: {
+    key: OnboardingKey;
+    state: 'todo' | 'done' | 'blocked';
+    href: Exclude<(typeof ONBOARDING_HREFS)[OnboardingKey], '/console/catalog/:kind'> | `/console/catalog/${string}`;
+    reason?: string;
+  }[];
+}
+export interface SettingsResponses {
+  organization: OrganizationView;
+  members: { items: MemberView[] };
+  channels: { items: ChannelView[] };
+  onboarding: OnboardingView;
+  usage: UsageView; // 直接引用 14；不复制聚合或另造用量 DTO。
+}
+export const SETTINGS_URLS = {
+  organization: '/api/console/settings/organization',
+  members: '/api/console/settings/members',
+  channels: '/api/console/settings/channels',
+  onboarding: '/api/console/settings/onboarding',
+  usage: '/api/console/usage',
+} as const;
+export const SETTINGS_ROLES = ['owner', 'admin'] as const satisfies readonly Role[];
+/** 新设置 GET 的错误沿用 ApiError；usage 的匿名 403 保持 14 的既有契约。 */
+export const SETTINGS_ERRORS = {
+  unauthorized: 401,
+  forbidden: 403,
+  db_disabled: 503,
+  store_file_mode: 503,
+  internal: 500,
+} as const;
+/** 缓存仅进程内；tenantSlug/userId 来自真实 /me；登出、401、403、组织切换清理整个 settings 前缀。 */
+export const settingsQueryKey = (tenantId: string, userId: string, page: keyof SettingsResponses) =>
+  ['settings', tenantId, userId, page] as const;

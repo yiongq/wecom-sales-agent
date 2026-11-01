@@ -10,6 +10,8 @@ export interface Loaded {
   tenantId: string;
   /** 启动时装载的租户行里的名称与行业包：/me 的 tenantName、/pack 用，不查库 */
   tenantName: string;
+  /** 启动已读取的状态，供 limits 首次轮询失败时保留停用。 */
+  tenantStatus: 'trial' | 'active' | 'suspended';
   pack: IndustryPack;
   lock: TenantLock;
   imageSections: readonly SopSection[];

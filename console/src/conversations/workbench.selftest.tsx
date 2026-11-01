@@ -753,7 +753,7 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
       // 可用时 placeholder 没传，DOM 的 .placeholder 属性（不是 attribute）取不到值时固定是空字符串，不是 undefined
       eq(`输入框可用（${label}）`, [box?.disabled, box?.placeholder], [false, '']);
     } else {
-      eq(`输入框禁用、占位提示（${label}）`, [box?.disabled, box?.placeholder], [true, '接管后在此回复，客户在企业微信中看到']);
+      eq(`输入框禁用、占位提示（${label}）`, [box?.disabled, box?.placeholder], [true, '接手后在此回复，客户在企业微信中看到']);
     }
     await m.unmount();
   }
@@ -761,14 +761,14 @@ function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
 
 // 渠道决定回复位置：同一个渠道换 id 仍然显示同样的说明；宿主企微照旧。
 for (const [id, channel, where] of [
-  ['sbx-a', 'simulator', '网页模拟器里'],
-  ['sim-a', 'simulator', '网页模拟器里'],
-  ['web:a', 'web', '网页模拟器里'],
+  ['sbx-a', 'simulator', '网页里'],
+  ['sim-a', 'simulator', '网页里'],
+  ['web:a', 'web', '网页里'],
   ['sbx-a', 'wecom', '企业微信中'],
 ] as const) {
   server = { cur: detail({ row: row({ id, channel }) }), seenClientIds: [], extraMessages: [] };
   const m = await mount(member('owner'), id);
-  eq(`回复占位按渠道（${id}/${channel}）`, (m.$('textarea')[0] as HTMLTextAreaElement)?.placeholder, `接管后在此回复，客户在${where}看到`);
+  eq(`回复占位按渠道（${id}/${channel}）`, (m.$('textarea')[0] as HTMLTextAreaElement)?.placeholder, `接手后在此回复，客户在${where}看到`);
   await m.unmount();
 }
 
@@ -1528,6 +1528,18 @@ for (const sandbox of [true, false]) {
   );
 }
 
+// 窄窗口（走查实测）：报价审批在右栏，<1280 仍要三栏同屏；到外壳隐藏侧栏（<992）才竖排，右栏完整展开。
+// 按钮行要能换行，否则右栏收窄后「撤回报价单」被挤出窗口。happy-dom 不排版，读 CSS 源码核对
+{
+  const css = fs.readFileSync(new URL('./workbench.css', import.meta.url), 'utf8');
+  const media = (width: number): string => css.split(`@media (max-width: ${width}px) {`)[1]?.split('\n}\n')[0] ?? '';
+  const side = /\.wb-side \{([^}]*)\}/.exec(media(991))?.[1] ?? '';
+  check('workbench.css：<1280 不竖排，右栏留在第一屏', media(1279) !== '' && !media(1279).includes('flex-direction: column'));
+  check('workbench.css：<992 才竖排', media(991).includes('flex-direction: column'));
+  check('workbench.css：竖排时右栏不限高', side !== '' && !side.includes('max-height'));
+  check('workbench.css：报价按钮能换行', /\.wb-order-actions \{[^}]*flex-wrap: wrap;/.test(css));
+}
+
 // 05：只有沙箱的 sbx 会话露出模拟器入口。
 for (const [sandbox, id, shown] of [
   [true, 'sbx-probe', true],
@@ -1657,6 +1669,40 @@ for (const remaining of [3, 0]) {
   await m.unmount();
 }
 
+// 15 评审：旅游旧订单不能遮住尚未成单的新报价。
+{
+  server = {
+    cur: detail({
+      orders: [
+        {
+          id: 'old-travel',
+          routeTitle: '旧线路A',
+          travelers: 2,
+          departDate: '2026-11-01',
+          totalPrice: 2000,
+          status: 'paid',
+          createdAt: new Date(NOW - 86400000).toISOString(),
+          paidAt: new Date(NOW).toISOString(),
+          confirmed: null,
+          handoffBeforePaid: null,
+          conversation: null,
+        },
+      ],
+      quote: { routeId: 'new-travel-b', routeTitle: '新线路B', travelers: 4, perPerson: 3000, total: 12000, departDate: '2026-12-10' },
+    }),
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  const m = await mount(member('agent'));
+  check(
+    '旅游：旧订单仍展示，未下单的新报价有「最近报价」',
+    m.box.textContent!.includes('旧线路A') &&
+      m.box.textContent!.includes('新线路B') &&
+      m.texts('.wb-card-title').filter((t) => t === '最近报价').length === 1,
+  );
+  await m.unmount();
+}
+
 // 09 D：报价按钮、发送提示、409 刷新、403 禁用、加载/空/错误态。
 {
   const order: import('../../../src/shared/console-api.js').LineOrderView = {
@@ -1678,13 +1724,15 @@ for (const remaining of [3, 0]) {
     cur: detail({
       orders: [order],
       quote: null,
+      quoteCard: { title: '合成报价', amountFen: 133000, lines: ['1项'] },
       can,
       sendWindow: { remaining: 0, closesAt: NOW - 1, lastCustomerAt: NOW - 48 * 3600000, used: 5 },
     }),
     seenClientIds: [],
     extraMessages: [],
   };
-  const m = await mount(member('agent'));
+  const m = await mount({ kind: 'member', me: me('agent'), pack: { ...TRAVEL, id: 'industrial', name: '工业询价' } });
+  check('工业：待审批订单展示一次，不重复「最近报价」', m.$('.wb-order').length === 1 && !m.texts('.wb-card-title').includes('最近报价'));
   const btn = (label: string) => m.$('.wb-order button').find((e) => e.textContent === label);
   check(
     '报价：待审高亮，只展示审批动作',

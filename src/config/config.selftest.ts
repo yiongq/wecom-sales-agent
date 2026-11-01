@@ -1508,7 +1508,9 @@ const imp = (slug: string, over: Partial<Parameters<typeof importConfig>[0]> = {
 
   await expectFail('DEFAULT_TENANT_SLUG 不存在', 'tenant_not_found', d({ tenantSlug: 'nobody' }));
   await newTenant('paused', 'suspended');
-  await expectFail('租户已停用', 'tenant_suspended', d({ tenantSlug: 'paused' }));
+  check('14 验收 8：停用不再是启动错误，继续核对已发布配置', (await imp('paused')).code === 0);
+  const paused = await bootWith(d({ tenantSlug: 'paused' }));
+  check('14 验收 8：停用租户照常启动', paused.exits === '' && paused.calls.startsWith('serve'), paused.log);
   await newTenant('blank');
   await expectFail('租户没有已发布的 SOP', 'no_published_sop', d({ tenantSlug: 'blank' }));
   await expectFail('另一个进程已持有该租户的锁', 'lock_held', d({ lock: async () => null }));

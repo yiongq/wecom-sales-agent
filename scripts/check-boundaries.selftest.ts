@@ -80,6 +80,46 @@ const FACADE_FILES = [
 ];
 
 try {
+  // 11 R2 / 验收 10：四种违例均由真实 CLI 报文件与行号；目标目录/文件不存在也照样检查。
+  check('src/connectors/probe.ts', "fetch('https://erp.example.test');", '11 R2：连接器不调 fetch');
+  check('src/probe.ts', "import './connectors/odoo-mock.js';", 'odoo-mock.ts 只许 *.selftest.ts import');
+  check('src/probe.ts', 'const opts = { allowLoopback: true };', '11 R2：allowLoopback');
+  check('src/packs/travel/probe.ts', "import '../../connectors/odoo.js';", '跨层 import 只经');
+  check('src/packs/travel/probe.ts', "import '../../net/egress.js';", '跨层 import 只经');
+  for (const builtin of ['http', 'https', 'net', 'tls', 'dns', 'dns/promises']) {
+    for (const prefix of ['', 'node:']) {
+      const spec = prefix + builtin;
+      for (const source of [
+        `import '${spec}';`,
+        `const m = import('${spec}');`,
+        `const m = require('${spec}');`,
+        `export * from '${spec}';`,
+      ])
+        check('src/connectors/probe.ts', source, '不 import 网络内置模块', spec);
+    }
+  }
+  for (const source of ['globalThis.fetch(url);', "globalThis['fetch'](url);", '(fetch)(url);']) {
+    check('src/connectors/nested/probe.ts', source, '11 R2：连接器不调 fetch');
+  }
+  for (const source of [
+    "const m = import('./connectors/odoo-mock.js');",
+    "const m = require('./connectors/odoo-mock.js');",
+    "export * from './connectors/odoo-mock.js';",
+  ])
+    check('src/probe.ts', source, 'odoo-mock.ts 只许 *.selftest.ts import');
+  check('src/probe.ts', "import { createEgress } from './net/egress.js'; const resolver = {};", '11 R2：egress 的 resolver');
+  check('src/probe.ts', "const e = import('./net/egress.js'); const resolver = {};", '11 R2：egress 的 resolver');
+  check('src/probe.ts', 'const resolver = {};', null);
+  check('src/probe.ts', "import { createEgress } from './net/egress.js';", null);
+  check('src/connectors/probe.ts', "import { createEgress } from '../net/egress.js';", null);
+  check('src/connectors/odoo-mock.ts', "import http from 'node:http'; fetch(url);", null);
+  check('src/connectors/probe.selftest.ts', "import http from 'node:http'; fetch(url); const allowLoopback = true;", null);
+  check('src/probe.selftest.ts', "import './connectors/odoo-mock.js'; const resolver = {};", null);
+  for (const file of ['src/net/egress.ts', 'scripts/odoo-integration.ts', 'src/probe.selftest.ts', 'scripts/check-boundaries.ts']) {
+    check(file, 'const allowLoopback = true; const resolver = {};', null);
+  }
+  check('scripts/check-boundaries.ts', "import '../src/connectors/odoo-mock.js';", null);
+
   // 核心不引包：包侧引核心出口合法，反方向的各种语法都拒绝。
   check('src/core/probe.ts', "import type { Session } from '../types.js';", null);
   check('src/core/probe.ts', "import '../../src/packs/travel/probe.js';", 'src/core/ 不 import src/packs/');

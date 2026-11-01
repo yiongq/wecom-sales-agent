@@ -1,15 +1,47 @@
 // 登录页（05 spec「界面 · 登录页」，2026-10-12 owner 定的设计稿 B；设计系统 §2.3 display、§3「登录页控件 40」）。
 // demo：左栏字标、标题「登录」、一句说明、表单，下方一行「没有账号？免登录体验」（没配沙箱时是「只看演示数据」）；
-// 右栏是产品画面图，图与 alt 由 /api/console/entry 下发，console 源码不出现行业词。prod：单栏卡片，没有右栏与体验入口。
+// 右栏是产品画面图，图与 alt 由 /api/console/entry 下发，console 源码不出现行业词。
+// prod：左栏表单，右栏用一条询价的流程说明产品（窄屏隐藏），没有体验入口。
 // 登录成功后重新判断来者：并发取 /me 与 /pack（shell/boot.ts），进成员外壳；地址不变，登录前在哪一页，登录后还在哪一页
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouterState } from '@tanstack/react-router';
 import { type MouseEvent, useEffect, useRef } from 'react';
 import { LoginForm } from '../LoginForm.js';
 import { useDocumentTitle } from '../shell/hooks.js';
-import { SHOWCASE_COPY, type PublicEntryBrand, type Showcase } from '../../../src/shared/entry-ui.js';
+import { type PublicEntryBrand, type Showcase } from '../../../src/shared/entry-ui.js';
 import { cjk } from '../typography.js';
 import { type AnonViewer, type Viewer, VIEWER_KEY } from '../viewer.js';
+
+const STORY_STEPS = [
+  { title: '收到询价', note: '文字、图片和表格都能接', state: '已整理', tone: 'done' },
+  { title: '匹配与试算', note: '核对规格和数量，按规则算价', state: '已完成', tone: 'done' },
+  { title: '报价审批', note: '顾问确认后才会发给客户', state: '待审批', tone: 'pending' },
+  { title: '发给客户', note: '需要时由顾问接手', state: '下一步', tone: 'next' },
+] as const;
+
+function LoginStory() {
+  return (
+    <aside className="login-story" aria-label="产品说明">
+      <h2>
+        {cjk('接住每条询价，')}
+        <br />
+        {cjk('把报价交给规则。')}
+      </h2>
+      <p className="login-story-lead">{cjk('让AI整理需求，让顾问把住报价与承诺。')}</p>
+      <ol className="login-story-steps">
+        {STORY_STEPS.map((step) => (
+          <li key={step.title}>
+            <div>
+              <strong>{step.title}</strong>
+              <span>{cjk(step.note)}</span>
+            </div>
+            <em data-tone={step.tone}>{step.state}</em>
+          </li>
+        ))}
+      </ol>
+    </aside>
+  );
+}
 
 export function LoginPage({
   demo,
@@ -26,7 +58,7 @@ export function LoginPage({
 }) {
   const qc = useQueryClient();
   const href = useRouterState({ select: (s) => s.location.publicHref });
-  useDocumentTitle(brand?.name ?? 'AI销售工作台');
+  useDocumentTitle(brand?.name ? `登录 · ${brand.name} · 单来` : '登录 · 单来');
   const image = brand ? brand.image : showcase;
   // 进入匿名视图时链接随登录页卸载，焦点放到已挂载的外壳 main。
   const returning = useRef(false);
@@ -48,17 +80,18 @@ export function LoginPage({
   return (
     <div className={`login-page ${demo ? 'login-demo' : 'login-prod'}`}>
       <main id="main" className="login-panel">
-        <div className="entry-wordmark">{brand?.name ?? 'AI销售工作台'}</div>
+        {/* prod 的卡片标题已是产品名，再放字标就重复了。 */}
+        {demo && <div className="entry-wordmark">单来</div>}
         <div className="login-column">
-          <h1 className="login-title">登录</h1>
+          <h1 className="login-title">单来</h1>
           <p className="login-lead">
             {brand ? (
-              cjk(brand.subtitle)
+              cjk(brand.name)
             ) : (
               <>
-                {cjk('AI在企业微信里接待客户，')}
+                {cjk('在企业微信里接收工业询价，')}
                 <br />
-                {cjk('你在这里管话术、产品和会话。')}
+                {cjk('匹配产品、试算报价、审批与人工接手。')}
               </>
             )}
           </p>
@@ -86,12 +119,13 @@ export function LoginPage({
           )}
         </div>
       </main>
+      {!demo && <LoginStory />}
       {demo && image && (
         <aside className="entry-showcase" aria-label="产品画面">
           <div className="entry-showcase-content">
             <img src={image.src} alt={image.alt} width="460" />
-            <h2>{brand?.name ?? SHOWCASE_COPY.title}</h2>
-            <p>{brand?.subtitle ?? SHOWCASE_COPY.description}</p>
+            <h2>单来</h2>
+            <p>接收工业询价，匹配产品、试算报价、审批与人工接手</p>
           </div>
         </aside>
       )}

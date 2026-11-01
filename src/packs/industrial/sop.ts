@@ -48,7 +48,7 @@ export const templates: BrandTemplates = {
   identityAnswer: '{identityLine}，需要真人服务请告诉我。',
   offTopicReply: '我可以帮您核对工业品的型号、数量与报价。',
   welcomeText: '您好，我是{brandName}的{aiTitle}，请告诉我型号和数量。',
-  welcomeBackText: '您好，型号或数量有变化可以告诉我。',
+  welcomeBackText: '您好，我是{brandName}的{aiTitle}，可以继续发型号和数量，需要真人服务请告诉我。',
   webWelcome: '欢迎来到{brandName}，我是{aiTitle}，请提供型号和数量，需要人工时请告诉我。',
   mockOpening: '请告诉我型号和数量。',
   quickReplies: industrialQuickReplies,

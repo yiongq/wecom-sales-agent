@@ -1,6 +1,7 @@
 # 03 · 渠道层 v2
 
 Status: implemented
+Amended by: [15 · 产品门面：单来官网、文档与设置中心](../15-product-surface/spec.md) — 只读渠道状态投影，区分配置、装载、profile 禁用与实际入站；凭据不回显，渠道变更仍走 CLI 维护窗口（15 R4、R7）。
 Amended by: [11 · 外部业务系统连接器：Odoo 实时库存（只读）](../11-erp-connector/spec.md)（只做新增：R9 的密钥环兼管 ERP 连接器凭据，附加数据另起 `erp_connectors:v1` 一域，轮换多一步 `erp-connector rekey`；见 11 R3）
 Superseded in part by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md) — 开放问题 1 已定 A 中 guide.html 指向 chat.html 的一句（05 R23）。
 Superseded in part by: [12 · 客户发来的图片与文件](../12-customer-files/spec.md) — 网页消息接口返回值「转人工后为 null」只指转人工之后的轮次；这一轮刚转人工的那句照常返回给客户（12 R3，2026-10-30）。

@@ -5,7 +5,9 @@ import {
   moneyProvenanceFollowupStep,
   type ShapePolicy,
 } from '../../core/pack-api.js';
+import { live } from './live.js';
 import { createIntake } from './intake.js';
+import { normalizePartNo } from './normalize.js';
 import { handoffVocab } from './handoff-vocab.js';
 import { industrialReplyGuard, industrialFollowupGuard, rfqTrimStep, rfqTrimFollowupStep } from './guards.js';
 import { IndustrialPolicySchema, quoteNotes } from './policy.js';
@@ -36,10 +38,19 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     session.orderIds.map(getAnyOrder).filter((order) => order && 'v' in order && order.sessionId === session.id);
   return {
     id: industrial.id,
+    erp: {
+      kind: 'part',
+      key: (item) => (typeof item.partNo === 'string' ? normalizePartNo(item.partNo) : null),
+      remoteKey: normalizePartNo,
+      unit: (item) => String(item.unit),
+    },
     intake: createIntake(sources),
     catalog: { part: partCatalog },
     maxQty: MAX_QTY,
-    priceLine,
+    priceLine(item, qty) {
+      if (!sources.erp?.active('part') || typeof item.id !== 'string') return priceLine(item, qty);
+      return priceLine(live(item, sources.erp.fresh('part', item.id)), qty);
+    },
     policy: industrialPolicy,
     quotes: quoteCapabilities(sources),
     siteLinks: quoteSiteLinks(),
@@ -105,7 +116,7 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     tools: createIndustrialTools(sources),
     money: { minimumAmount: 0.01, precisionTolerance: 0.5, decimals: true },
     defaultBrand: {
-      brandName: '衡石工业品（虚构）',
+      brandName: '衡石工业品（演示）',
       advisorTitle: '顾问',
       aiTitle: 'AI 询价顾问',
       scopeNoun: '工业品询价',
@@ -115,8 +126,8 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
       identityAnswer: '我是衡石工业品的 AI 询价顾问',
       offTopicReply: templates.offTopicReply,
       welcomeText: '您好，请告诉我型号和数量。',
-      welcomeBackText: templates.welcomeBackText,
-      webWelcome: '欢迎来到衡石工业品（虚构），请告诉我型号和数量。',
+      welcomeBackText: '您好，可以继续发型号和数量，需要真人服务请告诉我。',
+      webWelcome: '欢迎来到衡石工业品（演示），请告诉我型号和数量。',
       mockOpening: templates.mockOpening,
       quickReplies: templates.quickReplies,
       hardRequirements,
