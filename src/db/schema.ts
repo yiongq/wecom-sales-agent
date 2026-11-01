@@ -485,6 +485,127 @@ export const turnTraces = pgTable(
   ],
 );
 
+/** 17 R2：只保留当前评分；成员删除不影响评分，trace 删除必须级联。 */
+export const turnReviews = pgTable(
+  'turn_reviews',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    turnId: uuid('turn_id').notNull(),
+    rating: text('rating', { enum: ['good', 'bad'] }).notNull(),
+    reason: text('reason', { enum: ['incorrect', 'missing', 'handoff', 'format', 'other'] }),
+    reviewerUserId: uuid('reviewer_user_id').notNull(),
+    revision: integer('revision').notNull().default(1),
+    createdAt: tstz('created_at').notNull().defaultNow(),
+    updatedAt: tstz('updated_at').notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.turnId] }),
+    foreignKey({
+      name: 'turn_reviews_turn_fk',
+      columns: [t.tenantId, t.turnId],
+      foreignColumns: [turnTraces.tenantId, turnTraces.id],
+    }).onDelete('cascade'),
+    check('turn_reviews_rating_check', sql`${t.rating} IN ('good', 'bad')`),
+    check('turn_reviews_reason_check', sql`${t.reason} IN ('incorrect', 'missing', 'handoff', 'format', 'other')`),
+    check('turn_reviews_reason_rating_check', sql`(${t.rating} = 'bad') = (${t.reason} IS NOT NULL)`),
+    check('turn_reviews_revision_check', sql`${t.revision} >= 1`),
+    index('turn_reviews_rating_reason_idx').on(t.tenantId, t.rating, t.reason),
+  ],
+);
+
+/** 17：日账本独立于 jobs 留存，聚合业务值可提前清空。 */
+export const opsDailyReports = pgTable(
+  'ops_daily_reports',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    day: date('day', { mode: 'string' }).notNull(),
+    reportId: uuid('report_id').notNull().defaultRandom().unique(),
+    status: text('status', { enum: ['pending', 'sending', 'sent', 'unknown', 'failed', 'skipped'] })
+      .notNull()
+      .default('pending'),
+    attempts: integer('attempts').notNull().default(0),
+    resendCount: integer('resend_count').notNull().default(0),
+    nextAttemptAt: tstz('next_attempt_at'),
+    claimToken: uuid('claim_token'),
+    computedAt: tstz('computed_at'),
+    sentAt: tstz('sent_at'),
+    errorCode: text('error_code', {
+      enum: [
+        'config_missing',
+        'rate_limited',
+        'sql_error',
+        'rejected',
+        'timeout',
+        'network',
+        'bad_response',
+        'server_error',
+        'redirect',
+        'restart_in_sending',
+        'commit_failed',
+        'deadline',
+        'suspended',
+        'disabled',
+      ],
+    }),
+    snapshot: json('snapshot'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.day] }),
+    check('ops_daily_reports_status_check', sql`${t.status} IN ('pending', 'sending', 'sent', 'unknown', 'failed', 'skipped')`),
+    check('ops_daily_reports_attempts_check', sql`${t.attempts} >= 0`),
+    check('ops_daily_reports_resend_count_check', sql`${t.resendCount} >= 0`),
+    check(
+      'ops_daily_reports_error_code_check',
+      sql`${t.errorCode} IN ('config_missing', 'rate_limited', 'sql_error', 'rejected', 'timeout', 'network', 'bad_response', 'server_error', 'redirect', 'restart_in_sending', 'commit_failed', 'deadline', 'suspended', 'disabled')`,
+    ),
+  ],
+);
+
+export const opsLatencyState = pgTable(
+  'ops_latency_state',
+  {
+    tenantId: uuid('tenant_id')
+      .primaryKey()
+      .references(() => tenants.id),
+    lastWindowEnd: tstz('last_window_end'),
+    badStreak: integer('bad_streak').notNull().default(0),
+    goodStreak: integer('good_streak').notNull().default(0),
+    active: boolean('active').notNull().default(false),
+    paused: boolean('paused').notNull().default(false),
+    lastSentAt: tstz('last_sent_at'),
+    lastP90Ms: integer('last_p90_ms'),
+    lastSamples: integer('last_samples').notNull().default(0),
+  },
+  (t) => [
+    check('ops_latency_state_bad_streak_check', sql`${t.badStreak} >= 0`),
+    check('ops_latency_state_good_streak_check', sql`${t.goodStreak} >= 0`),
+    check('ops_latency_state_last_p90_ms_check', sql`${t.lastP90Ms} >= 0`),
+    check('ops_latency_state_last_samples_check', sql`${t.lastSamples} >= 0`),
+  ],
+);
+
+export const opsMetricCoverage = pgTable(
+  'ops_metric_coverage',
+  {
+    tenantId: uuid('tenant_id')
+      .notNull()
+      .references(() => tenants.id),
+    day: date('day', { mode: 'string' }).notNull(),
+    firstSeenAt: tstz('first_seen_at').notNull(),
+    lastSeenAt: tstz('last_seen_at').notNull(),
+    hasGap: boolean('has_gap').notNull().default(false),
+    hasDeletion: boolean('has_deletion').notNull().default(false),
+  },
+  (t) => [
+    primaryKey({ columns: [t.tenantId, t.day] }),
+    check('ops_metric_coverage_window_check', sql`${t.lastSeenAt} >= ${t.firstSeenAt}`),
+  ],
+);
+
 export const guardEvents = pgTable(
   'guard_events',
   {
@@ -576,7 +697,7 @@ export const jobs = pgTable(
       .notNull()
       .references(() => tenants.id),
     id: uuid('id').notNull().defaultRandom(),
-    kind: text('kind', { enum: ['followup', 'handoff_notify', 'retention_purge'] }).notNull(),
+    kind: text('kind', { enum: ['followup', 'handoff_notify', 'retention_purge', 'ops_daily_digest'] }).notNull(),
     dedupeKey: text('dedupe_key').notNull(),
     runAt: tstz('run_at').notNull(),
     status: text('status', { enum: ['pending', 'running', 'sending', 'done', 'failed', 'cancelled', 'abandoned'] })
@@ -592,7 +713,7 @@ export const jobs = pgTable(
   },
   (t) => [
     primaryKey({ columns: [t.tenantId, t.id] }),
-    check('jobs_kind_check', sql`${t.kind} IN ('followup', 'handoff_notify', 'retention_purge')`),
+    check('jobs_kind_check', sql`${t.kind} IN ('followup', 'handoff_notify', 'retention_purge', 'ops_daily_digest')`),
     check('jobs_status_check', sql`${t.status} IN ('pending', 'running', 'sending', 'done', 'failed', 'cancelled', 'abandoned')`),
     check('jobs_max_attempts_check', sql`${t.maxAttempts} BETWEEN 1 AND 10`),
     // 同一 dedupe_key 至多一个没结束的任务（enqueue 的唯一性兜底）

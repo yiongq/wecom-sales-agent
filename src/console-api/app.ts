@@ -1,3 +1,8 @@
+import { createHash } from 'node:crypto';
+import { bodyLimit } from 'hono/body-limit';
+import { buildRegressionDraft } from './review-draft.js';
+import { isTurnId, readReviewState, readRegressionReason, putTurnReview, reviewView, ReviewError } from '../db/repo/turn-reviews.js';
+import { TurnReviewBody, type TurnTraceDetailView } from '../shared/console-api.js';
 import { createSettingsApi } from './settings.js';
 import { sharedTrial } from '../tenancy/trial/notice.js';
 import { SandboxLimitError } from '../tenancy/sandbox/limits.js';
@@ -102,6 +107,7 @@ import {
   readTurnExportSource,
   readTurnSteps,
   readTurnTrace,
+  readTurnTraceById,
 } from '../db/repo/traces.js';
 import {
   AssignedToOtherError,
@@ -120,6 +126,7 @@ import {
 import { clientKey, isCrossSite, lookupLimit } from '../http-guards.js';
 import { requestLogContext } from '../log.js';
 import { liveOrderSummary } from '../ops/board.js';
+import { readTrendsView } from '../ops/trends.js';
 import { readMetricsView } from '../ops/metrics.js';
 import { defaultQuickRepliesOf } from '../packs/registry.js';
 import { paymentMode } from '../payment/mode.js';
@@ -153,6 +160,7 @@ import {
   LoginBody,
   MessagesQuery,
   MetricsQuery,
+  TrendsQuery,
   MoveBody,
   OrdersQuery,
   PatchItemBody,
@@ -331,6 +339,14 @@ const canSeeUsage: MiddlewareHandler<ConsoleEnv> = async (c, next) => {
   if (!c.var.user || currentRuntime().kind === 'sandbox') return fail(c, 403, { error: 'forbidden' });
   return ownerOrAdmin(c, next);
 };
+/** 17：鉴权 → 角色 → 沙箱 → 存储，参数校验在本中间件之后。 */
+const canSeeObservability: MiddlewareHandler<ConsoleEnv> = async (c, next) => {
+  if (!c.var.user) return unauthorized(c);
+  if (!EDITORS.has(c.var.user.role)) return fail(c, 403, { error: 'forbidden' });
+  if (currentRuntime().kind === 'sandbox') return fail(c, 403, { error: 'observability_unavailable' });
+  if (sessionStoreMode() !== 'db') throw new StoreFileModeError('可观测性接口只在 SESSION_STORE=db 时有');
+  return next();
+};
 /** trace 原文（原稿、参数、耗时、模型、前缀）：只有 owner / admin */
 const canSeeTraces = ownerOrAdmin;
 
@@ -435,10 +451,28 @@ const meOf = (u: AuthedUser): Me => ({
 const cookie = (value: string, maxAgeSec: number): string =>
   `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAgeSec}`;
 
+const validReviewTurn: MiddlewareHandler<ConsoleEnv> = async (c, next) =>
+  isTurnId(c.req.param('turnId') ?? '') ? next() : fail(c, 404, { error: 'not_found' });
+const reviewTokenHash = (c: Context<ConsoleEnv>) => createHash('sha256').update(c.var.token!).digest('hex');
+/** 包括 COMMIT 在内的整个写事务都成功才返回；失败不透传驱动错误或内容。 */
+async function reviewWriteTx<T>(c: Context<ConsoleEnv>, fn: (tx: Tx) => Promise<T>): Promise<T> {
+  try {
+    return await withTenant(configRuntime().db, ctxOf(c), fn);
+  } catch (error) {
+    if (error instanceof ReviewError) throw error;
+    throw new ReviewError('store_unavailable');
+  }
+}
+
 /** 命名错误 → 状态码与 { error, … }；不认识的返回 null，按 500 处理 */
 function mapError(e: unknown): { status: 400 | 403 | 404 | 409 | 422 | 429 | 503; body: ApiError } | null {
   if (e instanceof BudgetExhausted) return { status: 429, body: { error: 'llm_budget_exhausted' } };
   if (e instanceof HTTPException) return { status: 400, body: { error: 'bad_request', detail: e.message } };
+  if (e instanceof ReviewError)
+    return {
+      status: e.code === 'not_found' ? 404 : e.code === 'review_not_applicable' ? 422 : e.code === 'review_conflict' ? 409 : 503,
+      body: { error: e.code },
+    };
   // 02「后台接口」的新错误码：角色不够 403，角色够但会话不归你 409（不变量 23 与权限表的分界）
   if (e instanceof ForbiddenError) return { status: 403, body: { error: 'forbidden', detail: e.message } };
   if (e instanceof ConversationNotFoundError) return { status: 404, body: { error: 'conversation_not_found', detail: e.message } };
@@ -910,40 +944,122 @@ export const consoleApi = new Hono<ConsoleEnv>()
       'cache-control': 'no-store',
     });
   })
-  // ---------------- AI 记录（07 R24） ----------------
-  // 跨会话的每一轮，按开始时间倒序，筛选与游标都在 SQL 里做（src/db/repo/traces.ts 的 listTraces）。只给所有者、管理员；
-  // 只在 db 存储下有（trace 只在那时入库）：文件存储 503 store_file_mode，权限先于它
-  .get('/traces', canSeeTraces, zValidator('query', TracesQuery, badRequest), async (c) => {
-    if (sessionStoreMode() !== 'db') throw new StoreFileModeError('AI 记录只在 SESSION_STORE=db 时有');
-    const q = c.req.valid('query');
-    const { rows, next } = await readTx(c, (tx) =>
-      listTraces(tx, {
-        since: q.since,
-        until: q.until,
-        outcome: q.outcome,
-        guard: q.guard,
-        handoffKind: q.handoffKind,
-        overLimit: q.overLimit === '1',
-        before: q.before,
-        limit: q.limit ?? 50,
-      }),
-    );
-    const body: TracePage = {
-      items: rows.map((r) => ({
-        turnId: r.turnId,
-        conversationId: r.conversationId,
-        channel: r.channel,
+  // 17 深链接与抽检：权限在定位参数、请求体校验之前。
+  .get('/traces/:turnId', canSeeObservability, validReviewTurn, async (c) => {
+    const turnId = c.req.param('turnId');
+    const body = await readTx(c, async (tx): Promise<TurnTraceDetailView> => {
+      const state = await readReviewState(tx, turnId);
+      const r = await readTurnTraceById(tx, turnId);
+      if (!r) throw new ReviewError('not_found');
+      const customer = await readTurnCustomerMessage(tx, state.conversationId, turnId);
+      return {
+        turnId: r.id,
+        conversationId: state.conversationId,
+        channel: state.channel,
+        reviewable: state.reviewable,
+        review: state.review ? await reviewView(tx, state.review, reviewTokenHash(c)) : null,
         startedAt: r.startedAt.toISOString(),
         durationMs: r.durationMs,
         outcome: r.outcome,
-        guards: r.guards,
-        handoffKind: r.handoffKind !== null && isHandoffKind(r.handoffKind) ? r.handoffKind : null,
-        overLimit: r.overLimit,
-      })),
-      next,
-    };
+        sopVersion: r.sopVersion,
+        prefixHash: r.prefixHash,
+        catalogVersions: r.catalogVersions,
+        stageBefore: r.stageBefore,
+        stageAfter: r.stageAfter,
+        draft: r.draft,
+        finalText: r.finalText,
+        calls: r.calls,
+        llm: r.llm,
+        signals: r.signals,
+        guardVerdicts: r.guardVerdicts ?? null,
+        replyShape: r.replyShape ?? null,
+        handoffKind: handoffKindOfTurn(getSession(state.conversationId)?.handoffLog, r.id),
+        customerText: customer?.content ?? null,
+      };
+    });
     return c.json(body, 200);
   })
+  .get('/traces/:turnId/review', canSeeObservability, validReviewTurn, async (c) => {
+    const body = await readTx(c, async (tx) => {
+      const { review } = await readReviewState(tx, c.req.param('turnId'));
+      return { review: review ? await reviewView(tx, review, reviewTokenHash(c)) : null };
+    });
+    return c.json(body, 200);
+  })
+  .put(
+    '/traces/:turnId/review',
+    canSeeObservability,
+    bodyLimit({ maxSize: 4096, onError: (c) => c.json({ error: 'payload_too_large' }, 413) }),
+    validReviewTurn,
+    zValidator('json', TurnReviewBody, badRequest),
+    async (c) => {
+      const body = await reviewWriteTx(c, (tx) => putTurnReview(tx, c.req.param('turnId'), c.req.valid('json'), reviewTokenHash(c)));
+      return c.json(body, 200);
+    },
+  )
+  .post('/traces/:turnId/regression-draft', canSeeObservability, validReviewTurn, async (c) => {
+    const draft = await reviewWriteTx(c, async (tx) => {
+      const reason = await readRegressionReason(tx, c.req.param('turnId'));
+      const draft = buildRegressionDraft(reason, currentPack().runtime.id);
+      await writeAudit(tx, {
+        action: 'trace.regression_draft',
+        diff: { reason: draft.reason, format: draft.format, pack: draft.case.pack },
+      });
+      return draft;
+    });
+    return c.body(`${JSON.stringify(draft, null, 2)}\n`, 200, {
+      'content-type': 'application/json; charset=utf-8',
+      'content-disposition': 'attachment; filename="regression-draft.json"',
+      'cache-control': 'no-store',
+    });
+  })
+  // ---------------- AI 记录（07 R24） ----------------
+  // 跨会话的每一轮，按开始时间倒序，筛选与游标都在 SQL 里做（src/db/repo/traces.ts 的 listTraces）。只给所有者、管理员；
+  // 只在 db 存储下有（trace 只在那时入库）：文件存储 503 store_file_mode，权限先于它
+  .get(
+    '/traces',
+    canSeeTraces,
+    async (c, next) => {
+      if (c.req.query('review') !== undefined || c.req.query('reason') !== undefined) return canSeeObservability(c, next);
+      return next();
+    },
+    zValidator('query', TracesQuery, badRequest),
+    async (c) => {
+      if (sessionStoreMode() !== 'db') throw new StoreFileModeError('AI 记录只在 SESSION_STORE=db 时有');
+      const q = c.req.valid('query');
+      const { rows, next } = await readTx(c, (tx) =>
+        listTraces(tx, {
+          review: q.review,
+          reason: q.reason,
+          since: q.since,
+          until: q.until,
+          outcome: q.outcome,
+          guard: q.guard,
+          handoffKind: q.handoffKind,
+          overLimit: q.overLimit === '1',
+          before: q.before,
+          limit: q.limit ?? 50,
+        }),
+      );
+      const body: TracePage = {
+        items: rows.map((r) => ({
+          review: r.review,
+          reviewable: r.reviewable,
+          turnId: r.turnId,
+          conversationId: r.conversationId,
+          channel: r.channel,
+          startedAt: r.startedAt.toISOString(),
+          durationMs: r.durationMs,
+          outcome: r.outcome,
+          guards: r.guards,
+          handoffKind: r.handoffKind !== null && isHandoffKind(r.handoffKind) ? r.handoffKind : null,
+          overLimit: r.overLimit,
+        })),
+        next,
+      };
+      return c.json(body, 200);
+    },
+  )
   // 接手：没人接手或是自己 → 成为接手人；别人接手中 409 assigned_to_other；带 force 改派只给 supervisor 以上（坐席 403）
   .post('/conversations/:id/takeover', canHandle, zValidator('json', TakeoverBody, badRequest), async (c) => {
     const s = listedSessionOf(c.req.param('id'));
@@ -1230,6 +1346,11 @@ export const consoleApi = new Hono<ConsoleEnv>()
     }
     const body: MetricsView = await readMetricsView(ctxOf(c), c.req.valid('query').days ?? 7, clock());
     return c.json(body, 200);
+  })
+
+  .get('/metrics/trends', canSeeObservability, zValidator('query', TrendsQuery, badRequest), async (c) => {
+    const days = c.req.valid('query').days === '30' ? 30 : 7;
+    return c.json(await readTrendsView(ctxOf(c), days, clock()), 200);
   })
 
   // 没匹配上的路径回 JSON，不落到静态文件：成员与 demo 下的匿名 404；prod 下匿名 401（除了登录处处 401）

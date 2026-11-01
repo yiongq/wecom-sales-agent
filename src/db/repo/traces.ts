@@ -4,6 +4,8 @@
 import { and, asc, desc, eq, lt, ne, sql, type SQL } from 'drizzle-orm';
 import { currentTenantCtx, rowsOf, type Tx } from '../client.js';
 import { conversations, guardEvents, messages, turnTraces } from '../schema.js';
+import { reviewableSql } from './turn-reviews.js';
+import type { ReviewReason, ReviewRating } from '../../shared/console-api.js';
 import type { GuardVerdict, ReplyShape } from '../../core/pack-api.js';
 
 export interface TurnTraceRow {
@@ -149,6 +151,14 @@ export async function readTurnDiff(tx: Tx, conversationId: string, turnId: strin
 
 /** trace 原文（GET /conversations/:id/turns/:turnId，只给所有者、管理员）：整行；这一轮不在这个会话名下时为 null */
 export async function readTurnTrace(tx: Tx, conversationId: string, turnId: string): Promise<TurnTraceRow | null> {
+  return readTrace(tx, turnId, conversationId);
+}
+
+export async function readTurnTraceById(tx: Tx, turnId: string): Promise<TurnTraceRow | null> {
+  return readTrace(tx, turnId);
+}
+
+async function readTrace(tx: Tx, turnId: string, conversationId?: string): Promise<TurnTraceRow | null> {
   if (!UUID_RE.test(turnId)) return null;
   const [r] = await tx
     .select({
@@ -171,7 +181,7 @@ export async function readTurnTrace(tx: Tx, conversationId: string, turnId: stri
       replyShape: turnTraces.replyShape,
     })
     .from(turnTraces)
-    .where(and(eq(turnTraces.id, turnId), eq(turnTraces.conversationId, conversationId)));
+    .where(and(eq(turnTraces.id, turnId), conversationId === undefined ? undefined : eq(turnTraces.conversationId, conversationId)));
   return r ?? null;
 }
 
@@ -235,6 +245,8 @@ export async function readTurnExportSource(
 // ---------------- AI 记录列表（07 R24） ----------------
 
 export interface TraceListFilter {
+  review?: 'none' | ReviewRating;
+  reason?: ReviewReason;
   /** 含 */
   since?: string;
   /** 不含 */
@@ -251,6 +263,8 @@ export interface TraceListFilter {
 }
 
 export interface TraceListRow {
+  review: { rating: ReviewRating; reason: ReviewReason | null } | null;
+  reviewable: boolean;
   turnId: string;
   conversationId: string;
   channel: string;
@@ -272,6 +286,9 @@ const arrayOf = (col: SQL): SQL => sql`(case when json_typeof(${col}) = 'array' 
  */
 export async function listTraces(tx: Tx, f: TraceListFilter): Promise<{ rows: TraceListRow[]; next: string | null }> {
   const conds: SQL[] = [sql`true`];
+  if (f.review === 'none') conds.push(sql`${reviewableSql()} and r.turn_id is null`);
+  else if (f.review !== undefined) conds.push(sql`r.rating = ${f.review}`);
+  if (f.reason !== undefined) conds.push(sql`r.reason = ${f.reason}`);
   if (f.since !== undefined) conds.push(sql`t.started_at >= ${f.since}::timestamptz`);
   if (f.until !== undefined) conds.push(sql`t.started_at < ${f.until}::timestamptz`);
   if (f.outcome !== undefined) conds.push(sql`t.outcome = ${f.outcome}`);
@@ -305,16 +322,21 @@ export async function listTraces(tx: Tx, f: TraceListFilter): Promise<{ rows: Tr
     guards: unknown;
     over_limit: boolean;
     handoff_kind: string | null;
+    rating: ReviewRating | null;
+    reason: ReviewReason | null;
+    reviewable: boolean;
   }>(
     await tx.execute(sql`
       with page as (
-        select t.tenant_id, t.id, t.conversation_id, t.started_at, t.duration_ms, t.outcome, t.guard_verdicts, t.reply_shape
+        select t.tenant_id, t.id, t.conversation_id, t.started_at, t.duration_ms, t.outcome, t.guard_verdicts, t.reply_shape,
+               ${reviewableSql()} as reviewable, r.rating, r.reason
           from ${turnTraces} t
+          left join turn_reviews r on r.tenant_id=t.tenant_id and r.turn_id=t.id
          where ${sql.join(conds, sql` and `)}
          order by t.started_at desc, t.id desc
          limit ${f.limit + 1}
       )
-      select p.id::text as id,
+      select p.reviewable, p.rating, p.reason, p.id::text as id,
              p.conversation_id as conversation_id,
              c.channel as channel,
              (extract(epoch from p.started_at) * 1000)::float8 as started_ms,
@@ -342,6 +364,8 @@ export async function listTraces(tx: Tx, f: TraceListFilter): Promise<{ rows: Tr
   const last = shown.at(-1);
   return {
     rows: shown.map((r) => ({
+      reviewable: r.reviewable,
+      review: r.rating ? { rating: r.rating, reason: r.reason } : null,
       turnId: r.id,
       conversationId: r.conversation_id,
       channel: r.channel,

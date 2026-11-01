@@ -3355,6 +3355,11 @@ async function workbenchSuite(): Promise<void> {
       allowed: MONEY,
     },
     { route: 'GET /traces', url: '/traces', allowed: MONEY },
+    // 17：新抽检入口同样先过 owner/admin 权限，再拒绝文件模式或无效定位。
+    { route: 'GET /traces/:turnId', url: '/traces/not-a-uuid', allowed: MONEY },
+    { route: 'GET /traces/:turnId/review', url: '/traces/not-a-uuid/review', allowed: MONEY },
+    { route: 'PUT /traces/:turnId/review', url: '/traces/not-a-uuid/review', json: {}, allowed: MONEY },
+    { route: 'POST /traces/:turnId/regression-draft', url: '/traces/not-a-uuid/regression-draft', allowed: MONEY },
     // 12 R12：下载附件原件，只给能处理会话的成员（只读成员 403）；这里的附件不存在，过了权限的回 404
     {
       route: 'GET /conversations/:id/attachments/:attId',
@@ -3389,6 +3394,7 @@ async function workbenchSuite(): Promise<void> {
     { route: 'POST /quick-replies/:id/archive', url: '/quick-replies/nosuch/archive', allowed: REPLIES },
     { route: 'POST /quick-replies/:id/move', url: '/quick-replies/nosuch/move', json: { direction: 'up' }, allowed: REPLIES },
     { route: 'GET /metrics', url: '/metrics', allowed: MONEY },
+    { route: 'GET /metrics/trends', url: '/metrics/trends', allowed: MONEY },
     // 14 R9：用量仅给 owner/admin；匿名明确要求 403。
     { route: 'GET /usage', url: '/usage', allowed: MONEY, anonStatus: 403 },
     { route: 'GET /events', url: '/events', allowed: ALL, sse: true },

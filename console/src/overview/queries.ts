@@ -78,6 +78,16 @@ export const metricsQuery = queryOptions({
   queryFn: () => unwrap(api.metrics.$get({ query: {} })),
 });
 
+/** 17 R10：GET /metrics/trends；服务端缓存 60 秒，这里不随外壳每 30 秒重取 */
+export const TRENDS_KEY = 'metrics-trends';
+export const trendsQuery = (range: 7 | 30) => {
+  const days = String(range) as '7' | '30';
+  return queryOptions({
+    queryKey: [TRENDS_KEY, range] as const,
+    queryFn: () => unwrap(api.metrics.trends.$get({ query: { days } })),
+  });
+};
+
 /** 每页取多少条审计、最多翻几页（一次 CSV 导入至多 200 行，合成一句也要取得完） */
 const AUDIT_PAGE = 50;
 const AUDIT_MAX_PAGES = 10;

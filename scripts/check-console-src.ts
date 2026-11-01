@@ -78,6 +78,10 @@ const GENERIC: Readonly<Record<string, string | { why: string; only: readonly st
   标签: '界面自己的词：tags 类型字段的通用叫法',
   duration: '通用属性名：antd 的 message、notification 的显示时长配置键（parts/toast.tsx），碰巧是假包的字段 key',
   styles: '通用属性名：antd 组件与 ConfigProvider 的语义化样式配置键（theme/ThemeProvider.tsx），碰巧是假包的字段 key',
+  days: {
+    why: '17 趋势接口的查询参数名（GET /metrics/trends?days=7|30），与 MetricsTrendsView 同名，碰巧是行业包的字段',
+    only: ['console/src/overview/queries.ts'],
+  },
   route: {
     why: '设计系统 §7 的实体图标名（lucide 的 route），图标表以它为键；别的文件里 route 仍是旅游包的实体 kind',
     only: ['console/src/shell/icons.tsx'],

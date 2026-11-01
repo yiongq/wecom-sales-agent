@@ -10,7 +10,7 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 ## 开工条件
 
 1. 已满足：D1–D7 全部照推荐定案；owner 于 2026-10-31 明确说「17 改 ready」，并按「点这个就同时确认 heavy 档」确认档位，当前 Status: ready、Tier: heavy。
-2. 实现排在 15 第 1 批完成并合入之后，第 0 步也不提前开始。依赖 15 的设置导航、试用公司及其种子/7 天留存/手动重置、概览页与引导布局改动；同时要求 14 R6/R9 真实链路可用。14 核心合入不能代替验收，15 第 1 批完成状态待核实，第 0 步核对确切版本与证据。
+2. 已满足（2026-11-01 第 0 步核对）：15、14 已 `implemented`（#416，`origin/dev` `89807cf8`），设置导航、试用公司及其种子/7 天留存/手动重置、概览页与引导布局均已合入，14 R6/R9 在代码里。
 3. 已满足：本次 ready 文档变更已给 02、07、后台 UX 顶部各加一行 `Amended by:`，原正文不动；主参考阶段 8 已登记日期与批准原话。
 4. 本机可跑四门禁、一次性真实 PG、浏览器及固定版本 Langfuse；生产、真实数据与真实模型不在本期本机验收范围。
 
@@ -23,11 +23,11 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 
 ## 步骤
 
-- [ ] 0. 开工核对与契约冻结。核对 14 R6/R9、15 的 seed/reset/7 天留存和原 metrics、旧 exporter；确认 origin 分类、消息与 trace 对应、runbook 路径与现有后台路由。冻结 R5/R10 DTO、错误码、日期/金额单位、coverage、评分 revision、job 与账本状态、脱敏白名单。核实日采集检查点及删除失效如何复用生命周期钩子。依赖：15 第 1 批完成并合入及其余开工条件；不可并行。
+- [x] 0. 开工核对与契约冻结。核对 14 R6/R9、15 的 seed/reset/7 天留存和原 metrics、旧 exporter；确认 origin 分类、消息与 trace 对应、runbook 路径与现有后台路由。冻结 R5/R10 DTO、错误码、日期/金额单位、coverage、评分 revision、job 与账本状态、脱敏白名单。核实日采集检查点及删除失效如何复用生命周期钩子。依赖：15 第 1 批完成并合入及其余开工条件；不可并行。
 - [ ] 1. Langfuse 版本预检。按 R11 核实固定 tag 的 web/worker 与所有依赖镜像 digest、本机架构及资源，登记到本 plan；验证配置只指向本机、不设置内容捕获。只读核对导出器与接收字段；版本不可用或要求改 SDK 时停止记录并修订 spec，不静默换版本。依赖：0；与 2、3 可并行。
-- [ ] 2. 数据与清理。新增四表、FORCE RLS、复合键、索引、最小权限、jobs kind，以及清理/回滚增补；不改旧迁移。跑验收 3 的真实 PG 边界与 7 天删除，验证旧函数仍级联评分；日账本跨终态去重与数据字段到期清理。依赖：0；与 1、3 可并行，迁移编号集中分配。
-- [ ] 3. 日指标与趋势后端。实现 R5/R10 的共用日 SQL、coverage、60 秒租户缓存、采集/删除失效及新趋势接口，保持旧 metrics/UsageView。用固定时钟、真实 PG 对照验收 6、11 的接口部分。依赖：0；纯读聚合先行，ops_metric_coverage 采集检查点持久化接入等 2 合入后完成。
-- [ ] 4. 抽检与安全草稿后端。实现评分 revision、审计事务、角色检查、过滤/详情/安全深链接及无源内容的 v2 骨架；保留 travel 旧导出。验收 1–5 的 API/外部文件链路，特别证明工业草稿不得调用旧 goal-draft 获取正文。依赖：2；可接替已完成的 2 路，与 1、3 并行。
+- [x] 2. 数据与清理。新增四表、FORCE RLS、复合键、索引、最小权限、jobs kind，以及清理/回滚增补；不改旧迁移。跑验收 3 的真实 PG 边界与 7 天删除，验证旧函数仍级联评分；日账本跨终态去重与数据字段到期清理。依赖：0；与 1、3 可并行，迁移编号集中分配。
+- [x] 3. 日指标与趋势后端。实现 R5/R10 的共用日 SQL、coverage、60 秒租户缓存、采集/删除失效及新趋势接口，保持旧 metrics/UsageView。用固定时钟、真实 PG 对照验收 6、11 的接口部分。依赖：0；纯读聚合先行，ops_metric_coverage 采集检查点持久化接入等 2 合入后完成。
+- [x] 4. 抽检与安全草稿后端。实现评分 revision、审计事务、角色检查、过滤/详情/安全深链接及无源内容的 v2 骨架；保留 travel 旧导出。验收 1–5 的 API/外部文件链路，特别证明工业草稿不得调用旧 goal-draft 获取正文。依赖：2；可接替已完成的 2 路，与 1、3 并行。
 - [ ] 5. 每日摘要与延迟任务。实现 R6–R8 的 ops lane、日账本、跨重启恢复、显式重发命令、固定窗口告警及租户配置；注册运行时状态；接现有告警传输而不以 void 返回值当成功。执行验收 7–9，带进程中止/重启与本机 webhook，不只测纯函数。依赖：2、3；按下节三路安排启动。
 - [ ] 6. 分级与运维手册。穷尽映射现有 AlertKey、safeText 外的类型化链接、watch/backup 前缀、固定 runbook 路由；新增公共 docs/ops/observability.md，同批更新部署说明和 .env.example 的新配置名，真实值另记。按验收 10 验证恶意 URL、鉴权链接、阈值不变及无 trace 降级；与 5 对 alert.ts 的修改串行合入。依赖：4、5。
 - [ ] 7. 抽检与趋势前端。消费已冻结真 API，做评分原因、冲突提示、差评草稿说明、7/30 天趋势与可读表格；不改 15 设置导航与用量页。覆盖所有页面状态、键盘/窄屏/深浅主题与字体；浏览器按验收 1、2、4、11 走查，写 BEFORE/AFTER，截图只用合成数据。依赖：3、4 及 15 前端公共布局合入；可与 5、8 并行。
@@ -53,6 +53,79 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 
 共 **13 步（0–12）**，最多三路；1 与 8 为第三方预检和实测，2–7 为六个实现步骤，9 是必须的贯穿与回滚，最后三步遵循仓库固定收尾顺序。
 
+## 第 0 步冻结契约
+
+2026-11-01 第 0 步对照 `origin/dev`（`89807cf8`，含 #416）核对。DTO 代码在 `src/shared/console-api.ts` 末段，这里写代码表达不了的规则。各路只消费，要改先写进 Open。
+
+### 核对结论
+
+| 项            | 结论                                                                                                                                                                                                                  |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 14 R6/R9      | `GET /usage`、`UsageView`、`canSeeUsage` 在 `src/console-api/app.ts`；suspended 租户照常装载，判定在 `src/tenancy/limits.ts`，所以摘要要在事务里重读 `tenants.status`，不能只看 `rt.state`。14 与 15 已 `implemented` |
+| 15 种子与留存 | 种子会话 `state.seed=true`、带 `seedBaselineSeq`，订单 `ord_seed_` 前缀，经 `originOf` 判 seed；`resetTrial` 要求三个保留期都是 7、逐会话 `eraseConversation`                                                         |
+| 旧 metrics    | `src/ops/metrics.ts`、`src/db/repo/metrics.ts` 含种子与全部来源、成交取内存。新接口不复用也不改它们                                                                                                                   |
+| AI 消息       | AI 回复 `messages.author` 是 NULL，确定性提示同样如此，`linkTurn` 写 `turn_id`。判定：`role='agent' AND (author IS NULL OR author='ai')`。spec R2 已改                                                                |
+| 删除路径      | `erase_conversation` 与试用重置要拿租户锁，应用必须停着；进程内缓存随重启清空。进程内只有 `purgeOnce` 要主动作废                                                                                                      |
+| 时区          | 清除函数在库里跑，不知道部署 `TZ`，不能按本地日定位删除日期；用下面的区间法                                                                                                                                           |
+| 手册内容      | 镜像不含 `docs/`，第 6 步给 Dockerfile 加 `COPY docs/ops ./docs/ops`，接口读这份公共手册                                                                                                                              |
+| 登录          | 未登录时 Shell 在原地址渲染登录页，不跳转，深链接登录后留在原路径，无外部返回地址                                                                                                                                     |
+
+### 数据（第 2 步，迁移 `0026`，第 5 步若要函数用 `0027`）
+
+- `turn_reviews`：R2 的列；`reviewer_user_id` 不设外键，展示名按当前成员查，查不到写「已移除成员」；`CHECK ((rating='bad') = (reason IS NOT NULL))`。
+- `ops_daily_reports`：PK `(tenant_id, day)`，`report_id uuid` 唯一；`status`、`attempts`、`resend_count`、`next_attempt_at`、`claim_token uuid`、`computed_at`、`sent_at`、`error_code`、`snapshot json`（`DailyOpsPoint`，清业务值就置 NULL）。
+- `ops_latency_state`：PK `tenant_id`；`last_window_end`、`bad_streak`、`good_streak`、`active`、`paused`、`last_sent_at`、`last_p90_ms`、`last_samples`。
+- `ops_metric_coverage`：PK `(tenant_id, day)`；`first_seen_at`、`last_seen_at`、`has_gap`、`has_deletion`。
+- 四表 `agent_app` 只有 SELECT、INSERT、UPDATE，删除只走函数。`purge_ops_data(p_tenant, p_now)` 只 GRANT `agent_app`，随 `purgeOnce` 调：报告 35 天删行，`min(35, retention_trace_days)` 天清 `snapshot`，coverage 留 `min(30, retention_trace_days)` 个自然日。
+- `jobs_kind_check` 加 `ops_daily_digest`，TS 的 `JobKind` 到第 5 步才加。`erase_conversation` 的返回值加 `reviews`。
+- 删除标记：内部函数 `ops_coverage_mark_deleted(p_tenant, p_at timestamptz[])`，把 `p_at` 落在 `[first_seen_at-2分钟, last_seen_at+2分钟]` 内的 coverage 行置 `has_deletion`。`purge_conversation`、`erase_conversation` 在删除前传该会话的 `started_at` 和已付订单的 `paid_at`；`purge_expired_traces` 按 cutoff 批量标。不落在任何行区间的时刻必在采集缺口内，那天本来就不是 complete，不用标。
+
+### 指标与 coverage（第 3 步）
+
+- 日窗口由 JS 按本地零点算出后传 timestamptz，`todayIso` 同口径；`usage_daily.day` 直接比日期。
+- 来源谓词：`src/shared/origin.ts` 导出前缀常量，`originOf` 与 SQL 共用。standard 的 customer 会话是 `state.seed` 不为真且 id 不带种子、访客前缀；订单再排除 `ord_seed_` 与关联种子会话。三种来源要有对照自测。
+- `paidOrders`：`paid_at` 在窗口内、`status IN ('paid','refund_pending','refunded')`、`voided_at IS NULL`。
+- 窗口：`请求天数 ∩ retention_trace_days ∩ tenants.created_at 本地日`。截到保留期报 `retention`，截到开通日报 `collection_start`。没有 coverage 行的历史日留在窗口内，报 `unknown_history`。
+- complete 的条件：非今天，coverage 行 `first_seen_at` 不晚于零点后 2 分钟、`last_seen_at` 不早于次日零点前 2 分钟，无 `has_gap`、无 `has_deletion`。
+- 非 complete 日逐字段取值：记录值大于 0 才给数，否则 null；比率的分母为零时 null。至少一项有值是 `partial`，全空是 `unavailable`。今天固定 `partial`，报 `today`。
+- 检查点：每分钟一次（第 3 步接 `ops_metric_coverage`）。启动、与上次检查点间隔超过 2 分钟、`storeHealth()` 有 conflict、poisoned 或积压超 60 秒时置 `has_gap`；跨日间隔同时标两天。
+- 缓存键：租户、请求天数、时区、起始日、今天、保留期；每次请求现读 `tenants`，保留期变更立即失效。`purgeOnce` 删过东西就作废。摘要与告警绕过缓存。
+
+### 接口（第 4 步）
+
+权限顺序：未登录 401 → 角色 403 `forbidden` → 沙箱 403 `observability_unavailable` → 文件存储 503 `store_file_mode` → 解析定位参数。
+
+| 路由                                    | 说明                                                                                                                               |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /metrics/trends?days=7\|30`        | `MetricsTrendsView`（第 3 步）                                                                                                     |
+| `GET /traces/:turnId`                   | `TurnTraceView` 加 `conversationId`、`channel`、`reviewable`、`review`；只收 UUID                                                  |
+| `GET /traces/:turnId/review`            | `{ review: TurnReviewView \| null }`                                                                                               |
+| `PUT /traces/:turnId/review`            | `TurnReviewBody`，返回 `TurnReviewView`；请求体封顶 4 KiB                                                                          |
+| `POST /traces/:turnId/regression-draft` | `RegressionDraft` 附件，固定文件名，`no-store`；未差评 422 `review_not_applicable`                                                 |
+| `GET /traces`                           | 加 `review=none\|good\|bad`、`reason=<ReviewReason>`，`none` 只含可评未评；行加 `review: { rating, reason } \| null`、`reviewable` |
+
+可评：trace 有非空 `final_text`，outcome 不是 silent、reset，且有上面定义的 AI 消息。错误码：不存在或跨租户 404 `not_found`，内容 400，不可评 422 `review_not_applicable`，竞争 409 `review_conflict`，审计或存储失败 503 `store_unavailable`。审计 `trace.review`、`trace.regression_draft` 不写 target，diff 只有评分、原因、修订号（草稿是原因、格式、包 id）。
+
+### 摘要与告警（第 5、6 步）
+
+- job：`ops_daily_digest`，`dedupeKey=ops_daily_digest:<day>`，payload `{ day }`，`maxAttempts=10`（发送次数在账本，不用 job 计数），独立 `ops` lane。排程到期检查放 runner 每拍。
+- 账本：`pending → sending → sent | unknown`；`pending → failed | skipped`。`error_code` 取 `config_missing`、`rate_limited`、`sql_error`、`rejected`、`timeout`、`network`、`bad_response`、`server_error`、`redirect`、`restart_in_sending`、`commit_failed`、`deadline`、`suspended`、`disabled`。启动归位在 `recoverJobsAtStartup` 同一事务、认领之前。发送日是 `day` 的次日，到次日 24:00 截止。
+- 传输：`alert.ts` 新增发送函数，单次发送，返回 `accepted`、`rejected`、`unknown` 或 `not_attempted`（`config_missing`、`rate_limited`）。200 且 `errcode=0` 算 accepted；200 且 errcode 非 0、4xx 算 rejected；5xx、3xx、超时、断连、解析失败、响应超 8 KiB 算 unknown。摘要要求一分钟内已发不超过 6 条，给故障告警留 4 条。
+- 正文白名单：实例标签、`P3`、日期、`T-<租户 uuid 前 6 位>`（共享试用再加「共享试用」）、报告短号（`report_id` 前 8 位）、接待、轮次、转人工率、AI 错误率、回复 p90 与样本数、模型费用（标「租户全部模型费用（含测试）」）、已付订单数（含后续退款）、数据不足说明。不带 slug、租户名、成员、客户标识。
+- CLI：`src/cli/ops-report.ts`，`retry --tenant <slug> --day <date> --ack-duplicate-risk` 把 unknown 改回 pending 并排 job，由应用发送；`prepare-rollback --tenant <slug>` 取消未完 job、sending 归 unknown。都以 platform 身份经 SECURITY DEFINER 函数。
+- env：`OPS_DIGEST_TENANTS`、`OPS_LATENCY_TENANTS`，逗号分隔 slug，不存在或非 standard 的项报错跳过，不回显取值。
+- 手册：`GET /ops/runbooks/:key`，owner、admin，key 是固定白名单，内容取 `docs/ops/observability.md` 的同名小节，自测逐 key 校验。
+
+### 分路与文件归属
+
+| 路     | 步骤    | 执行   | 独占                                                                                                     |
+| ------ | ------- | ------ | -------------------------------------------------------------------------------------------------------- |
+| A      | 2 → 4   | Codex  | `drizzle/`、`src/db/schema.ts`、`src/db/repo/retention.ts`、`src/jobs/purge.ts`、`src/db/repo/traces.ts` |
+| B      | 3       | Codex  | `src/shared/origin.ts`、`src/ops/trends.ts`、`src/db/repo/ops-metrics.ts`                                |
+| 协调者 | 1、7、8 | Claude | `docs/architecture/17-observability/`、`console/`                                                        |
+
+`src/console-api/app.ts`、`src/shared/console-api.ts`、`package.json`、`src/tenancy/state-manifest.ts` 各路都要加行，协调者合并时手工对齐。Codex 不改 plan，也不提交。
+
 ## 验收记录模板
 
 实施时逐行补命令、结果与证据；这里不预填“通过”。完整日志、外部用例和截图放仓库外受控位置，公开记录只有合成且不含标识的结果。
@@ -71,6 +144,33 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 | 15    | 10–11    | 四门禁、锁定/哈希、回归、公开边界及资源清理           |
 
 ## 实施与验证记录
+
+### 第 2–4 步（2026-11-01）
+
+- 第 2 步：迁移 `0026`，四张表、`ops_coverage_mark_deleted`、`purge_ops_data`；四个被替换的函数逐行对比上一版，只有增补，签名不变。`purgeOnce` 接入 `purge_ops_data`。
+- 第 3 步：`src/db/repo/ops-metrics.ts`、`src/ops/trends.ts`、`src/ops/coverage.ts`、`src/ops/minute.ts`、`GET /metrics/trends`。审查时修正：非完整日分母存在时比率 0 不再变 null，p90 取整。检查点写入后也作废展示缓存，最多多一次聚合，保留。
+- 第 4 步：`src/db/repo/turn-reviews.ts`、`src/console-api/review-draft.ts`、四个路由与 `/traces` 筛选、两个审计动作。可评谓词只有一处。草稿路径只读评分和原因，不读 trace 正文列。
+- 接缝：三路合入同一分支后，下列套件都带一次性 PG 通过：`src/db/observability.selftest.ts`（验收 3 的角色、RLS、五条删除路径、7 天边界）、`src/ops/trends.selftest.ts`（验收 6、11 接口部分）、`src/ops/coverage.selftest.ts`（检查点、删除失效、真实 boot）、`src/console-api/reviews.selftest.ts`（验收 1、2、4、5，完整 server 入口，含外部 v2 用例正反例）；`test:locked` 通过；`trial-reset`、`db`、`sandbox`、`rollback-guard`、`jobs` 由 Codex 带真实 PG 跑过。
+- 变异（隔离副本）：去删除标记、去 revision 条件、去差评前置、列表 `none` 不判可评、去种子排除、去消息关联、去启动 gap、去 `invalidateTrends`，都被自测拦下。
+- CI：第一轮 #418–#420 都失败在 `check-fonts`，第 0 步校验文案带了 UI 子集没有的「评」，已重建字体子集。#418 另有一次 `settings-e2e`（`合成渠道` 断言）失败，本机同用例通过、dev 为绿，按偶发记录，后续 CI 再看。
+- 派活事故：第 1 步拉镜像占满 Docker 虚拟机磁盘时，第 2 步的测试库写入失败，Codex 重建了内存盘容器才跑完；之后测试库一律用内存盘。
+
+### 第 1 步 Langfuse 预检（2026-11-01，未完成）
+
+- 版本：D7 定的 `v3.122.1` 没有发布镜像（Docker Hub、GHCR 均无此 tag，`3.122` 与 `3.122.0` 是同一 digest）。`3.122.0` 的 revision 是 `322bc047`，比 `v3.122.1` 少 9 个提交，均未改 OTel 接收代码。owner 原话「用 3.122.0」，spec 已改。
+- 官方 compose 的 `langfuse:3`、clickhouse、minio 都是浮动 tag；`minio/minio` 已无法匿名拉取，改用 `bitnamilegacy/minio`。
+- 只读核对：接收端认 `langfuse.session.id`、`langfuse.user.id`、`langfuse.trace.name`，OTLP 收 `application/json`，与现有导出器一致。字段映射以第 8 步实测为准。
+- 本机：arm64 全部拉取成功。起栈时 Docker 虚拟机 100 GB 磁盘写满，Postgres、ClickHouse 起不来，也波及当时的测试库；已撤掉这次的容器、卷和镜像。资源占用未测，第 8 步前要先腾约 8 GB。
+- compose 改动：全部镜像固定 digest，只映射 web 到 `127.0.0.1`，`restart: "no"`，`TELEMETRY_ENABLED=false`，不设 `OTEL_CAPTURE_CONTENT`，凭据运行时生成，放仓库外。
+
+| 服务       | 镜像                                               | digest                                                                    |
+| ---------- | -------------------------------------------------- | ------------------------------------------------------------------------- |
+| web        | `docker.io/langfuse/langfuse:3.122.0`              | `sha256:c2c726c5904db7d328208136cad6f4e0a8231f2f41134c4f02cb207d01a9e234` |
+| worker     | `docker.io/langfuse/langfuse-worker:3.122.0`       | `sha256:08d3b05f80463e86afdef82791ccc3b9c0f81c5e5aa132ddea0f631b9e5e222c` |
+| clickhouse | `docker.io/clickhouse/clickhouse-server:25.8.33.6` | `sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77` |
+| redis      | `docker.io/library/redis:7.4.12`                   | `sha256:b6b6e3dc0c0952737748e55d5d885272840c7e42ba41ab1d5489f693419882f5` |
+| postgres   | `docker.io/library/postgres:17.11`                 | `sha256:31ba9c94a03ada9988f2bb493a22a75eef3a185884533e5cdbcd498ea835b08f` |
+| 对象存储   | `docker.io/bitnamilegacy/minio:2025.7.23`          | `sha256:8935e75fa5d11295c17171e4aa49efe390a1193cd7f12e4d21b92af9ffef09d7` |
 
 ### 草案起草（2026-10-31）
 
@@ -96,7 +196,8 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 
 - 无未决产品决定或档位/状态审批；D1–D7、heavy 与 ready 均已获 owner 确认。
 - 实施前置待核实：15 第 1 批须先完成并合入（设置导航、试用公司及概览页改动），14 R6/R9 完整验收状态仍须核对；满足排期依赖后，第 0 步据 code/plan 核验接口与清理实现。冲突写这里并停止，不自行改架构。
-- Langfuse 指定版本镜像与字段兼容未核实，1/8 步给证据；若需要 SDK/属性迁移，先报告差异并修订范围。
+- Langfuse 版本已定 3.122.0，字段兼容未核实，1/8 步给证据；若需要 SDK/属性迁移，先报告差异并修订范围。
+- 第 8 步前要腾 Docker 虚拟机磁盘（现空闲约 2 GB，这套镜像约 6 GB），动的是不属于本任务的缓存或镜像，由 owner 定。
 
 ## 已定
 
