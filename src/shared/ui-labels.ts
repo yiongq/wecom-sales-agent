@@ -127,6 +127,8 @@ export const AUDIT_ACTIONS: Readonly<Record<string, AuditActionDef>> = {
   'trace.review': { label: '评价回复', group: 'conversation', icon: 'message-square-text' },
   'trace.regression_draft': { label: '准备回归草稿', group: 'conversation', icon: 'download' },
   // 07 R24：AI 记录里「存为回归用例」每下载一次草稿记一行，target 是会话行的 ref，diff 带短码与轮次 id
+  'ops_report.retry': { label: '重发每日摘要', group: 'platform', icon: 'refresh-cw' },
+  'ops_report.prepare_rollback': { label: '准备摘要回滚', group: 'platform', icon: 'history' },
   'trace.export': { label: '下载回归用例草稿', group: 'conversation', icon: 'file-down' },
   // 快捷回复（J 页右栏插进输入框的模板）随会话工作台归在「会话与订单」一类。第 13 步先写「常用回复」（那时「快捷」两字
   // 还不在 UI 优先片里）；J 页右栏卡片标题（第 20.2 步）已经用上「快捷回复」，字已经在优先片里了，这里改回 spec 原词

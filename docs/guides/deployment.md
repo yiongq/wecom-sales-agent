@@ -83,3 +83,9 @@ docker compose -f deploy/compose.yml up -d app
 - 两种线都会删掉服务器上的 `deploy/`。db 容器照常在跑，cron 跑的是部署目录之外那份备份脚本，暂时都不受影响；但 db 容器一旦重启（宿主机重启、升级 Docker）就起不来，因为它挂载的 `deploy/db-init/roles.sh` 没了，之后每晚的备份在导出那一步失败，`var/` 也不再打包。所以跑完旧 deploy.sh 立刻只把这个目录放回去：`git archive <刚才在跑的 compose 版 tag> deploy/db-init | ssh <服务器> tar -x -C <部署目录>`。别把整个 `deploy/` 放回去：`deploy/compose.yml` 不在，手工的 compose 命令就会直接报错，而不会把 `:current` 的新镜像换回来。
 
 数据库存储并不代表可以多副本：identity map、串行锁与若干限流计数仍在进程内；DB 配置的租户锁会拒绝第二个进程，当前必须单实例运行。
+
+## 可观测性开关与回滚
+
+应用 env 的 `OPS_DIGEST_TENANTS` 开启每日摘要，`OPS_LATENCY_TENANTS` 开启回复延迟监测；均为逗号分隔的 standard 租户 slug，空值默认关闭，不存在或非 standard 的项报错跳过且不回显取值。真实值与租户映射另记；线上启用需要 owner 当次授权。群通知使用 `ALERT_WEBHOOK_URL`，定位链接只取当前租户 HTTPS `publicBase`，未配置合法地址时仅附手册编号。
+
+镜像包含 `docs/ops`，手册 API 仅 owner/admin 可读。异常状态、显式重发及回滚前的 `ops-report prepare-rollback` 见[公共运维手册](../ops/observability.md)，unknown 不自动重发。

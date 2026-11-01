@@ -88,7 +88,9 @@ save_state() {
 stamp() { date -d "@$NOW" '+%F %T' 2>/dev/null || date -r "$NOW" '+%F %T'; }
 json_escape() {
   local s=${1//\\/\\\\}
-  printf '%s' "${s//\"/\\\"}"
+  s=${s//\"/\\\"}
+  s=${s//$'\r'/\\r}
+  printf '%s' "${s//$'\n'/\\n}"
 }
 post() {
   if [[ -z "${ALERT_WEBHOOK_URL:-}" ]]; then
@@ -105,6 +107,17 @@ post() {
     echo "watch: ⚠️ 告警没推出去（curl 退出码 ${rc}）：$1" >&2
   fi
 }
+# 固定主机手册与级别；恢复的磁盘级别取清零前的 level。
+policy() {
+  severity=P1
+  case "$1" in
+    *restart) runbook=RB-16 ;;
+    *health) runbook=RB-17 ;;
+    disk) runbook=RB-18; if ((${level:-0} < 95)); then severity=P2; fi ;;
+    backup) runbook=RB-19; severity=P2 ;;
+    *) runbook=RB-20 ;;
+  esac
+}
 # alert <项> <说明> [escalate]：同一项在告警中、30 分钟内推过就不推（escalate 除外）
 alert() {
   local active last
@@ -113,13 +126,15 @@ alert() {
   if [[ "$active" == 1 && -z "${3:-}" ]] && ((NOW - ${last:-0} < DEDUPE_S)); then return 0; fi
   put "a_${1}_active" 1
   put "a_${1}_last" "$NOW"
-  post "[${LABEL}] $2 · $(stamp)"
+  policy "$1"
+  post "[${LABEL}] [${severity}] $2 · $(stamp)"$'\n'"手册 ${runbook}"
 }
 # resolve <项> <说明>：这一项在告警中才推「已恢复」
 resolve() {
   [[ "$(get "a_${1}_active")" == 1 ]] || return 0
   put "a_${1}_active" 0
-  post "[${LABEL}] 已恢复：$2 · $(stamp)"
+  policy "$1"
+  post "[${LABEL}] [${severity}] 已恢复：$2 · $(stamp)"$'\n'"手册 ${runbook}"
 }
 
 # ---------------- 1. 反复重启 ----------------
@@ -201,6 +216,7 @@ if ((max >= 0)); then
     elif ((level < 85)); then
       put disk_level 85
     fi
+    level="$(get disk_level)"
     alert disk "磁盘使用率 ${max}%（${which}）" "$esc"
   elif ((max < 80)); then
     put disk_level 0
