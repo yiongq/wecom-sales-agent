@@ -7,7 +7,7 @@ Tier: standard
 
 ## 当前 / 需要你
 
-当前：ready，17 已 implemented，可以开工；只有设计，没有实现，没跑过真实模型。经过三轮独立评审（Opus），带证据的问题已修进 spec，第三轮的修订没有再复审。
+当前：实现中，第 1、2、4 步已合入分支 `feat/16-industrial-sim`，第 5 步的两个产品 PR 已开（#427、#428），第 3、6 步在做。没跑过真实模型，费用 ¥0。
 
 需要你：
 
@@ -31,10 +31,10 @@ Tier: standard
 ## 步骤
 
 - [x] 0. 开工核对。确认 17 状态；确认 `src/packs/industrial/turn.ts` 的确认识别现状；确认闸的目标集哈希基线；确认 `eval/sim/goals/quality/26-post-handoff-silence.json` 的现状结果。把结果记进交接。
-- [ ] 1. 目标与运行器（R1–R3）。`journeyGoalSchema`、`judgeJourney`、顺序表和失败桶表、两种 `customer_drift`、审批替身、卡片文字、转人工即停、`finalState`、`failedTurn`。先写假模型自测再实现。验：验收 1–3，验收 4、5 的判分部分。
-- [ ] 2. 审计（R4）。`oraclePrice`、10 条规则、原稿计数、护栏工作量。每条规则一段违规样本和一段干净样本；`oraclePrice` 对 `priceLine` 做差分。验：验收 6 的审计部分、验收 7。
+- [x] 1. 目标与运行器（R1–R3）。`journeyGoalSchema`、`judgeJourney`、顺序表和失败桶表、两种 `customer_drift`、审批替身、卡片文字、转人工即停、`finalState`、`failedTurn`。先写假模型自测再实现。验：验收 1–3，验收 4、5 的判分部分。
+- [x] 2. 审计（R4）。`oraclePrice`、10 条规则、原稿计数、护栏工作量。每条规则一段违规样本和一段干净样本；`oraclePrice` 对 `priceLine` 做差分。验：验收 6 的审计部分、验收 7。
 - [ ] 3. 运行（R5、R6）。journal、续跑抵扣预算、账本、`--kind`、`--prepare`、`--reason`、`freeze.json`、留出集运行前检查、真实时钟、`fetch` 放行表、客户模型重试、保留被替换的一遍。验：验收 8，验收 9、11 的运行部分，验收 13 的联网和数据库部分。
-- [ ] 4. 报告（R7）。`buildReport`、`renderReport`、裁定阶段、Wilson、零事件上界、漏斗、混淆矩阵、抽样、第 7 章常量、「仿真不稳」「未跑完」标记、路径与地址扫描。用手写的合成 journal 生成样例报告，期望值手算；生成后调一次 oxfmt，保证过 `format:check`。验：验收 5、6、9、11 的报告部分，验收 10、12。
+- [x] 4. 报告（R7）。`buildReport`、`renderReport`、裁定阶段、Wilson、零事件上界、漏斗、混淆矩阵、抽样、第 7 章常量、「仿真不稳」「未跑完」标记、路径与地址扫描。用手写的合成 journal 生成样例报告，期望值手算；生成后调一次 oxfmt，保证过 `format:check`。验：验收 5、6、9、11 的报告部分，验收 10、12。
 - [ ] 5. 产品缺口（走独立 PR，不在 16 的 PR 里）。按 D8=A 修确认识别，带自测和真实模型回归；补折扣、免运费、赠送承诺的出口护栏，带自测，主参考开放问题「非金额承诺的拦截」同步。要做设计决定时另起 spec。
 - [ ] 6. 写场景（R1）。先写满 40 个并提交 id 清单，再按规则切分。金额按产品库手算写死，写好 `facts`、`baselineScript`、`modelFree`。留出集写完不用真实模型跑。验：`loadGoals` 通过，验收 4 的基线部分（假模型，不算运行留出集），验收 11 的切分部分；第二个 agent 独立复算金额，并逐个检查欠指定、过指定、非唯一结局，以及 `facts` 的 `fact` 是否过严、`asked` 是否过宽。
 - [ ] 7. 小样试跑（live，owner 授权，每次 ≤¥1，共 2 次）。开发集里带 `pilot` 标签的 8 个场景 × 1，主客户模型和第二客户模型各一次。回写协议失败率、跑题率、疑似条数、单段费用和耗时到 R9；用一次厂商账单对账；留出集估算超 ¥8 就停下找 owner。验：验收 14 的前半。
@@ -60,14 +60,26 @@ Tier: standard
 - 评审时查出的两个产品缺口（确认识别、折扣承诺）见第 5 步，本次不修。
 - 2026-11-01 owner 答「16 D1–D8 按推荐」和「D3=A，D7=A」：D1–D8 全部定 A。
 - 2026-11-01 owner 批准 ready，原话「16 改 ready，standard」。
-- 下一步：从第 0 步开始。
 
 ### 2026-11-01 · 第 0 步开工核对（基线 `origin/dev` 899b4e11）
 
 - 17：`Status: implemented`，已在 `dev`。
 - 确认识别：`src/packs/industrial/turn.ts` 第 26 行仍是一条正则，含问号或「吗」就放弃，与 spec 背景表一致。
 - 闸的目标集：`gateTargets` 同算法算出旅游 20 个 `6e9aeece…2a97`（与 `src/config/gate-per-pack.selftest.ts` 钉住的值相同），工业 31 个 `157e3908…beb1`。16 的目标放子目录，两个值都不该变。
-- 26 号目标现状：由第 1 步的自测在未改动代码上用假模型跑出字面量并钉住。
+- 26 号目标现状：第 1 步在未改动代码上用假模型跑出 passed、3 轮、客户与销售请求都是 0（确定性转人工），钉进 `eval/sim/journey.selftest.ts`。
+
+### 2026-11-01 · 第 1、2、4 步
+
+- 第 1 步：`eval/sim/journey.ts`、`runner.ts`、`runtime.ts`。`journey.selftest.ts` 59 项，覆盖验收 1–3，验收 4、5 的判分部分。现有 sim、gate、fixture、predicates、industrial 自测通过。审批替身调真实 `approveQuote` / `rejectQuote`，通知只在 `decide` 窗口捕获。
+- 第 2 步：`eval/sim/audit.ts`。十条规则各有正反例，隔离副本里逐条改成恒通过都变红；`oraclePrice` 与 `priceLine` 在 300 个档位边界逐一相同（验收 7）。审查时改过两处：否定词收紧，单个「不」只认紧贴命中处；`policy.json` 改成用到才读，`runner.ts` 连带加载这个模块时发布闸不碰它。
+- 第 4 步：`eval/sim/report.ts` 统计、抽样、正式保护、命令行，`report-render.ts` 页面、抽样对话、三张图（Claude 写，浅色深色都看过）。`report.selftest.ts` 15 组。`--draft yes` 是分诊用的草稿，不检查冻结与裁定。「第几次」算上中止的运行（验收 9）。「改前改后」用 `review.json` 的 `revisions`，运行记录用账本行，没有另加字段。`JourneyReport` 加 `rewrittenTurns`。
+- 沙箱提示：`report.selftest.ts` 要建一次性 git 仓库，Claude 沙箱禁止写 `.git/config`，本机要在沙箱外跑；CI 和 Codex 不受影响。
+
+### 2026-11-01 · 第 5 步
+
+- 确认识别 #427：`src/packs/industrial/acceptance.ts`，逐分句整句匹配。语料正例 42/42，反例误记 0/53；改动前 Codex 版语料正例 9/34，反例误记 4/45。接受加问题走 `prefetch.effects`，模型照常回答。出现未决定或改单的话（等等、再加、改成）整条不算接受。
+- 折扣承诺 #428：`industrial_claims` 加一条规则，主回复换固定句，跟进删句。语料 31 条违规、25 条放行。条件句算承诺（量大的话可以打九折）。
+- 还差：D8 要求的真实模型回归，等 owner 授权后和小样一起跑。
 
 ## Open
 
