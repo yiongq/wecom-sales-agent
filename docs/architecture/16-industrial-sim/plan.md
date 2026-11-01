@@ -209,8 +209,11 @@ Tier: standard
 
 第 13 步：删了 Codex worktree 和已合并的本地分支，`var/review` 已清。`var/eval-sim` 留在本机（D5 全量记录），`var/live/run.mjs` 留着，不含密钥。四个门禁和 gitleaks 通过，全量测试交 CI。
 
+报告复核（2026-11-02，owner 原话「补进报告」）：协调者从 `main-2.jsonl` 复算，报告数字全部对上，但查出审计没覆盖的回复问题。走 `review.json` 补了 3 条 `revisions`，改了 2 条 `causes`，重新生成后 `summary.json` 的数字字段、图表、抽样都没变，`eval/sim` 未动。逐句依据是 `trace.turn.guards` 的 `removed`、`added`，和工具结果对照。
+
 ## Open
 
+- 护栏过严、切坏文字、运费和付款说法、通过段里的说了没做：报告已披露，产品修复和审计规则都另算。
 - 确认后转人工的口径已定：owner 2026-11-01 原话「算通过」，spec 和报告都已更新。
 - 清单确认放宽：留出集 2 段、开发集 1 段都是它，要改 12 R9，不在 16 的范围，建议另起 amendment。
 - 模型说已建单却没调工具（`j-list-02`）：审计和护栏都没覆盖，建议另起 PR。
