@@ -426,7 +426,10 @@ try {
     const noScript = goal();
     delete noScript.customerScript;
     const failed = await simulate([noScript], 1, runtimeMeter, runtime.deps);
-    check('客户重试耗尽判 customer_http，不伪装成协议错误', () => assert.equal(failed.runs[0]!.status, 'customer_http'));
+    check('客户重试耗尽判 customer_http，不伪装成协议错误', () => {
+      assert.equal(failed.runs[0]!.status, 'customer_http');
+      assert.equal(failed.runs[0]!.customerHttp, '500');
+    });
     const beforeDrop = service.requests.length;
     service.script.push({ destroy: true }, { destroy: true }, { destroy: true }, say('您好', true));
     const dropped = await runtime.deps.customer('合成客户', [], false);

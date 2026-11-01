@@ -20,6 +20,13 @@ export class SalesTurnError extends Error {
   }
 }
 
+/** 客户模型重试后仍失败。detail 只有状态码和错误码，供分诊，不含回包正文。 */
+export class CustomerHttpError extends Error {
+  constructor(readonly detail: string) {
+    super('customer_http');
+  }
+}
+
 export const FIXTURE_CLOCK = '2026-10-10T12:00:00+08:00';
 export function fixtureClock(): () => void {
   const RealDate = Date;
@@ -378,7 +385,7 @@ export async function engineRuntime(
             return null;
           });
           if (!response) {
-            if (attempt >= 3) throw new Error('customer_http');
+            if (attempt >= 3) throw new CustomerHttpError('network');
             await backoff(attempt);
             continue;
           }
@@ -395,7 +402,7 @@ export async function engineRuntime(
               await backoff(attempt);
               continue;
             }
-            throw new Error('customer_http');
+            throw new CustomerHttpError(`${response.status}${code ? `:${code}` : ''}`);
           }
           const data = (await response.json()) as {
             error?: { code?: number | string };
@@ -410,7 +417,7 @@ export async function engineRuntime(
             };
           };
           if (options.strictNet && [1302, 1305].includes(Number(data.error?.code ?? data.code))) {
-            if (attempt >= 3) throw new Error('customer_http');
+            if (attempt >= 3) throw new CustomerHttpError(`200:${data.error?.code ?? data.code}`);
             await backoff(attempt);
             continue;
           }
