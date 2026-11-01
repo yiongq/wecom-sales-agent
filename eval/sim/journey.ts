@@ -33,12 +33,14 @@ export function judgeJourney(goal: SimGoal, run: RunResult): JourneyVerdict {
     case 'quote_accepted': {
       // 多重集比较：行顺序不影响结果，重复行仍计数。
       const lines = (xs: { code: string; qty: number }[]) => xs.map((l) => JSON.stringify([l.code, l.qty])).toSorted();
-      if (state.handedOver) bucket = 'unneeded_handoff';
-      else if (!latest) bucket = 'quote_missing';
-      else if (JSON.stringify(lines(latest.lines)) !== JSON.stringify(lines(expected.lines))) bucket = 'wrong_lines';
-      else if (latest.totalFen !== expected.totalFen) bucket = 'wrong_total';
-      else if (!valid(latest) || !byApprover(latest) || orders.filter(valid).length !== 1) bucket = 'not_approved';
-      else if (latest.approval?.acceptedAt == null) bucket = 'not_accepted';
+      // R3：通过只看单和确认；转了人工但单、批准、确认都对的算通过（顾问接手付款是正常结局）。
+      let miss: FailBucket | undefined;
+      if (!latest) miss = 'quote_missing';
+      else if (JSON.stringify(lines(latest.lines)) !== JSON.stringify(lines(expected.lines))) miss = 'wrong_lines';
+      else if (latest.totalFen !== expected.totalFen) miss = 'wrong_total';
+      else if (!valid(latest) || !byApprover(latest) || orders.filter(valid).length !== 1) miss = 'not_approved';
+      else if (latest.approval?.acceptedAt == null) miss = 'not_accepted';
+      bucket = miss && state.handedOver ? 'unneeded_handoff' : miss;
       break;
     }
     case 'quote_rejected':

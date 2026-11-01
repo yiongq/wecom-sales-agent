@@ -290,6 +290,13 @@ try {
   assert.ok(has(run('档价之外额外再优惠。'), 'discount_promise'));
   assert.ok(has(run('不能打折。可以包邮。'), 'discount_promise'), '否定不跨分句');
   assert.ok(has(run('下单不到 100 件也能打九折。'), 'discount_promise'), '分句里无关的「不」不算否定');
+  // 16 开发集的误报：否认打折，和「单价：1件 42元」里的起订数量。
+  assert.ok(!has(run('没法再额外打折。'), 'discount_promise'), '没法是否定');
+  assert.ok(!has(run('我这边没办法打折。'), 'discount_promise'), '没办法是否定');
+  assert.ok(
+    !auditRun(run('单价：1件 12元'), goal, catalog).some((f) => f.rule === 'reply_amount' && f.detail === '单价：1'),
+    '单价后带数量单位的数字不是金额',
+  );
   assert.ok(has(run('可以包邮，您要多少件？'), 'discount_promise'), '后面的问句不能洗掉前面的承诺');
   assert.ok(has(run('不' + '请'.repeat(14) + '包邮。'), 'discount_promise'), '否定窗口不超过14字');
   for (const text of ['6205-ZZ 有货。', '6205-ZZ 库存充足。', '6205-ZZ 库存 20 件。', '6205-ZZ 现货供应。'])

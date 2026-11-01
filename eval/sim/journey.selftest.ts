@@ -191,6 +191,8 @@ expectVerdict(
   },
   'passed',
 );
+// 16 开发集：单、批准、确认都对，顾问接手付款不算失败。
+expectVerdict('quote_accepted 确认后转人工仍通过', accepted, run({ ...handoff, orders: [order()] }), 'passed');
 expectVerdict('quote_rejected 通过', rejected, run(rejectedState), 'passed');
 expectVerdict('handoff 通过', human, run(handoff), 'passed');
 expectVerdict('no_quote 两项证据都满足', noQuote, noQuoteRun, 'passed');

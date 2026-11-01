@@ -143,7 +143,7 @@ function inFen(number: string, wan = false): number {
 }
 function replyAmounts(text: string): { text: string; fen: number }[] {
   const pattern = new RegExp(
-    String.raw`[¥￥]\s*(${NUMBER})\s*(万)?(?:元|块)?|(${NUMBER})\s*(万)?(?:元|块)|(?:单价|合计|总价|小计)\s*[:：]?\s*(${NUMBER})\s*(万)?(?:元|块)?`,
+    String.raw`[¥￥]\s*(${NUMBER})\s*(万)?(?:元|块)?|(${NUMBER})\s*(万)?(?:元|块)|(?:单价|合计|总价|小计)\s*[:：]?\s*(${NUMBER})\s*(万)?(?:元|块)?(?!\s*(?:件|个|只|套|台|支|根|条|盒|米|千克|pcs))`,
     'gu',
   );
   return [...text.matchAll(pattern)].map((m) => ({ text: m[0], fen: inFen(m[1] ?? m[3] ?? m[5], !!(m[2] ?? m[4] ?? m[6])) }));
@@ -157,7 +157,9 @@ function clauseAt(text: string, index: number): string {
 // 单个「不」只认紧贴命中处（不打折、不包邮）：「下单不到 100 件也能打九折」不是否定。
 function negatedAt(text: string, index: number): boolean {
   const before = [...text.slice(0, index).split(BREAK).at(-1)!].slice(-14).join('');
-  return /[不没无未]$|不能|不可|不会|不做|不支持|不承诺|不保证|没有|并无|绝无|不存在|不提供|不是|并非|无法|不要|不再|不额外/u.test(before);
+  return /[不没无未]$|不能|不可|不会|不做|不支持|不承诺|不保证|没有|并无|绝无|不存在|不提供|不是|并非|无法|没法|没办法|做不了|不要|不再|不额外/u.test(
+    before,
+  );
 }
 function question(text: string): boolean {
   return /[?？]|吗|么|是否|能否|可否|有没有/u.test(text);
