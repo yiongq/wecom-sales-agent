@@ -1,5 +1,6 @@
 import type { DeterministicReply, TurnContext, PackSources, PrefetchResult, TurnToolContext } from '../../core/pack-api.js';
 import { latestQuoteCandidate, expiredQuoteAwaitingConfirmation } from './quote-candidate.js';
+import { quoteAcceptance } from './acceptance.js';
 import { refreshParts } from './live.js';
 import { PartSchema } from './catalog.js';
 import { matchInMemory } from './match.js';
@@ -23,16 +24,15 @@ export function preModel(ctx: TurnContext, sources: Pick<PackSources, 'currentCa
           ? 'long'
           : null;
   if (type) return { text: FIXED[type], fixedId: `industrial.${type}`, handoff: { reason: FIXED[type] } };
-  if (!/确认下单|确认报价|就按这个|可以下单|没问题下单吧/.test(ctx.text)) return null;
-  // 仅明确确认才通知顾问；问法、否定与尚未决定不当成接受。
-  if (/[?？]|吗|是否|能否|能不能|会不会|是不是|还没|尚未|暂不|先别|不(?:要|想|能|会|可以|确认)/.test(ctx.text)) return null;
+  const acceptance = quoteAcceptance(ctx.text);
+  if (!acceptance.accepted) return null;
   const now = Date.now();
   const candidate = latestQuoteCandidate(ctx.session, now);
   if (candidate?.kind !== 'quote') return null;
   // 12 R9：报价单早于待确认的识别清单时，客户说的「确认下单」指向清单，不能当成接受这份旧报价。
   if (candidate.at < (pendingIntake(ctx.session)?.at ?? 0)) return null;
   if (candidate.state === 'pending') return { text: FIXED.pending, fixedId: 'industrial.pending' };
-  if (candidate.state === 'expired') return null;
+  if (candidate.state === 'expired' || acceptance.needsModel) return null;
   return {
     text: FIXED.accepted,
     fixedId: 'industrial.accepted',
@@ -166,6 +166,20 @@ async function confirmPrefetch(ctx: TurnContext, sources: PackSources): Promise<
   return { calls: items.length ? [await ctx.callTool('quote_items', { items })] : [], timings: [], effects };
 }
 export async function prefetch(ctx: TurnContext, sources: PackSources): Promise<PrefetchResult | null> {
+  const acceptance = quoteAcceptance(ctx.text);
+  if (acceptance.accepted && acceptance.needsModel) {
+    const now = Date.now();
+    const candidate = latestQuoteCandidate(ctx.session, now);
+    if (candidate?.kind === 'quote' && candidate.state === 'approved' && candidate.at >= (pendingIntake(ctx.session)?.at ?? 0))
+      return {
+        calls: [],
+        timings: [],
+        effects: {
+          statePatch: { confirmedQuoteAt: now },
+          notify: { reason: 'quote_accepted', orderId: candidate.order.id },
+        },
+      };
+  }
   const intake = readState(ctx.session).rfqIntake;
   if (sources.erp?.active('part')) {
     const parts = intakeParts(sources);

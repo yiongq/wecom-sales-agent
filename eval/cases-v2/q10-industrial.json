@@ -1542,5 +1542,58 @@
         ]
       }
     ]
+  },
+  {
+    "version": 2,
+    "pack": "industrial",
+    "tags": ["q10", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "id": "q10-industrial-colloquial-acceptance-pending",
+    "desc": "口语接受加开票问题仍受顾问待审闸约束",
+    "turns": [
+      {
+        "say": "6205-2RS两件正式报价",
+        "expect": {
+          "tools": ["quote_items", "create_quote_sheet"],
+          "replyMatches": ["^最新的报价单还在顾问审核，审好马上发您$"],
+          "orders": {
+            "count": 1
+          }
+        },
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote_sheet",
+                "args": {
+                  "items": [
+                    {
+                      "code": "bearing-02",
+                      "qty": 2
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "content": "最新的报价单还在顾问审核，审好马上发您"
+          }
+        ]
+      },
+      {
+        "say": "好的，下单吧，能开专票吗",
+        "expect": {
+          "tools": [],
+          "replyMatches": ["^最新的报价单还在顾问审核，审好马上发您$"],
+          "orders": {
+            "count": 1
+          },
+          "handoff": false
+        }
+      }
+    ]
   }
 ]

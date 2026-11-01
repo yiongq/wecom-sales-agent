@@ -5,6 +5,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import vm from 'node:vm';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
 import { industrial } from './packs/industrial/console-pack.js';
 import { createIndustrialRuntime } from './packs/industrial/runtime.js';
 import { defaultIndustrialPolicy, quoteNotes } from './packs/industrial/policy.js';
@@ -408,6 +410,264 @@ try {
   assert.equal(withdraw.stage, 'quote');
   assert.ok(sent.some((message) => message.text === '这份报价单已撤回，顾问会跟您重新确认'));
   console.log('INDUSTRIAL STAGES PASS: AI试算→报价、自动批准/取代→促成、工作台批准→促成、驳回/撤回→报价、实际收款→已支付');
+
+  // 16 D8：每条语料用独立的已批准报价单，真实引擎决定接受；模型只回答业务问题。
+  const positives = [
+    '没问题，下单吧',
+    '好的，下单吧',
+    '下单吧',
+    '确认',
+    '同意这个报价',
+    '接受报价',
+    '就按这个，什么时候能发货？',
+    '确认下单，能开专票吗',
+    '确认下单',
+    '确认报价',
+    '就按这个',
+    '可以下单',
+    '没问题下单吧',
+    '确认了',
+    '确认无误',
+    '下单',
+    '接受',
+    '同意',
+    '成交',
+    '就这个',
+    '就这样',
+    '就它了',
+    '按这个来',
+    '安排吧',
+    '行，确认下单',
+    '可以，接受报价',
+    '嗯，下单吧',
+    '好的确认报价',
+    '没问题就按这个',
+    '不用改了，确认下单',
+    '确认下单。什么时候能发货？',
+    '能开专票吗？确认下单',
+    '确认下单；能开专票吗？',
+    '确认下单\n什么时候能发货？',
+    '那就按这个下单吧',
+    '价格没问题，下单吧',
+    '我接受这个价格',
+    '帮我下单',
+    '好的，这个报价我接受',
+    '行，就这么定了',
+    '那就这么办',
+    'OK，确认',
+  ];
+  const negatives = [
+    '好的',
+    '行',
+    '可以',
+    '嗯',
+    '收到',
+    '谢谢',
+    '没问题',
+    '确认一下价格',
+    '帮我确认下库存',
+    '确认价格',
+    '请确认报价',
+    '可以下单吗',
+    '能确认吗',
+    '确认下单？',
+    '是否就按这个',
+    '能不能下单',
+    '确认报价是否含税',
+    '先别下单',
+    '暂不下单',
+    '还没确认下单',
+    '再想想',
+    '考虑一下',
+    '等等',
+    '问问领导',
+    '回头再说',
+    '不确认',
+    '不要确认下单',
+    '不想下单',
+    '不能下单',
+    '不会下单',
+    '不可以下单',
+    '尚未确认报价',
+    '先别确认报价',
+    '确认下单前再想想',
+    '确认报价后问问领导',
+    '等领导同意这个报价',
+    '如果有货就下单',
+    '下单的话要多久',
+    '我想下单但还没决定',
+    '确认一下价格，下单要多久？',
+    '可以下单吗，谢谢',
+    '收到，好的',
+    '不同意这个报价',
+    '不接受报价',
+    '等一下再确认下单',
+    '确认下单，再加 10 个',
+    '确认下单，等等',
+    '就按这个，我再想想',
+    '确认下单，改成 20 件',
+    '请确认',
+    '帮我确认',
+    '接受不了',
+    '我不同意',
+  ];
+  let modelCalls = 0;
+  mockAction = async () => {
+    modelCalls++;
+    return '库存和交期以顾问确认为准。可以开专票。';
+  };
+  setPolicy({ autoApproveMaxFen: 100000 });
+  const acceptanceJobs = async (id: string) => {
+    assert.deepEqual((await store.drainStore(5000)).undrained, []);
+    return t.pg.transaction(async (tx) => {
+      await tx.exec('SET LOCAL ROLE NONE');
+      return (
+        await tx.query<{ n: number }>(
+          "select count(*)::int as n from jobs where kind='handoff_notify' and payload->>'orderId'=$1 and payload->>'reason'='quote_accepted'",
+          [id],
+        )
+      ).rows[0]!.n;
+    });
+  };
+  for (const [group, corpus, expected] of [
+    ['正例', positives, true],
+    ['反例', negatives, false],
+  ] as const) {
+    let hits = 0;
+    for (const text of corpus) {
+      const session = fresh();
+      await estimate(session);
+      const { order } = await make(session);
+      now++;
+      const callsBefore = modelCalls;
+      const reply = await handleMessage(session.id, text, 'wecom');
+      const accepted = order.approval!.acceptedAt !== undefined;
+      hits += Number(accepted);
+      {
+        assert.equal(accepted, expected, text);
+        assert.equal(await acceptanceJobs(order.id), expected ? 1 : 0, text);
+        assert.equal(readState(session).confirmedQuoteAt !== undefined, expected, text);
+        if (expected && /什么时候|能开/.test(text)) {
+          assert.equal(modelCalls, callsBefore + 1, text);
+          assert.match(reply.text, /交期以顾问确认为准|可以开专票/, text);
+        } else if (expected) {
+          assert.equal(modelCalls, callsBefore, text);
+          assert.equal(reply.text, '好的，顾问会尽快联系您确认付款和发货', text);
+        }
+      }
+    }
+    console.log(`CONFIRM CORPUS ${group}: ${hits}/${corpus.length}`);
+  }
+
+  // 非接受终态、更新的试算/清单和转人工仍先于客户接受；纯接受与混合问题都验证。
+  for (const mode of [
+    'pending',
+    'expired',
+    'intake',
+    'draft',
+    'none',
+    'paid',
+    'cancelled',
+    'superseded',
+    'nonstandard',
+    'credit',
+    'sample',
+  ] as const) {
+    for (const text of ['好的，下单吧', '确认下单，能开专票吗']) {
+      const session = fresh();
+      setPolicy({ autoApproveMaxFen: mode === 'pending' ? 0 : 100000 });
+      await estimate(session);
+      const { order } = await make(session);
+      session.packState = {};
+      if (mode === 'expired') order.approval!.decidedAt = now - 9 * 86400000;
+      if (mode === 'paid' || mode === 'cancelled' || mode === 'superseded') order.status = mode;
+      if (mode === 'none') session.orderIds = [];
+      now++;
+      if (mode === 'intake')
+        writeState(session, {
+          rfqIntake: {
+            id: 'int_123456abcdef',
+            at: now,
+            status: 'pending',
+            lines: [{ q: data.partNo, qty: 100, m: 'exact' }],
+          },
+        });
+      if (mode === 'draft')
+        writeState(session, { rfqDraft: { at: now, lines: [{ code: data.id, version: 1, match: 'exact', qty: 100 }] } });
+      store.saveOrder(order);
+      const prefix = mode === 'nonstandard' ? '非标，' : mode === 'credit' ? '账期，' : mode === 'sample' ? '样品，' : '';
+      const reply = await handleMessage(session.id, prefix + text, 'wecom');
+      assert.equal(order.approval!.acceptedAt, undefined, `${mode}: ${text}`);
+      assert.equal(await acceptanceJobs(order.id), 0, `${mode}: ${text}`);
+      if (mode === 'pending') assert.equal(reply.text, '最新的报价单还在顾问审核，审好马上发您');
+      if (prefix) assert.equal(reply.handoff, true, mode);
+      if (mode === 'expired' && /确认/.test(text)) assert.ok(readState(session).rfqDraft, '过期报价仍重新试算');
+      if (mode === 'intake') assert.equal(readState(session).rfqIntake!.status, 'pending');
+    }
+  }
+  console.log('CONFIRM BOUNDARIES PASS: 待审/过期/更新清单/新试算/无候选/终态/三类转人工，纯接受与混合问题');
+
+  // 混合问题还要经过真实 HTTP 模型客户端；仅放行本套自建的回环假服务。
+  const requests: { messages: { role: string; content?: string }[] }[] = [];
+  const fake = createServer(async (req, res) => {
+    const chunks: Buffer[] = [];
+    for await (const chunk of req) chunks.push(Buffer.from(chunk));
+    requests.push(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+    res.setHeader('content-type', 'application/json');
+    res.end(
+      JSON.stringify({
+        choices: [{ message: { role: 'assistant', content: '库存和交期以顾问确认为准。可以开专票。' }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 0, completion_tokens: 0 },
+      }),
+    );
+  });
+  fake.listen(0, '127.0.0.1');
+  await once(fake, 'listening');
+  const fakeBase = `http://127.0.0.1:${(fake.address() as import('node:net').AddressInfo).port}`;
+  const savedEnv = { ...process.env };
+  const savedFetch = globalThis.fetch;
+  Object.assign(process.env, {
+    LLM_MOCK: '0',
+    LLM_PROVIDER: '',
+    LLM_BASE_URL: fakeBase,
+    LLM_API_KEY: 'fixture',
+    LLM_MODEL: 'fixture',
+    LLM_HEDGE_AFTER_MS: '0',
+  }); // gitleaks:allow
+  globalThis.fetch = (input, init) => {
+    const url = input instanceof Request ? input.url : String(input);
+    assert.equal(url, `${fakeBase}/chat/completions`, '只准访问本套假服务');
+    return savedFetch(input, init);
+  };
+  try {
+    setPolicy({ autoApproveMaxFen: 100000 });
+    for (const text of ['就按这个，什么时候能发货？', '确认下单，能开专票吗']) {
+      const session = fresh();
+      await estimate(session);
+      const { order } = await make(session);
+      now++;
+      const requestCount = requests.length;
+      const reply = await handleMessage(session.id, text, 'wecom');
+      assert.equal(requests.length, requestCount + 1);
+      assert.ok(requests.at(-1)!.messages.some((message) => message.role === 'user' && message.content?.includes(text)));
+      assert.match(reply.text, text.includes('专票') ? /可以开专票/ : /交期以顾问确认为准/);
+      assert.equal(order.approval!.acceptedAt, now);
+      assert.equal(readState(session).confirmedQuoteAt, now);
+      assert.equal(await acceptanceJobs(order.id), 1);
+      const acceptedAt = order.approval!.acceptedAt;
+      now++;
+      await handleMessage(session.id, text, 'wecom');
+      assert.equal(order.approval!.acceptedAt, acceptedAt, '重复确认保留首次接受时间');
+      assert.equal(await acceptanceJobs(order.id), 1, '重复确认不重复排顾问通知');
+    }
+    console.log('CONFIRM HTTP PASS: 两条接受+问题均到假服务、回答问题、acceptedAt和quote_accepted任务保存，重复确认去重');
+  } finally {
+    globalThis.fetch = savedFetch;
+    for (const key of Object.keys(process.env)) if (!(key in savedEnv)) delete process.env[key];
+    Object.assign(process.env, savedEnv);
+    fake.closeAllConnections();
+    await new Promise<void>((resolve, reject) => fake.close((error) => (error ? reject(error) : resolve())));
+  }
 
   // 缓存淘汰前后 R6 / R11 使用同一完整摘要与订单；D 批复用同一候选函数。
   setPolicy({ autoApproveMaxFen: 100000 });
