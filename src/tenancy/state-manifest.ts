@@ -670,6 +670,8 @@ export const STATE_MANIFEST: Record<
   'src/shared/console-api.ts:SaveDraftBody': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/shared/console-api.ts:TracesQuery': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/shared/console-api.ts:TakeoverBody': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
+  'src/shared/console-api.ts:TrendsQuery': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
+  'src/shared/console-api.ts:TurnReviewBody': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/shared/console-api.ts:VersionsQuery': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/shared/console-api.ts:jsonObject': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },
   'src/shared/console-api.ts:str': { kind: 'instance', why: '静态校验 / 查询元数据，不含数据库行或租户快照' },

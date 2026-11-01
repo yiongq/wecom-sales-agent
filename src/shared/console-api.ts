@@ -974,3 +974,71 @@ export const SETTINGS_ERRORS = {
 /** 缓存仅进程内；tenantSlug/userId 来自真实 /me；登出、401、403、组织切换清理整个 settings 前缀。 */
 export const settingsQueryKey = (tenantId: string, userId: string, page: keyof SettingsResponses) =>
   ['settings', tenantId, userId, page] as const;
+
+// ---------------- 17：抽检、回归草稿与趋势（docs/architecture/17-observability/spec.md R1、R2、R4、R10） ----------------
+
+export const REVIEW_REASONS = ['incorrect', 'missing', 'handoff', 'format', 'other'] as const;
+export type ReviewReason = (typeof REVIEW_REASONS)[number];
+export type ReviewRating = 'good' | 'bad';
+
+/** PUT /traces/:turnId/review。差评必选原因，好评 reason 必须是 null；未知字段 400，不收自由文本 */
+export const TurnReviewBody = z
+  .strictObject({
+    rating: z.enum(['good', 'bad']),
+    reason: z.enum(REVIEW_REASONS).nullable(),
+    expectedRevision: z.number().int().min(0).max(INT4_MAX),
+  })
+  .refine((b) => (b.rating === 'bad') === (b.reason !== null), { message: '差评必须选原因，好评不带原因', path: ['reason'] });
+export type TurnReviewInput = z.infer<typeof TurnReviewBody>;
+
+export interface TurnReviewView {
+  rating: ReviewRating;
+  reason: ReviewReason | null;
+  revision: number;
+  updatedAt: string;
+  /** 当前租户的成员展示名；成员已移除时是「已移除成员」 */
+  reviewer: string;
+}
+
+/** POST /traces/:turnId/regression-draft 的附件：只有骨架，不带任何源对话内容，原样过不了 v2 schema */
+export interface RegressionDraft {
+  _draft: true;
+  format: 'review-v2';
+  reason: ReviewReason;
+  case: { version: 2; pack: string; id: ''; desc: ''; tags: ['regression']; turns: [] };
+}
+
+/** GET /metrics/trends：只接受 7、30，不写按 7 */
+export const TrendsQuery = z.object({ days: z.enum(['7', '30']).optional() });
+
+export type Coverage = 'complete' | 'partial' | 'unavailable';
+
+/** 摘要快照与趋势同一形状。金额单位是厘（千分之一元），比率 0–1；完整日才有 0，缺失一律 null */
+export interface DailyOpsPoint {
+  /** YYYY-MM-DD，按 response.timezone */
+  day: string;
+  coverage: Coverage;
+  receptions: number | null;
+  turns: number | null;
+  replySamples: number | null;
+  replyP90Ms: number | null;
+  handoffRate: number | null;
+  aiErrorRate: number | null;
+  costMilli: number | null;
+  paidOrders: number | null;
+}
+
+export const TREND_PARTIAL_REASONS = ['retention', 'collection_start', 'deletion', 'today', 'unknown_history'] as const;
+export type TrendPartialReason = (typeof TREND_PARTIAL_REASONS)[number];
+
+export interface MetricsTrendsView {
+  requestedDays: 7 | 30;
+  /** 实际可查询自然日数，含今天 */
+  days: number;
+  timezone: string;
+  fromDay: string;
+  toDay: string;
+  computedAt: string;
+  partialReasons: TrendPartialReason[];
+  points: DailyOpsPoint[];
+}

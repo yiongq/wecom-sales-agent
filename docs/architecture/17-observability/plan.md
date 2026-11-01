@@ -10,7 +10,7 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 ## 开工条件
 
 1. 已满足：D1–D7 全部照推荐定案；owner 于 2026-10-31 明确说「17 改 ready」，并按「点这个就同时确认 heavy 档」确认档位，当前 Status: ready、Tier: heavy。
-2. 实现排在 15 第 1 批完成并合入之后，第 0 步也不提前开始。依赖 15 的设置导航、试用公司及其种子/7 天留存/手动重置、概览页与引导布局改动；同时要求 14 R6/R9 真实链路可用。14 核心合入不能代替验收，15 第 1 批完成状态待核实，第 0 步核对确切版本与证据。
+2. 已满足（2026-11-01 第 0 步核对）：15、14 已 `implemented`（#416，`origin/dev` `89807cf8`），设置导航、试用公司及其种子/7 天留存/手动重置、概览页与引导布局均已合入，14 R6/R9 在代码里。
 3. 已满足：本次 ready 文档变更已给 02、07、后台 UX 顶部各加一行 `Amended by:`，原正文不动；主参考阶段 8 已登记日期与批准原话。
 4. 本机可跑四门禁、一次性真实 PG、浏览器及固定版本 Langfuse；生产、真实数据与真实模型不在本期本机验收范围。
 
@@ -23,7 +23,7 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 
 ## 步骤
 
-- [ ] 0. 开工核对与契约冻结。核对 14 R6/R9、15 的 seed/reset/7 天留存和原 metrics、旧 exporter；确认 origin 分类、消息与 trace 对应、runbook 路径与现有后台路由。冻结 R5/R10 DTO、错误码、日期/金额单位、coverage、评分 revision、job 与账本状态、脱敏白名单。核实日采集检查点及删除失效如何复用生命周期钩子。依赖：15 第 1 批完成并合入及其余开工条件；不可并行。
+- [x] 0. 开工核对与契约冻结。核对 14 R6/R9、15 的 seed/reset/7 天留存和原 metrics、旧 exporter；确认 origin 分类、消息与 trace 对应、runbook 路径与现有后台路由。冻结 R5/R10 DTO、错误码、日期/金额单位、coverage、评分 revision、job 与账本状态、脱敏白名单。核实日采集检查点及删除失效如何复用生命周期钩子。依赖：15 第 1 批完成并合入及其余开工条件；不可并行。
 - [ ] 1. Langfuse 版本预检。按 R11 核实固定 tag 的 web/worker 与所有依赖镜像 digest、本机架构及资源，登记到本 plan；验证配置只指向本机、不设置内容捕获。只读核对导出器与接收字段；版本不可用或要求改 SDK 时停止记录并修订 spec，不静默换版本。依赖：0；与 2、3 可并行。
 - [ ] 2. 数据与清理。新增四表、FORCE RLS、复合键、索引、最小权限、jobs kind，以及清理/回滚增补；不改旧迁移。跑验收 3 的真实 PG 边界与 7 天删除，验证旧函数仍级联评分；日账本跨终态去重与数据字段到期清理。依赖：0；与 1、3 可并行，迁移编号集中分配。
 - [ ] 3. 日指标与趋势后端。实现 R5/R10 的共用日 SQL、coverage、60 秒租户缓存、采集/删除失效及新趋势接口，保持旧 metrics/UsageView。用固定时钟、真实 PG 对照验收 6、11 的接口部分。依赖：0；纯读聚合先行，ops_metric_coverage 采集检查点持久化接入等 2 合入后完成。
@@ -52,6 +52,79 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 本期整体实现排在 15 第 1 批之后，不只让第 7 步等前端布局：设置导航、试用公司和概览/引导改动均须先完成并合入，不与 15 抢写公共文件，也不复制设置导航；15 用量页只消费 14 R9，本期趋势是独立接口。14 的 `purpose='reply'` 只用于原用量，接待数不能用其 calls 替代。开发可在未部署时完成，本期本机通过也不能宣称 14/15 已上线。
 
 共 **13 步（0–12）**，最多三路；1 与 8 为第三方预检和实测，2–7 为六个实现步骤，9 是必须的贯穿与回滚，最后三步遵循仓库固定收尾顺序。
+
+## 第 0 步冻结契约
+
+2026-11-01 第 0 步对照 `origin/dev`（`89807cf8`，含 #416）核对。DTO 代码在 `src/shared/console-api.ts` 末段，这里写代码表达不了的规则。各路只消费，要改先写进 Open。
+
+### 核对结论
+
+| 项            | 结论                                                                                                                                                                                                                  |
+| ------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 14 R6/R9      | `GET /usage`、`UsageView`、`canSeeUsage` 在 `src/console-api/app.ts`；suspended 租户照常装载，判定在 `src/tenancy/limits.ts`，所以摘要要在事务里重读 `tenants.status`，不能只看 `rt.state`。14 与 15 已 `implemented` |
+| 15 种子与留存 | 种子会话 `state.seed=true`、带 `seedBaselineSeq`，订单 `ord_seed_` 前缀，经 `originOf` 判 seed；`resetTrial` 要求三个保留期都是 7、逐会话 `eraseConversation`                                                         |
+| 旧 metrics    | `src/ops/metrics.ts`、`src/db/repo/metrics.ts` 含种子与全部来源、成交取内存。新接口不复用也不改它们                                                                                                                   |
+| AI 消息       | AI 回复 `messages.author` 是 NULL，确定性提示同样如此，`linkTurn` 写 `turn_id`。判定：`role='agent' AND (author IS NULL OR author='ai')`。spec R2 已改                                                                |
+| 删除路径      | `erase_conversation` 与试用重置要拿租户锁，应用必须停着；进程内缓存随重启清空。进程内只有 `purgeOnce` 要主动作废                                                                                                      |
+| 时区          | 清除函数在库里跑，不知道部署 `TZ`，不能按本地日定位删除日期；用下面的区间法                                                                                                                                           |
+| 手册内容      | 镜像不含 `docs/`，第 6 步给 Dockerfile 加 `COPY docs/ops ./docs/ops`，接口读这份公共手册                                                                                                                              |
+| 登录          | 未登录时 Shell 在原地址渲染登录页，不跳转，深链接登录后留在原路径，无外部返回地址                                                                                                                                     |
+
+### 数据（第 2 步，迁移 `0026`，第 5 步若要函数用 `0027`）
+
+- `turn_reviews`：R2 的列；`reviewer_user_id` 不设外键，展示名按当前成员查，查不到写「已移除成员」；`CHECK ((rating='bad') = (reason IS NOT NULL))`。
+- `ops_daily_reports`：PK `(tenant_id, day)`，`report_id uuid` 唯一；`status`、`attempts`、`resend_count`、`next_attempt_at`、`claim_token uuid`、`computed_at`、`sent_at`、`error_code`、`snapshot json`（`DailyOpsPoint`，清业务值就置 NULL）。
+- `ops_latency_state`：PK `tenant_id`；`last_window_end`、`bad_streak`、`good_streak`、`active`、`paused`、`last_sent_at`、`last_p90_ms`、`last_samples`。
+- `ops_metric_coverage`：PK `(tenant_id, day)`；`first_seen_at`、`last_seen_at`、`has_gap`、`has_deletion`。
+- 四表 `agent_app` 只有 SELECT、INSERT、UPDATE，删除只走函数。`purge_ops_data(p_tenant, p_now)` 只 GRANT `agent_app`，随 `purgeOnce` 调：报告 35 天删行，`min(35, retention_trace_days)` 天清 `snapshot`，coverage 留 `min(30, retention_trace_days)` 个自然日。
+- `jobs_kind_check` 加 `ops_daily_digest`，TS 的 `JobKind` 到第 5 步才加。`erase_conversation` 的返回值加 `reviews`。
+- 删除标记：内部函数 `ops_coverage_mark_deleted(p_tenant, p_at timestamptz[])`，把 `p_at` 落在 `[first_seen_at-2分钟, last_seen_at+2分钟]` 内的 coverage 行置 `has_deletion`。`purge_conversation`、`erase_conversation` 在删除前传该会话的 `started_at` 和已付订单的 `paid_at`；`purge_expired_traces` 按 cutoff 批量标。不落在任何行区间的时刻必在采集缺口内，那天本来就不是 complete，不用标。
+
+### 指标与 coverage（第 3 步）
+
+- 日窗口由 JS 按本地零点算出后传 timestamptz，`todayIso` 同口径；`usage_daily.day` 直接比日期。
+- 来源谓词：`src/shared/origin.ts` 导出前缀常量，`originOf` 与 SQL 共用。standard 的 customer 会话是 `state.seed` 不为真且 id 不带种子、访客前缀；订单再排除 `ord_seed_` 与关联种子会话。三种来源要有对照自测。
+- `paidOrders`：`paid_at` 在窗口内、`status IN ('paid','refund_pending','refunded')`、`voided_at IS NULL`。
+- 窗口：`请求天数 ∩ retention_trace_days ∩ tenants.created_at 本地日`。截到保留期报 `retention`，截到开通日报 `collection_start`。没有 coverage 行的历史日留在窗口内，报 `unknown_history`。
+- complete 的条件：非今天，coverage 行 `first_seen_at` 不晚于零点后 2 分钟、`last_seen_at` 不早于次日零点前 2 分钟，无 `has_gap`、无 `has_deletion`。
+- 非 complete 日逐字段取值：记录值大于 0 才给数，否则 null；比率的分母为零时 null。至少一项有值是 `partial`，全空是 `unavailable`。今天固定 `partial`，报 `today`。
+- 检查点：每分钟一次（第 3 步接 `ops_metric_coverage`）。启动、与上次检查点间隔超过 2 分钟、`storeHealth()` 有 conflict、poisoned 或积压超 60 秒时置 `has_gap`；跨日间隔同时标两天。
+- 缓存键：租户、请求天数、时区、起始日、今天、保留期；每次请求现读 `tenants`，保留期变更立即失效。`purgeOnce` 删过东西就作废。摘要与告警绕过缓存。
+
+### 接口（第 4 步）
+
+权限顺序：未登录 401 → 角色 403 `forbidden` → 沙箱 403 `observability_unavailable` → 文件存储 503 `store_file_mode` → 解析定位参数。
+
+| 路由                                    | 说明                                                                                                                               |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /metrics/trends?days=7\|30`        | `MetricsTrendsView`（第 3 步）                                                                                                     |
+| `GET /traces/:turnId`                   | `TurnTraceView` 加 `conversationId`、`channel`、`reviewable`、`review`；只收 UUID                                                  |
+| `GET /traces/:turnId/review`            | `{ review: TurnReviewView \| null }`                                                                                               |
+| `PUT /traces/:turnId/review`            | `TurnReviewBody`，返回 `TurnReviewView`；请求体封顶 4 KiB                                                                          |
+| `POST /traces/:turnId/regression-draft` | `RegressionDraft` 附件，固定文件名，`no-store`；未差评 422 `review_not_applicable`                                                 |
+| `GET /traces`                           | 加 `review=none\|good\|bad`、`reason=<ReviewReason>`，`none` 只含可评未评；行加 `review: { rating, reason } \| null`、`reviewable` |
+
+可评：trace 有非空 `final_text`，outcome 不是 silent、reset，且有上面定义的 AI 消息。错误码：不存在或跨租户 404 `not_found`，内容 400，不可评 422 `review_not_applicable`，竞争 409 `review_conflict`，审计或存储失败 503 `store_unavailable`。审计 `trace.review`、`trace.regression_draft` 不写 target，diff 只有评分、原因、修订号（草稿是原因、格式、包 id）。
+
+### 摘要与告警（第 5、6 步）
+
+- job：`ops_daily_digest`，`dedupeKey=ops_daily_digest:<day>`，payload `{ day }`，`maxAttempts=10`（发送次数在账本，不用 job 计数），独立 `ops` lane。排程到期检查放 runner 每拍。
+- 账本：`pending → sending → sent | unknown`；`pending → failed | skipped`。`error_code` 取 `config_missing`、`rate_limited`、`sql_error`、`rejected`、`timeout`、`network`、`bad_response`、`server_error`、`redirect`、`restart_in_sending`、`commit_failed`、`deadline`、`suspended`、`disabled`。启动归位在 `recoverJobsAtStartup` 同一事务、认领之前。发送日是 `day` 的次日，到次日 24:00 截止。
+- 传输：`alert.ts` 新增发送函数，单次发送，返回 `accepted`、`rejected`、`unknown` 或 `not_attempted`（`config_missing`、`rate_limited`）。200 且 `errcode=0` 算 accepted；200 且 errcode 非 0、4xx 算 rejected；5xx、3xx、超时、断连、解析失败、响应超 8 KiB 算 unknown。摘要要求一分钟内已发不超过 6 条，给故障告警留 4 条。
+- 正文白名单：实例标签、`P3`、日期、`T-<租户 uuid 前 6 位>`（共享试用再加「共享试用」）、报告短号（`report_id` 前 8 位）、接待、轮次、转人工率、AI 错误率、回复 p90 与样本数、模型费用（标「租户全部模型费用（含测试）」）、已付订单数（含后续退款）、数据不足说明。不带 slug、租户名、成员、客户标识。
+- CLI：`src/cli/ops-report.ts`，`retry --tenant <slug> --day <date> --ack-duplicate-risk` 把 unknown 改回 pending 并排 job，由应用发送；`prepare-rollback --tenant <slug>` 取消未完 job、sending 归 unknown。都以 platform 身份经 SECURITY DEFINER 函数。
+- env：`OPS_DIGEST_TENANTS`、`OPS_LATENCY_TENANTS`，逗号分隔 slug，不存在或非 standard 的项报错跳过，不回显取值。
+- 手册：`GET /ops/runbooks/:key`，owner、admin，key 是固定白名单，内容取 `docs/ops/observability.md` 的同名小节，自测逐 key 校验。
+
+### 分路与文件归属
+
+| 路     | 步骤    | 执行   | 独占                                                                                                     |
+| ------ | ------- | ------ | -------------------------------------------------------------------------------------------------------- |
+| A      | 2 → 4   | Codex  | `drizzle/`、`src/db/schema.ts`、`src/db/repo/retention.ts`、`src/jobs/purge.ts`、`src/db/repo/traces.ts` |
+| B      | 3       | Codex  | `src/shared/origin.ts`、`src/ops/trends.ts`、`src/db/repo/ops-metrics.ts`                                |
+| 协调者 | 1、7、8 | Claude | `docs/architecture/17-observability/`、`console/`                                                        |
+
+`src/console-api/app.ts`、`src/shared/console-api.ts`、`package.json`、`src/tenancy/state-manifest.ts` 各路都要加行，协调者合并时手工对齐。Codex 不改 plan，也不提交。
 
 ## 验收记录模板
 

@@ -1,6 +1,7 @@
 # 17 · 可观测性增强
 
 Status: ready
+Revisions: 2026-11-01 第 0 步对照代码收窄一处，不改产品决定：R2 的 AI 消息按库里实际写法定为 `role='agent'` 且 `author` 为空或 `'ai'`（AI 回复的 `messages.author` 是 NULL，只有跟进写 `'followup'`）。其余核对结论与冻结契约见 plan「第 0 步冻结契约」。
 Revisions: 2026-10-31 owner 明确批准，原话「17 改 ready」，并按「点这个就同时确认 heavy 档」确认档位；Status 改为 ready，Tier 定为 heavy。实现排在 15 第 1 批之后，依赖其设置导航、试用公司和概览页改动；同次补 02、07、后台 UX 反向标记及主参考登记。
 Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按推荐」，D1–D7 全部照 ★ 推荐定案；Status 保持 draft，ready 须 owner 另外点名，Tier proposal 仍待 owner 确认，不属于本次决策卡定案。
 Revisions: 2026-10-31 首版起草，仅设计，未实施。
@@ -84,7 +85,7 @@ Amends: 02 的抽检表、清理范围、jobs 类型及 R24 告警元数据；07
 
 入口放在「AI 记录」详情的最终回复之后；列表加“全部 / 未评 / 好评 / 差评”和固定原因筛选，与现有时间、outcome 筛选相交。使用原有游标分页，单页最多 100 条，不新增评分总榜，也不把主动挑出的样本率称为总体好评率。
 
-评分对象为一轮已经落库、存在最终文本且有关联 `messages.turn_id` 的 `author='ai'` 消息；评价最终发出的内容而不是模型原稿。确定性 AI 回复也可评。无最终回复、纯 silent/reset、欢迎语、人工消息及无可对应 trace 的 followup 不可评，返回 422 `review_not_applicable`。按轮打一次，分段不是多个评分。
+评分对象为一轮已经落库、存在最终文本且有关联 `messages.turn_id` 的 AI 消息（`role='agent'` 且 `author` 为空或 `'ai'`）；评价最终发出的内容而不是模型原稿。确定性 AI 回复也可评。无最终回复、纯 silent/reset、欢迎语、人工消息及无可对应 trace 的 followup 不可评，返回 422 `review_not_applicable`。按轮打一次，分段不是多个评分。
 
 新增 `turn_reviews`：`tenant_id uuid`、`turn_id uuid`、`rating ('good'|'bad')`、`reason`、`reviewer_user_id uuid`、`revision integer`、`created_at/updated_at timestamptz`。主键 `(tenant_id, turn_id)`；复合外键到 `turn_traces(tenant_id,id)`，`ON DELETE CASCADE`。不复制客户文本、模型原稿、工具参数、会话原 id，不设自由文本备注。原因固定为 `incorrect`（内容错误）、`missing`（遗漏）、`handoff`（转人工不当）、`format`（表达问题）、`other`（其他）；差评必须选一项，好评 reason 必须为 null。
 
