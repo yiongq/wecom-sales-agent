@@ -17,6 +17,7 @@ import { IndustrialPolicySchema, taxInvoiceText } from './policy.js';
 
 export const INVENTORY_FALLBACK = '库存和交期以顾问确认为准';
 export const SUBSTITUTE_FALLBACK = '能否替代请顾问确认';
+export const PROMISE_FALLBACK = '价格按数量档位执行，额外优惠需要顾问确认。';
 export const TRIM_FALLBACK = '询价明细较多，需要的话我出一份正式报价单。';
 export const trimNote = (n: number): string => `另外 ${n} 行已算好，需要的话我出一份正式报价单`;
 const nonAssertion = /[?？]|如果|假如|若是|的话|是否|有没有|能不能|可以吗|以.{0,8}确认为准|不能|不可|不保证|不承诺|不是|没有|无现货/;
@@ -25,6 +26,13 @@ const substituteClaim = /可以替代|可替代|通用|一样的|能互换/;
 const internalRule =
   /代码与工具决定|本轮已发布政策|询价太长时只列前\d+行|(?:find_parts|quote_items|create_quote_sheet)\s*[（(]|【硬性要求】/;
 const pricePromise = /全网最低|保证不涨价|还能再便宜/;
+const discountClaim =
+  /打\s*[一二三四五六七八九十两零〇点\d.]+\s*折|[一二三四五六七八九十两零〇点\d.]+\s*折优惠|(?:给您|给你|提供|享受|额外)折扣|让利|抹零|再优惠|再减|(?:便宜|优惠)\s*[一二三四五六七八九十百千万两\d.]+\s*元/;
+const shippingClaim = /免运费|包邮|运费全免|运费我们出|不收运费/;
+const giftClaim = /赠送|附赠|送您|送你|送一个|搭赠|返点|返利|返现/;
+const promiseNonAssertion =
+  /[吗么呢][。！？?!，,；;]?\s*$|[?？]|是否|有没有|能不能|可以吗|以.{0,8}确认为准|不能|不可|不保证|不承诺|不是|没有|需要?顾问确认|请(?:顾问)?确认|不(?:再|予|提供|支持|享受)?(?:打(?:\s*[一二三四五六七八九十两零〇点\d.]+\s*)?折|包邮|免运费|赠送|附赠|送您|送你|送一个|搭赠|返点|返利|返现|让利|抹零|优惠|折扣)|无(?:额外)?(?:优惠|折扣|赠品|赠送|返点|返利|返现)/;
+
 // 数字单位、材料 / 防护等级、螺纹是规格，不是待校验的型号。
 const specToken =
   /^(?:\d+(?:\.\d+)?(?:MM|CM|M|MPA|KPA|PA|V|KV|W|KW|A|MA|HZ|KG|G|NM)|DC\d+(?:\.\d+)?V|AC\d+(?:\.\d+)?V|IP\d{2,3}|Q\d{3}|A[24]-\d+|[GR]\d+\/\d+)$/i;
@@ -169,6 +177,8 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
       ),
     ];
   };
+  // 承诺回退在整条回复只出现一次；其他既有回退仍按原句去重。
+  const promiseReplacements = new Set<string>();
   // 型号标题常独占一行；延续最近显式主语，新型号（包括未知型号）必须覆盖它。
   let subject: string[] = [];
   return sentenceUnits(ctx.text)
@@ -185,7 +195,6 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
         .map((sentence) => {
           const explicit = mentionedModels(sentence);
           if (explicit.length) subject = explicit;
-          if (pricePromise.test(sentence)) return '';
           const withoutLinks = partsOf(sentence)
             .reduce((text, link) => text.replaceAll(link.url, ''), sentence)
             .replace(/https?:\/\/[^\s，。！？]+/gi, '');
@@ -206,8 +215,22 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
           if (unknown) return '';
           let text = sentence;
           const assertions = !nonAssertion.test(sentence);
+          // 数量档位本身不是额外优惠；同句出现额外承诺仍须拦截。
+          const freeShipping =
+            /满(?:额|\s*[\d.]+\s*元)|达到包邮门槛/.test(sentence) &&
+            !/未满|不满|无需满|不限|无门槛/.test(sentence) &&
+            policy.shipping.freeOverFen > 0;
+          const threshold = /满\s*(\d+(?:\.\d+)?)\s*元/.exec(sentence);
+          const shippingSupported = freeShipping && (!threshold || Math.round(Number(threshold[1]) * 100) === policy.shipping.freeOverFen);
+          // 条件句也是承诺（量大的话可以打九折），不沿用 nonAssertion 对「如果 / 的话」的放行。
+          if (
+            !promiseNonAssertion.test(sentence) &&
+            (discountClaim.test(sentence) || giftClaim.test(sentence) || (shippingClaim.test(sentence) && !shippingSupported))
+          )
+            text = followup ? '' : PROMISE_FALLBACK;
+          if (text === sentence && pricePromise.test(sentence)) return '';
           const inventory = sentence.replace(/报价(?:单)?有效期(?:为|是|[:：])?\s*\d+\s*天/g, '');
-          if (assertions && inventoryClaim.test(inventory)) {
+          if (text !== PROMISE_FALLBACK && assertions && inventoryClaim.test(inventory)) {
             const supported =
               subject.length > 0 &&
               subject.every((model) => {
@@ -231,7 +254,7 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
               });
             if (!supported) text = followup ? '' : INVENTORY_FALLBACK + '。';
           }
-          if (text && assertions && substituteClaim.test(sentence)) {
+          if (text && text !== PROMISE_FALLBACK && assertions && substituteClaim.test(sentence)) {
             const relation = substituteClaim.exec(sentence)!;
             const left = mentionedModels(sentence.slice(0, relation.index));
             const right = mentionedModels(sentence.slice(relation.index + relation[0].length));
@@ -246,7 +269,12 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
               );
             if (!supported) text = followup ? '' : SUBSTITUTE_FALLBACK + '。';
           }
-          if (text && !/[?？]|如果|假如|的话|是否|能不能/.test(sentence) && /含税|不含税|税率|专票|专用发票/.test(sentence)) {
+          if (
+            text &&
+            text !== PROMISE_FALLBACK &&
+            !/[?？]|如果|假如|的话|是否|能不能/.test(sentence) &&
+            /含税|不含税|税率|专票|专用发票/.test(sentence)
+          ) {
             const tax = /不含税/.test(sentence) ? false : /含税/.test(sentence) ? true : null;
             const offersInvoice = !/不能开|不开|不支持|无法开|不能提供/.test(sentence);
             const invoiceOk = !/专票|专用发票/.test(sentence) || offersInvoice === policy.invoice.some((kind) => /专用|专票/.test(kind));
@@ -255,8 +283,9 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
               text = followup ? '' : taxInvoiceText(policy);
           }
           if (text !== sentence && text) {
-            if (replacements.has(text)) return '';
-            replacements.add(text);
+            const seen = text === PROMISE_FALLBACK ? promiseReplacements : replacements;
+            if (seen.has(text)) return '';
+            seen.add(text);
           }
           return text;
         })

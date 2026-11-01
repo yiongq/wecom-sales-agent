@@ -4,7 +4,7 @@ import { followupTemplates } from './auxiliary.js';
 import { defaultIndustrialPolicy, taxInvoiceText } from './policy.js';
 import { INTAKE_FIXED, renderIntake } from './intake.js';
 import { FIXED } from './turn.js';
-import { INVENTORY_FALLBACK, SUBSTITUTE_FALLBACK, TRIM_FALLBACK, trimNote } from './guards.js';
+import { INVENTORY_FALLBACK, SUBSTITUTE_FALLBACK, PROMISE_FALLBACK, TRIM_FALLBACK, trimNote } from './guards.js';
 const nonTextHints: Record<string, string> = {
   image: '图片收到了，我暂时看不了图片内容，请把型号和数量打字发来，型号铭牌上的文字也可以打给我。',
   voice: '语音我暂时听不了，请把型号和数量打字发来，我帮您查询。',
@@ -52,6 +52,7 @@ export const fixedReplies: readonly FixedReply[] = [
   ...[
     ['industrial.empty', '请告诉我型号和数量。', 'rfq_trim'],
     ['industrial.tax', taxInvoiceText(defaultIndustrialPolicy), 'industrial_claims'],
+    ['industrial.promise', PROMISE_FALLBACK, 'industrial_claims'],
     ['industrial.inventory', INVENTORY_FALLBACK + '。', 'industrial_claims'],
     ['industrial.substitute', SUBSTITUTE_FALLBACK + '。', 'industrial_claims'],
     ['industrial.trim.fallback', TRIM_FALLBACK, 'rfq_trim'],
