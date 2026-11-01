@@ -1542,5 +1542,94 @@
         ]
       }
     ]
+  },
+  {
+    "version": 2,
+    "pack": "industrial",
+    "tags": ["q10", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "id": "q10-industrial-extra-promises",
+    "desc": "模型额外折扣、免运费及赠送承诺被确定性回退替换且整条去重",
+    "turns": [
+      {
+        "say": "这批能再优惠吗",
+        "expect": {
+          "replyMatches": ["^价格按数量档位执行，额外优惠需要顾问确认。$"],
+          "replyExcludes": ["打九折", "免运费", "送您配件"],
+          "orders": {
+            "count": 0
+          },
+          "guardVerdicts": [
+            {
+              "id": "pre_clean",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "stage_advance",
+              "action": "pass"
+            },
+            {
+              "id": "industrial_claims",
+              "action": "replace"
+            },
+            {
+              "id": "markdown",
+              "action": "pass"
+            },
+            {
+              "id": "dangling",
+              "action": "pass"
+            },
+            {
+              "id": "advisor_prefix",
+              "action": "pass"
+            },
+            {
+              "id": "identity",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
+              "id": "link_whitelist",
+              "action": "pass"
+            },
+            {
+              "id": "money_provenance",
+              "action": "pass"
+            },
+            {
+              "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:post",
+              "action": "pass"
+            },
+            {
+              "id": "turn_failure",
+              "action": "pass"
+            },
+            {
+              "id": "final_clean",
+              "action": "pass"
+            }
+          ]
+        },
+        "script": [
+          {
+            "content": "给您打九折，免运费。送您配件。"
+          }
+        ]
+      }
+    ]
   }
 ]

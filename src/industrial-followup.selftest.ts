@@ -475,6 +475,23 @@ try {
     assert.match(guarded.text, /确认为准/);
     assert.doesNotMatch(guarded.text, /全网最低|今天发货/);
     assert.ok(finish.at(-1)!.turn.guards.some((g) => g.guard === 'industrial_claims'));
+    // 合成模型原稿保留在 trace，客户正文只能收到确定性回退。
+    for (const raw of ['给您打九折。', '可以再优惠。', '这单再减10元。', '这单免运费。', '送您配件。']) {
+      const s = store.getOrCreateSession(`wecom:wmIF${++sequence}`, 'wecom');
+      action = async () => raw;
+      const reply = await handleMessage(s.id, '这批价格还能商量吗', 'wecom');
+      assert.equal(reply.text, '价格按数量档位执行，额外优惠需要顾问确认。');
+      assert.equal(finish.at(-1)!.turn.draft, raw);
+      assert.ok(finish.at(-1)!.turn.guards.some((event) => event.guard === 'industrial_claims' && event.action === 'replace'));
+      process.env.LLM_MOCK = '0';
+      try {
+        completion = raw;
+        assert.equal(await followup.followUpText(silent()), '', raw);
+      } finally {
+        process.env.LLM_MOCK = '1';
+      }
+    }
+    console.log('工业承诺引擎：5条折扣/免运费/赠送原稿经真实主回复及跟进链路，正文替换/删空、trace原稿与industrial_claims事件通过');
     // 每类编造都经真实主回复管线，事件落入guard_events。
     const unsafeCases = [
       {
