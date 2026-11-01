@@ -1,7 +1,8 @@
 import { Onboarding } from './Onboarding.js';
+import { TrendsBlock } from './TrendsBlock.js';
 // 总览（spec「逐页设计 · 总览（A 页）」与 02 spec「后台页面 · 总览 A2」「可观测性与告警 · 运行数字」，
 // 设计系统 §5.10、§5.11、§6.7、§10.2 A 页与「02 后端到位后 · A2」）：回答两个问题，现在要处理什么，业务怎么样。
-// 从上到下：需要你处理（含 A2 的等人接手/已成交客户要人工/待付款 + 本月成交额）→ 运行数字 → 成交与转人工（07 R23，带来源视图，
+// 从上到下：需要你处理（含 A2 的等人接手/已成交客户要人工/待付款 + 本月成交额）→ 运行数字 → 趋势（17 R10，TrendsBlock.tsx）→ 成交与转人工（07 R23，带来源视图，
 // 本月成交额也跟着它）→ 系统状态 → 业务数 → 最近变更 / 客户停在哪一步。
 // - 只调现有接口和 spec 新增的只读接口；各块自己加载、自己出错，一块失败只有这一块写「没取到 · 重试」，其余照常。
 //   会话计数、各实体列表与外壳（侧栏徽标、铃铛、条目数）共用同一份缓存，页面可见时一起每 30 秒刷新；等人接手取的是
@@ -934,6 +935,7 @@ export function OverviewPage() {
       <Onboarding />
       <TodoBlock pack={pack} editor={editor} canHandle={canHandle} now={now} view={view} onSettled={showBelow} />
       <MetricsBlock editor={editor} />
+      <TrendsBlock editor={editor} />
       <DealsBlock editor={editor} view={view} onView={setView} />
       <div className={below ? 'ov-below' : 'ov-below is-waiting'}>
         <SystemBlock pack={pack} />

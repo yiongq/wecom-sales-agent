@@ -145,6 +145,23 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 
 ## 实施与验证记录
 
+### 第 1 步 Langfuse 预检（2026-11-01，未完成）
+
+- 版本：D7 定的 `v3.122.1` 没有发布镜像（Docker Hub、GHCR 均无此 tag，`3.122` 与 `3.122.0` 是同一 digest）。`3.122.0` 的 revision 是 `322bc047`，比 `v3.122.1` 少 9 个提交，均未改 OTel 接收代码。owner 原话「用 3.122.0」，spec 已改。
+- 官方 compose 的 `langfuse:3`、clickhouse、minio 都是浮动 tag；`minio/minio` 已无法匿名拉取，改用 `bitnamilegacy/minio`。
+- 只读核对：接收端认 `langfuse.session.id`、`langfuse.user.id`、`langfuse.trace.name`，OTLP 收 `application/json`，与现有导出器一致。字段映射以第 8 步实测为准。
+- 本机：arm64 全部拉取成功。起栈时 Docker 虚拟机 100 GB 磁盘写满，Postgres、ClickHouse 起不来，也波及当时的测试库；已撤掉这次的容器、卷和镜像。资源占用未测，第 8 步前要先腾约 8 GB。
+- compose 改动：全部镜像固定 digest，只映射 web 到 `127.0.0.1`，`restart: "no"`，`TELEMETRY_ENABLED=false`，不设 `OTEL_CAPTURE_CONTENT`，凭据运行时生成，放仓库外。
+
+| 服务       | 镜像                                               | digest                                                                    |
+| ---------- | -------------------------------------------------- | ------------------------------------------------------------------------- |
+| web        | `docker.io/langfuse/langfuse:3.122.0`              | `sha256:c2c726c5904db7d328208136cad6f4e0a8231f2f41134c4f02cb207d01a9e234` |
+| worker     | `docker.io/langfuse/langfuse-worker:3.122.0`       | `sha256:08d3b05f80463e86afdef82791ccc3b9c0f81c5e5aa132ddea0f631b9e5e222c` |
+| clickhouse | `docker.io/clickhouse/clickhouse-server:25.8.33.6` | `sha256:0152dd511befe6a2c2ef53e930726179669b08116da78500b37c51c96ff5ee77` |
+| redis      | `docker.io/library/redis:7.4.12`                   | `sha256:b6b6e3dc0c0952737748e55d5d885272840c7e42ba41ab1d5489f693419882f5` |
+| postgres   | `docker.io/library/postgres:17.11`                 | `sha256:31ba9c94a03ada9988f2bb493a22a75eef3a185884533e5cdbcd498ea835b08f` |
+| 对象存储   | `docker.io/bitnamilegacy/minio:2025.7.23`          | `sha256:8935e75fa5d11295c17171e4aa49efe390a1193cd7f12e4d21b92af9ffef09d7` |
+
 ### 草案起草（2026-10-31）
 
 - 已读 AGENTS.md、CLAUDE.md、任务说明、SDD 流程、总参考定位、14 spec/plan、ADR-003、02 可观测性条款，补查 07 trace 导出与 15 权限/留存/宿主规则；核对 metrics、alert、jobs、OTel、schema/清理、console 路由及 v2 runner。
@@ -169,7 +186,8 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 
 - 无未决产品决定或档位/状态审批；D1–D7、heavy 与 ready 均已获 owner 确认。
 - 实施前置待核实：15 第 1 批须先完成并合入（设置导航、试用公司及概览页改动），14 R6/R9 完整验收状态仍须核对；满足排期依赖后，第 0 步据 code/plan 核验接口与清理实现。冲突写这里并停止，不自行改架构。
-- Langfuse 指定版本镜像与字段兼容未核实，1/8 步给证据；若需要 SDK/属性迁移，先报告差异并修订范围。
+- Langfuse 版本已定 3.122.0，字段兼容未核实，1/8 步给证据；若需要 SDK/属性迁移，先报告差异并修订范围。
+- 第 8 步前要腾 Docker 虚拟机磁盘（现空闲约 2 GB，这套镜像约 6 GB），动的是不属于本任务的缓存或镜像，由 owner 定。
 
 ## 已定
 
