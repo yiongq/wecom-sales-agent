@@ -529,6 +529,16 @@ async function inboxRetentionSuite(
        values ($1,$2,$3,'wecom',$2,'image','image/png',1,'synthetic',decode('01','hex'),'[{"keep":true}]',now()-interval '31 days')`,
       [tenantId, attachmentId, conversationId],
     );
+    await su(
+      `insert into ops_daily_reports(tenant_id,day,status,snapshot)
+      values ($1,current_date-40,'sent','{}')`,
+      [tenantId],
+    );
+    await su(
+      `insert into ops_metric_coverage(tenant_id,day,first_seen_at,last_seen_at)
+      values ($1,current_date-40,now()-interval '40 days',now()-interval '40 days')`,
+      [tenantId],
+    );
     const spec = retentionPurgeSpec(Date.now());
     const result = daily
       ? await runRetentionPurgeJob({ dedupeKey: spec.dedupeKey, runAt: new Date(spec.runAt) } as JobRow, Date.now())
@@ -538,7 +548,7 @@ async function inboxRetentionSuite(
       [tenantId, account!.id, `${prefix}-%`],
     );
     const audit = (
-      await su<{ diff: { inbox: number; attachments: number } }>(
+      await su<{ diff: { inbox: number; attachments: number; ops: number } }>(
         "select diff from audit_log where tenant_id=$1 and action='system.purge' order by id desc limit 1",
         [tenantId],
       )
@@ -552,6 +562,16 @@ async function inboxRetentionSuite(
         rows.find((r) => r.msgid === `${prefix}-open`)?.reason === 'too_old' &&
         rows.find((r) => r.msgid === `${prefix}-open`)?.nopay === true,
       json(rows),
+    );
+    const [opsRows] = await su<{ reports: number; coverage: number }>(
+      `select (select count(*)::int from ops_daily_reports where tenant_id=$1) reports,
+       (select count(*)::int from ops_metric_coverage where tenant_id=$1) coverage`,
+      [tenantId],
+    );
+    check(
+      `${label}：日常清理执行 purge_ops_data 并将计数写审计/返回值`,
+      opsRows?.reports === 0 && opsRows.coverage === 0 && audit?.diff.ops === 2 && (daily || ('ops' in result && result.ops === 2)),
+      json({ opsRows, audit, result }),
     );
     const [attachment] = await su<{ cleared: boolean; result: unknown }>(
       'select bytes is null as cleared,result from attachments where tenant_id=$1 and id=$2',

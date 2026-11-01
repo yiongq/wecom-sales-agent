@@ -62,7 +62,7 @@ main(async () => {
         (tx) => eraseConversation(tx, convId, reason),
       );
       console.log(
-        `[erase-conversation] 完成：conversations=${counts.conversations} messages=${counts.messages} traces=${counts.traces} ` +
+        `[erase-conversation] 完成：conversations=${counts.conversations} messages=${counts.messages} traces=${counts.traces} reviews=${counts.reviews} ` +
           `guardEvents=${counts.guardEvents} consents=${counts.consents} outboundSends=${counts.outboundSends} ` +
           `orders=${counts.orders} jobs=${counts.jobs} inbox=${counts.inbox}`,
       );
