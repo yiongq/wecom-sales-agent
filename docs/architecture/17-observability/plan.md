@@ -25,9 +25,9 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 
 - [x] 0. 开工核对与契约冻结。核对 14 R6/R9、15 的 seed/reset/7 天留存和原 metrics、旧 exporter；确认 origin 分类、消息与 trace 对应、runbook 路径与现有后台路由。冻结 R5/R10 DTO、错误码、日期/金额单位、coverage、评分 revision、job 与账本状态、脱敏白名单。核实日采集检查点及删除失效如何复用生命周期钩子。依赖：15 第 1 批完成并合入及其余开工条件；不可并行。
 - [ ] 1. Langfuse 版本预检。按 R11 核实固定 tag 的 web/worker 与所有依赖镜像 digest、本机架构及资源，登记到本 plan；验证配置只指向本机、不设置内容捕获。只读核对导出器与接收字段；版本不可用或要求改 SDK 时停止记录并修订 spec，不静默换版本。依赖：0；与 2、3 可并行。
-- [ ] 2. 数据与清理。新增四表、FORCE RLS、复合键、索引、最小权限、jobs kind，以及清理/回滚增补；不改旧迁移。跑验收 3 的真实 PG 边界与 7 天删除，验证旧函数仍级联评分；日账本跨终态去重与数据字段到期清理。依赖：0；与 1、3 可并行，迁移编号集中分配。
-- [ ] 3. 日指标与趋势后端。实现 R5/R10 的共用日 SQL、coverage、60 秒租户缓存、采集/删除失效及新趋势接口，保持旧 metrics/UsageView。用固定时钟、真实 PG 对照验收 6、11 的接口部分。依赖：0；纯读聚合先行，ops_metric_coverage 采集检查点持久化接入等 2 合入后完成。
-- [ ] 4. 抽检与安全草稿后端。实现评分 revision、审计事务、角色检查、过滤/详情/安全深链接及无源内容的 v2 骨架；保留 travel 旧导出。验收 1–5 的 API/外部文件链路，特别证明工业草稿不得调用旧 goal-draft 获取正文。依赖：2；可接替已完成的 2 路，与 1、3 并行。
+- [x] 2. 数据与清理。新增四表、FORCE RLS、复合键、索引、最小权限、jobs kind，以及清理/回滚增补；不改旧迁移。跑验收 3 的真实 PG 边界与 7 天删除，验证旧函数仍级联评分；日账本跨终态去重与数据字段到期清理。依赖：0；与 1、3 可并行，迁移编号集中分配。
+- [x] 3. 日指标与趋势后端。实现 R5/R10 的共用日 SQL、coverage、60 秒租户缓存、采集/删除失效及新趋势接口，保持旧 metrics/UsageView。用固定时钟、真实 PG 对照验收 6、11 的接口部分。依赖：0；纯读聚合先行，ops_metric_coverage 采集检查点持久化接入等 2 合入后完成。
+- [x] 4. 抽检与安全草稿后端。实现评分 revision、审计事务、角色检查、过滤/详情/安全深链接及无源内容的 v2 骨架；保留 travel 旧导出。验收 1–5 的 API/外部文件链路，特别证明工业草稿不得调用旧 goal-draft 获取正文。依赖：2；可接替已完成的 2 路，与 1、3 并行。
 - [ ] 5. 每日摘要与延迟任务。实现 R6–R8 的 ops lane、日账本、跨重启恢复、显式重发命令、固定窗口告警及租户配置；注册运行时状态；接现有告警传输而不以 void 返回值当成功。执行验收 7–9，带进程中止/重启与本机 webhook，不只测纯函数。依赖：2、3；按下节三路安排启动。
 - [ ] 6. 分级与运维手册。穷尽映射现有 AlertKey、safeText 外的类型化链接、watch/backup 前缀、固定 runbook 路由；新增公共 docs/ops/observability.md，同批更新部署说明和 .env.example 的新配置名，真实值另记。按验收 10 验证恶意 URL、鉴权链接、阈值不变及无 trace 降级；与 5 对 alert.ts 的修改串行合入。依赖：4、5。
 - [ ] 7. 抽检与趋势前端。消费已冻结真 API，做评分原因、冲突提示、差评草稿说明、7/30 天趋势与可读表格；不改 15 设置导航与用量页。覆盖所有页面状态、键盘/窄屏/深浅主题与字体；浏览器按验收 1、2、4、11 走查，写 BEFORE/AFTER，截图只用合成数据。依赖：3、4 及 15 前端公共布局合入；可与 5、8 并行。
@@ -144,6 +144,16 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 | 15    | 10–11    | 四门禁、锁定/哈希、回归、公开边界及资源清理           |
 
 ## 实施与验证记录
+
+### 第 2–4 步（2026-11-01）
+
+- 第 2 步：迁移 `0026`，四张表、`ops_coverage_mark_deleted`、`purge_ops_data`；四个被替换的函数逐行对比上一版，只有增补，签名不变。`purgeOnce` 接入 `purge_ops_data`。
+- 第 3 步：`src/db/repo/ops-metrics.ts`、`src/ops/trends.ts`、`src/ops/coverage.ts`、`src/ops/minute.ts`、`GET /metrics/trends`。审查时修正：非完整日分母存在时比率 0 不再变 null，p90 取整。检查点写入后也作废展示缓存，最多多一次聚合，保留。
+- 第 4 步：`src/db/repo/turn-reviews.ts`、`src/console-api/review-draft.ts`、四个路由与 `/traces` 筛选、两个审计动作。可评谓词只有一处。草稿路径只读评分和原因，不读 trace 正文列。
+- 接缝：三路合入同一分支后，下列套件都带一次性 PG 通过：`src/db/observability.selftest.ts`（验收 3 的角色、RLS、五条删除路径、7 天边界）、`src/ops/trends.selftest.ts`（验收 6、11 接口部分）、`src/ops/coverage.selftest.ts`（检查点、删除失效、真实 boot）、`src/console-api/reviews.selftest.ts`（验收 1、2、4、5，完整 server 入口，含外部 v2 用例正反例）；`test:locked` 通过；`trial-reset`、`db`、`sandbox`、`rollback-guard`、`jobs` 由 Codex 带真实 PG 跑过。
+- 变异（隔离副本）：去删除标记、去 revision 条件、去差评前置、列表 `none` 不判可评、去种子排除、去消息关联、去启动 gap、去 `invalidateTrends`，都被自测拦下。
+- CI：第一轮 #418–#420 都失败在 `check-fonts`，第 0 步校验文案带了 UI 子集没有的「评」，已重建字体子集。#418 另有一次 `settings-e2e`（`合成渠道` 断言）失败，本机同用例通过、dev 为绿，按偶发记录，后续 CI 再看。
+- 派活事故：第 1 步拉镜像占满 Docker 虚拟机磁盘时，第 2 步的测试库写入失败，Codex 重建了内存盘容器才跑完；之后测试库一律用内存盘。
 
 ### 第 1 步 Langfuse 预检（2026-11-01，未完成）
 
