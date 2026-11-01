@@ -175,6 +175,13 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 - 与基线 `89807cf8` 对比：8 个锁定文件字节相同；`src/core`、`data`、`src/packs`、`eval/cases-v2` 没有任何改动。
 - 受影响的 33 套自测带一次性 PG 全部通过；涉及告警正文的另 31 套也已核对，修了 `channels.selftest.ts` 里旧格式断言。
 - 补文档：R4 差评回归流程写入 `docs/guides/observability.md`，旧镜像长期运行要手动清理写入 `docs/guides/deployment.md`。
+- 已知偶发：`feat/17-step0` 的 CI（run 41264499744）里 `settings-e2e` 失败过一次，真实界面切到渠道页后断言 `合成渠道` 不成立。`settle` 在 `isFetching()` 为 0 时就退出，懒加载页面的查询可能还没发起，推断是这条 15 自测的等待竞态，未复现。17 没有改过这个文件，后续 CI 未再出现。
+
+### 第 11 步 清理（2026-11-01）
+
+- 保留持久自测。清掉两个一次性 PG、回滚演练的两个镜像、本机 Langfuse 配置及其全部镜像和卷、`var/` 下的临时文件、两个 Codex worktree、浏览器标签。
+- 复核：`docker ps -a` 过滤 `wecom17` 为空，镜像列表没有本次产物，沙箱外列进程没有自测、server、Codex 残留。沙箱里 `pgrep` 取不到进程列表，不能当证据。
+- 最终范围：相对基线 `89807cf8` 共 91 个文件，集中在 `console/src`、`src/ops`、`src/db`、`src/shared`、`src/console-api`、`src/jobs`、迁移、部署脚本和文档。`gitleaks git` 扫 24 个提交无泄漏；新增行没有本机路径、超长假企微 id、线上域名或服务器 IP。
 
 ### 第 5–6 步（2026-11-01）
 
@@ -265,7 +272,7 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 ## Open
 
 - 无未决产品决定或档位/状态审批；D1–D7、heavy 与 ready 均已获 owner 确认。
-- 实施前置待核实：15 第 1 批须先完成并合入（设置导航、试用公司及概览页改动），14 R6/R9 完整验收状态仍须核对；满足排期依赖后，第 0 步据 code/plan 核验接口与清理实现。冲突写这里并停止，不自行改架构。
+- 第 12 步翻 `implemented` 等 owner 点名。线上开关 `OPS_DIGEST_TENANTS`、`OPS_LATENCY_TENANTS` 默认关，部署和开启要 owner 当次授权。
 
 ## 已定
 
