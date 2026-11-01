@@ -310,6 +310,10 @@ function single(entry: AuditEntryView, pack: IndustryPack, lookups: AuditLookups
     }
     case 'attachment.download':
       return { parts: [plain('下载了附件')] };
+    case 'trace.review':
+      return { parts: [plain(diff.rating === 'good' ? '将回复评为好评' : '将回复评为差评')] };
+    case 'trace.regression_draft':
+      return { parts: [plain('准备了回归草稿')] };
     case 'trace.export':
       return { parts: [plain('下载了'), ...conv(diff), plain('的回归用例草稿')] };
     case 'quick_reply.create':

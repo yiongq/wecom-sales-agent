@@ -797,6 +797,8 @@ if (process.env.PG_TEST_URL) {
     '列表：一行的字段（会话 id、渠道、开始时刻、耗时、结果、触发的护栏、转人工原因、超长）',
     JSON.stringify(row(T.t2)) ===
       JSON.stringify({
+        review: null,
+        reviewable: true,
         turnId: T.t2,
         conversationId: S1,
         channel: 'wecom',
