@@ -581,6 +581,27 @@ try {
     console.log(`CONFIRM CORPUS ${group}: ${hits}/${corpus.length}`);
   }
 
+  // 16 开发集：模型在客户接受的同一轮调 handoff_to_human，回复照发，接受不丢。
+  {
+    const session = fresh();
+    await estimate(session);
+    const { order } = await make(session);
+    now++;
+    const action = mockAction;
+    mockAction = async (opts) => {
+      await opts.executeTool('handoff_to_human', { reason: '客户要顾问对接付款' });
+      return '已为您转交顾问，稍后与您对接付款和发货。';
+    };
+    const reply = await handleMessage(session.id, '这份报价我确认接受，请安排后续对接', 'wecom');
+    mockAction = action;
+    assert.equal(reply.silent, undefined);
+    assert.equal(reply.text, '已为您转交顾问，稍后与您对接付款和发货。');
+    assert.ok(session.handedOver);
+    assert.ok(order.approval!.acceptedAt !== undefined);
+    assert.equal(await acceptanceJobs(order.id), 1);
+    console.log('MODEL HANDOFF PASS: 回复照发、接受记下、顾问通知排上');
+  }
+
   // 非接受终态、更新的试算/清单和转人工仍先于客户接受；纯接受与混合问题都验证。
   for (const mode of [
     'pending',
