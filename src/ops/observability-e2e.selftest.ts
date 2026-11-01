@@ -722,11 +722,12 @@ async function parent(superUrl: string): Promise<void> {
       [fx.tenantId, `ops_daily_digest:${day}`, JSON.stringify({ day }), new Date(early)],
     );
     await start(true);
+    // 客户服务恢复真实时钟，保持 PG 对 updated_at 的未来时间约束。
+    // 必须先于登录：重启后钟回到 early，晚上 20:02 后再拨到真实时间会跨过 12 小时空闲时限。
+    await rpc('clock', { clock: Date.now() });
     const renewed = await login(industryHost, 'surface-industrial@erp.example.test');
     assert.equal(renewed.status, 200, 'step7: industrial login with suspended host after restart');
     const renewedCookie = cookie(renewed);
-    // 客户服务恢复真实时钟，保持 PG 对 updated_at 的未来时间约束。
-    await rpc('clock', { clock: Date.now() });
     await message(industryHost, 'wmObsI', '您好，继续询价 OBS_AFTER_SUSPEND');
     await until(
       async () => (await sent('industrial-kf', 'wmObsI')).length > 0,
