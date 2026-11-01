@@ -1,6 +1,7 @@
 # 11 · 外部业务系统连接器：Odoo 实时库存（只读）
 
-Status: ready
+Status: implemented
+Revisions: 2026-11-01 owner 确认验收，原话「11 14 15 改 implemented」，翻 `implemented`：随 `demo-v12-rc1` 上线，线上不配连接器，验收 2–8 只有本机证据，跨地区实测 owner 定推迟到第一家真实商家，见 plan「第 9–11 步」。
 Revisions: 2026-10-29 起草；依据 10「后续」第 1 条与工业品询价调研（另记）。
 Revisions: 2026-10-29 起草期评审（一路 Claude Opus，只读，对照代码并核对 Odoo 文档与源码）之后就地修订，尚无代码依赖；owner 当日定开放问题 1：第一期只读，写回整段移出 11、另起 spec（理由见「非目标」「被否决的方案」）。按评审改：出站防护补上 IP 字面量（Node 遇字面量不调 `lookup`），AGENTS.md 规则原文随之修改；交期不再取 Odoo 的 `sale_delay`（语义不同）；「新鲜值」只有一个定义，工具结果、`priceLine`、自动批准与护栏证据（含跟进）共用；每轮共享一个 ERP 截止时间、预取一次预热、每个连接器一条保活连接，按 10 第 21 步的实测重算时延；API key 到期日必填并提前告警，Odoo 20 只认 scope 为 `rpc` 的 key；不再加 pre-11 回滚档（R11）；头部改为部分取代 10 R4、R6 (2) 与 ADR-003 决策 2；集成脚本进程内注入出站；补齐边界规则、计划依赖、`package.json` 与 `sandbox_tenant_purge`；单路请求加每秒限速、401 与 403 分开、`search_read` 带 `active_test`、地址改白名单式等次要项；砍掉并发池、可调时限与连接器 key。开放问题由 7 条减为 5 条。
 Revisions: 2026-10-29 owner 定开放问题 1–5，全部照推荐：只支持 Odoo 19、20 的 JSON-2；客户料号 / 竞品料号对照不放进 11；工业演示租户不接 Odoo，验收在本机一次性容器上做；连接器凭据共用 `CHANNEL_SECRETS_KEY`；这一轮取不到新鲜值时退回产品库的值，同时不自动批准、给顾问留系统消息。
