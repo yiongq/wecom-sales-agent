@@ -19,6 +19,8 @@ export const INVENTORY_FALLBACK = '库存和交期以顾问确认为准';
 export const SUBSTITUTE_FALLBACK = '能否替代请顾问确认';
 export const PROMISE_FALLBACK = '价格按数量档位执行，额外优惠需要顾问确认。';
 export const PAYMENT_FALLBACK = '收款账户以顾问提供的公司账户为准。';
+export const NOTE_FALLBACK = '发货和备注要求请和顾问确认。';
+export const NOT_SUBMITTED = '报价单还没有提交，需要的话请告诉我，我马上起草。';
 export const TRIM_FALLBACK = '询价明细较多，需要的话我出一份正式报价单。';
 export const trimNote = (n: number): string => `另外 ${n} 行已算好，需要的话我出一份正式报价单`;
 const nonAssertion =
@@ -45,6 +47,13 @@ const promiseNonAssertion =
 const specToken =
   /^(?:\d+(?:\.\d+)?(?:MM|CM|M|MPA|KPA|PA|V|KV|W|KW|A|MA|HZ|KG|G|NM)|DC\d+(?:\.\d+)?V|AC\d+(?:\.\d+)?V|IP\d{2,3}|Q\d{3}|A[24]-\d+|[GR]\d+\/\d+)$/i;
 const tokens = (text: string): string[] => text.match(/[A-Za-z0-9]+(?:[-_/×.*][A-Za-z0-9]+)*/g) ?? [];
+// 系统没有备注动作，模型说记下了，顾问其实看不到。
+const noteClaim =
+  /已(?:经)?(?:同步|写入|加了?|添加|注明|记下|记录|登记)[^，,。；;\n]{0,8}备注|已(?:经)?备注|备注已(?:经)?(?:注明|写|加|同步)|已(?:在|把)[^，,。；;\n]{0,10}备注/;
+const quoteSubmitted =
+  /(?:报价单|单据)[^，,。；;\n]{0,8}已(?:经)?(?:提交|生成|起草|创建|建好|送审)|已(?:经)?(?:为您|帮您|给您)?(?:提交|生成|起草|创建)[^，,。；;\n]{0,10}(?:报价单|单据)|(?:报价单|单据)[^，,。；;\n]{0,6}(?:审核中|待审|待顾问审核)/;
+const wantsQuoteSheet = /(?:出|起草|生成|做|开|发|要)[^，,。；;\n]{0,6}报价单|正式报价/;
+const declinesQuoteSheet = /暂不|先别|不用|不要|不需要|不出/;
 const hasModel = (text: string, model: string): boolean => normalizePartNo(text).includes(normalizePartNo(model));
 const bracketed = /（[^（）]*）|\([^()]*\)|「[^「」]*」|“[^“”]*”/g;
 
@@ -115,6 +124,11 @@ function quoteBehaviorText(ctx: FollowupGuardContext, sources: PackSources, foll
     const units = sentenceUnits(text).map(({ start, end }) => text.slice(start, end));
     if (units.some(unsafe)) text = followup ? units.filter((unit) => !unsafe(unit)).join('') : FIXED.pending;
   }
+  if (followup && !quote && quoteSubmitted.test(text))
+    text = sentenceUnits(text)
+      .map(({ start, end }) => text.slice(start, end))
+      .filter((unit) => !quoteSubmitted.test(unit))
+      .join('');
   if (quote?.kind === 'quote' && quote.state === 'expired') {
     if (followup) {
       text = sentenceUnits(text)
@@ -314,6 +328,7 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
         text = followup ? '' : taxInvoiceText(policy);
     }
     if (text === sentence && !/[?？]/.test(sentence) && payToAdvisor.test(sentence)) text = followup ? '' : PAYMENT_FALLBACK;
+    if (text === sentence && !/[?？]/.test(sentence) && noteClaim.test(sentence)) text = followup ? '' : NOTE_FALLBACK;
     return text;
   };
   return sentenceUnits(body)
@@ -377,6 +392,53 @@ export function trimRfq(text: string, models: readonly string[], followup = fals
     if (!removed) return followup ? '' : TRIM_FALLBACK;
   }
   return render();
+}
+/** 模型说报价单提交了却没建单：客户空等，顾问也看不到。客户这轮要了正式报价就补建，建出来照常人审；否则改回实话。 */
+export function quoteClaimStep(): GuardStep<ReplyGuardContext> {
+  return {
+    id: 'quote_claim',
+    after: ['takeover_check:pre'],
+    async run(ctx) {
+      if (ctx.session.handedOver || !quoteSubmitted.test(ctx.text)) return { action: 'pass' };
+      if (latestQuoteCandidate({ ...ctx.session, packState: {} }, Date.now())) return { action: 'pass' };
+      const lines = readState(ctx.session).rfqDraft?.lines ?? [];
+      const repairable =
+        !ctx.toolSources.some((call) => call.name === 'create_quote_sheet') &&
+        lines.length > 0 &&
+        wantsQuoteSheet.test(ctx.inputText) &&
+        !declinesQuoteSheet.test(ctx.inputText);
+      if (repairable && lines.every((line) => line.match === 'exact')) {
+        const items = lines.flatMap((line) => (line.match === 'exact' ? [{ code: line.code, qty: line.qty }] : []));
+        const result = JSON.parse(await ctx.callTool('create_quote_sheet', { items })) as {
+          state?: string;
+          quoteUrl?: string;
+          totalText?: string;
+        };
+        if (result.state === 'pending') {
+          ctx.recordGuard('quote_claim', ctx.text, ctx.text, 'patch');
+          return { action: 'pass' };
+        }
+        if (result.state === 'approved') {
+          const text = `报价单：${result.quoteUrl}\n合计${result.totalText}`;
+          ctx.recordGuard('quote_claim', ctx.text, text, 'replace');
+          return { action: 'replace', text };
+        }
+      }
+      let replaced = false;
+      const text = sentenceUnits(ctx.text)
+        .map(({ start, end }) => ctx.text.slice(start, end))
+        .map((unit) => {
+          if (!quoteSubmitted.test(unit)) return unit;
+          if (replaced) return '';
+          replaced = true;
+          return NOT_SUBMITTED;
+        })
+        .join('')
+        .trim();
+      ctx.recordGuard('quote_claim', ctx.text, text, 'replace');
+      return { action: 'replace', text };
+    },
+  };
 }
 export function industrialReplyGuard(sources: PackSources): GuardStep<ReplyGuardContext> {
   return {
