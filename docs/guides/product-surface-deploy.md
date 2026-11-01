@@ -21,7 +21,7 @@ app 使用分服务 env 中的 `agent_app`，不得带 platform/owner 凭据；`
 1. 取得 owner 对本次操作的授权，核对 11/14/15 验收、备份及异地副本可恢复性、私有发布输入、法律正文和回退 tag。先关闭对外试用，排空在途发送与入站恢复。
 2. 按 05 长期停用：删除本实例 sandbox 容器及其匿名卷，将 `.env.sandbox` 改为 `.env.sandbox.off`；持沙箱进程锁执行既有 `sandbox purge --all`。从代理摘沙箱站点，去掉宿主体验链接与旧拨测；长期不用的体验客服在平台停用。清理失败继续关闭入口，不删除 spill/恢复哨兵来伪造成功。`deploy.sh` 的只读预检会拒绝 prod 仍有 `.env.sandbox` 或遗留 sandbox 容器（包括停止状态）；env 改名后部署不会进入沙箱启动分支，compose 默认 profile 不启动 sandbox。不要手动加 `--profile sandbox` 或把 off 文件改回原名；源码 demo 档仍可按 05 开沙箱。
 3. **第一段，旅游保持 active。** 用 `tenant-host` 把工业改到 app → 部署一个支持完整 14 R6、PG 种子豁免、种子外发守卫和未完成批次启动检查的 tag → 平滑重载代理，加根域、app、旧工业三段，旅游旧 Host 此时不收窄 → 停 app 按文末「工业品名同步」处理，再起 → 重跑工业发布闸 → 验工业 app 普通登录、真实收发、两租户渠道、历史客户链接 → 记录验证通过的回退 tag 和不可变镜像 ID。根域 301 到 www 并保留路径和 query；新域重新登录。切换窗口旧工业回调暂时失败会延迟即时拉取；按 `src/adapters/wecom.ts` 的 `startRuntimeInScope`，重启先从持久 cursor 补拉，再以至少 30 秒（默认 60 秒）的兜底轮询补回调丢失，不能据此承诺零延迟或无限期无丢失。
-4. 观察至少隔一晚，确认工业登录、真实收发、两租户渠道、历史链接与运维告警稳定，再进入第二段。
+4. 观察至少隔一晚，确认工业登录、真实收发、两租户渠道、历史链接与运维告警稳定，再进入第二段。owner 当次要求提前时，先手动备份并确认异地副本，夜间清理、零点额度跨日和告警次日复查。
 5. **第二段，仍使用第一段同一个 tag。** 把旅游改为 suspended，同时代理把旅游旧 Host 收窄到批准回调；验证 30 秒内普通登录失效、固定停用回复与紧急/撤回优先级、重启仍可装载宿主且工业继续服务。旅游原保留期和访客清理照常，到期仍删除；不主动清旅游，不拿旅游做试用重置。核对批准回调 GET/POST 可达，其他旧页面为 410、无客户数据且不转发给工业。
 6. 按下节准备工业试用、7 天保留和 PG 种子，并通过 `privacy-publish` 发布与实际保留期一致的隐私说明；再发布 www、docs 静态产物，静态根放在部署目录之外（`deploy.sh` 的 rsync 带 `--delete`）。配置 `.env.ops` 的 PROBE 项；确认共享提示已接入、无线上演示入口、无沙箱进程，验报价读接口、用量、隔离和独立工业拨测后放量。
 
@@ -29,7 +29,7 @@ app 使用分服务 env 中的 `agent_app`，不得带 platform/owner 凭据；`
 
 先通过既有 `user-create` CLI 创建唯一普通 agent，仅属于工业试用公司；独立 owner 不对外发放。用 `tenant-retention --tenant <slug> --lead 7 --customer 7 --trace 7` 设置三类保留期。不绑定真实 ERP，不把正式客户数据、凭据或其他租户成员混入。账号和客服码私下提供。
 
-app 服务另设私有 `TRIAL_TENANT_ALLOWLIST`，值为签收 JSON 中 `allowlist` 数组的 JSON 文本。服务端精确比较 UUID、slug、industrial、standard、非宿主；未配置、格式错误或错配时不显示，不按名称推断。`/me` 和登录响应仅下发 `sharedTrial` 布尔值，白名单内容不下发。更改后重启，并验证试用成员有提示、旅游及其他租户没有提示。这只是告知开关，不授予任何权限。
+app 服务另设私有 `TRIAL_TENANT_ALLOWLIST`，值为签收 JSON 中 `allowlist` 数组的 JSON 文本，不加引号（`.env` 按 raw 读，引号会原样进容器，解析失败时提示不显示）。服务端精确比较 UUID、slug、industrial、standard、非宿主；未配置、格式错误或错配时不显示，不按名称推断。`/me` 和登录响应仅下发 `sharedTrial` 布尔值，白名单内容不下发。更改后重启，并验证试用成员有提示、旅游及其他租户没有提示。这只是告知开关，不授予任何权限。
 
 后台外壳顶部常驻显示以下说明：
 
@@ -78,7 +78,7 @@ node --import tsx src/cli/trial-reset.ts \
 
 不能把宿主 `/healthz` 的 200、revision 或汇总 ok 当工业可用证据。[watch.sh](../../deploy/watch.sh) 复用原每分钟 cron，在第五项通过工业 app Host 正常登录 → `/api/console/me` 核对租户 → 读取普通成员可访问的 `conversations/counts` → 带 csrf 退出。中途失败也尽力退出，每请求限时 8 秒、不跳转、不关闭 TLS 验证；告警仅含步骤与 HTTP/curl 结果码，租户错配只记「租户不符」，不记响应体或配置值。
 
-拨测账号用 `user-create` 建普通 agent，只属于工业租户，单独受控，不是共享试用账号；`trial-reset` 不改它的口令。配置在服务器 `.env.ops`，文件被 `source`，口令用单引号包裹（若口令本身含单引号，按 shell 单引号转义规则处理），不在命令行传入口令：
+拨测账号用 `user-create` 建 viewer，只属于工业租户，单独受控，不是共享试用账号。`trial-reset` 要求租户里恰好一个 agent，所以拨测账号不能是 agent；重置不改它的口令。配置在服务器 `.env.ops`，文件被 `source`，口令用单引号包裹（若口令本身含单引号，按 shell 单引号转义规则处理），不在命令行传入口令：
 
 ```sh
 PROBE_APP_ORIGIN='https://app.example.test'

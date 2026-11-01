@@ -4,13 +4,13 @@ English | [简体中文](README.zh-CN.md)
 
 An AI assistant for industrial RFQs in WeCom Customer Service. Receive inquiries, recognize part numbers, look up catalog stock, calculate quantity-based quotes, request human approval, and hand conversations to an advisor. Prices, orders, links and commitments are checked by deterministic code; the model interprets requests and organizes replies.
 
-The workbench brings conversations, quote approval and advisor replies together. Text, images and spreadsheets can help collect inquiry details. Stock comes from the published catalog snapshot. ERP connectors and usage reporting are in the codebase but have **not been deployed**; do not treat them as available services.
+The workbench brings conversations, quote approval and advisor replies together. Text, images and spreadsheets can help collect inquiry details. Stock comes from the published catalog snapshot. Usage reporting is available to authorized admins. ERP connectors are enabled per merchant and are not connected in the shared trial.
 
 Node 22 · Hono · TypeScript via tsx · PostgreSQL 17 + pgvector · React workbench · MIT software license.
 
 ## Request a trial account
 
-Request an account from the person who introduced this project to you. Access is provided on request; there is no public password, automatic account claim or self-service signup. The sign-in address is supplied with the account.
+Follow the instructions on the website linked from this repository. Access is provided on request; there is no public password, automatic account claim or self-service signup. The sign-in address is supplied with the account.
 
 The shared trial account has the agent role: handle assigned conversations and approve their quotes, without editing the catalog, sales SOP or administrator settings. Trial data includes synthetic seeds and messages submitted by trial users. Other members of the shared trial company may see those messages: **do not send personal information, credentials or real customer records**. Trial messages, customer profiles and traces are retained for 7 days; manual reset clears both trial messages and synthetic seeds.
 
