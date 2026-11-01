@@ -34,6 +34,8 @@ export function isIntakeEdit(text: string): boolean {
   return EDIT.test(half(text));
 }
 const VERB = /^(?:改成|改为|换成|换为|选择|选|改|换)\s*/u;
+const DROP = /剔除|删掉|删除|去掉|不要/u;
+const CLAUSE = /[,，。;；]+/u;
 // 只改数量：「50件」或「数量 50」；单独一个数字是型号（6205），不是数量。
 const QTY_ONLY = /^(?:(-?\d+(?:\.\d+)?)\s*(?:件|个|套|pcs)|数量\s*(?:改成|改为|换成|是|为)?\s*(-?\d+(?:\.\d+)?)\s*(?:件|个|套|pcs)?)$/iu;
 const TRAILING_QTY = /^([\s\S]*?)(?:\s*[,，;；:：]\s*|\s+|(?<=\p{Script=Han}))(-?\d+(?:\.\d+)?)\s*(?:件|个|套|pcs)?$/iu;
@@ -70,6 +72,21 @@ export function editIntake(session: Session, text: string, parts: readonly Part[
         statePatch: patchOf(session, { ...intake, status: 'superseded' }, []),
       };
   } else {
+    // 「第3行 ZZ9999 剔除」「第3行不要了」：写法自然的删行。第一个小句里写了别的型号时读不出来，不猜。
+    const first = rest.split(CLAUSE)[0]!;
+    if (DROP.test(first)) {
+      const named = normalizePartNo(first.replace(DROP, '').replace(/[了吧的\s]/gu, ''));
+      if (named && named !== normalizePartNo(line.q)) return listReply(current, parts, intakeUnreadNote(n));
+      intake.lines.splice(n - 1, 1);
+      if (intake.lines.length) return listReply(intake, parts, undefined, patchOf(session, intake, []));
+      return {
+        fixedId: 'industrial.intake.cleared',
+        text: INTAKE_FIXED.cleared,
+        statePatch: patchOf(session, { ...intake, status: 'superseded' }, []),
+      };
+    }
+    // 多句话不是改行：整段当型号会把后面的话吃进清单。
+    if (rest.split(CLAUSE).filter(Boolean).length > 2) return listReply(current, parts, intakeUnreadNote(n));
     const body = rest.replace(VERB, '');
     const qtyOnly = QTY_ONLY.exec(body);
     const trailing = qtyOnly ? null : TRAILING_QTY.exec(body);
