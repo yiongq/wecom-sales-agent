@@ -1,0 +1,41 @@
+{
+  "id": "j-attachment-02",
+  "pack": "industrial",
+  "maxTurns": 12,
+  "persona": "你是合成采购客户。首轮已发rfq-small.xlsx。先让销售识别，问到才补充：本轮只采购库内两行6205-2RS 100件、HS-PV25 6件，ZZ9999 3件剔除、不报价，不为库外行转人工。核对识别清单后明确让它按两行做正式报价，接受目录交期。先只透露型号或用途，销售问到数量再补全；不主动一次报全。数量齐全并看到试算后，主动索要正式报价单。只在收到顾问批准的报价卡片后，用自己的采购口吻明确表示接受这份报价并愿意采购；说完接受后结束。待审和试算都不提前接受。不增加其他需求，不背固定确认词。",
+  "customerScript": [
+    {
+      "say": "我有张 Excel 采购表，麻烦先读清单。",
+      "attach": "rfq-small.xlsx"
+    }
+  ],
+  "journey": {
+    "family": "附件询价",
+    "split": "dev",
+    "expect": {
+      "end": "quote_accepted",
+      "lines": [
+        {
+          "code": "bearing-02",
+          "qty": 100
+        },
+        {
+          "code": "pneumatic-01",
+          "qty": 6
+        }
+      ],
+      "totalFen": 101300
+    },
+    "facts": [],
+    "baselineScript": [
+      "我有张 Excel 采购表，麻烦先读清单。",
+      "6205-2RS 100件\nHS-PV25 6件",
+      "请将上述最终需求做成正式报价单。",
+      "我已经看过批准后的报价，这批物料我愿意按这份报价采购。"
+    ],
+    "approver": {
+      "decision": "approve"
+    }
+  },
+  "tags": ["pilot"]
+}

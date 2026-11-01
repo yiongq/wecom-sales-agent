@@ -1,0 +1,56 @@
+{
+  "id": "j-attachment-01",
+  "pack": "industrial",
+  "maxTurns": 12,
+  "persona": "你是合成采购客户。首轮已发截图list-confusable.jpg。先让销售识别，不抢先逐行报答案；对方要求核对时逐行核对：6205-2RS 40件、6206-2RS 40件、HS-K01-24 3件、HS-K10-24 3件、M8×30 60件、M8×40 60件。清单准确后用自己的话表示这些行数量均正确，再索要正式报价单；全部六行合一单，接受目录交期。先只透露型号或用途，销售问到数量再补全；不主动一次报全。数量齐全并看到试算后，主动索要正式报价单。只在收到顾问批准的报价卡片后，用自己的采购口吻明确表示接受这份报价并愿意采购；说完接受后结束。待审和试算都不提前接受。不增加其他需求，不背固定确认词。",
+  "customerScript": [
+    {
+      "say": "这份截图上的采购清单帮我核一下。",
+      "attach": "list-confusable.jpg"
+    }
+  ],
+  "journey": {
+    "family": "附件询价",
+    "split": "holdout",
+    "expect": {
+      "end": "quote_accepted",
+      "lines": [
+        {
+          "code": "bearing-02",
+          "qty": 40
+        },
+        {
+          "code": "bearing-03",
+          "qty": 40
+        },
+        {
+          "code": "electric-01",
+          "qty": 3
+        },
+        {
+          "code": "electric-10",
+          "qty": 3
+        },
+        {
+          "code": "fastener-01",
+          "qty": 60
+        },
+        {
+          "code": "fastener-04",
+          "qty": 60
+        }
+      ],
+      "totalFen": 114935
+    },
+    "facts": [],
+    "baselineScript": [
+      "这份截图上的采购清单帮我核一下。",
+      "6205-2RS 40件\n6206-2RS 40件\nHS-K01-24 3件\nHS-K10-24 3件\nM8×30 60件\nM8×40 60件",
+      "请将上述最终需求做成正式报价单。",
+      "我已经看过批准后的报价，这批物料我愿意按这份报价采购。"
+    ],
+    "approver": {
+      "decision": "approve"
+    }
+  }
+}
