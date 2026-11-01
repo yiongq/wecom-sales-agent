@@ -126,7 +126,7 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
       identityAnswer: '我是衡石工业品的 AI 询价顾问',
       offTopicReply: templates.offTopicReply,
       welcomeText: '您好，请告诉我型号和数量。',
-      welcomeBackText: templates.welcomeBackText,
+      welcomeBackText: '您好，可以继续发型号和数量，需要真人服务请告诉我。',
       webWelcome: '欢迎来到衡石工业品（演示），请告诉我型号和数量。',
       mockOpening: templates.mockOpening,
       quickReplies: templates.quickReplies,
