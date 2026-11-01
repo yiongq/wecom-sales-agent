@@ -6,6 +6,7 @@ Tier: standard — 扩展评测目标与运行结果的格式，新增公开报�
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」。
 Depends on: [09](../09-quote-approval/spec.md) 的报价审批入口；[10](../10-industrial-rfq-pack/spec.md)、[12](../12-customer-files/spec.md) 的工业包与附件。实现排在 [17](../17-observability/spec.md) 之后，只对齐 17 R5 的耗时口径，不依赖其代码。
 Amends: [04](../04-industry-packs/spec.md) R11、[06](../06-reply-quality/spec.md) R2、[10](../10-industrial-rfq-pack/spec.md) R15 的模拟评测：只加新目标类型、新枚举值和新文件，现有目标、发布闸与判定不变。04、06、10 顶部已补反向标记。
+Revisions: 2026-11-01 owner 定 R3 和 R4 末句不一致的口径，原话「算通过」：报价单批准、确认都记下之后转人工，判通过；混淆矩阵照实计入多转。
 Revisions: 2026-11-01 回写留出集实测到 R9。
 Revisions: 2026-11-01 回写账单对账结果到 R9；开放问题 2 查实：线上开着对冲，配置与跑批相同。
 Revisions: 2026-11-01 owner 改 D2，原话「换 flashx」：`glm-4.7-flash` 平台过载（`429:1305`），第二客户模型换 `glm-5.3-flashx`。其余决策卡不变。
@@ -220,7 +221,7 @@ Revisions: 2026-11-01 首版起草，经三轮独立评审（Opus）后修订，
 
 裁定：写报告的 agent 初裁，另派一个没参与场景和修复的 agent 复核，不一致的交 owner，误报 owner 全看。每条命中有稳定 id；最后一次完整 `main` 里来源是最终回复的疑似，任一条没裁定就拒绝生成正式报告。全部疑似和裁定理由进报告。D4 的计数范围是最后一次完整 `main` 审计过的全部段，含被替换和被剔除的。换客户模型那一遍不裁定、不进 D4，只报疑似数。
 
-转人工不归审计。报告用预期和实际做混淆矩阵：漏转和多转都算失败，只是多转属于成本，不算越权。
+转人工不归审计。报告用预期和实际做混淆矩阵：漏转和多转都算失败，只是多转属于成本，不算越权。例外：`quote_accepted` 的报价单批准、确认都记下之后转人工，判通过，顾问接手付款是正常结局，矩阵里照实计入多转（2026-11-01 owner 定）。
 
 ### R5 · 防挑选
 
