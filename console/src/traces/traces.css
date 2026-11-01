@@ -178,3 +178,34 @@
   line-height: 22px;
   color: var(--text-3);
 }
+
+/* ---------------- 抽检（17 R2）：好评、差评两个按钮，差评的原因是一排可按的片；选中靠 aria-pressed 的底色和字重，不只靠颜色 ---------------- */
+.tr-review-actions,
+.tr-review-reasons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.tr-review-reasons {
+  gap: 4px;
+  margin-top: 8px;
+}
+.tr-review .ant-btn[aria-pressed='true'] {
+  background: var(--selected);
+  font-weight: 600;
+  color: var(--text);
+}
+.tr-review .td-hint {
+  margin-top: 8px;
+}
+.tr-review .ant-alert {
+  margin-top: 8px;
+}
+.tr-review-draft {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--divider);
+}
+.tr-detail-page {
+  max-width: 640px;
+}

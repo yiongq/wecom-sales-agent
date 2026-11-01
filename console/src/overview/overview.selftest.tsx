@@ -1186,6 +1186,21 @@ function respond(method: string, url: URL): Response {
     if (server.metrics === 'fail') return json(500, { error: 'internal', detail: '故意的' });
     return json(200, server.metrics);
   }
+  // 17 R10：趋势自己的状态在 trends.selftest.tsx，这里只给一个空窗口
+  if (method === 'GET' && p === '/metrics/trends') {
+    if (server.metrics === undefined) return json(503, { error: 'store_file_mode' });
+    if (server.metrics === 'fail') return json(500, { error: 'internal' });
+    return json(200, {
+      requestedDays: 7,
+      days: 0,
+      timezone: 'Asia/Shanghai',
+      fromDay: '',
+      toDay: '',
+      computedAt: new Date(NOW).toISOString(),
+      partialReasons: [],
+      points: [],
+    });
+  }
   if (method === 'GET' && p === '/sop') return json(200, SOP);
   if (method === 'POST' && p === '/sop/draft/check') return json(200, CHECK);
   if (method === 'GET' && p === '/status') return json(200, STATUS);
@@ -1349,7 +1364,7 @@ const member = (role: Role, pack = TRAVEL): Viewer => ({ kind: 'member', me: me(
   };
   requests = [];
   const m = await mountOverview(member('owner'));
-  eq('所有者：区块顺序', m.texts('h2'), ['新手清单', '需要你处理', '成交与转人工', '最近变更', '客户停在哪一步']);
+  eq('所有者：区块顺序', m.texts('h2'), ['新手清单', '需要你处理', '客户接待趋势，排除种子', '成交与转人工', '最近变更', '客户停在哪一步']);
   eq('所有者：标签页标题', document.title, '总览 · 云途定制旅行 · 单来');
   eq('所有者：页头状态句是租户名与日期', m.texts('.page-status'), ['云途定制旅行·9月26日 周六']);
   eq('需要你处理：7项（等人接手2 + 已成交客户要人工1 + 待付款1 + 话术草稿1 + 待上架2）', m.texts('.ov-count')[0], '7项');
@@ -1975,7 +1990,7 @@ const humanRequests = (): string[] => requests.filter((r) => r.includes('state=h
   eq(
     '成交与转人工：只请求了一份 /metrics 和一份 /orders/summary（视图切换不重新请求）',
     [
-      requests.filter((r) => r.startsWith('GET /api/console/metrics')).length,
+      requests.filter((r) => r.startsWith('GET /api/console/metrics') && !r.includes('/metrics/trends')).length,
       requests.filter((r) => r.startsWith('GET /api/console/orders/summary')).length,
     ],
     [1, 1],

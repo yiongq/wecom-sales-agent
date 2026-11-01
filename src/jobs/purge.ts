@@ -21,12 +21,14 @@ import {
   purgeConversation,
   purgeExpiredTraces,
   purgeFinishedJobs,
+  purgeOpsData,
   readPurgeCandidates,
   readRetentionSettings,
   type RetentionSettings,
 } from '../db/repo/retention.js';
 import { forgetSession, getAnyOrder, getSession, holdForPurge, withJobsTx } from '../store.js';
 import type { JobOutcome, JobSpec } from './runner.js';
+import { invalidateTrends } from '../ops/trends.js';
 
 /** 持有期间这个会话被改动了：清除事务按这个信号回滚、让这次写赢（不是真的错误，只是「这一轮清不掉」的信号） */
 class PurgeRaceSkip extends Error {}
@@ -106,6 +108,7 @@ export interface PurgeResult {
   /** 03：purge_channel_inbox 删掉的与记成 abandoned 的入站行之和 */
   inbox?: number;
   attachments?: number;
+  ops?: number;
 }
 
 /** 执行一次清理：候选分页、逐个清理、trace 与任务清理、写审计。供执行体与自测共用 */
@@ -160,6 +163,7 @@ export async function purgeOnce(now: number): Promise<PurgeResult> {
         // 极窄窗口里真的又来一笔写，会带着没提交的改动被 forget() 一并丢弃并记一行日志（见 pg-backend.ts 的注释）
         forgetSession(cand.id);
         conversationsPurged += 1;
+        invalidateTrends();
       } else {
         hold.release();
         skipped += 1;
@@ -169,13 +173,18 @@ export async function purgeOnce(now: number): Promise<PurgeResult> {
   }
   const attachments = await withJobsTx((tx) => purgeAttachmentBytes(tx, new Date(now)));
   const traces = await withJobsTx((tx) => purgeExpiredTraces(tx, new Date(now)));
+  if (traces > 0) invalidateTrends();
   const jobsDeleted = await withJobsTx((tx) => purgeFinishedJobs(tx, new Date(now)));
   const inbox = await withJobsTx((tx) => purgeChannelInbox(tx, new Date(now)));
+  const ops = await withJobsTx((tx) => purgeOpsData(tx, new Date(now)));
   // writeAudit 取事务里的 ctx.actor（withJobsTx 内部的 systemCtx：kind='system'、name=null）
   await withJobsTx((tx) =>
-    writeAudit(tx, { action: 'system.purge', diff: { conversations: conversationsPurged, traces, jobs: jobsDeleted, inbox, attachments } }),
+    writeAudit(tx, {
+      action: 'system.purge',
+      diff: { conversations: conversationsPurged, traces, jobs: jobsDeleted, inbox, attachments, ops },
+    }),
   );
-  return { conversations: conversationsPurged, traces, jobs: jobsDeleted, skipped, preFiltered, inbox, attachments };
+  return { conversations: conversationsPurged, traces, jobs: jobsDeleted, skipped, preFiltered, inbox, attachments, ops };
 }
 
 /**

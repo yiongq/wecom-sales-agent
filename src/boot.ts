@@ -33,6 +33,8 @@ export interface BootDeps {
   startFollowUpScheduler(): void;
   /** db 存储：任务表（认领与执行、跟进的排程与取消），代替 startFollowUpScheduler（02 spec「两种会话存储与启动」） */
   startJobs(): void;
+  /** 17：任务表之后启动分钟检查；失败不阻断服务。 */
+  startOpsMinute?(): void;
   /** 03：代替 02 的 startWecom——在任务与跟进扫描器之前起渠道（这一步只起 env 账号的企微拉取，库里账号的运行时第 7 步接上） */
   startChannels(): void;
   exit(code: number): void;
@@ -108,6 +110,11 @@ export async function boot(d: BootDeps): Promise<void> {
           if (d.storeMode() === 'db') d.startJobs();
           else d.startFollowUpScheduler();
         });
+        try {
+          backgroundEntry(() => d.startOpsMinute?.());
+        } catch {
+          console.warn('[boot] 分钟检查未启动，对话照常');
+        }
         backgroundEntry(() => d.startAlerts?.());
       }),
     ),

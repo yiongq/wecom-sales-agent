@@ -2,7 +2,14 @@
 // 不依赖 React，traces.selftest.tsx 直接 import。
 // 地址里的取值（结果、护栏、转人工原因）按真实的表再筛一遍：认不得的当没写，不发给接口（接口对不认识的取值回 400）。
 // 界面不认行业：会话标签的客户叫法取自行业包；结果、护栏、转人工原因的中文在 src/shared（ui-labels.ts、conversation.ts），步骤 id 不上页面（不变量 7）。
-import { TRACE_OUTCOMES, type TraceOutcome, type TracePage, type TraceRow } from '../../../src/shared/console-api.js';
+import {
+  REVIEW_REASONS,
+  TRACE_OUTCOMES,
+  type ReviewReason,
+  type TraceOutcome,
+  type TracePage,
+  type TraceRow,
+} from '../../../src/shared/console-api.js';
 import { HANDOFF_NOTICE_TEXT } from '../../../src/shared/conversation.js';
 import { isHandoffKind, type HandoffKind } from '../../../src/shared/conversation-types.js';
 import { absoluteTime, relativeTime } from '../../../src/shared/format.js';
@@ -30,6 +37,18 @@ export const rangeOf = (search: TracesSearch): TraceRange => search.range ?? '7d
 
 // ---------------- 筛选 ----------------
 
+export type ReviewFilter = 'none' | 'good' | 'bad';
+/** 差评原因的中文：抽检页与列表共用，顺序就是界面顺序 */
+export const REVIEW_REASON_LABEL: Readonly<Record<ReviewReason, string>> = {
+  incorrect: '内容错误',
+  missing: '遗漏',
+  handoff: '转人工不当',
+  format: '表达问题',
+  other: '其他',
+};
+const REVIEW_SET: ReadonlySet<string> = new Set(['none', 'good', 'bad']);
+const REASON_SET: ReadonlySet<string> = new Set(REVIEW_REASONS);
+
 /** 地址里的筛选，按真实的表筛过一遍 */
 export interface TraceFilters {
   range: TraceRange;
@@ -37,6 +56,8 @@ export interface TraceFilters {
   guard?: string;
   handoff?: HandoffKind;
   over: boolean;
+  review?: ReviewFilter;
+  reason?: ReviewReason;
 }
 
 const OUTCOME_SET: ReadonlySet<string> = new Set(TRACE_OUTCOMES);
@@ -48,12 +69,14 @@ export function filtersOf(search: TracesSearch): TraceFilters {
     ...(search.guard !== undefined && Object.hasOwn(GUARD_STEP_LABEL, search.guard) ? { guard: search.guard } : {}),
     ...(search.handoff !== undefined && isHandoffKind(search.handoff) ? { handoff: search.handoff } : {}),
     over: search.over === 1,
+    ...(search.review !== undefined && REVIEW_SET.has(search.review) ? { review: search.review as ReviewFilter } : {}),
+    ...(search.reason !== undefined && REASON_SET.has(search.reason) ? { reason: search.reason as ReviewReason } : {}),
   };
 }
 
 /** 除时间段以外有没有筛选 */
 export const hasRowFilters = (f: TraceFilters): boolean =>
-  f.outcome !== undefined || f.guard !== undefined || f.handoff !== undefined || f.over;
+  f.outcome !== undefined || f.guard !== undefined || f.handoff !== undefined || f.over || f.review !== undefined || f.reason !== undefined;
 
 /**
  * 接口的查询串（值都是字符串）。since 在取数的那一刻按「现在」往前推，不是页面打开的那一刻：翻页时的下限最多晚几秒，只会少看到边缘上的几行，
@@ -67,6 +90,8 @@ export interface TracesQueryParams {
   handoffKind?: HandoffKind;
   overLimit?: '1';
   before?: string;
+  review?: ReviewFilter;
+  reason?: ReviewReason;
 }
 export function queryOf(f: TraceFilters, now: number, before?: string): TracesQueryParams {
   const ms = RANGES.find((r) => r.key === f.range)?.ms ?? null;
@@ -77,6 +102,8 @@ export function queryOf(f: TraceFilters, now: number, before?: string): TracesQu
     ...(f.guard === undefined ? {} : { guard: f.guard }),
     ...(f.handoff === undefined ? {} : { handoffKind: f.handoff }),
     ...(f.over ? { overLimit: '1' as const } : {}),
+    ...(f.review === undefined ? {} : { review: f.review }),
+    ...(f.reason === undefined ? {} : { reason: f.reason }),
     ...(before === undefined ? {} : { before }),
   };
 }
@@ -96,6 +123,12 @@ export interface Option {
 export const OUTCOME_OPTIONS: readonly Option[] = TRACE_OUTCOMES.map((v) => ({ value: v, label: TURN_OUTCOME_LABEL[v] }));
 /** 护栏筛选：按名字排，同名的（链接补全的两步）都留着，选哪个就按哪个步骤过滤 */
 export const GUARD_OPTIONS: readonly Option[] = Object.entries(GUARD_STEP_LABEL).map(([value, label]) => ({ value, label }));
+export const REVIEW_OPTIONS: readonly Option[] = [
+  { value: 'none', label: '未评' },
+  { value: 'good', label: '好评' },
+  { value: 'bad', label: '差评' },
+];
+export const REASON_OPTIONS: readonly Option[] = REVIEW_REASONS.map((value) => ({ value, label: REVIEW_REASON_LABEL[value] }));
 export const HANDOFF_OPTIONS: readonly Option[] = (Object.keys(HANDOFF_NOTICE_TEXT) as (keyof typeof HANDOFF_NOTICE_TEXT)[])
   .filter((k): k is HandoffKind => isHandoffKind(k))
   .map((value) => ({ value, label: HANDOFF_NOTICE_TEXT[value] }));
@@ -130,6 +163,8 @@ export interface TraceRowView {
   handoff: string | null;
   overLimit: boolean;
   took: string;
+  /** 「差评 · 内容错误」「好评」「未评」；不可评的一轮是「—」 */
+  review: string;
 }
 
 /** 耗时：不到 1 秒写毫秒，其余写秒（一位小数） */
@@ -141,6 +176,11 @@ export function guardsText(ids: readonly string[]): { short: string; full: strin
   if (!names.length) return { short: '—', full: '' };
   const full = names.join('、');
   return { short: names.length > 2 ? `${names.slice(0, 2).join('、')}等${names.length}项` : full, full };
+}
+
+export function reviewText(r: Pick<TraceRow, 'review' | 'reviewable'>): string {
+  if (!r.review) return r.reviewable ? '未评' : '—';
+  return r.review.rating === 'good' ? '好评' : `差评 · ${r.review.reason ? REVIEW_REASON_LABEL[r.review.reason] : ''}`;
 }
 
 export function rowView(r: TraceRow, pack: IndustryPack, now: number): TraceRowView {
@@ -158,6 +198,7 @@ export function rowView(r: TraceRow, pack: IndustryPack, now: number): TraceRowV
     handoff: r.handoffKind === null ? null : HANDOFF_NOTICE_TEXT[r.handoffKind],
     overLimit: r.overLimit,
     took: tookText(r.durationMs),
+    review: reviewText(r),
   };
 }
 

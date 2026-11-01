@@ -669,6 +669,16 @@ for (const [action, verb] of [
   );
 }
 
+// 17：抽检与空白草稿审计不携带可定位客户的 target。
+for (const [action, diff, text] of [
+  ['trace.review', { rating: 'good', reason: null, revision: 1 }, '小林 将回复评为好评'],
+  ['trace.review', { rating: 'bad', reason: 'incorrect', revision: 2 }, '小林 将回复评为差评'],
+  ['trace.regression_draft', { reason: 'other', format: 'review-v2', pack: 'industrial' }, '小林 准备了回归草稿'],
+] as const) {
+  eq(`${action}：无 target 的句子`, describeAudit(entry({ action, diff }), TRAVEL).text, text);
+  check(`${action}：会话动作筛选`, (auditActionsParam('conversation', false) ?? '').split(',').includes(action));
+}
+
 // 12 R12：工作台每下载一次客户发来的附件原件记一行 attachment.download；target 是附件 id，diff 只有附件 id、类别、大小，不含文件名
 {
   const downloaded = describeAudit(

@@ -1,10 +1,12 @@
+import { ALERT_POLICY, RUNBOOKS, isRunbookKey, type AlertKey, type AlertSeverity, type RunbookKey } from '../shared/alert-policy.js';
+import { normalizeHost, publicBase } from '../tenancy/hosts.js';
 import { TenantLocal } from '../tenancy/local-state.js';
 import { registerTenantState } from '../tenancy/state.js';
 import { currentRuntime, scopedRuntime, TenantScopeMissing } from '../tenancy/runtime.js';
 import { tenantRuntimes, withTenantScope, withoutTenantScope, onTenantScopeMissing, backgroundEntry } from '../tenancy/runtime.js';
 import { onDomainEventMismatch } from '../store/events.js';
 // 告警（docs/architecture/02-conversations-workbench/spec.md「可观测性与告警 · 告警」、R24、不变量 32、50）。
-// 推到 ALERT_WEBHOOK_URL（企微群机器人，text 消息），内容是「[实例名] 中文说明 · 时间」，只有计数、短码、错误码：不含客户原话、
+// 推到 ALERT_WEBHOOK_URL（企微群机器人，text 消息），内容是「[实例名] [级别] 中文说明 · 时间」及类型化手册/定位行；普通文本只有计数、短码、错误码：不含客户原话、
 // external_userid、密钥和带凭据的地址（地址只在 env 文件里，日志里也不打它）。
 // 同一键在条件持续期间 30 分钟内至多一次；恢复发一条「已恢复」；条件变重（租户锁确认被别的进程持有）不受去重限制。
 // 推送只在后台：5 秒超时、至多重试 2 次、失败只记日志，不抛、不阻塞请求与对话；没配地址只写一行 warn。另有一道总限流
@@ -31,23 +33,11 @@ import { onPlanRejected, onSendSettled, onUnsafeSend, type SendSettled } from '.
 import { onShutdown, onStoreIncident, storeCounters, storeHealth, type StoreHealth, type StoreIncident } from '../store.js';
 import { onTurnEnd, type FinishedTurn } from '../trace/recorder.js';
 
-export type AlertKey =
-  | 'usage_limit'
-  | 'erp'
-  | 'attachment_limit'
-  | 'model_errors'
-  | 'wecom_send'
-  | 'tenant_lock'
-  | 'store'
-  | 'jobs'
-  | 'channel'
-  | 'tenant_scope_missing'
-  | 'sandbox_pool'
-  | 'sandbox_purge'
-  | 'sandbox_send_refused'
-  | 'sandbox_wecom_full';
-
+export type { AlertKey } from '../shared/alert-policy.js';
 export interface AlertOpts {
+  severity?: AlertSeverity;
+  runbook?: RunbookKey;
+  traceId?: string | null;
   /** 同一告警键下按账号与原因独立去重，正文仍只有公开账号 key。 */
   scope?: string;
   /** 进程资源的事实（模型、恢复汇总等），不借用某个租户的去重表。 */
@@ -72,6 +62,8 @@ let clock: () => number = () => Date.now();
 interface KeyState {
   active: boolean;
   lastSentAt: number;
+  severity?: AlertSeverity;
+  runbook?: RunbookKey;
 }
 const instanceStates = new Map<string, KeyState>();
 const tenants = new TenantLocal(
@@ -131,6 +123,27 @@ function safeText(text: string): string {
     .replace(/\bhttps?:\/\/\S+/gi, '[地址已略]')
     .replace(/[\r\n]+/g, ' ')
     .slice(0, 300);
+}
+
+/** 链接只能来自当前租户配置；文本与去重 scope 永不参与构造。 */
+function alertLinks(key: AlertKey, runbook: RunbookKey, opts: AlertOpts): string {
+  let origin: string | null = null;
+  if (!opts.instance && scopedRuntime() && statesFor(key, false) !== instanceStates) {
+    try {
+      const url = new URL(publicBase());
+      const host = normalizeHost(url.host);
+      if (url.protocol === 'https:' && !url.username && !url.password && host) origin = `https://${host}${url.port ? `:${url.port}` : ''}`;
+    } catch {
+      /* 无合法配置时只留编号 */
+    }
+  }
+  const book = RUNBOOKS[runbook];
+  const lines = [`手册 ${book.code}${origin ? ` ${origin}/console/ops/runbooks/${book.key}` : ''}`];
+  const trace = opts.traceId;
+  if (origin && trace && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(trace))
+    lines.push(`定位 ${origin}/console/traces/${trace}`);
+  else if (key === 'reply_latency') lines.push('无可用单轮记录');
+  return lines.join('\n');
 }
 
 /** 只认错误码、错误名一类的短串，别的写「?」：告警里只有计数、短码与错误码 */
@@ -193,6 +206,76 @@ function deliver(content: string, t: number): void {
   inflight.add(p);
 }
 
+export type SingleSendResult =
+  | { status: 'accepted' }
+  | { status: 'rejected'; errorCode: 'rejected' }
+  | { status: 'not_attempted'; errorCode: 'config_missing' | 'rate_limited' }
+  | { status: 'unknown'; errorCode: 'timeout' | 'network' | 'bad_response' | 'server_error' | 'redirect' };
+
+/** 摘要专用：共享预算中只用前六个名额；请求一旦开始，含糊结果绝不自动重发。 */
+export async function sendOnce(content: string, now = Date.now()): Promise<SingleSendResult> {
+  const url = (process.env.ALERT_WEBHOOK_URL ?? '').trim();
+  if (!url) return { status: 'not_attempted', errorCode: 'config_missing' };
+  while (sentAt.length && now - sentAt[0]! >= RATE_WINDOW_MS) sentAt.shift();
+  if (sentAt.length >= 6) return { status: 'not_attempted', errorCode: 'rate_limited' };
+  sentAt.push(now);
+  const signal = AbortSignal.timeout(5000);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ msgtype: 'text', text: { content } }),
+      signal,
+      redirect: 'manual',
+    });
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
+      return { status: 'unknown', errorCode: 'redirect' };
+    }
+    if (response.status >= 500) {
+      await response.body?.cancel();
+      return { status: 'unknown', errorCode: 'server_error' };
+    }
+    if (response.status >= 400 && response.status < 500) {
+      await response.body?.cancel();
+      return { status: 'rejected', errorCode: 'rejected' };
+    }
+    reader = response.body?.getReader();
+    if (!reader) return { status: 'unknown', errorCode: 'bad_response' };
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > 8192) {
+        await reader.cancel();
+        return { status: 'unknown', errorCode: 'bad_response' };
+      }
+      chunks.push(value);
+    }
+    let body: { errcode?: unknown } | null;
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as typeof body;
+    } catch {
+      return { status: 'unknown', errorCode: 'bad_response' };
+    }
+    if (response.status !== 200 || typeof body?.errcode !== 'number') return { status: 'unknown', errorCode: 'bad_response' };
+    return body.errcode === 0 ? { status: 'accepted' } : { status: 'rejected', errorCode: 'rejected' };
+  } catch {
+    return { status: 'unknown', errorCode: signal.aborted ? 'timeout' : 'network' };
+  } finally {
+    reader?.releaseLock();
+  }
+}
+
+/** DB 已确认的恢复不依赖重启后为空的内存去重表。 */
+export function alertReplyLatency(text: string, resolved: boolean, traceId: string | null): void {
+  if (resolved) tenantAlerts().states.set('reply_latency', { active: true, lastSentAt: 0 });
+  alert('reply_latency', text, { resolved, escalate: true, traceId });
+}
+
 /**
  * 发到 ALERT_WEBHOOK_URL（企微群机器人，text 消息）。同一键在条件持续期间 30 分钟内至多一次；resolved 发一条「已恢复」。
  * 只发生在后台：5 秒超时、至多重试 2 次、失败只记日志，不抛、不阻塞请求与对话。没配 URL 时只写一行 warn 日志
@@ -214,8 +297,17 @@ export function alert(key: AlertKey, text: string, opts: AlertOpts = {}): void {
       st.active = true;
       st.lastSentAt = t;
     }
+    const policy = ALERT_POLICY[key];
+    const severity = opts.resolved ? (st.severity ?? policy.severity) : (opts.severity ?? policy.severity);
+    const runbook = opts.resolved
+      ? (st.runbook ?? policy.runbook)
+      : opts.runbook && isRunbookKey(opts.runbook)
+        ? opts.runbook
+        : policy.runbook;
+    st.severity = severity;
+    st.runbook = runbook;
     states.set(stateKey, st);
-    const content = `[${instanceLabel()}] ${opts.resolved ? '已恢复：' : ''}${safeText(text)} · ${stamp(t)}`;
+    const content = `[${safeText(instanceLabel())}] [${severity}] ${opts.resolved ? '已恢复：' : ''}${safeText(text)} · ${stamp(t)}\n${alertLinks(key, runbook, opts)}`;
     if (owner?.kind === 'sandbox' && !opts.instance && key !== 'model_errors' && key !== 'tenant_scope_missing') {
       console.warn(`[alert] 沙箱租户告警只记在日志里：${content}`);
       return;
@@ -419,9 +511,9 @@ function onIncident(i: StoreIncident): void {
     alert(
       'store',
       `store_conflict：落库撞上另一写者（${safeCodes(i.detail)}），本进程优雅停机，没落库的写进 spill`,
-      currentRuntime().kind === 'sandbox' ? { instance: true, scope: 'store_conflict' } : {},
+      currentRuntime().kind === 'sandbox' ? { instance: true, scope: 'store_conflict', severity: 'P1' } : { severity: 'P1' },
     );
-  else alert('store', `停机时 ${i.sessions} 个会话没落库，退出时写进 spill 文件（下次启动先回放）`);
+  else alert('store', `停机时 ${i.sessions} 个会话没落库，退出时写进 spill 文件（下次启动先回放）`, { severity: 'P2' });
 }
 
 /** 短码与错误码之外的字一概不要（detail 是「会话 <短码>」） */
@@ -430,18 +522,20 @@ const safeCodes = (s: string): string => s.replace(/[^\w\s·:\-\p{Script=Han}]/g
 function checkStore(t: number): void {
   const local = tenantAlerts();
   const h = probe.health();
-  if (currentRuntime().kind !== 'sandbox' && h.conflict) alert('store', 'store_conflict：落库撞上另一写者，本进程优雅停机');
+  if (currentRuntime().kind !== 'sandbox' && h.conflict)
+    alert('store', 'store_conflict：落库撞上另一写者，本进程优雅停机', { severity: 'P1' });
   const fresh = h.poisoned.filter((c) => !local.poisonedSeen.has(c));
   if (fresh.length) {
     for (const c of fresh) local.poisonedSeen.add(c);
     alert(
       'store',
       `会话 ${fresh.map(codeOf).join('、')} 停止落库（poisoned，${safeCodes(h.lastError ?? '原因见日志')}），内存照旧服务客户`,
+      { severity: 'P1' },
     );
   }
   if (currentRuntime().kind !== 'sandbox' && h.lagMs > LAG_ALERT_MS) {
     local.lagAlerted = true;
-    alert('store', `写库积压 ${Math.round(h.lagMs / 1000)} 秒（${h.dirty} 个会话有没落库的改动）`);
+    alert('store', `写库积压 ${Math.round(h.lagMs / 1000)} 秒（${h.dirty} 个会话有没落库的改动）`, { severity: 'P2' });
   } else if (currentRuntime().kind !== 'sandbox' && local.lagAlerted && h.lagMs <= LAG_OK_MS) {
     local.lagAlerted = false;
     if (!h.conflict && h.poisoned.length === 0) alert('store', '写库积压回到 5 秒以内', { resolved: true });
@@ -450,7 +544,7 @@ function checkStore(t: number): void {
   if (!c) return;
   if (c.replayFailedFiles > local.replayFailedSeen) {
     local.replayFailedSeen = c.replayFailedFiles;
-    alert('store', `启动时 ${c.replayFailedFiles} 个 spill 文件回放失败，已改名 .failed，需要人工处理`);
+    alert('store', `启动时 ${c.replayFailedFiles} 个 spill 文件回放失败，已改名 .failed，需要人工处理`, { severity: 'P1' });
   }
   // 丢掉的遥测批次：第一次读到的是基线（startAlerts 时就读一次），之后比上一次多了就报，报的是最近 10 分钟里的批数
   const prev = local.dropSamples.at(-1)?.n;
@@ -458,7 +552,9 @@ function checkStore(t: number): void {
   const before = local.dropSamples[0]?.n ?? prev ?? c.telemetryDropped;
   local.dropSamples.push({ at: t, n: c.telemetryDropped });
   if (prev !== undefined && c.telemetryDropped > prev) {
-    alert('store', `最近 10 分钟有 ${c.telemetryDropped - before} 批遥测行（trace、护栏事件、发送账本）没写进库，已丢弃`);
+    alert('store', `最近 10 分钟有 ${c.telemetryDropped - before} 批遥测行（trace、护栏事件、发送账本）没写进库，已丢弃`, {
+      severity: 'P2',
+    });
   }
 }
 
@@ -468,11 +564,12 @@ function checkSandboxStores(health: StoreHealth[]): void {
   const lagMs = Math.max(...health.map((h) => h.lagMs));
   const dirty = health.reduce((n, h) => n + h.dirty, 0);
   if (health.some((h) => h.conflict))
-    alert('store', 'store_conflict：落库撞上另一写者，本进程优雅停机', { instance: true, scope: 'store_conflict' });
+    alert('store', 'store_conflict：落库撞上另一写者，本进程优雅停机', { instance: true, scope: 'store_conflict', severity: 'P1' });
   if (lagMs > LAG_ALERT_MS)
     alert('store', `沙箱写库积压 ${Math.round(lagMs / 1000)} 秒（${dirty} 个会话有没落库的改动，可能库不可达）`, {
       instance: true,
       scope: 'store_lag',
+      severity: 'P2',
     });
   else if (lagMs <= LAG_OK_MS && health.every((h) => !h.conflict && !h.poisoned.length))
     alert('store', '沙箱写库积压回到 5 秒以内', { instance: true, scope: 'store_lag', resolved: true });

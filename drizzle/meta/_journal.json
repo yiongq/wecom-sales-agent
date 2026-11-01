@@ -183,6 +183,20 @@
       "when": 1793404800003,
       "tag": "0025_console_members_read",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1793404800004,
+      "tag": "0026_observability",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1793404800005,
+      "tag": "0027_ops_report_commands",
+      "breakpoints": true
     }
   ]
 }

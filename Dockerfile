@@ -40,6 +40,7 @@ COPY --from=rtdeps /app/node_modules ./node_modules
 COPY package.json tsconfig.json ./
 COPY src ./src
 COPY data ./data
+COPY docs/ops ./docs/ops
 # 发布闸（07 R9，第 13 步）的评测子进程：node --import tsx eval/sim/gate.ts …。
 # 只依赖 Node 内置模块、zod 与 src/；回归目标集 eval/sim/goals/ 也在里面，漏了闸起不来
 COPY eval/sim ./eval/sim

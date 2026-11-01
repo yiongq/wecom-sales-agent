@@ -151,7 +151,7 @@ const CHANNEL_ACCOUNT_UPDATABLE = [
   'settings',
   'updated_at',
 ];
-/** 02 的清除与删除函数（03 加入站清理，12 加附件清理）各自只授权给谁 */
+/** 清理与受控运维函数各自只授权给谁（17 增摘要重发与回滚准备）。 */
 const PURGE_FNS: Record<string, 'agent_app' | 'agent_platform'> = {
   erase_conversation: 'agent_platform',
   purge_attachment_bytes: 'agent_app',
@@ -159,6 +159,9 @@ const PURGE_FNS: Record<string, 'agent_app' | 'agent_platform'> = {
   purge_conversation: 'agent_app',
   purge_expired_traces: 'agent_app',
   purge_finished_jobs: 'agent_app',
+  purge_ops_data: 'agent_app',
+  ops_report_retry: 'agent_platform',
+  ops_report_prepare_rollback: 'agent_platform',
 };
 const SANDBOX_FNS = [
   'sandbox_tenant_create',
@@ -202,6 +205,9 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
         ...(vector ? ['kb_vectors'] : []),
         'memberships',
         'messages',
+        'ops_daily_reports',
+        'ops_latency_state',
+        'ops_metric_coverage',
         'orders',
         'outbound_sends',
         'privacy_notices',
@@ -213,6 +219,7 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
         'sop_gate_runs',
         'sop_versions',
         'tenants',
+        'turn_reviews',
         'turn_traces',
         'usage_daily',
         'users',
@@ -346,7 +353,7 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
   check(`${label}认证函数：五个`, auth.length === 5, auth.map((f) => f.proname).join(','));
   const purge = fns.filter((f) => Object.hasOwn(PURGE_FNS, f.proname)).map((f) => f.proname);
   check(
-    `${label}清除与删除函数：六个（02 的四个、03 的入站清理、12 的附件清理）`,
+    `${label}清理与受控运维函数：九个（含 17 摘要命令）`,
     purge.toSorted().join(',') === Object.keys(PURGE_FNS).toSorted().join(','),
     purge.join(','),
   );
@@ -357,6 +364,12 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
     if (f.proname.startsWith('auth_')) {
       check(`${label}认证函数：${f.proname} 是 SECURITY DEFINER`, f.secdef);
       check(`${label}认证函数：${f.proname} 只授权给 agent_app，PUBLIC 不能执行`, f.acl.includes('agent_app=X/') && !publicExec, f.acl);
+    } else if (f.proname === 'ops_coverage_mark_deleted') {
+      check(
+        `${label}内部删除标记：SECURITY DEFINER 且不授权调用者`,
+        f.secdef && !publicExec && !f.acl.includes('agent_app=') && !f.acl.includes('agent_platform='),
+        f.acl,
+      );
     } else if (f.proname === 'console_members_read') {
       check(`${label}15 成员投影：${f.proname} 是 SECURITY DEFINER`, f.secdef);
       check(
@@ -905,9 +918,10 @@ async function purgeChecks(env: PurgeEnv, label: string): Promise<void> {
     jobs: 3,
     inbox: 2,
     attachments: 0,
+    reviews: 0,
   };
   check(
-    `${L}删除：保留期内的会话也删，返回各类条数（03 加 inbox，12 加 attachments）`,
+    `${L}删除：保留期内的会话也删，返回各类条数（03 inbox、12 attachments、17 reviews）`,
     JSON.stringify(counts) === JSON.stringify(wantCounts),
     JSON.stringify(counts),
   );
@@ -4895,6 +4909,10 @@ async function realPostgres(superUrl: string): Promise<void> {
       audit_log: { agent_app: 'SELECT,INSERT', agent_platform: 'SELECT,INSERT' },
       // 02 spec「数据库」的授权表：没有任何角色对新表有 DELETE 或 TRUNCATE
       attachments: { agent_app: 'SELECT,INSERT', agent_platform: '' },
+      turn_reviews: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
+      ops_daily_reports: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
+      ops_latency_state: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
+      ops_metric_coverage: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       conversations: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       orders: { agent_app: 'SELECT,INSERT,UPDATE', agent_platform: '' },
       messages: { agent_app: 'SELECT,INSERT', agent_platform: '' },

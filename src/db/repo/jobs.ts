@@ -4,7 +4,7 @@ import { and, eq, inArray, sql } from 'drizzle-orm';
 import { currentTenantCtx, rowsOf, type Tx } from '../client.js';
 import { jobs } from '../schema.js';
 
-export type JobKind = 'followup' | 'handoff_notify' | 'retention_purge';
+export type JobKind = 'followup' | 'handoff_notify' | 'retention_purge' | 'ops_daily_digest';
 export type JobStatus = 'pending' | 'running' | 'sending' | 'done' | 'failed' | 'cancelled' | 'abandoned';
 
 export interface JobRow {
@@ -161,13 +161,16 @@ export async function recoverJobsAtStartup(tx: Tx): Promise<JobRecovery> {
   const followupAbandoned = await n(sql`
     update ${jobs} set status = 'abandoned', finished_at = now(), last_error = 'restart_in_sending'
      where kind = 'followup' and status = 'sending' returning id`);
+  // 摘要重试由持久账本决定；进程中止不消耗 job 的失败额度。
+  const opsRequeued = await n(sql`update ${jobs} set status='pending', claimed_at=null
+    where kind='ops_daily_digest' and status='running' returning id`);
   const otherFailed = await n(sql`
     update ${jobs} set status = 'failed', attempts = attempts + 1, finished_at = now(), last_error = 'interrupted'
      where kind <> 'followup' and status = 'running' and attempts + 1 >= max_attempts returning id`);
   const otherRequeued = await n(sql`
     update ${jobs} set status = 'pending', attempts = attempts + 1, claimed_at = null, last_error = 'interrupted'
      where kind <> 'followup' and status = 'running' returning id`);
-  return { followupRequeued, followupAbandoned, otherRequeued, otherFailed };
+  return { followupRequeued, followupAbandoned, otherRequeued: otherRequeued + opsRequeued, otherFailed };
 }
 
 /** 取消这个 dedupeKey 还没开始执行的任务（客户回话、重置）；返回取消的条数 */

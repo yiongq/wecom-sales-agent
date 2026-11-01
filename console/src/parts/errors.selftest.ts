@@ -58,6 +58,11 @@ const SPEC: ReadonlyArray<readonly [string, number, string, string | null, strin
   ['order_state', 409, '这个操作对当前订单状态不适用', null, 'caution', 'inline'],
   ['store_file_mode', 503, '这项内容只在数据库模式下可用', null, 'neutral', 'inline'],
   ['store_lagging', 503, '已生效，记录稍后保存', null, 'neutral', 'inline'],
+  // 17 R2、R1：抽检
+  ['review_not_applicable', 422, '这一轮不能评价', '只有发出最终回复的轮次可以评价', 'neutral', 'inline'],
+  ['review_conflict', 409, '刚才有人改过这条评价', '已换成最新的结果，看过之后再改', 'caution', 'inline'],
+  ['store_unavailable', 503, '这次没有保存', '稍后再试', 'caution', 'inline'],
+  ['observability_unavailable', 403, '体验环境没有这项功能', null, 'neutral', 'inline'],
   ['conflict', 409, '刚才有人同时在改', '刷新后重来', 'danger', 'banner'],
   ['bad_request', 400, '无法完成这项操作', '刷新页面后重试', 'danger', 'page'],
   ['unsupported_media_type', 415, '无法完成这项操作', '刷新页面后重试', 'danger', 'page'],

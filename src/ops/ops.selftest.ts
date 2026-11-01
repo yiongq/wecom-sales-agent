@@ -2267,7 +2267,7 @@ A.stopTimer();
 A.setClock(() => alertNow);
 A.setTimings({ retryDelaysMs: [20, 20] });
 A.reset();
-const stampRe = /^\[selftest\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+const stampRe = /^\[selftest\] \[P[123]\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\n手册 RB-\d{2}$/;
 const ALERT_SAID = '我电话一三九零零零零一一一一，叫李四';
 
 await captureAlertLogs(async () => {
@@ -2319,7 +2319,7 @@ await captureAlertLogs(async () => {
     check(
       'model_errors：连续 5 次模型调用失败收到一条（失败类别、实例名、时间）',
       hook.bodies.length === 1 &&
-        contents()[0]!.startsWith('[selftest] AI 模型调用连续 5 次失败（http_5xx） · ') &&
+        contents()[0]!.startsWith('[selftest] [P2] AI 模型调用连续 5 次失败（http_5xx） · ') &&
         stampRe.test(contents()[0]!),
       json(contents()),
     );
@@ -2332,7 +2332,7 @@ await captureAlertLogs(async () => {
     await A.settle();
     check(
       '条件持续超过 30 分钟：再失败一次又收到一条（连续 11 次）',
-      hook.bodies.length === 2 && contents()[1]!.startsWith('[selftest] AI 模型调用连续 11 次失败'),
+      hook.bodies.length === 2 && contents()[1]!.startsWith('[selftest] [P2] AI 模型调用连续 11 次失败'),
       json(contents()),
     );
     for (let i = 1; i <= 9; i++) await ok(sid, i);
@@ -2342,14 +2342,14 @@ await captureAlertLogs(async () => {
     await A.settle();
     check(
       '连续 10 次成功：收到一条「已恢复」',
-      hook.bodies.length === 3 && contents()[2]!.startsWith('[selftest] 已恢复：AI 模型调用连续 10 次成功 · '),
+      hook.bodies.length === 3 && contents()[2]!.startsWith('[selftest] [P2] 已恢复：AI 模型调用连续 10 次成功 · '),
       json(contents()),
     );
     for (let i = 12; i <= 16; i++) await bad(sid, i);
     await A.settle();
     check(
       '恢复之后又连续 5 次失败：是新的一次，马上收到',
-      hook.bodies.length === 4 && contents()[3]!.startsWith('[selftest] AI 模型调用连续 5 次失败'),
+      hook.bodies.length === 4 && contents()[3]!.startsWith('[selftest] [P2] AI 模型调用连续 5 次失败'),
       json(contents()),
     );
     for (let i = 11; i <= 20; i++) await ok(sid, i);
@@ -2378,7 +2378,7 @@ await captureAlertLogs(async () => {
     await A.settle();
     check(
       '满 50 轮、13 轮出错（26%）：收到一条',
-      hook.bodies.length === n0 + 1 && contents()[n0]!.startsWith('[selftest] 最近 50 轮里 13 轮 AI 出错（26%） · '),
+      hook.bodies.length === n0 + 1 && contents()[n0]!.startsWith('[selftest] [P2] 最近 50 轮里 13 轮 AI 出错（26%） · '),
       json(contents().slice(n0)),
     );
   }
@@ -2406,7 +2406,7 @@ await captureAlertLogs(async () => {
       await A.settle();
       check(
         'wecom_send：取不到 access_token 立即收到一条（企微错误码，不带地址与密钥）',
-        hook.bodies.length === n0 + 1 && contents()[n0]!.startsWith('[selftest] 取不到企微 access_token（40013），收发消息都停了 · '),
+        hook.bodies.length === n0 + 1 && contents()[n0]!.startsWith('[selftest] [P2] 取不到企微 access_token（40013），收发消息都停了 · '),
         json(contents().slice(n0)),
       );
       wx.tokenFails = false;
@@ -2419,7 +2419,7 @@ await captureAlertLogs(async () => {
       await A.settle();
       check(
         '10 分钟没有失败：收到「已恢复」',
-        hook.bodies.length === n0 + 2 && contents()[n0 + 1]!.startsWith('[selftest] 已恢复：企微发送 10 分钟没有失败 · '),
+        hook.bodies.length === n0 + 2 && contents()[n0 + 1]!.startsWith('[selftest] [P2] 已恢复：企微发送 10 分钟没有失败 · '),
         json(contents().slice(n0)),
       );
       // 三次失败隔得开（0、11、22 分钟）：任何 10 分钟里都不满 3 个
@@ -2442,7 +2442,7 @@ await captureAlertLogs(async () => {
       check(
         '10 分钟内 3 个分段最终失败（rejected 2、unknown 1）：收到一条，带错误码',
         hook.bodies.length === n0 + 3 &&
-          contents()[n0 + 2]!.startsWith('[selftest] 企微发送 10 分钟内 3 个分段最终失败（rejected 2、unknown 1，错误码 40096） · '),
+          contents()[n0 + 2]!.startsWith('[selftest] [P2] 企微发送 10 分钟内 3 个分段最终失败（rejected 2、unknown 1，错误码 40096） · '),
         json(contents().slice(n0)),
       );
       alertNow += 10 * 60_000;
@@ -2474,7 +2474,7 @@ await captureAlertLogs(async () => {
       'tenant_lock：锁进入 lost 收到一条；重取连不上的那几次不再发',
       configHealth().lock === 'lost' &&
         hook.bodies.length === n0 + 1 &&
-        contents()[n0]!.startsWith('[selftest] 租户锁连接断开：配置写入暂停、对话照常，正在重取 · '),
+        contents()[n0]!.startsWith('[selftest] [P1] 租户锁连接断开：配置写入暂停、对话照常，正在重取 · '),
       json(contents().slice(n0)),
     );
     lock!.next = 'ok';
@@ -2514,7 +2514,7 @@ await captureAlertLogs(async () => {
       await A.settle();
       check(
         'store：积压超过 60 秒收到一条（只有秒数与会话个数），持续时不重发',
-        hook.bodies.length === n0 + 1 && contents()[n0]!.startsWith('[selftest] 写库积压 61 秒（2 个会话有没落库的改动） · '),
+        hook.bodies.length === n0 + 1 && contents()[n0]!.startsWith('[selftest] [P2] 写库积压 61 秒（2 个会话有没落库的改动） · '),
         json(contents().slice(n0)),
       );
       h = { ...base, dirty: 1, lagMs: 5_001 };
@@ -2536,7 +2536,7 @@ await captureAlertLogs(async () => {
       check(
         '会话 poisoned（WindowCorruptError）：收到一条，带短码与错误码；同一个会话不重复报',
         hook.bodies.length === n0 + 3 &&
-          contents()[n0 + 2]!.startsWith('[selftest] 会话 AB12 停止落库（poisoned，window_corrupt · AB12），内存照旧服务客户 · '),
+          contents()[n0 + 2]!.startsWith('[selftest] [P1] 会话 AB12 停止落库（poisoned，window_corrupt · AB12），内存照旧服务客户 · '),
         json(contents().slice(n0)),
       );
       alertNow += 31 * 60_000;
@@ -2566,7 +2566,7 @@ await captureAlertLogs(async () => {
       check(
         '10 分钟内存档点里丢了遥测行：收到一条（批数）；同一键 30 分钟内的下一条（又丢了、spill 回放失败）不再发',
         hook.bodies.length === n0 + 5 &&
-          contents()[n0 + 4]!.startsWith('[selftest] 最近 10 分钟有 1 批遥测行（trace、护栏事件、发送账本）没写进库，已丢弃 · '),
+          contents()[n0 + 4]!.startsWith('[selftest] [P2] 最近 10 分钟有 1 批遥测行（trace、护栏事件、发送账本）没写进库，已丢弃 · '),
         json(contents().slice(n0)),
       );
       alertNow += 31 * 60_000;
@@ -2575,7 +2575,7 @@ await captureAlertLogs(async () => {
       await A.settle();
       check(
         '过了 30 分钟又丢：再收到一条，批数只算最近 10 分钟里的',
-        hook.bodies.length === n0 + 6 && contents()[n0 + 5]!.startsWith('[selftest] 最近 10 分钟有 2 批遥测行'),
+        hook.bodies.length === n0 + 6 && contents()[n0 + 5]!.startsWith('[selftest] [P2] 最近 10 分钟有 2 批遥测行'),
         json(contents().slice(n0)),
       );
       A.reset();
@@ -2584,7 +2584,7 @@ await captureAlertLogs(async () => {
       await A.settle();
       check(
         '启动时 spill 回放失败、改名 .failed：收到一条',
-        hook.bodies.length === n0 + 7 && contents()[n0 + 6]!.startsWith('[selftest] 启动时 1 个 spill 文件回放失败'),
+        hook.bodies.length === n0 + 7 && contents()[n0 + 6]!.startsWith('[selftest] [P1] 启动时 1 个 spill 文件回放失败'),
         json(contents().slice(n0)),
       );
       A.reset();
@@ -2603,7 +2603,7 @@ await captureAlertLogs(async () => {
       check(
         'store_conflict 的事故（落库撞上另一写者）：立刻收到一条，带短码',
         hook.bodies.length === n0 + 9 &&
-          contents()[n0 + 8]!.startsWith('[selftest] store_conflict：落库撞上另一写者（会话 CD34），本进程优雅停机'),
+          contents()[n0 + 8]!.startsWith('[selftest] [P1] store_conflict：落库撞上另一写者（会话 CD34），本进程优雅停机'),
         json(contents().slice(n0)),
       );
     } finally {
@@ -2626,7 +2626,7 @@ await captureAlertLogs(async () => {
     await A.settle();
     check(
       '真的写不进 trace（存档点里丢掉）：巡检读到计数涨了，收到一条',
-      hook.bodies.length === n0 + 1 && contents()[n0]!.startsWith('[selftest] 最近 10 分钟有 1 批遥测行'),
+      hook.bodies.length === n0 + 1 && contents()[n0]!.startsWith('[selftest] [P2] 最近 10 分钟有 1 批遥测行'),
       json(contents().slice(n0)),
     );
     A.reset();
@@ -2674,7 +2674,7 @@ await captureAlertLogs(async () => {
       check(
         'jobs：handoff_notify 用完重试记 failed 收到一条（种类与错误名）；同一拍的第二个 30 分钟内不再发',
         hook.bodies.length === n0 + 1 &&
-          contents()[n0]!.startsWith('[selftest] 任务 handoff_notify 用完重试次数，记 failed（TypeError） · '),
+          contents()[n0]!.startsWith('[selftest] [P2] 任务 handoff_notify 用完重试次数，记 failed（TypeError） · '),
         json(contents().slice(n0)),
       );
     } finally {
@@ -2692,7 +2692,7 @@ await captureAlertLogs(async () => {
     await A.settle();
     check(
       '启动归位时 retention_purge 用完重试记 failed：过了 30 分钟，收到一条（个数）',
-      hook.bodies.length === n0 + 2 && contents()[n0 + 1]!.startsWith('[selftest] 启动归位：1 个任务用完重试次数，记 failed · '),
+      hook.bodies.length === n0 + 2 && contents()[n0 + 1]!.startsWith('[selftest] [P2] 启动归位：1 个任务用完重试次数，记 failed · '),
       json(contents().slice(n0)),
     );
   }
@@ -2794,7 +2794,7 @@ await captureAlertLogs(async () => {
     await A.settle();
     check(
       '告警正文的兜底：会话原 id 换成短码、地址整段去掉',
-      contents().at(-1)!.startsWith('[selftest] 会话 RT42 出错，见 [地址已略] · '),
+      contents().at(-1)!.startsWith('[selftest] [P2] 会话 RT42 出错，见 [地址已略] · '),
       contents().at(-1),
     );
     logMod.setConvRefResolver((id) => channelRefs.get(id) ?? store.conversationRef(id));
@@ -2808,7 +2808,9 @@ await captureAlertLogs(async () => {
         const out = contents().at(-1)!;
         check(
           `03 R22 告警正文：${raw} 换成 ${code}`,
-          hook.bodies.length === before + 1 && out.startsWith(`[selftest] 会话 ${code} 出错 · `) && channelIdsHidden(hook.bodies.at(-1)!),
+          hook.bodies.length === before + 1 &&
+            out.startsWith(`[selftest] [P2] 会话 ${code} 出错 · `) &&
+            channelIdsHidden(hook.bodies.at(-1)!),
           out,
         );
       }
@@ -2818,7 +2820,7 @@ await captureAlertLogs(async () => {
       await A.settle();
       check(
         '03 R22 告警正文：普通 web 文本与长度不对的 id 原样保留',
-        hook.bodies.length === before + 1 && contents().at(-1)!.startsWith(`[selftest] ${ordinaryWebText} · `),
+        hook.bodies.length === before + 1 && contents().at(-1)!.startsWith(`[selftest] [P2] ${ordinaryWebText} · `),
         contents().at(-1),
       );
     } finally {
@@ -2829,7 +2831,7 @@ await captureAlertLogs(async () => {
     A.reset();
     alertMod.alert('jobs', '没设实例名');
     await A.settle();
-    check('没设 INSTANCE_LABEL：实例名是 wecom-sales-agent', contents().at(-1)!.startsWith('[wecom-sales-agent] 没设实例名 · '));
+    check('没设 INSTANCE_LABEL：实例名是 wecom-sales-agent', contents().at(-1)!.startsWith('[wecom-sales-agent] [P2] 没设实例名 · '));
     process.env.INSTANCE_LABEL = 'selftest';
   }
 });
@@ -2954,7 +2956,7 @@ const runBackup = async (extra: Record<string, string> = {}): Promise<{ status: 
   scriptOut.push(r.stdout + r.stderr);
   return { status: r.status, out: r.stdout + r.stderr };
 };
-const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
+const hostStampRe = /^\[selftest-host\] \[P[12]\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\n手册 RB-\d{2}$/;
 {
   const deploySrc = fs.readFileSync(path.join(repoRoot, 'deploy.sh'), 'utf8');
   const installed = /install -m 755 \$\{REMOTE_DIR\}\/deploy\/watch\.sh (\/\S+)\/\$\{NAME\}\/watch\.sh/.exec(deploySrc)?.[1];
@@ -2993,7 +2995,9 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
   await runWatch((now += 60));
   check(
     'watch.sh：RestartCount 10 分钟内增加 2 次收到一条，再增加时 30 分钟内不重发',
-    fresh().length === 1 && fresh()[0]!.startsWith('[selftest-host] app 容器 10 分钟内重启了 2 次 · ') && hostStampRe.test(fresh()[0]!),
+    fresh().length === 1 &&
+      fresh()[0]!.startsWith('[selftest-host] [P1] app 容器 10 分钟内重启了 2 次 · ') &&
+      hostStampRe.test(fresh()[0]!),
     json(fresh()),
   );
   await runWatch(now + 29 * 60);
@@ -3019,7 +3023,7 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
   await runWatch((now += 60));
   check(
     'watch.sh：/healthz 连续 3 分钟连不上收到一条，第 4 分钟不重发',
-    fresh().length === 3 && fresh()[2]!.startsWith('[selftest-host] 健康检查连续 3 分钟失败（连不上或 HTTP 出错，curl 退出码 7） · '),
+    fresh().length === 3 && fresh()[2]!.startsWith('[selftest-host] [P1] 健康检查连续 3 分钟失败（连不上或 HTTP 出错，curl 退出码 7） · '),
     json(fresh()),
   );
   setFake('health', '{"ok":true}');
@@ -3050,7 +3054,7 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
   await runWatch((now += 60));
   check(
     'watch.sh：根分区 86% 收到一条，涨到 90% 不重发',
-    fresh().length === 7 && fresh()[6]!.startsWith('[selftest-host] 磁盘使用率 86%（根分区） · '),
+    fresh().length === 7 && fresh()[6]!.startsWith('[selftest-host] [P2] 磁盘使用率 86%（根分区） · '),
     json(fresh()),
   );
   setFake('df_volume', '96');
@@ -3059,7 +3063,7 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
   await runWatch((now += 60));
   check(
     'watch.sh：数据卷到 96% 再发一次（不受 30 分钟去重），之后不重发',
-    fresh().length === 8 && fresh()[7]!.startsWith('[selftest-host] 磁盘使用率 96%（数据库数据卷） · '),
+    fresh().length === 8 && fresh()[7]!.startsWith('[selftest-host] [P1] 磁盘使用率 96%（数据库数据卷） · '),
     json(fresh()),
   );
   setFake('df_root', '82');
@@ -3081,7 +3085,7 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
   await runWatch((now += 60));
   check(
     'watch.sh：上次成功的备份早于 26 小时收到一条，下一分钟不重发',
-    fresh().length === 10 && fresh()[9]!.startsWith('[selftest-host] 上次成功的备份是 27 小时前（超过 26 小时） · '),
+    fresh().length === 10 && fresh()[9]!.startsWith('[selftest-host] [P2] 上次成功的备份是 27 小时前（超过 26 小时） · '),
     json(fresh()),
   );
   await runWatch((now += 31 * 60));
@@ -3138,7 +3142,7 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
     'backup.sh：校验那一步失败，退出码照旧是 1，推一条（哪一步、退出码），写下失败标记',
     failed.status === 1 &&
       contents().length === fb0 + 1 &&
-      contents()[fb0]!.startsWith('[selftest-host] 备份失败（校验这一步，退出码 1），这次的备份不可用 · ') &&
+      contents()[fb0]!.startsWith('[selftest-host] [P2] 备份失败（校验这一步，退出码 1），这次的备份不可用 · ') &&
       hostStampRe.test(contents()[fb0]!) &&
       fs.existsSync(path.join(bk, 'opswatch', 'last-failure')),
     `${failed.status} ${json(contents().slice(fb0))} ${failed.out.slice(-300)}`,
@@ -3159,7 +3163,7 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
       stamp <= Math.floor(Date.now() / 1000) + 1 &&
       !fs.existsSync(path.join(bk, 'opswatch', 'last-failure')) &&
       contents().length === fb0 + 3 &&
-      contents()[fb0 + 2]!.startsWith('[selftest-host] 已恢复：备份成功 · ') &&
+      contents()[fb0 + 2]!.startsWith('[selftest-host] [P2] 已恢复：备份成功 · ') &&
       fs.existsSync(path.join(bk, 'opswatch', day, 'agent.dump.age')),
     `${ok1.status} ${ok1.out.slice(-300)} ${json(contents().slice(fb0))}`,
   );
@@ -3264,7 +3268,9 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
           failed &&
           fs.readFileSync(path.join(bk, 'opswatch', 'last-success'), 'utf8') === lastSuccess &&
           contents().length === pushed + 1 &&
-          contents()[pushed]!.startsWith(`[selftest-host] 备份失败（打包 var/这一步，退出码 ${scenario.status}），这次的备份不可用 · `) &&
+          contents()[pushed]!.startsWith(
+            `[selftest-host] [P2] 备份失败（打包 var/这一步，退出码 ${scenario.status}），这次的备份不可用 · `,
+          ) &&
           hostStampRe.test(contents()[pushed]!);
       }
       check(
@@ -3377,6 +3383,23 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
 
 // ---------------- 告警正文：只有计数、短码、错误码 ----------------
 {
+  const hostMessages = contents().filter((c) => c.startsWith('[selftest-host]'));
+  check(
+    '17 R9 主机脚本每条消息带固定级别与手册编号',
+    hostMessages.length > 10 &&
+      hostMessages.every((c) => {
+        const book = c.includes('容器') ? 'RB-16' : c.includes('健康检查') ? 'RB-17' : c.includes('磁盘') ? 'RB-18' : 'RB-19';
+        return /\[P[12]\]/.test(c) && c.includes(`手册 ${book}`);
+      }),
+    json(hostMessages),
+  );
+  check(
+    '17 R9 磁盘升级及恢复继承 P1、备份 P2',
+    hostMessages.some((c) => c.includes('[P1] 磁盘使用率 96%')) &&
+      hostMessages.some((c) => c.includes('[P1] 已恢复：磁盘')) &&
+      hostMessages.filter((c) => c.includes('备份')).every((c) => c.includes('[P2]')),
+    json(hostMessages),
+  );
   const all = contents();
   const leaks = all.filter(
     (c) =>
@@ -3391,7 +3414,7 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
       c.includes('127.0.0.1'),
   );
   check(
-    '不变量 32：收到的每条告警都是「[实例名] 中文说明 · 时间」，没有客户原话、external_userid、会话原 id、地址与密钥',
+    '不变量 32：收到的每条告警包含级别、时间与手册编号，没有客户原话、external_userid、会话原 id、地址与密钥',
     all.length > 40 &&
       leaks.length === 0 &&
       all.every((c) => stampRe.test(c) || hostStampRe.test(c) || c.startsWith('[wecom-sales-agent] ')),
@@ -3514,7 +3537,7 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
     'tenant_lock：锁进入 lost 一条；确认被别的进程持有、开始停机时再发一条（不受 30 分钟去重）',
     contents().length === n0 + 2 &&
       contents()[n0]!.includes('租户锁连接断开') &&
-      contents()[n0 + 1]!.startsWith('[selftest] 租户锁已被另一个进程持有，本进程开始停机 · '),
+      contents()[n0 + 1]!.startsWith('[selftest] [P1] 租户锁已被另一个进程持有，本进程开始停机 · '),
     json(contents().slice(n0)),
   );
   // 锁在别人手里：drain 段不写库，没落库的真实会话（含前面 poisoned 的那个）退出时写进 spill。告警在 drain 段末尾发出，
@@ -3528,7 +3551,7 @@ const hostStampRe = /^\[selftest-host\] (?:已恢复：)?[^\n]+ · \d{4}-\d{2}-\
     ok &&
       hook.hits > h0 &&
       spill.length === 1 &&
-      /^\[selftest\] 停机时 \d+ 个会话没落库，退出时写进 spill 文件（下次启动先回放） · /.test(spill[0]!),
+      /^\[selftest\] \[P2\] 停机时 \d+ 个会话没落库，退出时写进 spill 文件（下次启动先回放） · /.test(spill[0]!),
     json(spill),
   );
 }

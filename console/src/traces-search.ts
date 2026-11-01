@@ -14,6 +14,10 @@ export interface TracesSearch {
   handoff?: string;
   /** 只看回复仍超长的；没开不写 */
   over?: 1;
+  /** 17 R2：评价（none 未评、good 好评、bad 差评） */
+  review?: string;
+  /** 17 R2：差评原因 */
+  reason?: string;
 }
 
 const word = (v: unknown, re: RegExp): string | undefined => (typeof v === 'string' && re.test(v) ? v : undefined);
@@ -28,4 +32,6 @@ export const tracesSearch = (s: Record<string, unknown>): TracesSearch => ({
   guard: word(s.guard, /^[a-z][a-z0-9_:-]{0,63}$/),
   handoff: word(s.handoff, /^[a-z]{1,20}$/),
   over: s.over === 1 || s.over === '1' ? 1 : undefined,
+  review: word(s.review, /^[a-z]{1,20}$/),
+  reason: word(s.reason, /^[a-z]{1,20}$/),
 });
