@@ -5,6 +5,7 @@ Tier: standard — 扩展评测目标与运行结果的格式，新增公开报�
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」。
 Depends on: [09](../09-quote-approval/spec.md) 的报价审批入口；[10](../10-industrial-rfq-pack/spec.md)、[12](../12-customer-files/spec.md) 的工业包与附件。实现排在 [17](../17-observability/spec.md) 之后，只对齐 17 R5 的耗时口径，不依赖其代码。
 Amends: [04](../04-industry-packs/spec.md) R11、[06](../06-reply-quality/spec.md) R2、[10](../10-industrial-rfq-pack/spec.md) R15 的模拟评测：只加新目标类型、新枚举值和新文件，现有目标、发布闸与判定不变。反向标记随 ready 补。
+Revisions: 2026-11-01 owner 答「D3=A，D7=A」：D1–D8 全部定案；Status 保持 draft，档位和 ready 未批。
 Revisions: 2026-11-01 owner 答「16 D1–D8 按推荐」：D1、D2、D4、D5、D6、D8 照 ★ 定案；D3、D7 选错难退，按规矩要各回一句，尚未定案；档位和 ready 未批。
 Revisions: 2026-11-01 首版起草，经三轮独立评审（Opus）后修订，只有设计，未实施。
 
@@ -31,7 +32,7 @@ Revisions: 2026-11-01 首版起草，经三轮独立评审（Opus）后修订，
 - 成功率只代表 24 个留出场景，不能外推成线上成交率。
 - 评审时已查出两个产品缺口：客户说「好的，下单吧」「确认」这类话时系统记不下确认，24 种说法只认 7 种；模型原稿里的「打九折、免运费、送赠品」能漏到客户。两个都在冻结前走独立 PR 修。
 
-要你定的：D3、D7 选错难退，要各回一句；其余 6 张已照推荐定案。另请确认档位 standard：这份改评测格式、不碰线上判定，所以不走最重的流程。
+要你定的：8 张决策卡已全部定案（D1–D8 都选 A）。还请确认档位 standard：这份改评测格式、不碰线上判定，所以不走最重的流程。
 
 怎么算做完：
 
@@ -460,7 +461,7 @@ node --import tsx eval/sim/run.ts --goals eval/sim/goals/industrial/journey/hold
 
 ## 决策卡
 
-2026-11-01 定案：D1、D2、D4、D5、D6、D8 照 ★ 定为 A。D3、D7 待 owner 各回一句。
+2026-11-01 定案：D1–D8 全部照 ★ 定为 A。
 
 ### D1 · 规模和预算（已定 A）
 
@@ -477,7 +478,7 @@ node --import tsx eval/sim/run.ts --goals eval/sim/goals/industrial/journey/hold
 - D 第二个模型换厂商。相关性更低，但要新 key 和接入验证。
 - 选错难退吗：好退。留出集跑之前换模型不受影响。
 
-### D3 · 要不要留出集（待定）
+### D3 · 要不要留出集（已定 A）
 
 - A ★ 留。报告成功率只算留出集。代价：24 个场景调优时不能看，问题可能到最后才暴露，要多跑一轮。
 - B 不留，40 个都看着调。数字更好看，但面试被问「这些场景你调过吗」答不上来。
@@ -504,7 +505,7 @@ node --import tsx eval/sim/run.ts --goals eval/sim/goals/industrial/journey/hold
 - C 起完整服务，走后台 HTTP 和 Postgres。最接近线上，要容器和登录，开发约多 1 天，每段更慢。
 - 选错难退吗：好退。A 以后可以换 C，场景和报告不变。
 
-### D7 · 成功率怎么判（待定）
+### D7 · 成功率怎么判（已定 A）
 
 - A ★ 终态对且没有违规才算通过，话术不算；确认的疑似算失败；疑似由 AI 初裁、另一个 agent 复核，误报你全看；客户问题不进分母但单列，并列保守成功率，超 10% 不发布。代价：语气差的回复也算通过；确认由 AI 定，不是人工逐条审。
 - B 终态加话术正则都算。沿用现有谓词，但 10 的历史说明正则会误判，每个失败都要解释。
@@ -523,6 +524,7 @@ node --import tsx eval/sim/run.ts --goals eval/sim/goals/industrial/journey/hold
 ### owner 原话
 
 - 2026-11-01，对话：「16 D1–D8 按推荐」。
+- 2026-11-01，对话：「D3=A，D7=A」。
 
 ## 开放问题
 
