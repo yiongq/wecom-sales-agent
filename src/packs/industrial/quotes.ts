@@ -41,7 +41,7 @@ export function quoteSiteLinks(): NonNullable<PackRuntime['siteLinks']> {
     if (!order || !('v' in order)) return null;
     const binding = boundPack();
     const brand = binding?.brand ?? binding?.runtime.defaultBrand;
-    return { order, title: `${brand?.brandName ?? '衡石工业品（虚构）'}报价单 · ${order.lines.length} 项` };
+    return { order, title: `${brand?.brandName ?? '衡石工业品（演示）'}报价单 · ${order.lines.length} 项` };
   };
   return [
     {
