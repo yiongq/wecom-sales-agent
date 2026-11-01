@@ -166,6 +166,18 @@ try {
   assert.deepEqual([...seenChanges].sort(), [...expectedIds].sort(), '夹具让 11 步全部命中改写，包含残句与半句');
   assert.equal(attemptedEffects, 0, '跟进步骤不调用任何工具、建单或转人工能力');
   assert.equal(toolCalls, 0, '门面跟进不补链接、不调工具');
+  // 16 留出集：模型写的 markdown 表格漏到了客户。表格、行内代码、链接都要变成纯文字。
+  {
+    const table =
+      '十二行全部精确匹配。\n| 型号 | 数量 | 单价 |\n|---|---|---|\n| 6205-ZZ | 4 | 12.00 |\n| M8×40 | 100 | 1.23 |\n另外 4 行已算好';
+    assert.equal(stripMarkdown(table), '十二行全部精确匹配。\n型号，数量，单价\n6205-ZZ，4，12.00\nM8×40，100，1.23\n另外 4 行已算好');
+    assert.equal(stripMarkdown('| a | b |\n| :--- | ---: |\n| 1 | 2 |'), 'a，b\n1，2');
+    assert.equal(stripMarkdown('型号 `6205-2RS` 现货'), '型号 6205-2RS 现货');
+    assert.equal(stripMarkdown('看[报价单](/quote/ord_1)'), '看报价单 /quote/ord_1');
+    // 普通竖线和数学式不动
+    assert.equal(stripMarkdown('A|B 两种'), 'A|B 两种');
+    assert.equal(stripMarkdown('规格 2*3 --- 备注'), '规格 2*3 --- 备注');
+  }
   console.log(
     `FOLLOWUP GUARDS SELFTEST PASS: ${fixtures.length} 组旧实现差分 · 11 步全命中 · 双 handoff 事件 · 只删句/零副作用/无 guard_verdicts`,
   );
