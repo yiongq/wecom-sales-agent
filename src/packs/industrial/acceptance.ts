@@ -3,7 +3,12 @@ const ACK = /^(?:好的?|行|可以|没问题|嗯|ok|收到|谢谢|不用改了|
 // 采购口吻也算：愿意按这份报价采购、同意采购、这份报价我们认可。
 const ACCEPT =
   /^(?:(?:好的?|好吧|行吧?|可以的?|没问题|嗯+|ok|那就|那|就|我们|我|这批(?:物料|货)?|这(?:个|份)(?:报价|价格?)|愿意|决定|同意)\s*)*(?:(?:(?:帮我|请|麻烦|给我)\s*)?下单|确认下单|确认报价|确认这(?:个|份)报价|(?:接受|认可|同意)(?:这(?:个|份))?(?:报价|价格?)?(?:并?(?:采购|购买|订购|下单))?|可以接受|成交|(?:采购|购买|订购)|就?按这(?:个|份)(?:报价|价格?)?(?:来|办|下单|采购|购买|订购)?|就这个|就这样|就这么(?:定|办)|就?定这个|就它|可以下单|安排(?:下单|采购)?|确认(?:无误|没问题)?)(?:吧|了|的|啦)*$/iu;
+// 客户常把数量、金额和接受写在一句里，整句对不上白名单。这些明确的说法出现在分句里就算（16 小样实测）。
+const STRONG =
+  /确认接受|接受这(?:个|份)报价|这(?:个|份)报价单?(?:我们?)?(?:确认|接受|认可)|(?:就|按|就按)这(?:个|份)(?:单子|方案|报价单?)(?:来|办)?(?:采购|下单)|确认采购|决定采购|同意采购/u;
 const QUESTION = /[?？]|吗|是否|能否|能不能|会不会|是不是/u;
+// 条件、否定和转述不算，只作用于上面这种分句内匹配。
+const NOT_MINE = /如果|假如|要是|的话|等领导|领导|不(?:愿意|接受|同意|确认|想|要|能|会|可以|打算)|别|没有?(?:决定|确认|接受|同意)/u;
 // 任一分句出现就不算接受：还没决定，或要改这张单（改完会有新报价）。
 const HOLD =
   /先别|暂不|还没|尚未|再想想|再看看|考虑一下|考虑考虑|等等|等一下|稍等|问问领导|回头再说|再说吧|不确认|再加|加\s*\d|加到|改成|改为|换成|换个|减到|少要|多要/u;
@@ -12,7 +17,9 @@ export function quoteAcceptance(text: string): { accepted: boolean; needsModel: 
   // 问号保留在所属分句里，不能把「确认下单？」切成肯定；逗号后的问题不影响前面的接受。
   const clauses = (text.normalize('NFKC').match(/[^,。.!！;；\n\r?？]+[?？]?/gu) ?? []).map((clause) => clause.trim()).filter(Boolean);
   if (clauses.some((clause) => HOLD.test(clause))) return { accepted: false, needsModel: true };
-  const accepts = clauses.map((clause) => !QUESTION.test(clause) && ACCEPT.test(clause));
+  const accepts = clauses.map(
+    (clause) => !QUESTION.test(clause) && (ACCEPT.test(clause) || (STRONG.test(clause) && !NOT_MINE.test(clause))),
+  );
   return {
     accepted: accepts.some(Boolean),
     needsModel: clauses.some((clause, i) => !accepts[i] && !ACK.test(clause)),
