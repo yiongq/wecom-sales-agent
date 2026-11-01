@@ -30,7 +30,7 @@ Tier: standard
 
 ## 步骤
 
-- [ ] 0. 开工核对。确认 17 状态；确认 `src/packs/industrial/turn.ts` 的确认识别现状；确认闸的目标集哈希基线；确认 `eval/sim/goals/quality/26-post-handoff-silence.json` 的现状结果。把结果记进交接。
+- [x] 0. 开工核对。确认 17 状态；确认 `src/packs/industrial/turn.ts` 的确认识别现状；确认闸的目标集哈希基线；确认 `eval/sim/goals/quality/26-post-handoff-silence.json` 的现状结果。把结果记进交接。
 - [ ] 1. 目标与运行器（R1–R3）。`journeyGoalSchema`、`judgeJourney`、顺序表和失败桶表、两种 `customer_drift`、审批替身、卡片文字、转人工即停、`finalState`、`failedTurn`。先写假模型自测再实现。验：验收 1–3，验收 4、5 的判分部分。
 - [ ] 2. 审计（R4）。`oraclePrice`、10 条规则、原稿计数、护栏工作量。每条规则一段违规样本和一段干净样本；`oraclePrice` 对 `priceLine` 做差分。验：验收 6 的审计部分、验收 7。
 - [ ] 3. 运行（R5、R6）。journal、续跑抵扣预算、账本、`--kind`、`--prepare`、`--reason`、`freeze.json`、留出集运行前检查、真实时钟、`fetch` 放行表、客户模型重试、保留被替换的一遍。验：验收 8，验收 9、11 的运行部分，验收 13 的联网和数据库部分。
@@ -61,6 +61,13 @@ Tier: standard
 - 2026-11-01 owner 答「16 D1–D8 按推荐」和「D3=A，D7=A」：D1–D8 全部定 A。
 - 2026-11-01 owner 批准 ready，原话「16 改 ready，standard」。
 - 下一步：从第 0 步开始。
+
+### 2026-11-01 · 第 0 步开工核对（基线 `origin/dev` 899b4e11）
+
+- 17：`Status: implemented`，已在 `dev`。
+- 确认识别：`src/packs/industrial/turn.ts` 第 26 行仍是一条正则，含问号或「吗」就放弃，与 spec 背景表一致。
+- 闸的目标集：`gateTargets` 同算法算出旅游 20 个 `6e9aeece…2a97`（与 `src/config/gate-per-pack.selftest.ts` 钉住的值相同），工业 31 个 `157e3908…beb1`。16 的目标放子目录，两个值都不该变。
+- 26 号目标现状：由第 1 步的自测在未改动代码上用假模型跑出字面量并钉住。
 
 ## Open
 
