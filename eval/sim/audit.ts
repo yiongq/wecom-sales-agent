@@ -143,7 +143,7 @@ function inFen(number: string, wan = false): number {
 }
 function replyAmounts(text: string): { text: string; fen: number }[] {
   const pattern = new RegExp(
-    String.raw`[¥￥]\s*(${NUMBER})\s*(万)?(?:元|块)?|(${NUMBER})\s*(万)?(?:元|块)|(?:单价|合计|总价|小计)\s*[:：]?\s*(${NUMBER})\s*(万)?(?:元|块)?(?!\s*(?:件|个|只|套|台|支|根|条|盒|米|千克|pcs))`,
+    String.raw`[¥￥]\s*(${NUMBER})\s*(万)?(?:元|块)?|(${NUMBER})\s*(万)?(?:元|块)|(?:单价|合计|总价|小计)\s*[:：]?\s*(${NUMBER})(?![\d.,])\s*(万)?(?:元|块)?(?!\s*(?:件|个|只|套|台|支|根|条|盒|米|千克|pcs))`,
     'gu',
   );
   return [...text.matchAll(pattern)].map((m) => ({ text: m[0], fen: inFen(m[1] ?? m[3] ?? m[5], !!(m[2] ?? m[4] ?? m[6])) }));
