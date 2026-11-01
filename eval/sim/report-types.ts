@@ -83,6 +83,8 @@ export interface JourneyReport {
   zeroUpper: { byRuns: number; byScenes: number } | null;
   handoffMatrix: { expectedYes: { yes: number; no: number }; expectedNo: { yes: number; no: number } };
   guards: { guard: string; turns: number }[];
+  /** 代码改写过的轮数（一轮多个护栏算一次） */
+  rewrittenTurns: number;
   latency: { samples: number; p50: number; p90: number; p95: number; max: number; over8sShare: number; deterministicTurns: number };
   cost: { salesPerRun: number; customerPerRun: number; salesPerAccepted: number | null; cacheHitRate: number };
   swap: { customerModel: string; rate: number; byScenes: Interval; suspects: number; valid: boolean } | null;
