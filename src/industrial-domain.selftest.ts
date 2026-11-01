@@ -1,6 +1,12 @@
 import './selftest-env.js';
 import assert from 'node:assert/strict';
-import { industrialReplyGuard, industrialFollowupGuard, PROMISE_FALLBACK } from './packs/industrial/guards.js';
+import {
+  industrialReplyGuard,
+  industrialFollowupGuard,
+  INVENTORY_FALLBACK,
+  PAYMENT_FALLBACK,
+  PROMISE_FALLBACK,
+} from './packs/industrial/guards.js';
 import { defaultIndustrialPolicy } from './packs/industrial/policy.js';
 import { fixedReplies } from './packs/industrial/fixed-replies.js';
 import type { ReplyGuardContext } from './core/pack-api.js';
@@ -343,6 +349,7 @@ const unsafePromises = [
 ];
 const safePromises = [
   '不能打折。',
+  '9折这样的额外折扣我这边给不了。',
   '我这边无法自行调整或承诺额外折扣。',
   '没法再打九折。',
   '不会赠送配件。',
@@ -397,3 +404,118 @@ for (const sample of await promiseFixed.samples()) assert.equal(sample.text, PRO
 console.log(
   `INDUSTRIAL PROMISE PASS: ${unsafePromises.length}条违规、${safePromises.length}条放行，主回复/跟进、整条去重、政策门槛与固定句登记通过`,
 );
+
+// 16 报告复核：对的库存交期和有效期不被换掉，运费和付款说法按政策纠正，括号不被切坏。
+const quoted = (partNo: string, delivery: string) => ({
+  name: 'quote_items',
+  args: {},
+  result: JSON.stringify({ lines: [{ partNo, delivery }] }),
+});
+const found = (partNo: string, stock: string, leadDays: number) => ({
+  name: 'find_parts',
+  args: {},
+  result: JSON.stringify({ parts: [{ partNo, stock, leadDays }] }),
+});
+async function guardClaim(text: string, toolSources: object[] = [], followup = false, inputText = ''): Promise<string> {
+  const context = {
+    session: promiseSession,
+    text,
+    inputText,
+    policy: promisePolicy,
+    toolSources,
+    recordGuard: () => undefined,
+  } as unknown as ReplyGuardContext;
+  const result = await (followup ? industrialFollowupGuard(promiseSources) : industrialReplyGuard(promiseSources)).run(context);
+  return result?.action === 'pass' ? text : result && 'text' in result ? result.text : '';
+}
+const partial = [quoted('6207-2RS', '现货 18 件，其余约 9 天')];
+const spot = [found('M10×45', '现货', 8), quoted('M10×45', '现货')];
+const fallback = `${INVENTORY_FALLBACK}。`;
+for (const text of [
+  '32件试算结果：\n现货情况：现货只有18件，不够32件全现货，其余约14件到货周期约9天。',
+  '如果库存拆批不方便，也可以改成18件现货。',
+  '现货18件，其余约9天。',
+  '当前现货只有18件，其余14件约9天到货。',
+])
+  assert.equal(await guardClaim(text, partial), text, text);
+for (const text of ['查到了，有现货：', '18件试算：单价1.35元，现货。', '现货，交期约8天。', '报价含税，款到发货，有效期7天。'])
+  assert.equal(await guardClaim(text, spot), text, text);
+for (const text of ['报价7天内有效。', '报价有效期至7天内。', '已批准且在有效期内（7天）。', '有效期：7天。', '报价单有效期为7天。'])
+  assert.equal(await guardClaim(text), text, text);
+// 放宽只放行有依据的说法：数字不对、依据缺失、客户问的是别的型号，都还是回退。
+for (const [text, tools, input] of [
+  ['有效期30天。', [], ''],
+  ['现货20件。', partial, ''],
+  ['全部现货。', partial, ''],
+  ['交期约5天。', spot, ''],
+  ['9天到货。', partial, ''],
+  ['约5天到货。', partial, ''],
+  ['其余约9天。', spot, ''],
+  ['有现货。', [], ''],
+  ['有现货。', spot, 'XR-9420-Q 有吗'],
+] as const)
+  assert.equal(await guardClaim(text, [...tools], false, input), fallback, text);
+// 多个型号时，没点名型号的说法要对每个型号都成立。
+assert.equal(await guardClaim('都有现货。', [...spot, ...partial]), fallback);
+assert.equal(await guardClaim('都有现货。', [...spot, found('6205-2RS', '现货', 7)]), '都有现货。');
+
+// 括号：整组说法不成立时只去括号，括号外的金额和正文留下，不留半边括号。
+assert.equal(
+  await guardClaim('确认这6行无误，或指出需要修改的行（例如「第3行改成 XR-9420-Q，3件」），我马上试算。'),
+  '确认这6行无误，或指出需要修改的行，我马上试算。',
+);
+assert.equal(await guardClaim('试算结果（含税13%，现货）：'), `试算结果：${fallback}`);
+assert.equal(await guardClaim('合计265.86元（含税13%，免运费），现货。'), `合计265.86元，${PROMISE_FALLBACK}${fallback}`);
+assert.equal(await guardClaim('合计100元（现货）。', [], true), '合计100元。');
+
+// 免责句：模型自己说过就不再补；同一条回复只补一次。
+assert.equal(await guardClaim('有现货。交期约9天。库存与交期以顾问确认为准。'), '库存与交期以顾问确认为准。');
+assert.equal(await guardClaim('有现货。交期约9天。需要报价单吗？'), `${fallback}需要报价单吗？`);
+
+// 运费：政策固定 0 元时就地改回事实；有运费或门槛时「另计」是对的，不动。
+for (const [text, expected] of [
+  ['合计420.48元（含13%税，未含运费）。', '合计420.48元（含13%税，运费0元）。'],
+  ['含税，不含运费。', '含税，运费0元。'],
+  ['运费另计。', '运费0元。'],
+  ['含税，运费另计为0元。', '含税，运费0元。'],
+  ['运费按政策另计以实际结算为准。', '运费0元。'],
+  ['运费另以顾问确认为准。', '运费0元。'],
+])
+  assert.equal(await guardClaim(text!), expected, text);
+assert.equal(await guardClaim('合计420.48元（含税，不含运费）。', [], true), '合计420.48元。');
+assert.equal(await guardClaim('运费另计。', [], true), '');
+promisePolicy.shipping = { freeOverFen: 10000, feeFen: 1000 };
+for (const followup of [false, true]) assert.equal(await guardClaim('运费另计。', [], followup), '运费另计。');
+promisePolicy = structuredClone(defaultIndustrialPolicy);
+
+// 付款：款进公司账户，不能让客户理解成付给顾问，也不能说报价单上有账户。
+for (const text of [
+  '请按报价单上的对公账户完成转账（款到发货）。',
+  '款项付给我们的顾问账户。',
+  '款项支付给顾问后安排发货。',
+  '款项请付给顾问指定账户。',
+  '请对公转账至顾问提供的账户。',
+  '对公转账到顾问提供的收款账户即可。',
+  '对公转账给销售顾问。',
+  '对公转账支付622.08元到顾问提供的账户。',
+  '直接转给顾问收款即可。',
+]) {
+  assert.equal(await guardClaim(text), PAYMENT_FALLBACK, text);
+  assert.equal(await guardClaim(text, [], true), '', text);
+}
+for (const text of [
+  '款到发货，对公转账。',
+  '请对公转账至顾问提供的公司账户。',
+  '款项支付给顾问吗？',
+  '顾问会与您对接收款账户。',
+  '款项由顾问收取确认后安排发货。',
+  '转账到账后顾问会确认。',
+  '需要我把您转给顾问收款吗？',
+  '已转给顾问跟进。',
+])
+  assert.equal(await guardClaim(text), text, text);
+assert.equal(await guardClaim('款到发货，款项支付给顾问，款项付给我们的顾问账户。'), `款到发货，${PAYMENT_FALLBACK}`);
+const paymentFixed = fixedReplies.find((reply) => reply.id === 'industrial.payment')!;
+assert.deepEqual(paymentFixed.producedBy, { pipeline: 'reply', step: 'industrial_claims' });
+for (const sample of await paymentFixed.samples()) assert.equal(sample.text, PAYMENT_FALLBACK);
+console.log('INDUSTRIAL CLAIMS PASS: 库存交期有效期放行与回退、括号、免责句去重、运费与付款说法，主回复和跟进都通过');

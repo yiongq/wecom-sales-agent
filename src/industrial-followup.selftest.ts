@@ -491,6 +491,16 @@ try {
         process.env.LLM_MOCK = '1';
       }
     }
+    // 运费和付款说法走完整条主回复管线：改写后的话还要过金额出处和其余护栏。
+    for (const [raw, expected] of [
+      ['含税，不含运费。', '含税，运费0元。'],
+      ['款到发货，款项付给我们的顾问账户。', '款到发货，收款账户以顾问提供的公司账户为准。'],
+    ]) {
+      const s = store.getOrCreateSession(`wecom:wmIF${++sequence}`, 'wecom');
+      action = async () => raw!;
+      assert.equal((await handleMessage(s.id, '运费和付款怎么算', 'wecom')).text, expected);
+      assert.equal(finish.at(-1)!.turn.draft, raw);
+    }
     console.log('工业承诺引擎：5条折扣/免运费/赠送原稿经真实主回复及跟进链路，正文替换/删空、trace原稿与industrial_claims事件通过');
     // 每类编造都经真实主回复管线，事件落入guard_events。
     const unsafeCases = [
