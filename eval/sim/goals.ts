@@ -275,7 +275,12 @@ export async function loadGoals(input: string): Promise<SimGoal[]> {
     } catch {
       throw new Error(`${file} (<无 id>): <root>: JSON 读取失败`);
     }
-    for (const [i, value] of (Array.isArray(data) ? data : [data]).entries()) goals.push(validateGoal(value, `${file}[${i}]`));
+    for (const [i, value] of (Array.isArray(data) ? data : [data]).entries()) {
+      const goal = validateGoal(value, `${file}[${i}]`);
+      const split = /(?:^|\/)journey\/(dev|holdout)\//u.exec(path.resolve(file).split(path.sep).join('/'))?.[1];
+      if (goal.journey && split && goal.journey.split !== split) throw new Error(`${file} (${goal.id}): journey.split 与目录不一致`);
+      goals.push(goal);
+    }
   }
   if (!goals.length) throw new Error(`${input}: 没有目标`);
   const ids = new Set<string>();
