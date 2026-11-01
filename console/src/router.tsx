@@ -79,6 +79,10 @@ const audit = createRoute({ getParentRoute: () => root, path: '/audit', validate
 const traces = createRoute({ getParentRoute: () => root, path: '/traces', validateSearch: tracesSearch }).lazy(() =>
   import('./pages/traces.lazy.js').then((m) => m.Route),
 );
+// 17 R9：告警里的手册链接
+const runbook = createRoute({ getParentRoute: () => root, path: '/ops/runbooks/$key' }).lazy(() =>
+  import('./pages/runbook.lazy.js').then((m) => m.Route),
+);
 // 17 R9：告警里的深链接。未登录时外壳在这个地址上原地显示登录页，登录后还在这里
 const traceDetail = createRoute({ getParentRoute: () => root, path: '/traces/$turnId' }).lazy(() =>
   import('./pages/trace-detail.lazy.js').then((m) => m.Route),
@@ -125,6 +129,7 @@ export const router = createRouter({
     conversationWorkbench,
     traces,
     traceDetail,
+    runbook,
     audit,
     settings,
     settingsPage,
