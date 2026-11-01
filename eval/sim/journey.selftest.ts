@@ -379,9 +379,11 @@ try {
   }
 
   // 客户问题单列、重跑保留原记录，外层费用只计一次。
+  const catalog = JSON.parse(await fs.readFile('data/packs/industrial/catalog/part.json', 'utf8')) as SimDeps['catalog'];
   const mockDeps = (overrides: Partial<SimDeps> = {}): SimDeps => ({
     customerModel: 'fake',
     pack: 'industrial',
+    catalog,
     price: () => 0.001,
     customer: async () => ({ raw: '{', tokens: { promptTokens: 1, completionTokens: 1, cachedTokens: 0, reasoningTokens: 0 } }),
     start: () => ({ id: 'sim-test', initial: structuredClone(empty) }),
