@@ -124,6 +124,8 @@ export interface RunResult extends Evidence {
   wasReplaced?: true;
   /** 最后一轮客户只表达结束、一句话没说（R3 customer_drift 第二种） */
   leftSilently?: true;
+  /** 客户接口重试后仍失败时的状态码和错误码，只供分诊 */
+  customerHttp?: string;
 }
 export interface Summary {
   id: string;
@@ -284,7 +286,10 @@ async function executeRun(goal: SimGoal, repetition: number, meter: Meter, deps:
     }
   } catch (e) {
     run.endedBy = 'runner_error';
-    if (goal.journey && e instanceof Error && e.message === 'customer_http') run.status = 'customer_http';
+    if (goal.journey && e instanceof Error && e.message === 'customer_http') {
+      run.status = 'customer_http';
+      if ('detail' in e) run.customerHttp = String(e.detail);
+    }
     // 错误消息可能含供应商地址或凭据，只保留稳定原因。
     run.reasons.push(e instanceof Error && e.message === 'accounting_usage_missing' ? 'accounting_usage_missing' : 'runner_error');
   } finally {
