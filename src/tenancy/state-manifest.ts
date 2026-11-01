@@ -3,6 +3,7 @@ export const STATE_MANIFEST: Record<
   string,
   { kind: 'tenant'; state: string } | { kind: 'instance'; why: string } | { kind: 'object-keyed' }
 > = Object.freeze({
+  'src/ops/runbooks.ts:sections': { kind: 'instance', why: '公共固定手册文件的只读缓存，不保存租户数据；缺失延迟到请求返回 503。' },
   'src/ops/ops-config.ts:validated': { kind: 'instance', why: '环境配置及运行时目录的校验签名，仅用于抑制重复配置错误；目录改变即重验。' },
   'src/ops/digest.ts:scheduled': { kind: 'tenant', state: 'ops.digest.schedule' },
 

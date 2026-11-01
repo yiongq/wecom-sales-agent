@@ -277,6 +277,11 @@ try {
   assert.ok(Date.now() - started < 40000);
   assert.equal(hits.at(-1)!.path, '/api/console/auth/logout');
   assert.equal(hits.at(-1)!.status, 200);
+  for (const output of logs)
+    if (output.includes('业务拨测')) {
+      assert.match(output, /\[P1\]/);
+      assert.match(output, /手册 RB-20/);
+    }
   console.log('PASS app-probe: real API/curl/watch login → Secure cookie → tenant → counts → csrf/logout; foreign tenant rejected');
   console.log(
     'PASS app-probe: empty/partial config, intervals/retries, 3 failures/recovery/dedupe, HTTP/curl/timeout, cleanup, secret-free argv/logs',

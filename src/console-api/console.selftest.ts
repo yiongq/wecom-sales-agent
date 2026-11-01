@@ -2571,11 +2571,12 @@ check(
   };
   scan(srcRoot);
   // platform.erase 由 erase_conversation() 这个 SECURITY DEFINER 的 SQL 函数直接 INSERT audit_log（02 第 4 步的迁移），
-  // 不经 TS 的 writeAudit/queueAudit，静态扫描看不到源头；手动列出这一个例外，连同它一起核对
-  const SQL_WRITTEN_ACTIONS = ['platform.erase'];
+  // 17 第 5 步的 ops_report 两个 platform 命令同样由迁移 0027 的 SQL 函数直接写审计。
+  // 不经 TS 的 writeAudit/queueAudit，静态扫描看不到源头；明确列出并连同它们一起核对。
+  const SQL_WRITTEN_ACTIONS = ['platform.erase', 'ops_report.retry', 'ops_report.prepare_rollback'];
   const known = Object.keys(AUDIT_ACTIONS);
   check(
-    'AUDIT_ACTIONS 与 src/ 里 writeAudit 写的动作逐个相同（不多不少，platform.erase 由 SQL 函数直接写，另计）',
+    'AUDIT_ACTIONS 与 src/ 里 writeAudit 写的动作逐个相同（不多不少，platform.erase 与 ops_report 命令由 SQL 函数直接写，另计）',
     written.size >= 17 &&
       [...written, ...SQL_WRITTEN_ACTIONS].toSorted().join() === known.toSorted().join() &&
       SQL_WRITTEN_ACTIONS.every((a) => !written.has(a)),
@@ -3395,6 +3396,7 @@ async function workbenchSuite(): Promise<void> {
     { route: 'POST /quick-replies/:id/move', url: '/quick-replies/nosuch/move', json: { direction: 'up' }, allowed: REPLIES },
     { route: 'GET /metrics', url: '/metrics', allowed: MONEY },
     { route: 'GET /metrics/trends', url: '/metrics/trends', allowed: MONEY },
+    { route: 'GET /ops/runbooks/:key', url: '/ops/runbooks/model_errors', allowed: MONEY },
     // 14 R9：用量仅给 owner/admin；匿名明确要求 403。
     { route: 'GET /usage', url: '/usage', allowed: MONEY, anonStatus: 403 },
     { route: 'GET /events', url: '/events', allowed: ALL, sse: true },
