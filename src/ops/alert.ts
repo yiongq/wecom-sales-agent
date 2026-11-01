@@ -32,6 +32,7 @@ import { onShutdown, onStoreIncident, storeCounters, storeHealth, type StoreHeal
 import { onTurnEnd, type FinishedTurn } from '../trace/recorder.js';
 
 export type AlertKey =
+  | 'reply_latency'
   | 'usage_limit'
   | 'erp'
   | 'attachment_limit'
@@ -191,6 +192,78 @@ function deliver(content: string, t: number): void {
     .catch(() => undefined)
     .finally(() => inflight.delete(p));
   inflight.add(p);
+}
+
+export type SingleSendResult =
+  | { status: 'accepted' }
+  | { status: 'rejected'; errorCode: 'rejected' }
+  | { status: 'not_attempted'; errorCode: 'config_missing' | 'rate_limited' }
+  | { status: 'unknown'; errorCode: 'timeout' | 'network' | 'bad_response' | 'server_error' | 'redirect' };
+
+/** 摘要专用：共享预算中只用前六个名额；请求一旦开始，含糊结果绝不自动重发。 */
+export async function sendOnce(content: string, now = Date.now()): Promise<SingleSendResult> {
+  const url = (process.env.ALERT_WEBHOOK_URL ?? '').trim();
+  if (!url) return { status: 'not_attempted', errorCode: 'config_missing' };
+  while (sentAt.length && now - sentAt[0]! >= RATE_WINDOW_MS) sentAt.shift();
+  if (sentAt.length >= 6) return { status: 'not_attempted', errorCode: 'rate_limited' };
+  sentAt.push(now);
+  const signal = AbortSignal.timeout(5000);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ msgtype: 'text', text: { content } }),
+      signal,
+      redirect: 'manual',
+    });
+    if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
+      return { status: 'unknown', errorCode: 'redirect' };
+    }
+    if (response.status >= 500) {
+      await response.body?.cancel();
+      return { status: 'unknown', errorCode: 'server_error' };
+    }
+    if (response.status >= 400 && response.status < 500) {
+      await response.body?.cancel();
+      return { status: 'rejected', errorCode: 'rejected' };
+    }
+    reader = response.body?.getReader();
+    if (!reader) return { status: 'unknown', errorCode: 'bad_response' };
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      length += value.byteLength;
+      if (length > 8192) {
+        await reader.cancel();
+        return { status: 'unknown', errorCode: 'bad_response' };
+      }
+      chunks.push(value);
+    }
+    let body: { errcode?: unknown } | null;
+    try {
+      body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as typeof body;
+    } catch {
+      return { status: 'unknown', errorCode: 'bad_response' };
+    }
+    if (response.status !== 200 || typeof body?.errcode !== 'number') return { status: 'unknown', errorCode: 'bad_response' };
+    return body.errcode === 0 ? { status: 'accepted' } : { status: 'rejected', errorCode: 'rejected' };
+  } catch {
+    return { status: 'unknown', errorCode: signal.aborted ? 'timeout' : 'network' };
+  } finally {
+    reader?.releaseLock();
+  }
+}
+
+/** DB 已确认的恢复不依赖重启后为空的内存去重表。 */
+export function alertReplyLatency(text: string, resolved: boolean, traceId: string | null): void {
+  // traceId 在第 6 步接安全链接；本步只把选择结果送到调用边界。
+  void traceId;
+  if (resolved) tenantAlerts().states.set('reply_latency', { active: true, lastSentAt: 0 });
+  alert('reply_latency', text, { resolved, escalate: true });
 }
 
 /**

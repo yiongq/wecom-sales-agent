@@ -151,7 +151,7 @@ const CHANNEL_ACCOUNT_UPDATABLE = [
   'settings',
   'updated_at',
 ];
-/** 02 的清除与删除函数（03 加入站清理，12 加附件清理）各自只授权给谁 */
+/** 清理与受控运维函数各自只授权给谁（17 增摘要重发与回滚准备）。 */
 const PURGE_FNS: Record<string, 'agent_app' | 'agent_platform'> = {
   erase_conversation: 'agent_platform',
   purge_attachment_bytes: 'agent_app',
@@ -160,6 +160,8 @@ const PURGE_FNS: Record<string, 'agent_app' | 'agent_platform'> = {
   purge_expired_traces: 'agent_app',
   purge_finished_jobs: 'agent_app',
   purge_ops_data: 'agent_app',
+  ops_report_retry: 'agent_platform',
+  ops_report_prepare_rollback: 'agent_platform',
 };
 const SANDBOX_FNS = [
   'sandbox_tenant_create',
@@ -351,7 +353,7 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
   check(`${label}认证函数：五个`, auth.length === 5, auth.map((f) => f.proname).join(','));
   const purge = fns.filter((f) => Object.hasOwn(PURGE_FNS, f.proname)).map((f) => f.proname);
   check(
-    `${label}清除与删除函数：七个（02 四个、03 入站、12 附件、17 可观测数据）`,
+    `${label}清理与受控运维函数：九个（含 17 摘要命令）`,
     purge.toSorted().join(',') === Object.keys(PURGE_FNS).toSorted().join(','),
     purge.join(','),
   );

@@ -3,6 +3,9 @@ export const STATE_MANIFEST: Record<
   string,
   { kind: 'tenant'; state: string } | { kind: 'instance'; why: string } | { kind: 'object-keyed' }
 > = Object.freeze({
+  'src/ops/ops-config.ts:validated': { kind: 'instance', why: '环境配置及运行时目录的校验签名，仅用于抑制重复配置错误；目录改变即重验。' },
+  'src/ops/digest.ts:scheduled': { kind: 'tenant', state: 'ops.digest.schedule' },
+
   'src/tenancy/budget.ts:dailyCapReader': {
     kind: 'instance',
     why: '读取当前作用域快照的能力接线，不保存租户数据；避免运行时构造的导入环。',
