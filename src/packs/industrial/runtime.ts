@@ -116,7 +116,7 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     tools: createIndustrialTools(sources),
     money: { minimumAmount: 0.01, precisionTolerance: 0.5, decimals: true },
     defaultBrand: {
-      brandName: '衡石工业品（虚构）',
+      brandName: '衡石工业品（演示）',
       advisorTitle: '顾问',
       aiTitle: 'AI 询价顾问',
       scopeNoun: '工业品询价',
@@ -127,7 +127,7 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
       offTopicReply: templates.offTopicReply,
       welcomeText: '您好，请告诉我型号和数量。',
       welcomeBackText: templates.welcomeBackText,
-      webWelcome: '欢迎来到衡石工业品（虚构），请告诉我型号和数量。',
+      webWelcome: '欢迎来到衡石工业品（演示），请告诉我型号和数量。',
       mockOpening: templates.mockOpening,
       quickReplies: templates.quickReplies,
       hardRequirements,
