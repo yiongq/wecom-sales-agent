@@ -203,6 +203,11 @@ export function renderCharts(report: JourneyReport): Record<string, string> {
 }
 
 // ---- 页面 ----
+const setName = (report: JourneyReport): string =>
+  report.meta.kind === 'dev' ? '开发集' : report.meta.kind === 'pilot' ? '小样' : '留出集';
+const attemptText = (report: JourneyReport): string =>
+  report.meta.kind === 'main' ? `这是第 ${report.attempt} 次跑留出集` : `这是${setName(report)}运行，不算跑留出集`;
+
 function conclusion(report: JourneyReport): string {
   const c = counts(report);
   const upper = report.zeroUpper
@@ -213,7 +218,7 @@ function conclusion(report: JourneyReport): string {
     table(
       ['指标', '数值', '口径'],
       [
-        ['留出集成功率', `${pct(report.success.rate)}（${c.passed}/${c.valid}）`, '通过 ÷（跑完 − 客户问题），按遍合并'],
+        [`${setName(report)}成功率`, `${pct(report.success.rate)}（${c.passed}/${c.valid}）`, '通过 ÷（跑完 − 客户问题），按遍合并'],
         ['保守成功率', `${pct(report.success.conservative)}（${c.passed}/${c.done}）`, '客户问题全算失败'],
         ['95% 区间（按段）', range(report.success.byRuns), `Wilson，n = ${c.valid}，同场景 5 遍不独立，这个区间偏窄`],
         ['95% 区间（按场景）', range(report.success.byScenes), `Wilson，n = ${c.eligible.length}，场景全过才算成功，这个区间偏宽`],
@@ -236,7 +241,7 @@ function scope(report: JourneyReport): string {
   const end = report.ledger.findLast((l) => l.runId === m.runId && l.event === 'end');
   const models = [...new Set([m.salesModel, m.hedgeModel, m.customerModel, report.swap?.customerModel].filter((x): x is string => !!x))];
   return [
-    `${report.scenes.length} 个留出场景，每个跑 ${m.k} 遍。场景、产品库、客户话术都是合成的。`,
+    `${report.scenes.length} 个${setName(report)}场景，每个跑 ${m.k} 遍。场景、产品库、客户话术都是合成的。`,
     '',
     table(
       ['项目', '值'],
@@ -460,7 +465,7 @@ function limits(report: JourneyReport): string {
     report.swap
       ? `- 换客户模型的差值是 ${((report.swap.rate - report.success.rate) * 100).toFixed(1)} 个百分点${report.swap.valid ? '' : '（对比无效）'}。`
       : '- 这份结果没有换客户模型的差值。',
-    `- 这是第 ${report.attempt} 次跑留出集。`,
+    `- ${attemptText(report)}。`,
   ].join('\n');
 }
 
@@ -478,7 +483,7 @@ function ledger(report: JourneyReport): string {
     '',
     `先加 \`--prepare yes\` 写开跑行并提交推送，再去掉它正式跑。文档没有 \`seed\`，逐字复现没有保证；这里的可复现指同样的命令和配置再跑一遍，数字落在区间内。判分和报告可以用存档数据逐字节重算。`,
     '',
-    `这是第 ${report.attempt} 次跑留出集，中止 ${report.aborts.length} 次。`,
+    `${attemptText(report)}，中止 ${report.aborts.length} 次。`,
     '',
     table(
       ['运行', '类型', '事件', '时间', '提交', '客户模型', '预算', '通过', '失败', '剔除', '花费（元）'],
@@ -556,7 +561,7 @@ export function renderReport(report: JourneyReport, options: RenderOptions = {})
   return [
     '# 工业询价仿真报告',
     '',
-    `状态：${options.draft ? '草稿' : STATUS[report.status]}。运行 ${report.meta.runId}，第 ${report.attempt} 次跑留出集。`,
+    `状态：${options.draft ? '草稿' : STATUS[report.status]}。运行 ${report.meta.runId}，${attemptText(report).replace(/^这是/, '')}。`,
     ...(banner ? ['', banner] : []),
     '',
     '模型扮客户，在合成产品库上跑完工业询价全流程：询价、试算、报价单、顾问批准、客户确认，也覆盖砍价、非标转人工、附件询价和注入。成功率只看业务终态，规则由一套独立的审计代码检查。',

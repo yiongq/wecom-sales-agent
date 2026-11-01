@@ -454,7 +454,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       await fs.mkdir(path.dirname(path.join(out, name)), { recursive: true });
       await fs.writeFile(path.join(out, name), content);
     }
-    execFileSync('pnpm', ['exec', 'oxfmt', out], { timeout: 30000, stdio: 'pipe' });
+    // 草稿写在被忽略的 var/ 下，不进仓库，oxfmt 也不处理被忽略的目录。
+    if (!draft) execFileSync('pnpm', ['exec', 'oxfmt', out], { timeout: 30000, stdio: 'pipe' });
     for (const name of artifacts.keys()) scanPublic(await fs.readFile(path.join(out, name), 'utf8'));
   } catch (error) {
     await fs.rm(out, { recursive: true, force: true });
