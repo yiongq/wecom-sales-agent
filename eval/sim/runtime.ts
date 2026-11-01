@@ -10,6 +10,16 @@ import type { FinishedTurn } from '../../src/trace/recorder.js';
 import { PACK_FILE, readPackFile } from '../../src/config/pack-file.js';
 import { prepareFixture } from './attachment-fixtures.js';
 
+/** 16 R6：只带当前失败轮；错误正文沿用原来的稳定分类，不泄露供应商回包。 */
+export class SalesTurnError extends Error {
+  constructor(
+    cause: unknown,
+    readonly failedTurn: FinishedTurn | undefined,
+  ) {
+    super(cause instanceof Error && cause.message === 'accounting_usage_missing' ? 'accounting_usage_missing' : 'runner_error');
+  }
+}
+
 export const FIXTURE_CLOCK = '2026-10-10T12:00:00+08:00';
 export function fixtureClock(): () => void {
   const RealDate = Date;
@@ -145,7 +155,9 @@ export async function engineRuntime(
     const tools = await import('../../src/tools.js');
     const source = await import('../../src/config/source.js');
     const orderView = await import('../../src/core/order-view.js');
-    return { usage, llm, engine, recorder, store, tools, source, orderView };
+    const orders = await import('../../src/payment/orders.js');
+    const takeover = await import('../../src/handoff/takeover.js');
+    return { usage, llm, engine, recorder, store, tools, source, orderView, orders, takeover };
   };
   const modules = await load().catch(async (e: unknown) => {
     await restoreProcess();
@@ -157,6 +169,8 @@ export async function engineRuntime(
   const { llmCfg, llmStats } = modules.llm;
   const { handleMessage } = modules.engine;
   const { onTurnEnd } = modules.recorder;
+  // 模拟器没有真实渠道；只有 decide 的短窗口接收审批通知。
+  modules.takeover.setReplyTransport(async () => false);
   const store = modules.store;
   const { createQuote, routeVersion } = modules.tools;
   const { createLineOrder } = modules.orderView;
@@ -260,7 +274,35 @@ export async function engineRuntime(
       customerModel: customerCfg.model,
       configDir,
       pack,
+      ...(configDir && pack === 'industrial'
+        ? { catalog: JSON.parse(await fs.readFile(path.join(configDir, 'catalog/part.json'), 'utf8')) }
+        : {}),
       price,
+      async decide(orderId, d) {
+        const order = store.getAnyOrder(orderId);
+        if (!order) throw new Error('quote_missing');
+        const session = store.getSession(order.sessionId);
+        if (!session) throw new Error('session_missing');
+        let notice: string | null = null;
+        modules.takeover.setReplyTransport(async (id, text) => {
+          if (id !== session.id) return false;
+          if (d.decision === 'approve') {
+            const link = currentPack().runtime.siteLinks?.find((l) => l.linkKind === 'quote');
+            const card = link?.card?.(text, session);
+            if (!card) throw new Error('quote_card_missing');
+            notice = `${card.title}\n${card.desc}`;
+          } else notice = text;
+          return true;
+        });
+        try {
+          const actor = { userId: null, name: '审批替身', role: 'supervisor' as const };
+          if (d.decision === 'approve') await modules.orders.approveQuote(orderId, actor);
+          else await modules.orders.rejectQuote(orderId, actor, d.reason);
+          return { notice, state: snapshot(session.id) };
+        } finally {
+          modules.takeover.setReplyTransport(async () => false);
+        }
+      },
       async customer(persona, history, retry) {
         const response = await fetch(`${customerCfg.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
           method: 'POST',
@@ -400,6 +442,8 @@ export async function engineRuntime(
             trace,
             state: snapshot(id),
           };
+        } catch (e) {
+          throw new SalesTurnError(e, trace);
         } finally {
           off();
         }
