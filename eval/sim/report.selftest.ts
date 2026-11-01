@@ -491,6 +491,7 @@ try {
     assert.ok(page.includes('留出集成功率 | 85.7%（12/14）'));
     assert.ok(page.includes('保守成功率 | 60.0%（12/20）'));
     assert.ok(page.includes(`第 ${baseline.attempt} 次跑留出集`));
+    assert.ok(page.includes('账单约为账本的 1.4 倍'));
     assert.equal(page, renderReport(structuredClone(baseline)));
     assert.ok(renderReport({ ...baseline, status: 'formal' }).startsWith('# 工业询价仿真报告\n\n状态：正式'));
     assert.ok(renderReport({ ...baseline, status: 'unstable' }).includes('> 仿真不稳：'));
