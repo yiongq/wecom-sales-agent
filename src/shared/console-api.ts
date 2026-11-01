@@ -152,12 +152,19 @@ export type TraceOutcome = (typeof TRACE_OUTCOMES)[number];
 /** AI 记录的游标（TracePage.next 原样传回 before）：这一页最后一行的开始时刻（UTC、微秒）加下划线加轮次 id；微秒不能截成毫秒，否则同毫秒的行翻页时会漏 */
 const TRACE_CURSOR = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+/** 17 R2：抽检的差评原因 */
+export const REVIEW_REASONS = ['incorrect', 'missing', 'handoff', 'format', 'other'] as const;
+export type ReviewReason = (typeof REVIEW_REASONS)[number];
+export type ReviewRating = 'good' | 'bad';
+
 /**
  * AI 记录列表（07 R24，GET /traces，所有者、管理员）：since 含、until 不含，都是带时区的 ISO 时刻；
  * guard 是主回复步骤的 id（guard_verdicts 里 action 不是 pass 的算触发过）；handoffKind 是这一轮触发的转人工原因；
  * overLimit 只能写 1（只看回复仍超长的）；before 取上一页的 next；limit 1–100，默认 50
  */
 export const TracesQuery = z.object({
+  review: z.enum(['none', 'good', 'bad']).optional(),
+  reason: z.enum(REVIEW_REASONS).optional(),
   since: z.iso.datetime({ offset: true }).optional(),
   until: z.iso.datetime({ offset: true }).optional(),
   outcome: z.enum(TRACE_OUTCOMES).optional(),
@@ -786,8 +793,17 @@ export interface TurnTraceView {
   customerText: string | null;
 }
 
+export interface TurnTraceDetailView extends TurnTraceView {
+  conversationId: string;
+  channel: string;
+  reviewable: boolean;
+  review: TurnReviewView | null;
+}
+
 /** AI 记录列表的一行（GET /traces）：一轮对话，跨会话 */
 export interface TraceRow {
+  review: { rating: ReviewRating; reason: ReviewReason | null } | null;
+  reviewable: boolean;
   /** 这一轮的 trace id（turn_traces.id）：详情与「存为回归用例」都用它 */
   turnId: string;
   /** 所属会话的 id：现有的详情接口 /conversations/:id/turns/:turnId 与工作台地址 /conversations/$id 用它（审计的 target 才是会话行的 ref） */
@@ -976,10 +992,6 @@ export const settingsQueryKey = (tenantId: string, userId: string, page: keyof S
   ['settings', tenantId, userId, page] as const;
 
 // ---------------- 17：抽检、回归草稿与趋势（docs/architecture/17-observability/spec.md R1、R2、R4、R10） ----------------
-
-export const REVIEW_REASONS = ['incorrect', 'missing', 'handoff', 'format', 'other'] as const;
-export type ReviewReason = (typeof REVIEW_REASONS)[number];
-export type ReviewRating = 'good' | 'bad';
 
 /** PUT /traces/:turnId/review。差评必选原因，好评 reason 必须是 null；未知字段 400，不收自由文本 */
 export const TurnReviewBody = z
