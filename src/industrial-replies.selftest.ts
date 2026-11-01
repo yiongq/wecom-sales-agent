@@ -198,6 +198,21 @@ try {
   assert.ok(runtime.engineHooks.isComplaint('我要投诉'));
   assert.equal(runtime.engineHooks.isComplaint('我不是来投诉的'), false);
   assert.ok(runtime.engineHooks.isHandoffIntent('人工'));
+  // 16 复核：否定说法不转人工；同一条消息里另一小句真要人工仍然转
+  for (const text of [
+    '不用转人工',
+    '不要人工',
+    '不需要转人工，你直接报',
+    '别转人工',
+    '先别转人工客服',
+    '不想找真人',
+    '无需人工顾问',
+    '不接受转人工',
+    '不要退款',
+  ])
+    assert.equal(runtime.engineHooks.isHandoffIntent(text), false, text);
+  for (const text of ['转人工', '我要转人工', '要人工', '人工客服', '不用报价了，转人工', '不要机器人，我要人工', '我要退款'])
+    assert.equal(runtime.engineHooks.isHandoffIntent(text), true, text);
 
   console.log('工业词表：104键（80通用、4不匹配、20改写）逐键与正反例通过');
 
