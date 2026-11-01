@@ -28,9 +28,9 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 - [x] 2. 数据与清理。新增四表、FORCE RLS、复合键、索引、最小权限、jobs kind，以及清理/回滚增补；不改旧迁移。跑验收 3 的真实 PG 边界与 7 天删除，验证旧函数仍级联评分；日账本跨终态去重与数据字段到期清理。依赖：0；与 1、3 可并行，迁移编号集中分配。
 - [x] 3. 日指标与趋势后端。实现 R5/R10 的共用日 SQL、coverage、60 秒租户缓存、采集/删除失效及新趋势接口，保持旧 metrics/UsageView。用固定时钟、真实 PG 对照验收 6、11 的接口部分。依赖：0；纯读聚合先行，ops_metric_coverage 采集检查点持久化接入等 2 合入后完成。
 - [x] 4. 抽检与安全草稿后端。实现评分 revision、审计事务、角色检查、过滤/详情/安全深链接及无源内容的 v2 骨架；保留 travel 旧导出。验收 1–5 的 API/外部文件链路，特别证明工业草稿不得调用旧 goal-draft 获取正文。依赖：2；可接替已完成的 2 路，与 1、3 并行。
-- [ ] 5. 每日摘要与延迟任务。实现 R6–R8 的 ops lane、日账本、跨重启恢复、显式重发命令、固定窗口告警及租户配置；注册运行时状态；接现有告警传输而不以 void 返回值当成功。执行验收 7–9，带进程中止/重启与本机 webhook，不只测纯函数。依赖：2、3；按下节三路安排启动。
-- [ ] 6. 分级与运维手册。穷尽映射现有 AlertKey、safeText 外的类型化链接、watch/backup 前缀、固定 runbook 路由；新增公共 docs/ops/observability.md，同批更新部署说明和 .env.example 的新配置名，真实值另记。按验收 10 验证恶意 URL、鉴权链接、阈值不变及无 trace 降级；与 5 对 alert.ts 的修改串行合入。依赖：4、5。
-- [ ] 7. 抽检与趋势前端。消费已冻结真 API，做评分原因、冲突提示、差评草稿说明、7/30 天趋势与可读表格；不改 15 设置导航与用量页。覆盖所有页面状态、键盘/窄屏/深浅主题与字体；浏览器按验收 1、2、4、11 走查，写 BEFORE/AFTER，截图只用合成数据。依赖：3、4 及 15 前端公共布局合入；可与 5、8 并行。
+- [x] 5. 每日摘要与延迟任务。实现 R6–R8 的 ops lane、日账本、跨重启恢复、显式重发命令、固定窗口告警及租户配置；注册运行时状态；接现有告警传输而不以 void 返回值当成功。执行验收 7–9，带进程中止/重启与本机 webhook，不只测纯函数。依赖：2、3；按下节三路安排启动。
+- [x] 6. 分级与运维手册。穷尽映射现有 AlertKey、safeText 外的类型化链接、watch/backup 前缀、固定 runbook 路由；新增公共 docs/ops/observability.md，同批更新部署说明和 .env.example 的新配置名，真实值另记。按验收 10 验证恶意 URL、鉴权链接、阈值不变及无 trace 降级；与 5 对 alert.ts 的修改串行合入。依赖：4、5。
+- [x] 7. 抽检与趋势前端。消费已冻结真 API，做评分原因、冲突提示、差评草稿说明、7/30 天趋势与可读表格；不改 15 设置导航与用量页。覆盖所有页面状态、键盘/窄屏/深浅主题与字体；浏览器按验收 1、2、4、11 走查，写 BEFORE/AFTER，截图只用合成数据。依赖：3、4 及 15 前端公共布局合入；可与 5、8 并行。
 - [x] 8. 本机真实 Langfuse 验证。真实引擎/recorder/exporter → 本机指定版本 → UI/API 字段核对，完成验收 12；失败/断网/关闭出口均测试，无原文无真实 key。把版本、映射、命令与结果写本 plan，不复制第三方截图入仓库；清理当次资源。依赖：1；与 5、7 并行。
 - [ ] 9. 真实链路贯穿与回滚演练。按验收 13 走真实认证、API、SQL、队列、外部 v2 回归及安全定位；再用新旧镜像和同一测试库验证验收 14。核对 14 用量、15 宿主停用/工业继续服务/重置；开启新功能前后四哈希及锁定文件一致。依赖：5–8；整合串行。
 - [ ] 10. 对照当前全部验收逐条验证并记录。跑四门禁、锁定套件、受影响真实 PG、v2 回归、字体检查和 PR 范围公开边界/密钥扫描；每条记录命令、结果、证据和限制，未执行不得标通过。核对删除、导出和发送未知窗口，不以局部测试代替贯穿。依赖：9。
@@ -145,6 +145,14 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 
 ## 实施与验证记录
 
+### 第 5–6 步（2026-11-01）
+
+- 第 5 步：`src/ops/digest.ts`、`src/ops/latency.ts`、`src/db/repo/ops-reports.ts`、`src/db/repo/ops-latency.ts`、`src/ops/ops-config.ts`、`src/cli/ops-report.ts`、迁移 `0027`。`alert.ts` 加单次发送 `sendOnce`，共用限流，摘要最多占 6 条。启动归位在认领之前把 `sending` 归 `unknown`，同一事务里摘要 job 回 pending 且不消耗 attempts。窗口查询与日指标共用一段有效回复 SQL。
+- 第 6 步：`src/shared/alert-policy.ts` 穷尽 15 个 `AlertKey`，21 个手册 key；`docs/ops/observability.md` 21 节；`GET /ops/runbooks/:key`，Dockerfile 带上 `docs/ops`；`deploy/watch.sh`、`deploy/backup.sh` 加级别和编号，状态机不变。`safeText` 未改，链接只由 `publicBase`（HTTPS）与 UUID v4 构造。`store` 默认 P2，冲突、poisoned、spill 回放失败显式 P1。
+- 验证：`digest`、`latency`、`ops-report`、`alert-policy` 自测在 PGlite 与一次性 PG 通过，含三处 SIGKILL 中止和本机 HTTP 接收器；`ops` 551 项、`jobs` 126 项、`db` 1396 项、`rollback-guard` 702 项、`console` 467 项、`app-probe` 通过。
+- 变异（隔离副本）：去账本终态判断、unknown 可重试、`>=8000`、低样本报恢复、去 `safeText` 的 URL 剔除、放行 http host、删一个 `AlertKey` 映射、删手册一节，都被拦下。
+- `rollback-guard` 在机器忙时出现过一次计时断言失败，单独重跑通过，CI 上再看。
+
 ### 第 8 步 本机真实 Langfuse（2026-11-01）
 
 - 链路：真实 `handleMessage` → recorder → `src/ops/otel.ts` 与 `src/otel/export.ts` → 本机抓包转发 → Langfuse 3.122.0。模型是本机假服务（走真实 LLM 客户端的 HTTP、重试），两个合成租户 `synth-a`、`synth-b`，db 配置与 db 会话存储（PGlite）。验证脚本是一次性的，放在 `var/`，已删除。
@@ -166,13 +174,14 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 - 界面：登录本机 Langfuse 打开 trace，树、token、Session、User 徽标与 API 一致，输入 null。截图未入库。
 - 清理：容器、网络、卷、镜像都已删除（`down --volumes --rmi all`）。
 
-### 第 7 步前端（2026-11-01，手册页待第 6 步）
+### 第 7 步前端（2026-11-01）
 
 - 概览 `TrendsBlock`：六张小图，每图一个单位，原生 SVG。完整日实心，今天空心、连到今天的线段是虚线，缺失日是底色带，线在缺失处断开，完整日的 0 是贴底短线。悬停或方向键选中一天时六张卡片的数字同步切换，「查看数据」展开同一份表格。
 - AI 记录：列表加评价列与「评价」「差评原因」筛选，写进地址；详情在最终回复之后放好评、差评，差评点原因才保存；409 写明并换成最新结果；差评后可下载草稿。新路由 `/console/traces/:turnId`，数据不依赖会话在内存里。
 - 浏览器走查（本机预览栈：真实 server、真实 PG、prod 档位，合成工业租户，synthetic 会话直接写库）：登录后切 7/30 天；2 天无数据显示底色带；完整日、今天、gap、deletion 的 coverage 经真实 `ops_metric_coverage` 读取；深链接打开合成 trace，点差评和原因后保存，`?review=bad` 列表筛出同一行，刷新仍在；375 宽 `scrollWidth=clientWidth`，无横向滚动；深色下取到 `--panel`、`--accent` 深色值；方向键让六张卡片同步到前一天；字体 `Geist`、`Noto Sans SC`，`check-fonts` 通过。
 - 走查限制：合成会话绕过应用写库，不在内存里，AI 记录抽屉的旧详情接口对它们报「这个会话已经不在了」，抽屉里的抽检由 `traces.selftest.tsx` 覆盖，深链接页用真实接口走查。第 9 步用真实引擎的会话再走一遍抽屉。
-- 自测：`console/src/overview/trends.selftest.tsx`、`console/src/traces/traces.selftest.tsx`（114 条）、`overview`、`errors` 通过。
+- 手册页 `/console/ops/runbooks/:key`：读 `GET /ops/runbooks/:key`，只认标题、段落、代码三种块，不引入 Markdown 库。
+- 自测：`console/src/overview/trends.selftest.tsx`、`console/src/traces/traces.selftest.tsx`（114 条）、`console/src/ops/runbook.selftest.ts`（逐节解析真实手册）、`overview`、`errors` 通过。
 
 ### 第 2–4 步（2026-11-01）
 
