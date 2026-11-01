@@ -1,24 +1,17 @@
-// 17 R5/R10：展示缓存不供摘要使用；不写 coverage，采集与删除接线在第 2 步合入后完成。
+// 17 R5/R10：展示缓存不供摘要使用；采集证据由分钟入口持久化。
 import { configRuntime } from '../config/source.js';
 import { withTenant, type TenantCtx, type Tx } from '../db/client.js';
 import { readDailyMetrics, readOpsTenant, type DailyMetricsRow, type DayWindow } from '../db/repo/ops-metrics.js';
+import { readCoverage, type CoverageRow } from '../db/repo/ops-coverage.js';
 import { todayIso } from '../env.js';
 import { TREND_PARTIAL_REASONS, type DailyOpsPoint, type MetricsTrendsView, type TrendPartialReason } from '../shared/console-api.js';
 import { TenantLocal } from '../tenancy/local-state.js';
 import { currentRuntime } from '../tenancy/runtime.js';
 import { registerTenantState } from '../tenancy/state.js';
 
-export interface CoverageRow {
-  day: string;
-  firstSeenAt: Date;
-  lastSeenAt: Date;
-  hasGap: boolean;
-  hasDeletion: boolean;
-}
+export type { CoverageRow } from '../db/repo/ops-coverage.js';
 export type CoverageReader = (tx: Tx, windows: readonly DayWindow[]) => Promise<CoverageRow[]>;
-/** 第 2 步合入后换成真实读取；空数组明确表示没有历史完整性证据。 */
-const emptyCoverage: CoverageReader = async () => [];
-const deps = { coverage: emptyCoverage, aggregate: readDailyMetrics };
+const deps = { coverage: readCoverage as CoverageReader, aggregate: readDailyMetrics };
 
 export function dayWindow(day: string): DayWindow {
   const [y, m, d] = day.split('-').map(Number) as [number, number, number];
@@ -166,7 +159,7 @@ export const __trendsTest = {
     Object.assign(deps, over);
   },
   reset(): void {
-    Object.assign(deps, { coverage: emptyCoverage, aggregate: readDailyMetrics });
+    Object.assign(deps, { coverage: readCoverage, aggregate: readDailyMetrics });
     trends.registration(() => 0).reset();
   },
 };
