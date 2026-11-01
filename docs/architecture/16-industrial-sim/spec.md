@@ -1,11 +1,13 @@
 # 16 · 工业询价仿真：批量跑全流程，出一份可信报告
 
-Status: draft
-Tier: standard — 扩展评测目标与运行结果的格式，新增公开报告格式，评测跨到审批入口；本 spec 不改生产判定，不碰线上。（提议，待 owner 确认）
+Status: ready
+Approved: ready · 2026-11-01 · 「16 改 ready，standard」 · 对话
+Tier: standard — 扩展评测目标与运行结果的格式，新增公开报告格式，评测跨到审批入口；本 spec 不改生产判定，不碰线上。owner 已于 2026-11-01 确认。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」。
 Depends on: [09](../09-quote-approval/spec.md) 的报价审批入口；[10](../10-industrial-rfq-pack/spec.md)、[12](../12-customer-files/spec.md) 的工业包与附件。实现排在 [17](../17-observability/spec.md) 之后，只对齐 17 R5 的耗时口径，不依赖其代码。
-Amends: [04](../04-industry-packs/spec.md) R11、[06](../06-reply-quality/spec.md) R2、[10](../10-industrial-rfq-pack/spec.md) R15 的模拟评测：只加新目标类型、新枚举值和新文件，现有目标、发布闸与判定不变。反向标记随 ready 补。
-Revisions: 2026-11-01 owner 答「D3=A，D7=A」：D1–D8 全部定案；Status 保持 draft，档位和 ready 未批。
+Amends: [04](../04-industry-packs/spec.md) R11、[06](../06-reply-quality/spec.md) R2、[10](../10-industrial-rfq-pack/spec.md) R15 的模拟评测：只加新目标类型、新枚举值和新文件，现有目标、发布闸与判定不变。04、06、10 顶部已补反向标记。
+Revisions: 2026-11-01 owner 明确批准，原话「16 改 ready，standard」；Status 改为 ready，Tier 定为 standard。同次补主参考阶段 8 登记和 04、06、10 的反向标记。
+Revisions: 2026-11-01 owner 答「D3=A，D7=A」：D1–D8 全部定案。
 Revisions: 2026-11-01 owner 答「16 D1–D8 按推荐」：D1、D2、D4、D5、D6、D8 照 ★ 定案；D3、D7 选错难退，按规矩要各回一句，尚未定案；档位和 ready 未批。
 Revisions: 2026-11-01 首版起草，经三轮独立评审（Opus）后修订，只有设计，未实施。
 
@@ -32,7 +34,7 @@ Revisions: 2026-11-01 首版起草，经三轮独立评审（Opus）后修订，
 - 成功率只代表 24 个留出场景，不能外推成线上成交率。
 - 评审时已查出两个产品缺口：客户说「好的，下单吧」「确认」这类话时系统记不下确认，24 种说法只认 7 种；模型原稿里的「打九折、免运费、送赠品」能漏到客户。两个都在冻结前走独立 PR 修。
 
-要你定的：8 张决策卡已全部定案（D1–D8 都选 A）。还请确认档位 standard：这份改评测格式、不碰线上判定，所以不走最重的流程。
+要你定的：无。8 张决策卡已全部定案（D1–D8 都选 A），档位 standard 已确认。线上是否开对冲，跑正式报告前要告诉我。
 
 怎么算做完：
 
