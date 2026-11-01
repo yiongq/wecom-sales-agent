@@ -28,6 +28,7 @@ import {
 } from '../db/repo/retention.js';
 import { forgetSession, getAnyOrder, getSession, holdForPurge, withJobsTx } from '../store.js';
 import type { JobOutcome, JobSpec } from './runner.js';
+import { invalidateTrends } from '../ops/trends.js';
 
 /** 持有期间这个会话被改动了：清除事务按这个信号回滚、让这次写赢（不是真的错误，只是「这一轮清不掉」的信号） */
 class PurgeRaceSkip extends Error {}
@@ -162,6 +163,7 @@ export async function purgeOnce(now: number): Promise<PurgeResult> {
         // 极窄窗口里真的又来一笔写，会带着没提交的改动被 forget() 一并丢弃并记一行日志（见 pg-backend.ts 的注释）
         forgetSession(cand.id);
         conversationsPurged += 1;
+        invalidateTrends();
       } else {
         hold.release();
         skipped += 1;
@@ -171,6 +173,7 @@ export async function purgeOnce(now: number): Promise<PurgeResult> {
   }
   const attachments = await withJobsTx((tx) => purgeAttachmentBytes(tx, new Date(now)));
   const traces = await withJobsTx((tx) => purgeExpiredTraces(tx, new Date(now)));
+  if (traces > 0) invalidateTrends();
   const jobsDeleted = await withJobsTx((tx) => purgeFinishedJobs(tx, new Date(now)));
   const inbox = await withJobsTx((tx) => purgeChannelInbox(tx, new Date(now)));
   const ops = await withJobsTx((tx) => purgeOpsData(tx, new Date(now)));

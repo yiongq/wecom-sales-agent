@@ -85,6 +85,7 @@ import { gateStatus } from './llm-gate.js';
 import { buildIndex } from './retrieval.js';
 import { startFollowUpScheduler } from './followup.js';
 import { startJobs } from './jobs/runner.js';
+import { startOpsMinute } from './ops/minute.js';
 import { simulatorAdapter, subscribe } from './adapters/simulator.js';
 import { webAdapter } from './adapters/web.js';
 import { webRoutes } from './web/routes.js';
@@ -1388,6 +1389,7 @@ if (!SELFTEST && !sandbox) {
     // 沉默唤醒：报价后长时间没动静的客户自动追一条（默认关闭，FOLLOWUP_ENABLED=1 开启）。文件存储是扫描器，db 存储由任务表驱动
     startFollowUpScheduler: () => startFollowUpScheduler(pushFollowUp),
     startJobs: () => startJobs(pushFollowUp),
+    startOpsMinute,
     startChannels,
     exit: (code) => process.exit(code),
     // 设了 OTEL_EXPORTER_OTLP_ENDPOINT 才由 boot() 调（动态 import 导出器）
