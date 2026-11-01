@@ -1,6 +1,7 @@
 # 17 · 可观测性增强 — 执行计划
 
-Status: ready
+Status: implemented
+Revisions: 2026-11-01 owner 确认验收，原话「翻 implemented」，Status 改为 implemented；未发版未部署。
 Revisions: 2026-10-31 owner 明确批准，原话「17 改 ready」，并按「点这个就同时确认 heavy 档」确认档位；Status 改为 ready，Tier 定为 heavy。实现排在 15 第 1 批之后，依赖其设置导航、试用公司和概览页改动；同次补 02、07、后台 UX 反向标记及主参考登记。
 Tier: heavy
 Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按推荐」，D1–D7 全部照 ★ 推荐定案；Status 保持 draft，ready 须 owner 另外点名，Tier proposal 仍待 owner 确认，不属于本次决策卡定案。
@@ -35,7 +36,7 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 - [x] 9. 真实链路贯穿与回滚演练。按验收 13 走真实认证、API、SQL、队列、外部 v2 回归及安全定位；再用新旧镜像和同一测试库验证验收 14。核对 14 用量、15 宿主停用/工业继续服务/重置；开启新功能前后四哈希及锁定文件一致。依赖：5–8；整合串行。
 - [x] 10. 对照当前全部验收逐条验证并记录。跑四门禁、锁定套件、受影响真实 PG、v2 回归、字体检查和 PR 范围公开边界/密钥扫描；每条记录命令、结果、证据和限制，未执行不得标通过。核对删除、导出和发送未知窗口，不以局部测试代替贯穿。依赖：9。
 - [x] 11. 清理临时探针和测试。保留 durable 自测，清除本次临时案例、证据原件、浏览器、后台服务、容器及卷；复核无客户内容、地址、凭据、本机路径，最终 diff 范围明确。依赖：10。
-- [ ] 12. owner 确认后更新 spec 与 plan 的 Status 为 implemented。前置为验收全部有证据，未完成不得推进；本期没有默认生产操作，不自行开启线上开关。依赖：11。
+- [x] 12. owner 确认后更新 spec 与 plan 的 Status 为 implemented。前置为验收全部有证据，未完成不得推进；本期没有默认生产操作，不自行开启线上开关。依赖：11。
 
 ## 共享契约与最多三路
 
@@ -178,6 +179,8 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 - 补文档：R4 差评回归流程写入 `docs/guides/observability.md`，旧镜像长期运行要手动清理写入 `docs/guides/deployment.md`。
 - 已知偶发：`feat/17-step0` 的 CI（run 41264499744）里 `settings-e2e` 失败过一次，真实界面切到渠道页后断言 `合成渠道` 不成立。`settle` 在 `isFetching()` 为 0 时就退出，懒加载页面的查询可能还没发起，推断是这条 15 自测的等待竞态，未复现。17 没有改过这个文件，#423 这轮也通过了。修复单独做，不在 17 范围。
 
+**owner 确认（2026-11-01）：** owner 原话「翻 implemented」，spec 翻 `implemented`（`Status` 下首条 `Revisions:`）。确认时代码在 `dev`，未发版未部署，线上开关默认关，所以上表的证据都来自 CI 和本机，没有线上证据。
+
 ### 第 11 步 清理（2026-11-01）
 
 - 保留持久自测。清掉两个一次性 PG、回滚演练的两个镜像、本机 Langfuse 配置及其全部镜像和卷、`var/` 下的临时文件、两个 Codex worktree、浏览器标签。
@@ -272,8 +275,8 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 
 ## Open
 
-- 无未决产品决定或档位/状态审批；D1–D7、heavy 与 ready 均已获 owner 确认。
-- 第 12 步翻 `implemented` 等 owner 点名。线上开关 `OPS_DIGEST_TENANTS`、`OPS_LATENCY_TENANTS` 默认关，部署和开启要 owner 当次授权。
+- 无未决产品决定或档位/状态审批；D1–D7、heavy、ready 与 `implemented` 均已获 owner 确认。
+- 发版不在本 spec 内。线上开关 `OPS_DIGEST_TENANTS`、`OPS_LATENCY_TENANTS` 默认关，部署和开启要 owner 当次授权。
 
 ## 已定
 
@@ -305,10 +308,17 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 - 阻塞：无待 owner 决定的问题；实现排期等待 15 第 1 批完成并合入，14 完整验收及 Langfuse 镜像/字段验证仍按原步骤核实。
 - 下一步：协调者审阅提交本次文档；15 第 1 批的设置导航、试用公司和概览页改动完成并合入、其余开工条件满足后，按第 0 步核对并继续，不提前抢做实现。
 
-### 2026-11-01 · 第 0–11 步完成后交接
+### 2026-11-01 · 第 0–11 步完成后交接（历史，当前状态以下条为准）
 
 - 已完成：第 0–11 步。数据、趋势、抽检、摘要、延迟告警、分级手册、后台界面和贯穿用例都已合入 `dev`；验收 1–15 的证据见「第 10 步 验收逐条」。
 - 半成品状态：无。spec 与 plan 仍是 `ready`。线上没有部署，`OPS_DIGEST_TENANTS`、`OPS_LATENCY_TENANTS` 默认关。
 - 已知限制：Langfuse 按 3.122.0 验证，缓存 token 只作属性，模型重试没有次数属性；线上不接 Langfuse。
 - 阻塞：第 12 步等 owner 点名。
 - 下一步：owner 点名后把 spec 与 plan 的 Status 改成 `implemented`。上线走发版流程，部署和打开开关都要 owner 当次授权。
+
+### 2026-11-01 · implemented 后交接
+
+- 已完成：第 0–12 步，owner 原话「翻 implemented」。
+- 半成品状态：无。代码在 `dev`，未发版未部署。
+- 阻塞：无。
+- 下一步：17 到此结束。发版、部署和打开开关都要 owner 当次授权，下一份 spec 由 owner 指定。

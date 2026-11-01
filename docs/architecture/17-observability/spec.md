@@ -1,6 +1,7 @@
 # 17 · 可观测性增强
 
-Status: ready
+Status: implemented
+Revisions: 2026-11-01 owner 确认验收，原话「翻 implemented」，翻 `implemented`：代码已合入 `dev`（#421、#423），未发版未部署，`OPS_DIGEST_TENANTS`、`OPS_LATENCY_TENANTS` 默认关；验收 12 在本机按 3.122.0 验证，验收 13 分 API 与浏览器两段，见 plan「第 10 步 验收逐条」。
 Revisions: 2026-11-01 第 1 步发现 D7 定的 `v3.122.1` 只有 GitHub release，Docker Hub 与 GHCR 都没有这个镜像；owner 原话「用 3.122.0」，D7、R11、验收 12 的目标改为 `3.122.0`（比 `v3.122.1` 少 9 个提交，均未改 OTel 接收代码）。官方 compose 的 `minio/minio` 已无法匿名拉取，本机对象存储改用同源构建的固定镜像，清单见 plan。
 Revisions: 2026-11-01 第 0 步对照代码收窄一处，不改产品决定：R2 的 AI 消息按库里实际写法定为 `role='agent'` 且 `author` 为空或 `'ai'`（AI 回复的 `messages.author` 是 NULL，只有跟进写 `'followup'`）。其余核对结论与冻结契约见 plan「第 0 步冻结契约」。
 Revisions: 2026-10-31 owner 明确批准，原话「17 改 ready」，并按「点这个就同时确认 heavy 档」确认档位；Status 改为 ready，Tier 定为 heavy。实现排在 15 第 1 批之后，依赖其设置导航、试用公司和概览页改动；同次补 02、07、后台 UX 反向标记及主参考登记。
