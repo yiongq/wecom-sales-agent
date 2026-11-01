@@ -1,0 +1,35 @@
+/* 运维手册（17 R9）：单列阅读宽度，代码块自己横滚，窄屏不撑开页面。颜色只取 brand.css 的变量 */
+.rb-body {
+  max-width: 680px;
+}
+.rb-heading {
+  margin: 24px 0 4px;
+  font-size: 15px;
+  line-height: 22px;
+  font-weight: 600;
+  color: var(--text);
+}
+.rb-heading:first-child {
+  margin-top: 0;
+}
+.rb-text {
+  margin: 0 0 8px;
+  font-size: 14px;
+  line-height: 22px;
+  color: var(--text-2);
+}
+.rb-code {
+  margin: 4px 0 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-radius: var(--r-md);
+  background: var(--subtle);
+  font-family: 'Geist Mono', ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text);
+}
+.rb-code:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}

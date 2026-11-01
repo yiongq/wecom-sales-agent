@@ -34,6 +34,40 @@ export async function readOpsTenant(tx: Tx, tenantId: string) {
   return row;
 }
 
+// 日指标与五分钟窗口必须复用这一整段有效回复及来源谓词。
+function customerTurns() {
+  return sql`select t.*, w.day,
+    (t.outcome = 'replied' and t.duration_ms >= 0 and exists (
+      select 1 from messages m where m.tenant_id = t.tenant_id
+        and m.conversation_id = t.conversation_id and m.turn_id = t.id
+        and m.role = 'agent' and (m.author is null or m.author = 'ai')
+    )) as valid_reply
+    from windows w
+    join turn_traces t on t.started_at >= w."from" and t.started_at < w."to"
+    join conversations c on c.tenant_id = t.tenant_id and c.id = t.conversation_id
+    join tenants tenant on tenant.id = t.tenant_id and tenant.kind = 'standard'
+    where coalesce(c.state->>'seed', 'false') <> 'true'
+      and starts_with(c.id, ${SEED_SESSION_PREFIX}) = false
+      and starts_with(c.id, ${VISITOR_SESSION_PREFIX}) = false`;
+}
+export interface ReplyWindow {
+  samples: number;
+  p90Ms: number | null;
+  traceId: string | null;
+}
+export async function readReplyWindow(tx: Tx, end: number): Promise<ReplyWindow> {
+  return rowsOf<ReplyWindow>(
+    await tx.execute(sql`
+    with windows as (select '' as day, ${new Date(end - 300_000).toISOString()}::timestamptz as "from",
+      ${new Date(end).toISOString()}::timestamptz as "to"), customer_turns as (${customerTurns()})
+    select count(*)::int as samples,
+      (percentile_cont(0.9) within group (order by duration_ms))::float8 as "p90Ms",
+      (select id from customer_turns where valid_reply order by duration_ms desc, id limit 1) as "traceId"
+    from customer_turns where valid_reply
+  `),
+  )[0]!;
+}
+
 /** 使用共享前缀的精确 startsWith 语义：不用 LIKE，避免前缀中的下划线被当作通配符。 */
 export async function readDailyMetrics(tx: Tx, windows: readonly DayWindow[]): Promise<DailyMetricsRow[]> {
   if (!windows.length) return [];
@@ -48,19 +82,7 @@ export async function readDailyMetrics(tx: Tx, windows: readonly DayWindow[]): P
         })),
       )}::jsonb) as w(day text, "from" timestamptz, "to" timestamptz)
     ), customer_turns as (
-      select t.*, w.day,
-        (t.outcome = 'replied' and t.duration_ms >= 0 and exists (
-          select 1 from messages m where m.tenant_id = t.tenant_id
-            and m.conversation_id = t.conversation_id and m.turn_id = t.id
-            and m.role = 'agent' and (m.author is null or m.author = 'ai')
-        )) as valid_reply
-      from windows w
-      join turn_traces t on t.started_at >= w."from" and t.started_at < w."to"
-      join conversations c on c.tenant_id = t.tenant_id and c.id = t.conversation_id
-      join tenants tenant on tenant.id = t.tenant_id and tenant.kind = 'standard'
-      where coalesce(c.state->>'seed', 'false') <> 'true'
-        and starts_with(c.id, ${SEED_SESSION_PREFIX}) = false
-        and starts_with(c.id, ${VISITOR_SESSION_PREFIX}) = false
+      ${customerTurns()}
     )
     select w.day,
       (select count(distinct t.conversation_id)::int from customer_turns t where t.day=w.day) as receptions,

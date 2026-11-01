@@ -77,11 +77,13 @@ ROOT=''
 TMP=''
 json_escape() {
   local s=${1//\\/\\\\}
-  printf '%s' "${s//\"/\\\"}"
+  s=${s//\"/\\\"}
+  s=${s//$'\r'/\\r}
+  printf '%s' "${s//$'\n'/\\n}"
 }
 notify() {
   local content resp rc
-  content="[${INSTANCE_LABEL:-${COMPOSE_PROJECT:-wecom-sales-agent}}] $1 · $(date '+%F %T')"
+  content="[${INSTANCE_LABEL:-${COMPOSE_PROJECT:-wecom-sales-agent}}] [P2] $1 · $(date '+%F %T')"$'\n''手册 RB-19'
   if [[ -z "${ALERT_WEBHOOK_URL:-}" ]]; then
     echo "backup: ⚠️ 没配 ALERT_WEBHOOK_URL，这条告警只记在这里：${content}" >&2
     return 0

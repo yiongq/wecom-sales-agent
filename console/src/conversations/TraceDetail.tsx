@@ -6,6 +6,7 @@
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Button } from 'antd';
 import { Download } from 'lucide-react';
+import type { ReactNode } from 'react';
 import type { ApiError, TurnTraceView } from '../../../src/shared/console-api.js';
 import { HANDOFF_NOTICE_TEXT } from '../../../src/shared/conversation.js';
 import { guardLabel, outcomeLabel } from '../../../src/shared/ui-labels.js';
@@ -79,8 +80,8 @@ function shapeSentence(s: NonNullable<TurnTraceView['replyShape']>): string {
   ].join('，');
 }
 
-export function TraceTab({ id, turnId }: { id: string; turnId: string | null }) {
-  const pack = usePack();
+/** review 给了就在客户原话之后写出最终回复，再放抽检（17 R2：评的是发出去的内容）；工作台不给 */
+export function TraceTab({ id, turnId, review }: { id: string; turnId: string | null; review?: ReactNode }) {
   const q = useQuery({
     queryKey: [...CONV_PREFIX, 'turnTrace', id, turnId] as const,
     queryFn: () => unwrap(api.conversations[':id'].turns[':turnId'].$get({ param: { id, turnId: turnId! } })),
@@ -89,7 +90,11 @@ export function TraceTab({ id, turnId }: { id: string; turnId: string | null }) 
   if (turnId === null) return <p className="td-empty">选中一条AI回复，看它为什么这么回</p>;
   if (q.isPending) return <Skeleton rows={4} />;
   if (q.error) return <DetailError error={q.error} />;
-  const t: TurnTraceView = q.data!;
+  return <TraceBody t={q.data!} id={id} turnId={turnId} review={review} />;
+}
+
+export function TraceBody({ t, id, turnId, review }: { t: TurnTraceView; id: string; turnId: string; review?: ReactNode }) {
+  const pack = usePack();
   const stage = (s: string | null): string => (s === null ? '—' : pack ? stageLabel(pack, s) : s);
   return (
     <div className="td">
@@ -99,6 +104,13 @@ export function TraceTab({ id, turnId }: { id: string; turnId: string | null }) 
           <p className="td-quote">{t.customerText}</p>
         </section>
       )}
+      {review !== undefined && t.finalText !== null && (
+        <section className="td-block">
+          <h4 className="td-h">最终回复</h4>
+          <p className="td-quote">{t.finalText}</p>
+        </section>
+      )}
+      {review}
       <section className="td-block">
         <p>{cjk(`结果：${outcomeLabel(t.outcome)}`)}</p>
         <p>{`模型用了${t.durationMs}毫秒`}</p>

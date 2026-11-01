@@ -1,3 +1,4 @@
+import { readRunbook } from '../ops/runbooks.js';
 import { createHash } from 'node:crypto';
 import { bodyLimit } from 'hono/body-limit';
 import { buildRegressionDraft } from './review-draft.js';
@@ -943,6 +944,12 @@ export const consoleApi = new Hono<ConsoleEnv>()
       'content-disposition': `attachment; filename="${goalDraftFilename(out.turnId)}"`,
       'cache-control': 'no-store',
     });
+  })
+  .get('/ops/runbooks/:key', canSeeObservability, (c) => {
+    const book = readRunbook(c.req.param('key'));
+    if (book === undefined) return fail(c, 404, { error: 'not_found' });
+    if (book === null) return c.json({ error: 'store_unavailable' } satisfies ApiError, 503);
+    return c.json(book, 200);
   })
   // 17 深链接与抽检：权限在定位参数、请求体校验之前。
   .get('/traces/:turnId', canSeeObservability, validReviewTurn, async (c) => {

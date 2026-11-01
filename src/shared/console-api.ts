@@ -1054,3 +1054,11 @@ export interface MetricsTrendsView {
   partialReasons: TrendPartialReason[];
   points: DailyOpsPoint[];
 }
+
+/** GET /ops/runbooks/:key：公共手册原文，仅 owner/admin。 */
+export interface RunbookView {
+  key: import('./alert-policy.js').RunbookKey;
+  code: string;
+  title: string;
+  body: string;
+}

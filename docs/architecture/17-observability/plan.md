@@ -24,15 +24,15 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 ## 步骤
 
 - [x] 0. 开工核对与契约冻结。核对 14 R6/R9、15 的 seed/reset/7 天留存和原 metrics、旧 exporter；确认 origin 分类、消息与 trace 对应、runbook 路径与现有后台路由。冻结 R5/R10 DTO、错误码、日期/金额单位、coverage、评分 revision、job 与账本状态、脱敏白名单。核实日采集检查点及删除失效如何复用生命周期钩子。依赖：15 第 1 批完成并合入及其余开工条件；不可并行。
-- [ ] 1. Langfuse 版本预检。按 R11 核实固定 tag 的 web/worker 与所有依赖镜像 digest、本机架构及资源，登记到本 plan；验证配置只指向本机、不设置内容捕获。只读核对导出器与接收字段；版本不可用或要求改 SDK 时停止记录并修订 spec，不静默换版本。依赖：0；与 2、3 可并行。
+- [x] 1. Langfuse 版本预检。按 R11 核实固定 tag 的 web/worker 与所有依赖镜像 digest、本机架构及资源，登记到本 plan；验证配置只指向本机、不设置内容捕获。只读核对导出器与接收字段；版本不可用或要求改 SDK 时停止记录并修订 spec，不静默换版本。依赖：0；与 2、3 可并行。
 - [x] 2. 数据与清理。新增四表、FORCE RLS、复合键、索引、最小权限、jobs kind，以及清理/回滚增补；不改旧迁移。跑验收 3 的真实 PG 边界与 7 天删除，验证旧函数仍级联评分；日账本跨终态去重与数据字段到期清理。依赖：0；与 1、3 可并行，迁移编号集中分配。
 - [x] 3. 日指标与趋势后端。实现 R5/R10 的共用日 SQL、coverage、60 秒租户缓存、采集/删除失效及新趋势接口，保持旧 metrics/UsageView。用固定时钟、真实 PG 对照验收 6、11 的接口部分。依赖：0；纯读聚合先行，ops_metric_coverage 采集检查点持久化接入等 2 合入后完成。
 - [x] 4. 抽检与安全草稿后端。实现评分 revision、审计事务、角色检查、过滤/详情/安全深链接及无源内容的 v2 骨架；保留 travel 旧导出。验收 1–5 的 API/外部文件链路，特别证明工业草稿不得调用旧 goal-draft 获取正文。依赖：2；可接替已完成的 2 路，与 1、3 并行。
-- [ ] 5. 每日摘要与延迟任务。实现 R6–R8 的 ops lane、日账本、跨重启恢复、显式重发命令、固定窗口告警及租户配置；注册运行时状态；接现有告警传输而不以 void 返回值当成功。执行验收 7–9，带进程中止/重启与本机 webhook，不只测纯函数。依赖：2、3；按下节三路安排启动。
-- [ ] 6. 分级与运维手册。穷尽映射现有 AlertKey、safeText 外的类型化链接、watch/backup 前缀、固定 runbook 路由；新增公共 docs/ops/observability.md，同批更新部署说明和 .env.example 的新配置名，真实值另记。按验收 10 验证恶意 URL、鉴权链接、阈值不变及无 trace 降级；与 5 对 alert.ts 的修改串行合入。依赖：4、5。
-- [ ] 7. 抽检与趋势前端。消费已冻结真 API，做评分原因、冲突提示、差评草稿说明、7/30 天趋势与可读表格；不改 15 设置导航与用量页。覆盖所有页面状态、键盘/窄屏/深浅主题与字体；浏览器按验收 1、2、4、11 走查，写 BEFORE/AFTER，截图只用合成数据。依赖：3、4 及 15 前端公共布局合入；可与 5、8 并行。
-- [ ] 8. 本机真实 Langfuse 验证。真实引擎/recorder/exporter → 本机指定版本 → UI/API 字段核对，完成验收 12；失败/断网/关闭出口均测试，无原文无真实 key。把版本、映射、命令与结果写本 plan，不复制第三方截图入仓库；清理当次资源。依赖：1；与 5、7 并行。
-- [ ] 9. 真实链路贯穿与回滚演练。按验收 13 走真实认证、API、SQL、队列、外部 v2 回归及安全定位；再用新旧镜像和同一测试库验证验收 14。核对 14 用量、15 宿主停用/工业继续服务/重置；开启新功能前后四哈希及锁定文件一致。依赖：5–8；整合串行。
+- [x] 5. 每日摘要与延迟任务。实现 R6–R8 的 ops lane、日账本、跨重启恢复、显式重发命令、固定窗口告警及租户配置；注册运行时状态；接现有告警传输而不以 void 返回值当成功。执行验收 7–9，带进程中止/重启与本机 webhook，不只测纯函数。依赖：2、3；按下节三路安排启动。
+- [x] 6. 分级与运维手册。穷尽映射现有 AlertKey、safeText 外的类型化链接、watch/backup 前缀、固定 runbook 路由；新增公共 docs/ops/observability.md，同批更新部署说明和 .env.example 的新配置名，真实值另记。按验收 10 验证恶意 URL、鉴权链接、阈值不变及无 trace 降级；与 5 对 alert.ts 的修改串行合入。依赖：4、5。
+- [x] 7. 抽检与趋势前端。消费已冻结真 API，做评分原因、冲突提示、差评草稿说明、7/30 天趋势与可读表格；不改 15 设置导航与用量页。覆盖所有页面状态、键盘/窄屏/深浅主题与字体；浏览器按验收 1、2、4、11 走查，写 BEFORE/AFTER，截图只用合成数据。依赖：3、4 及 15 前端公共布局合入；可与 5、8 并行。
+- [x] 8. 本机真实 Langfuse 验证。真实引擎/recorder/exporter → 本机指定版本 → UI/API 字段核对，完成验收 12；失败/断网/关闭出口均测试，无原文无真实 key。把版本、映射、命令与结果写本 plan，不复制第三方截图入仓库；清理当次资源。依赖：1；与 5、7 并行。
+- [x] 9. 真实链路贯穿与回滚演练。按验收 13 走真实认证、API、SQL、队列、外部 v2 回归及安全定位；再用新旧镜像和同一测试库验证验收 14。核对 14 用量、15 宿主停用/工业继续服务/重置；开启新功能前后四哈希及锁定文件一致。依赖：5–8；整合串行。
 - [ ] 10. 对照当前全部验收逐条验证并记录。跑四门禁、锁定套件、受影响真实 PG、v2 回归、字体检查和 PR 范围公开边界/密钥扫描；每条记录命令、结果、证据和限制，未执行不得标通过。核对删除、导出和发送未知窗口，不以局部测试代替贯穿。依赖：9。
 - [ ] 11. 清理临时探针和测试。保留 durable 自测，清除本次临时案例、证据原件、浏览器、后台服务、容器及卷；复核无客户内容、地址、凭据、本机路径，最终 diff 范围明确。依赖：10。
 - [ ] 12. owner 确认后更新 spec 与 plan 的 Status 为 implemented。前置为验收全部有证据，未完成不得推进；本期没有默认生产操作，不自行开启线上开关。依赖：11。
@@ -145,6 +145,75 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 
 ## 实施与验证记录
 
+### 第 9 步 贯穿与回滚（2026-11-01）
+
+- 贯穿：`src/ops/observability-e2e.selftest.ts`，fork 完整 prod server、真实 PG、签名回调、本机 webhook。七步：登录与两轮真实引擎回复 → 列表、差评、筛选 → 无正文草稿与外部 v2 正反例 → 真实 runner 发昨日摘要，与趋势 SQL 一致 → 真实分钟入口触发延迟告警，从「定位」行取链接，匿名 401、登录后是这一轮 → 趋势读到同一批数据 → 跨租户 404、宿主停用后工业继续、旅游摘要 `skipped`。受控手段只有：用超级用户挪 trace 时间列、预置 coverage 与连续慢窗状态、预加载脚本缩短分钟定时器。本机连跑 3 次通过，约 9 秒；沙箱里跑会因写不了 `/tmp` 失败，这是环境限制。去种子谓词、定位改旅游宿主、日窗口错一天三种变异都被拦下。
+- 回滚（验收 14）：用 `demo-v12` 与当前分支各构建镜像，同一个一次性 PG。新镜像发摘要 → 写入 sent、unknown、failed、sending 账本与评分 → `ops-report prepare-rollback` → 旧镜像启动，`/metrics`、`/usage` 字节不变，新路由 404，到点的 `ops_daily_digest` 12 秒内仍 pending、无发送 → 旧镜像 `erase-conversation` 后评分消失 → 宿主 suspended 下旧镜像启动，工业可登录 → 新镜像前滚，账本不变，摘要总数仍是 1，趋势可用。演练脚本是一次性的，不进仓库。
+- 浏览器（真实镜像）：未登录打开深链接，原地址显示登录页，登录后留在该记录；AI 记录抽屉打好评后列表同步；手册页与未知手册 404；CSP 无报错，控制台只有预期的 401、404。
+
+### 第 10 步 验收逐条（2026-11-01）
+
+| 验收          | 结果  | 证据                                                                                                                              | 限制                                                                               |
+| ------------- | ----- | --------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| 1 逐角色权限  | 通过  | `reviews`、`trends`、`console` 自测逐角色 HTTP，走完整 server；贯穿第 7 步跨租户 404                                              | 共享试用 agent 按 agent 角色覆盖                                                   |
+| 2 评分与竞争  | 通过  | `reviews` 自测：并发相同 revision 一成一 409、临时触发器让审计失败时评分不提交、`updated_at` 不变；`traces.selftest.tsx` 覆盖界面 | —                                                                                  |
+| 3 隔离与删除  | 通过  | `observability`、`trial-reset` 自测，真实角色；五条删除路径与 7 天边界                                                            | —                                                                                  |
+| 4 安全导出    | 通过  | `reviews` 自测：唯一标记在文件与审计全表搜不到，`seed` 同样；草稿过不了 `validateCase`；`goal-draft` 既有测试不动                 | —                                                                                  |
+| 5 回归落地    | 通过  | `reviews` 与贯穿第 3 步：仓库外合成 v2 用例正例退出 0，改坏后非 0                                                                 | 只用合成数据                                                                       |
+| 6 SQL 口径    | 通过  | `trends` 自测三种来源对照、固定时钟；贯穿第 4、6 步摘要与趋势一致                                                                 | —                                                                                  |
+| 7 摘要调度    | 通过  | `digest` 自测真实 runner 与本机接收器；回滚演练真实镜像发出                                                                       | —                                                                                  |
+| 8 发送故障    | 通过  | `digest` 自测三处 SIGKILL、拒绝 3 次、unknown 不重试、显式重发保留报告 id                                                         | —                                                                                  |
+| 9 延迟阈值    | 通过  | `latency` 自测 19/20、8000/8001、6000/6001、缺窗、重启                                                                            | —                                                                                  |
+| 10 告警定位   | 通过  | `alert-policy`、`ops`、`app-probe` 自测；贯穿第 5 步                                                                              | 主机脚本用假命令，未碰生产                                                         |
+| 11 趋势与后台 | 通过  | `trends`、`coverage`、`trends.selftest.tsx` 与浏览器走查                                                                          | 窄屏、深色在预览栈走查                                                             |
+| 12 Langfuse   | 通过  | 第 8 步记录                                                                                                                       | 版本是 3.122.0；缓存 token 只作属性，无重试次数属性                                |
+| 13 贯穿       | 通过  | 贯穿自测 + 真实镜像浏览器走查                                                                                                     | 分两段：API 段用真实引擎，浏览器段用合成写库的 trace，不是同一批数据；受控手段见上 |
+| 14 迁移回滚   | 通过  | 第 9 步回滚演练                                                                                                                   | 演练用本机 PG，未碰线上                                                            |
+| 15 交付边界   | 待 CI | 见下                                                                                                                              | 全量 `pnpm test` 只在 CI 跑                                                        |
+
+- 本机核对：`format:check`、`lint`、`typecheck` 通过；`check-fonts` 通过（762 字）；`ci-shard --check 4` 通过；`test:locked` 通过；文件与 PGlite 两条 `eval/run.ts` 通过，DB 模式 22 个请求前缀与 `/healthz` 一致；旅游四哈希断言在 `product-surface`、`brand`、`policy` 自测里通过。
+- 与基线 `89807cf8` 对比：8 个锁定文件字节相同；`src/core`、`data`、`src/packs`、`eval/cases-v2` 没有任何改动。
+- 受影响的 33 套自测带一次性 PG 全部通过；涉及告警正文的另 31 套也已核对，修了 `channels.selftest.ts` 里旧格式断言。
+- 补文档：R4 差评回归流程写入 `docs/guides/observability.md`，旧镜像长期运行要手动清理写入 `docs/guides/deployment.md`。
+
+### 第 5–6 步（2026-11-01）
+
+- 第 5 步：`src/ops/digest.ts`、`src/ops/latency.ts`、`src/db/repo/ops-reports.ts`、`src/db/repo/ops-latency.ts`、`src/ops/ops-config.ts`、`src/cli/ops-report.ts`、迁移 `0027`。`alert.ts` 加单次发送 `sendOnce`，共用限流，摘要最多占 6 条。启动归位在认领之前把 `sending` 归 `unknown`，同一事务里摘要 job 回 pending 且不消耗 attempts。窗口查询与日指标共用一段有效回复 SQL。
+- 第 6 步：`src/shared/alert-policy.ts` 穷尽 15 个 `AlertKey`，21 个手册 key；`docs/ops/observability.md` 21 节；`GET /ops/runbooks/:key`，Dockerfile 带上 `docs/ops`；`deploy/watch.sh`、`deploy/backup.sh` 加级别和编号，状态机不变。`safeText` 未改，链接只由 `publicBase`（HTTPS）与 UUID v4 构造。`store` 默认 P2，冲突、poisoned、spill 回放失败显式 P1。
+- 验证：`digest`、`latency`、`ops-report`、`alert-policy` 自测在 PGlite 与一次性 PG 通过，含三处 SIGKILL 中止和本机 HTTP 接收器；`ops` 551 项、`jobs` 126 项、`db` 1396 项、`rollback-guard` 702 项、`console` 467 项、`app-probe` 通过。
+- 变异（隔离副本）：去账本终态判断、unknown 可重试、`>=8000`、低样本报恢复、去 `safeText` 的 URL 剔除、放行 http host、删一个 `AlertKey` 映射、删手册一节，都被拦下。
+- `rollback-guard` 在机器忙时出现过一次计时断言失败，单独重跑通过，CI 上再看。
+
+### 第 8 步 本机真实 Langfuse（2026-11-01）
+
+- 链路：真实 `handleMessage` → recorder → `src/ops/otel.ts` 与 `src/otel/export.ts` → 本机抓包转发 → Langfuse 3.122.0。模型是本机假服务（走真实 LLM 客户端的 HTTP、重试），两个合成租户 `synth-a`、`synth-b`，db 配置与 db 会话存储（PGlite）。验证脚本是一次性的，放在 `var/`，已删除。
+- 样本：每个租户同一会话两轮（工具加 markdown 护栏一轮，429 重试一轮）和另一会话一轮模型失败，共 6 条 trace。
+
+| 字段         | 结果                                                                                                                                                                                               |
+| ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| span 树      | `turn` → `invoke_agent travel`（AGENT）→ `execute_tool`（TOOL）、`chat`（GENERATION）、`guard`（SPAN），父子关系正确，耗时有值                                                                     |
+| 模型与 token | `chat` 被识别为 GENERATION，`model=glm-5.3-flashx`，input、output、total 可见，界面显示 1,001 → 41                                                                                                 |
+| 失败         | 根与 `chat` 都是 `level=ERROR`，`error.type=http_5xx`，`statusMessage` 为空                                                                                                                        |
+| 会话分组     | 同一会话两轮共用 `sessionId`，4 个会话互不串，`userId` 同 ref；`trace.name=turn`                                                                                                                   |
+| 只保留为属性 | `app.llm.cached_tokens`、`app.llm.hedged`、`app.sop.version`、`app.prefix.hash`、`app.tenant`、`app.turn.*`、`app.guard.*`、`app.tool.prefetch` 在 metadata 里，Langfuse 不把缓存 token 算进 usage |
+| 重试         | 没有重试次数属性，429 重试那轮是一个 `chat` span，耗时含等待（849 ms）。这是现状，不改 SDK                                                                                                         |
+| 费用         | 没有配模型价格，不作承诺                                                                                                                                                                           |
+| 正文         | 抓包负载与 API 读回都搜不到写进客户消息、工具参数、回复的标记串，也搜不到 `wecom:wm` 原始 id；trace 的 input 为 null                                                                               |
+
+- 故障：错鉴权 3 次 401、抓包端断连、真实停掉 Langfuse web（`ECONNREFUSED`），三种情况前两轮回复都照常，`[otel]` 失败日志各一行且不含地址。第三轮是脚本让模型一直 500，与导出无关。
+- 关闭：不设端点时抓包 0 个请求，日志里没有 `[otel]`，导出器不加载。
+- 界面：登录本机 Langfuse 打开 trace，树、token、Session、User 徽标与 API 一致，输入 null。截图未入库。
+- 清理：容器、网络、卷、镜像都已删除（`down --volumes --rmi all`）。
+
+### 第 7 步前端（2026-11-01）
+
+- 概览 `TrendsBlock`：六张小图，每图一个单位，原生 SVG。完整日实心，今天空心、连到今天的线段是虚线，缺失日是底色带，线在缺失处断开，完整日的 0 是贴底短线。悬停或方向键选中一天时六张卡片的数字同步切换，「查看数据」展开同一份表格。
+- AI 记录：列表加评价列与「评价」「差评原因」筛选，写进地址；详情在最终回复之后放好评、差评，差评点原因才保存；409 写明并换成最新结果；差评后可下载草稿。新路由 `/console/traces/:turnId`，数据不依赖会话在内存里。
+- 浏览器走查（本机预览栈：真实 server、真实 PG、prod 档位，合成工业租户，synthetic 会话直接写库）：登录后切 7/30 天；2 天无数据显示底色带；完整日、今天、gap、deletion 的 coverage 经真实 `ops_metric_coverage` 读取；深链接打开合成 trace，点差评和原因后保存，`?review=bad` 列表筛出同一行，刷新仍在；375 宽 `scrollWidth=clientWidth`，无横向滚动；深色下取到 `--panel`、`--accent` 深色值；方向键让六张卡片同步到前一天；字体 `Geist`、`Noto Sans SC`，`check-fonts` 通过。
+- 走查限制：合成会话绕过应用写库，不在内存里，AI 记录抽屉的旧详情接口对它们报「这个会话已经不在了」，抽屉里的抽检由 `traces.selftest.tsx` 覆盖，深链接页用真实接口走查。第 9 步用真实引擎的会话再走一遍抽屉。
+- 手册页 `/console/ops/runbooks/:key`：读 `GET /ops/runbooks/:key`，只认标题、段落、代码三种块，不引入 Markdown 库。
+- 自测：`console/src/overview/trends.selftest.tsx`、`console/src/traces/traces.selftest.tsx`（114 条）、`console/src/ops/runbook.selftest.ts`（逐节解析真实手册）、`overview`、`errors` 通过。
+
 ### 第 2–4 步（2026-11-01）
 
 - 第 2 步：迁移 `0026`，四张表、`ops_coverage_mark_deleted`、`purge_ops_data`；四个被替换的函数逐行对比上一版，只有增补，签名不变。`purgeOnce` 接入 `purge_ops_data`。
@@ -155,12 +224,13 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 - CI：第一轮 #418–#420 都失败在 `check-fonts`，第 0 步校验文案带了 UI 子集没有的「评」，已重建字体子集。#418 另有一次 `settings-e2e`（`合成渠道` 断言）失败，本机同用例通过、dev 为绿，按偶发记录，后续 CI 再看。
 - 派活事故：第 1 步拉镜像占满 Docker 虚拟机磁盘时，第 2 步的测试库写入失败，Codex 重建了内存盘容器才跑完；之后测试库一律用内存盘。
 
-### 第 1 步 Langfuse 预检（2026-11-01，未完成）
+### 第 1 步 Langfuse 预检（2026-11-01）
 
 - 版本：D7 定的 `v3.122.1` 没有发布镜像（Docker Hub、GHCR 均无此 tag，`3.122` 与 `3.122.0` 是同一 digest）。`3.122.0` 的 revision 是 `322bc047`，比 `v3.122.1` 少 9 个提交，均未改 OTel 接收代码。owner 原话「用 3.122.0」，spec 已改。
 - 官方 compose 的 `langfuse:3`、clickhouse、minio 都是浮动 tag；`minio/minio` 已无法匿名拉取，改用 `bitnamilegacy/minio`。
 - 只读核对：接收端认 `langfuse.session.id`、`langfuse.user.id`、`langfuse.trace.name`，OTLP 收 `application/json`，与现有导出器一致。字段映射以第 8 步实测为准。
-- 本机：arm64 全部拉取成功。起栈时 Docker 虚拟机 100 GB 磁盘写满，Postgres、ClickHouse 起不来，也波及当时的测试库；已撤掉这次的容器、卷和镜像。资源占用未测，第 8 步前要先腾约 8 GB。
+- 本机：arm64 全部拉取成功。第一次起栈时 Docker 虚拟机 100 GB 磁盘写满，Postgres、ClickHouse 起不来，也波及当时的测试库，已撤掉当次资源。owner 同意后清了 9.66 GB 未使用的构建缓存，第二次起栈全部 healthy，`/api/public/health` 返回版本 `3.122.0`。
+- 资源：空闲时 web 约 508 MiB、worker 386 MiB、ClickHouse 507 MiB、MinIO 214 MiB、Postgres 83 MiB、Redis 10 MiB，共约 1.7 GiB；镜像约占 6 GB。
 - compose 改动：全部镜像固定 digest，只映射 web 到 `127.0.0.1`，`restart: "no"`，`TELEMETRY_ENABLED=false`，不设 `OTEL_CAPTURE_CONTENT`，凭据运行时生成，放仓库外。
 
 | 服务       | 镜像                                               | digest                                                                    |
@@ -196,8 +266,6 @@ Revisions: 2026-10-31 owner 对「7 个决策卡都按推荐吗」答「都按�
 
 - 无未决产品决定或档位/状态审批；D1–D7、heavy 与 ready 均已获 owner 确认。
 - 实施前置待核实：15 第 1 批须先完成并合入（设置导航、试用公司及概览页改动），14 R6/R9 完整验收状态仍须核对；满足排期依赖后，第 0 步据 code/plan 核验接口与清理实现。冲突写这里并停止，不自行改架构。
-- Langfuse 版本已定 3.122.0，字段兼容未核实，1/8 步给证据；若需要 SDK/属性迁移，先报告差异并修订范围。
-- 第 8 步前要腾 Docker 虚拟机磁盘（现空闲约 2 GB，这套镜像约 6 GB），动的是不属于本任务的缓存或镜像，由 owner 定。
 
 ## 已定
 

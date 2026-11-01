@@ -812,7 +812,7 @@ async function dbScenarios(h: Harness): Promise<void> {
       __alertTest.stopTimer();
       assert.match(
         captured.slice(from),
-        /\[alert\] 没配 ALERT_WEBHOOK_URL，这条告警只记在日志里：\[[^\]]+\] 渠道账号启动检查：.*web6.*kf-main/,
+        /\[alert\] 没配 ALERT_WEBHOOK_URL，这条告警只记在日志里：\[[^\]]+\] \[P2\] 渠道账号启动检查：.*web6.*kf-main/,
       );
     }
   });

@@ -4,6 +4,7 @@ import { onShutdown, sessionStoreMode } from '../store.js';
 import { TenantLocal } from '../tenancy/local-state.js';
 import { tenantRuntimes, tenantStoreIfLoaded, withTenantScope, withoutTenantScope } from '../tenancy/runtime.js';
 import { registerTenantState } from '../tenancy/state.js';
+import { checkLatency } from './latency.js';
 import { checkpointCoverage } from './coverage.js';
 
 const failures = new TenantLocal(() => ({ loggedAt: -Infinity }));
@@ -20,7 +21,7 @@ async function tick(): Promise<void> {
         if (configMode() !== 'db' || sessionStoreMode() !== 'db' || configHealth().lock !== 'held' || tenantLockTaken()) return;
         await rt.inflight.track(async () => {
           await checkpointCoverage();
-          // 第 5 步：在这里检查已结束的延迟窗口。
+          await checkLatency();
         });
       } catch {
         const state = failures.get(rt);
