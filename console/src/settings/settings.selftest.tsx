@@ -162,6 +162,16 @@ async function settle(qc: QueryClient, rounds = 16) {
     if (i > 3 && qc.isFetching() === 0) break;
   }
 }
+// settle 只看 QueryClient：真实请求慢时轮数先到顶，前一个查询刚结束、下一个还没发起时也读到 0。这里按内容等，到上限才算失败。
+async function until(ready: () => unknown, label: string, ms = 15_000) {
+  const end = Date.now() + ms;
+  while (!ready()) {
+    assert.ok(Date.now() < end, `timed out waiting for ${label}: ${text()}`);
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+  }
+}
 async function mount(path: string) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false, refetchOnWindowFocus: false } } });
   const router = createRouter({ ...appRouter.options, history: createMemoryHistory({ initialEntries: [path] }) });
@@ -226,15 +236,18 @@ try {
     beginMemberSession(logged);
     const m = await mount(realUsage ? '/console/settings/usage' : '/console/settings/organization');
     try {
+      await until(() => m.qc.getQueryData<Viewer>(VIEWER_KEY), 'viewer');
       const viewer = m.qc.getQueryData<Viewer>(VIEWER_KEY);
       assert.equal(viewer?.kind, 'member');
       if (process.env.SETTINGS_TEST_TRIAL === '1') {
         assert.equal(logged.sharedTrial, true);
+        await until(() => document.querySelector('.trial-banner'), 'trial banner');
         assert.ok(document.querySelector('.trial-banner')?.textContent?.includes('请不要发送个人信息'));
         assert.ok(document.querySelector('.trial-banner')?.textContent?.includes('7'));
         const value = await unwrap(api.usage.$get());
         assert.ok(value.replies.used > 0);
         await navigate(m, 'usage');
+        await until(() => document.querySelector('[data-usage="replies"]'), 'usage page');
         assert.equal(document.querySelector('[data-usage="replies"]')?.textContent, `${value.replies.used}次`);
         assert.ok(document.querySelector('.usage-table'));
         await navigate(m, 'organization');
@@ -243,6 +256,7 @@ try {
       if (realUsage) {
         const checkUsage = async () => {
           const value = await unwrap(api.usage.$get());
+          await until(() => document.querySelector('[data-usage="replies"]'), 'usage page');
           assert.equal(document.querySelector('[data-usage="replies"]')?.textContent, `${value.replies.used}次`);
           assert.equal(document.querySelector('[data-usage="cost"]')?.textContent, `${(value.daily.costMilli / 1000).toFixed(3)}元`);
           return value;
@@ -261,24 +275,27 @@ try {
         assert.equal((await checkUsage()).replies.used, 1);
         console.log('15 验收 5 REAL USAGE PASS: real engine reply → usage_daily → authenticated HTTP API → actual usage page 0→1');
       } else if (process.env.SETTINGS_TEST_ROLE === 'agent') {
+        const denied = () => document.querySelector('.sb-nav') && text().includes('你的角色无法执行这项操作');
+        await until(denied, 'agent denied page');
         assert.ok(!document.querySelector('.sb-nav a[href="/console/settings"]'));
         assert.ok(!document.querySelector('.settings-section'));
         for (const page of ['members', 'channels']) {
           await navigate(m, page);
+          await until(() => m.router.state.location.pathname.endsWith(page) && denied(), `agent denied ${page}`);
           assert.ok(!document.querySelector('.settings-list'));
         }
         assert.equal((await api.settings.channels.$get()).status, 403);
         await settle(m.qc);
         console.log('15 验收 2/3 REAL UI PASS: real agent login, all settings pages denied and navigation hidden');
       } else {
-        assert.ok(text().includes('合成工业'));
+        await until(() => text().includes('合成工业'), 'organization page');
         assert.ok(document.querySelector('.settings-section'));
         await navigate(m, 'members');
-        assert.ok(text().includes('合成所有者'));
+        await until(() => text().includes('合成所有者'), 'members page');
         assert.ok(!text().includes('surface-travel@erp.example.test'));
         assert.ok(text().includes('owner@settings.example.test'));
         await navigate(m, 'channels');
-        assert.ok(text().includes('合成渠道'));
+        await until(() => text().includes('合成渠道'), 'channels page');
         assert.ok(document.querySelector('time'));
         assert.ok(text().includes('已载入'));
         assert.ok(!text().includes('synthetic-industry-corp'));
@@ -287,10 +304,9 @@ try {
           await m.router.navigate({ to: '/' });
         });
         await settle(m.qc);
-        assert.equal(
-          document.querySelector('.onboarding-list li[data-state="done"] a[href="/console/settings/channels"]')?.textContent,
-          '验证接入收发',
-        );
+        const onboardingDone = '.onboarding-list li[data-state="done"] a[href="/console/settings/channels"]';
+        await until(() => document.querySelector(onboardingDone), 'onboarding checklist');
+        assert.equal(document.querySelector(onboardingDone)?.textContent, '验证接入收发');
         assert.ok(calls.some((r) => r.path === '/api/console/settings/onboarding'));
         assert.ok(calls.filter((r) => r.path.includes('/settings/')).every((r) => r.method === 'GET'));
         console.log('15 验收 3/4/5 REAL UI PASS: real login → actual router → actual four APIs → persisted inbound onboarding');
@@ -471,6 +487,10 @@ try {
         });
         await settle(switched.qc);
         await navigate(switched, 'usage');
+        await until(
+          () => switched.router.state.location.pathname.endsWith('usage') && text().includes('你的角色无法执行这项操作'),
+          `${role} denied usage`,
+        );
         assert.ok(!document.querySelector('.sb-nav a[href="/console/settings"]'));
         assert.ok(!document.querySelector('[data-usage]'));
         assert.ok(!document.querySelector('.settings-list'));
