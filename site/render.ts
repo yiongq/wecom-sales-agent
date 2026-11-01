@@ -43,7 +43,7 @@ export function buildSite(input: ProductPublishInput, output: string): void {
     ],
     '/product/': [
       '产品能力',
-      `<div class="hero"><div><p class="eyebrow">产品能力</p><h1>询价往前走，<br>边界留得住。</h1><p class="lead">围绕工业销售日常，把接收、匹配、试算、审批和交接串成一条清楚的工作流。</p></div><div><h2>每份报价，都有来处。</h2><p>金额依据已发布的产品库和工具计算结果；模型负责理解与表达。未批准的报价不向客户外发。</p><a href="${docs}catalog.html">了解产品库 →</a></div></div><section>${workflow}</section><section><div class="section-head"><span class="eyebrow">使用边界</span><div><h2>按实际开通范围使用。</h2><p>产品库库存是配置快照。ERP 连接器代码已具备，尚未上线，不能视为实时库存承诺。</p><p>用量展示依赖联合发布验证，尚未上线；它不是服务账单。成员与渠道设置本期只读，变更由平台在维护窗口完成。</p><p>共享顾问账号可以处理会话与审批其负责的报价，不能修改产品库、销售话术或管理设置。</p></div></div></section>${apply}`,
+      `<div class="hero"><div><p class="eyebrow">产品能力</p><h1>询价往前走，<br>边界留得住。</h1><p class="lead">围绕工业销售日常，把接收、匹配、试算、审批和交接串成一条清楚的工作流。</p></div><div><h2>每份报价，都有来处。</h2><p>金额依据已发布的产品库和工具计算结果；模型负责理解与表达。未批准的报价不向客户外发。</p><a href="${docs}catalog.html">了解产品库 →</a></div></div><section>${workflow}</section><section><div class="section-head"><span class="eyebrow">使用边界</span><div><h2>按实际开通范围使用。</h2><p>产品库库存是配置快照，不能视为实时库存承诺。ERP 连接器按商家单独开通，共享试用环境没有接入。</p><p>用量展示只对授权管理员开放，它不是服务账单。成员与渠道设置本期只读，变更由平台在维护窗口完成。</p><p>共享顾问账号可以处理会话与审批其负责的报价，不能修改产品库、销售话术或管理设置。</p></div></div></section>${apply}`,
     ],
     '/privacy/': [
       '隐私政策',
