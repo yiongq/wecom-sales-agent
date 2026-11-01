@@ -6,10 +6,18 @@ https://{$PRODUCT_ROOT_HOST} {
 https://{$PRODUCT_WWW_HOST} {
   root * {$PRODUCT_WWW_ROOT}
   file_server
+  handle_errors {
+    rewrite * /404.html
+    file_server
+  }
 }
 https://{$PRODUCT_DOCS_HOST} {
   root * {$PRODUCT_DOCS_ROOT}
   file_server
+  handle_errors {
+    rewrite * /404.html
+    file_server
+  }
 }
 
 (industrial_app) {

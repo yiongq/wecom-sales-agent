@@ -8,13 +8,9 @@ The workbench brings conversations, quote approval and advisor replies together.
 
 Node 22 · Hono · TypeScript via tsx · PostgreSQL 17 + pgvector · React workbench · MIT software license.
 
-## Online demo
-
-[www.danlaiai.com](https://www.danlaiai.com)
-
 ## Request a trial account
 
-Follow the instructions on the website. Access is provided on request; there is no public password, automatic account claim or self-service signup. The sign-in address is supplied with the account.
+Follow the instructions on the website linked from this repository. Access is provided on request; there is no public password, automatic account claim or self-service signup. The sign-in address is supplied with the account.
 
 The shared trial account has the agent role: handle assigned conversations and approve their quotes, without editing the catalog, sales SOP or administrator settings. Trial data includes synthetic seeds and messages submitted by trial users. Other members of the shared trial company may see those messages: **do not send personal information, credentials or real customer records**. Trial messages, customer profiles and traces are retained for 7 days; manual reset clears both trial messages and synthetic seeds.
 

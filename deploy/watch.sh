@@ -29,7 +29,7 @@
 #   WATCH_BACKUP       设成 0 不查备份（没配备份的实例）
 #   PROBE_APP_ORIGIN   工业 app 的 origin；与下面三项全空时跳过，部分配置告警但不请求
 #   PROBE_TENANT_SLUG  工业租户 slug
-#   PROBE_EMAIL        专属普通 agent 邮箱（不是共享试用账号）
+#   PROBE_EMAIL        专属 viewer 邮箱（不是共享试用账号）
 #   PROBE_PASSWORD     专属账号口令；.env.ops 被 source，值必须用单引号
 #   PROBE_EVERY_S      健康时的间隔秒数，默认 600；失败/恢复观察时每次巡检都跑
 # 自测另用 WATCH_NOW（当作「现在」的秒数）。
