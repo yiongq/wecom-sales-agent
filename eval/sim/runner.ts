@@ -20,8 +20,15 @@ export interface Charge {
 export class Meter {
   readonly charges: Charge[] = [];
   private readonly aborter = new AbortController();
-  constructor(readonly budget: number) {
+  constructor(
+    readonly budget: number,
+    initial: Charge[] = [],
+  ) {
     if (!Number.isFinite(budget) || budget <= 0) throw new Error('--budget 必须是正数');
+    this.restore(initial);
+  }
+  restore(charges: Charge[]): void {
+    for (const charge of charges) this.add(charge);
   }
   get total(): number {
     return this.charges.reduce((sum, c) => sum + c.cny, 0);
@@ -159,7 +166,7 @@ function customerMessage(raw: string): { say: string; done: boolean } | null {
   }
 }
 
-async function executeRun(goal: SimGoal, repetition: number, meter: Meter, deps: SimDeps): Promise<RunResult> {
+async function executeRun(goal: SimGoal, repetition: number, meter: Meter, deps: SimDeps, runId?: string): Promise<RunResult> {
   const chargeStart = meter.charges.length;
   const { id, initial } = await deps.start(goal.initial);
   const run: RunResult = {
@@ -175,6 +182,7 @@ async function executeRun(goal: SimGoal, repetition: number, meter: Meter, deps:
     charges: [],
     turnMetrics: [],
     rerun: false,
+    ...(runId === undefined ? {} : { runId }),
   };
   let latest = initial;
   if (goal.journey) {
@@ -322,9 +330,9 @@ function checkPacks(goals: SimGoal[], deps: SimDeps): void {
 }
 
 /** 一遍：客户模型没按协议出话，整遍重跑一次，两次的费用并进同一遍。 */
-async function runOnce(goal: SimGoal, repetition: number, meter: Meter, deps: SimDeps): Promise<RunResult> {
+async function runOnce(goal: SimGoal, repetition: number, meter: Meter, deps: SimDeps, runId?: string): Promise<RunResult> {
   const chargeStart = meter.charges.length;
-  let run = await executeRun(goal, repetition, meter, deps);
+  let run = await executeRun(goal, repetition, meter, deps, runId);
   // 客户模型没按协议出话：整遍重跑一次，仍失败的不计入 pass^k 的分母，单列
   if (run.status === 'customer_protocol' && !meter.stopped) {
     const replaced = run;
@@ -332,7 +340,7 @@ async function runOnce(goal: SimGoal, repetition: number, meter: Meter, deps: Si
       replaced.wasReplaced = true;
       replaced.findings = auditRun(replaced, goal, deps.catalog ?? []);
     }
-    run = await executeRun(goal, repetition, meter, deps);
+    run = await executeRun(goal, repetition, meter, deps, runId);
     if (goal.journey) run.replaced = replaced;
     run.rerun = true;
     run.charges = meter.charges.slice(chargeStart);
@@ -340,16 +348,24 @@ async function runOnce(goal: SimGoal, repetition: number, meter: Meter, deps: Si
   return run;
 }
 
-export async function simulate(goals: SimGoal[], k: number, meter: Meter, deps: SimDeps): Promise<SimReport> {
+export interface SimOptions {
+  runId?: string;
+  onRun?(run: RunResult): Promise<void> | void;
+  resume?: { completed: Set<string>; charges: Charge[]; runs?: RunResult[] };
+}
+export async function simulate(goals: SimGoal[], k: number, meter: Meter, deps: SimDeps, options: SimOptions = {}): Promise<SimReport> {
   if (!Number.isSafeInteger(k) || k < 1) throw new Error('--k 必须是正整数');
-  const runs: RunResult[] = [];
+  const runs: RunResult[] = [...(options.resume?.runs ?? [])];
+  if (options.resume) meter.restore(options.resume.charges);
   checkBrands(goals, deps);
   checkPacks(goals, deps);
   outer: for (const goal of goals)
     for (let repetition = 1; repetition <= k; repetition++) {
+      if (options.resume?.completed.has(JSON.stringify([goal.id, repetition]))) continue;
       if (meter.stopped) break outer;
-      const run = await runOnce(goal, repetition, meter, deps);
+      const run = await runOnce(goal, repetition, meter, deps, options.runId);
       runs.push(run);
+      await options.onRun?.(run);
       if (meter.stopped) break outer;
     }
   const summary = goals.map((g) => {
