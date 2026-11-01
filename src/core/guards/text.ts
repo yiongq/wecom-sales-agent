@@ -32,11 +32,25 @@ export function answerIdentity(text: string, reply: string, identityAnswer: stri
   return reply ? identityAnswer + '\n' + reply : identityAnswer;
 }
 
+// 表格分隔行整行删掉；表格行去掉竖线，各格用逗号连起来。微信不渲染表格，客户看到的是一堆竖线。
+const TABLE_RULE = /^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)+\|?[ \t]*(?:\n|$)/gm;
+const TABLE_ROW = /^[ \t]*\|(.+)\|[ \t]*$/gm;
+const tableRow = (_: string, row: string): string =>
+  row
+    .split('|')
+    .map((cell) => cell.trim())
+    .filter(Boolean)
+    .join('，');
+
 /** 去 markdown（对话轮次与跟进共用） */
 export function stripMarkdown(visible: string): string {
   return visible
+    .replace(TABLE_RULE, '')
+    .replace(TABLE_ROW, tableRow)
     .replace(/\*\*(.+?)\*\*/g, '$1')
     .replace(/^#{1,6}\s+/gm, '')
     .replace(/^(\s*)[-*]\s+/gm, '$1· ')
+    .replace(/`([^`\n]*)`/g, '$1')
+    .replace(/\[([^\]\n]+)\]\(([^)\s]+)\)/g, '$1 $2')
     .replace(/[ \t]{2,}/g, ' ');
 }

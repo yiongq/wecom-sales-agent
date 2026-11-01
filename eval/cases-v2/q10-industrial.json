@@ -1722,5 +1722,32 @@
         ]
       }
     ]
+  },
+  {
+    "version": 2,
+    "pack": "industrial",
+    "tags": ["q10", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "id": "q10-industrial-markdown-table",
+    "desc": "模型写的 markdown 表格不漏到客户",
+    "turns": [
+      {
+        "say": "你们主要卖什么",
+        "expect": {
+          "replyMatches": ["轴承，紧固件"],
+          "replyExcludes": ["\\|", "---"],
+          "orders": {
+            "count": 0
+          }
+        },
+        "script": [
+          {
+            "content": "品类如下：\n| 类别 | 说明 |\n|---|---|\n| 轴承，紧固件 | 常用件 |"
+          }
+        ]
+      }
+    ]
   }
 ]
