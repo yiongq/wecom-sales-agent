@@ -11,6 +11,7 @@ Superseded in part by: [06 · AI 回复质量](../06-reply-quality/spec.md) — 
 Amended by: [05 · 同部署多租户 + 一键体验沙箱](../05-tenancy-sandbox/spec.md)（R2 的 bindPack 绑定归租户运行时，R14 的回滚检查新增 pre-05，见 05 R3、R18）。
 Amended by: [09 · 报价审批、报价单页与站内链接（核心）](../09-quote-approval/spec.md)（只做新增或收紧，全文见该 spec 顶部 Amends：R3 的 PackRuntime 加 quotes、siteLinks、onQuoteDecided、followupGate，DeterministicReply 加 fixedId、handoff、notify、statePatch，EnginePackHooks 加 quoteRejectedText、quoteWithdrawnText；R15 的 MessagePart.linkKind 扩为字符串并加 title；R11 的 handoff 谓词加可选 handoffKind，shape 改读包已有的 ShapePolicy.richTools；R14 的回滚检查加 pre-09 与退出码 9，见 09 R5、R10–R13、R15、R16）。
 Amended by: [10 · 第二个行业包：工业品询价（与演示租户）](../10-industrial-rfq-pack/spec.md) — R11 的 `SimGoal.initial.orders`：通用单夹具加可选审批数据，仅模拟目标、沿用模拟时钟（10 R15）；R9 / R13：对启用核心链接白名单的包，跟进护栏删空后跳过发送与记账，覆盖文件扫描及数据库任务，遵守跟进只读约束，旅游行为不变（10 R8、R14）。
+Amended by: [16 · 工业询价仿真](../16-industrial-sim/spec.md) — R11 的模拟目标：新增全流程目标类型和运行字段，现有目标与判定不变。
 Phase: 4 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」（2026-10-10 拆分之后的编号）
 Depends on: [03 · 渠道层 v2](../03-channels-v2/spec.md)（开工时须已 implemented）；[01](../01-pg-config-console/spec.md) 的 SOP 节表、锁定节、发布与启动重渲染；[02](../02-conversations-workbench/spec.md) 的 trace 与护栏事件（R16）；[00](../00-baseline/spec.md) 的前缀稳定检查。
 Supersedes in part: 01 不变量 11「当前发布的锁定节与镜像原文逐字节相同」——改为与**租户的镜像**逐字节相同（R5）；01「渲染与哈希」的渲染输入（加品牌）与「启动重渲染」的原因（加 `brand`）；主参考「护栏」一节「每次裁决记一行 `guard_events`」——改为 `guard_events` 只记改了文字的裁决，全部裁决（含放行）记在 `turn_traces.guard_verdicts`（R8）。
