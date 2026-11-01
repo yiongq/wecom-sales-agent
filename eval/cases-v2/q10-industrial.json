@@ -1684,5 +1684,43 @@
         ]
       }
     ]
+  },
+  {
+    "version": 2,
+    "pack": "industrial",
+    "tags": ["q10", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "id": "q10-industrial-model-handoff-reply",
+    "desc": "模型调 handoff_to_human 的那一轮，回复照发给客户",
+    "turns": [
+      {
+        "say": "这单麻烦让顾问跟我对接付款",
+        "expect": {
+          "tools": ["handoff_to_human"],
+          "orders": {
+            "count": 0
+          },
+          "handoff": true,
+          "replyMatches": ["已转交顾问"]
+        },
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户要顾问对接付款"
+                }
+              }
+            ]
+          },
+          {
+            "content": "已转交顾问，稍后与您对接。"
+          }
+        ]
+      }
+    ]
   }
 ]

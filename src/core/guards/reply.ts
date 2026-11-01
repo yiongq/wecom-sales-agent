@@ -81,8 +81,11 @@ export function coreReplySteps<Context extends ReplyGuardContext>(): GuardStep<C
       ctx.recordGuard('identity', before, ctx.text, 'append');
     }),
     shapeCheckStep<Context>(),
+    // 模型自己调了转人工：这一轮的回复要发出去，否则客户什么都收不到，同一轮记的确认也跟着丢。
     replyStep('takeover_check:post', 'shape_check', ['handedOverSelfDecided'], [], (ctx): StepVerdict =>
-      ctx.takenOver() || (ctx.session.handedOver && !ctx.turn.flags.handedOverSelfDecided) ? { action: 'abort' } : { action: 'pass' },
+      ctx.takenOver() || (ctx.session.handedOver && !ctx.turn.flags.handedOverSelfDecided && !ctx.modelRequestedHandoff())
+        ? { action: 'abort' }
+        : { action: 'pass' },
     ),
     replyStep('turn_failure', 'takeover_check:post', ['emptyModelReply', 'guardHit'], [], (ctx) => {
       const { session, inputText: text, toolSources: calls } = ctx;
