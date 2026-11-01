@@ -287,7 +287,18 @@ await test('改行：三种说法、删行、行号顺延，整份重新渲染�
   r = await edit('第1行 6205-2RS 100', withIntake([{ q: '6205-2RS', qty: null, m: 'bad_qty' }]));
   assert.deepEqual(r.intake.lines[0], { q: '6205-2RS', qty: 100, m: 'exact' });
   // 读不出来：这一行没改，提示该怎么回。
-  for (const text of ['第3行', '第3行的价格是多少', '第3行 改成', '第3行 //', '删第3行 并且改一下']) {
+  // 16 开发集：客户用自己的话删行；多句话不当型号，第一句写了别的型号时不猜。
+  for (const text of ['第3行 ZZ9999 剔除，不要报价。前两行确认，按 6205-2RS 100件算价。', '第3行不要了', '第3行 剔除', '第3行去掉吧'])
+    assert.equal((await edit(text)).intake.lines.length, 4, text);
+  for (const text of [
+    '第3行',
+    '第3行的价格是多少',
+    '第3行 改成',
+    '第3行 //',
+    '删第3行 并且改一下',
+    '第3行 6205-ZZ 不要了',
+    '第3行 6205-ZZ 150，顺便问下交期，谢谢',
+  ]) {
     const session = withIntake();
     const reply = preModel(ctxOf(session, text), sources)!;
     assert.equal(reply.statePatch, undefined, text);
