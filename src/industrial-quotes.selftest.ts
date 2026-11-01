@@ -461,6 +461,10 @@ try {
     '我们决定采购',
     '可以，我接受这份报价并采购',
     '这个价格可以接受',
+    '好的，这份报价单我确认没问题，就按24件、合计455.76元接受，我们准备下单采购了。',
+    '这份报价我确认接受，24件6208-2RS，含税合计340.32元，我们就按这个单子采购。',
+    '报价单收到，885.6元含税、有效期到10月17日没问题，我们确认接受这份报价，按这个方案采购HS-PV33共16件。',
+    '我们确认接受这份报价，麻烦安排',
   ];
   const negatives = [
     '好的',
@@ -521,6 +525,12 @@ try {
     '这个价格可以接受吗',
     '不愿意按这份报价采购',
     '采购要走流程',
+    '等领导同意采购',
+    '如果确认接受的话我再告诉你',
+    '不接受这份报价',
+    '这份报价我们不接受',
+    '没有确认接受',
+    '领导决定采购再说',
   ];
   let modelCalls = 0;
   mockAction = async () => {
@@ -558,7 +568,8 @@ try {
         assert.equal(accepted, expected, text);
         assert.equal(await acceptanceJobs(order.id), expected ? 1 : 0, text);
         assert.equal(readState(session).confirmedQuoteAt !== undefined, expected, text);
-        if (expected && /什么时候|能开/.test(text)) {
+        // 带问题、数量或金额的长句：记下接受，再交模型回。
+        if (expected && /什么时候|能开|合计|含税|麻烦安排/.test(text)) {
           assert.equal(modelCalls, callsBefore + 1, text);
           assert.match(reply.text, /交期以顾问确认为准|可以开专票/, text);
         } else if (expected) {
