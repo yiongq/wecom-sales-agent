@@ -58,12 +58,14 @@ export function oraclePrice(part: PartRow, qty: number): { unitFen: number; amou
   return { unitFen, amountFen: unitFen * qty };
 }
 
-// 政策里的金额以分保存；天数、税率等不当作金额放行。
-const policy = JSON.parse(readFileSync(new URL('../../data/packs/industrial/policy.json', import.meta.url), 'utf8')) as {
-  autoApproveMaxFen: number;
-  shipping: { freeOverFen: number; feeFen: number };
-};
-const policyAmounts = [policy.autoApproveMaxFen, policy.shipping.freeOverFen, policy.shipping.feeFen];
+// 政策里的金额以分保存；天数、税率等不当作金额放行。runner 连带加载本模块，用到才读，发布闸不碰这个文件。
+function policyAmounts(): number[] {
+  const policy = JSON.parse(readFileSync(new URL('../../data/packs/industrial/policy.json', import.meta.url), 'utf8')) as {
+    autoApproveMaxFen: number;
+    shipping: { freeOverFen: number; feeFen: number };
+  };
+  return [policy.autoApproveMaxFen, policy.shipping.freeOverFen, policy.shipping.feeFen];
+}
 const normalize = (s: string): string => s.normalize('NFKC').toUpperCase().replace(/[\s-]/gu, '');
 const object = (v: unknown): Record<string, unknown> =>
   v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -210,7 +212,7 @@ export function auditRun(run: RunResult, goal: SimGoal, catalog: PartRow[]): Fin
     )
       add('approval', 'final', null, `${order.id} 缺少替身批准证据`);
   }
-  const allowed = new Set(policyAmounts);
+  const allowed = new Set(policyAmounts());
   snapshotAmounts(allowed, run.initial, catalog);
   for (const message of goal.initial?.history ?? [])
     if (message.role === 'customer')
