@@ -158,10 +158,75 @@ export const packGoalSchema = z
     initial: packInitialSchema.optional(),
   })
   .strict();
+
+// ---- 16 R1：全流程目标（写了 journey）。判分走 judgeJourney，predicates / forbidden / allowedTools 缺省为空且不生效 ----
+const handoffKind = z.custom<HandoffKind>((value) => typeof value === 'string' && isHandoffKind(value), '无效转人工类型');
+const journeyEnd = z.discriminatedUnion('end', [
+  z
+    .object({
+      end: z.literal('quote_accepted'),
+      lines: z.array(z.object({ code: z.string().min(1), qty: z.number().int().positive() }).strict()).min(1),
+      totalFen: z.number().int().positive(),
+    })
+    .strict(),
+  z.object({ end: z.literal('quote_rejected') }).strict(),
+  z.object({ end: z.literal('handoff'), kinds: z.array(handoffKind).min(1) }).strict(),
+  z
+    .object({
+      end: z.literal('no_quote'),
+      evidence: z
+        .object({ tool: z.string().min(1).optional(), reply: regex.optional() })
+        .strict()
+        .refine((e) => e.tool !== undefined || e.reply !== undefined, 'no_quote 至少写一项正面证据'),
+    })
+    .strict(),
+]);
+export const journeySpecSchema = z
+  .object({
+    family: z.string().min(1),
+    split: z.enum(['dev', 'holdout']),
+    expect: journeyEnd,
+    // 都是不分大小写的正则：fact 是客户必须说清的事实，asked 是销售问到它时的说法
+    facts: z.array(z.object({ fact: regex, asked: regex }).strict()),
+    baselineScript: z.array(z.string().min(1)).min(1),
+    approver: z
+      .discriminatedUnion('decision', [
+        z.object({ decision: z.literal('approve') }).strict(),
+        z.object({ decision: z.literal('reject'), reason: z.string().min(1) }).strict(),
+      ])
+      .optional(),
+    modelFree: z.literal(true).optional(),
+    voided: z
+      .object({ reason: z.string().min(1) })
+      .strict()
+      .optional(),
+  })
+  .strict()
+  .refine((j) => j.expect.end !== 'quote_accepted' || j.approver?.decision === 'approve', 'quote_accepted 必须配 approver.approve')
+  .refine((j) => j.expect.end !== 'quote_rejected' || j.approver?.decision === 'reject', 'quote_rejected 必须配 approver.reject')
+  .refine((j) => !j.modelFree || j.expect.end === 'handoff', 'modelFree 只允许 end: handoff');
+export const journeyGoalSchema = z
+  .object({
+    ...goalShape,
+    allowedTools: goalShape.allowedTools.default([]),
+    predicates: z.array(predicateSchema).default([]),
+    forbidden: goalShape.forbidden.default([]),
+    pack: z.literal('industrial'),
+    initial: packInitialSchema.optional(),
+    journey: journeySpecSchema,
+  })
+  .strict()
+  .refine((g) => !g.tags?.includes('regression'), 'journey 目标不带 regression，不进发布闸');
+export type JourneySpec = z.infer<typeof journeySpecSchema>;
+export type JourneyEnd = JourneySpec['expect'];
 export type TravelGoal = z.infer<typeof goalSchema>;
 export type PackGoal = z.infer<typeof packGoalSchema>;
 /** 运行器读的目标：旅游与非旅游包共用一个类型，pack 缺省 travel，initial 里的画像与订单按 pack 取旅游或通用单的形状 */
-export type SimGoal = Omit<TravelGoal, 'pack' | 'initial'> & { pack?: string; initial?: TravelGoal['initial'] | PackGoal['initial'] };
+export type SimGoal = Omit<TravelGoal, 'pack' | 'initial'> & {
+  pack?: string;
+  initial?: TravelGoal['initial'] | PackGoal['initial'];
+  journey?: JourneySpec;
+};
 export type Predicate = z.infer<typeof predicateSchema>;
 /** 目标所属的包 id（缺省 travel） */
 export const goalPack = (g: SimGoal): string => g.pack ?? 'travel';
@@ -181,7 +246,10 @@ export function validatePackInitial(value: unknown, now: number, quotes: boolean
 export function validateGoal(value: unknown, file: string): SimGoal {
   // 按 pack 分支：没写或写 travel 走旅游（与以前相同），写了别的字符串走非旅游包；写成非字符串由旅游 schema 报错
   const pack = value && typeof value === 'object' && 'pack' in value ? value.pack : undefined;
-  const result = (typeof pack === 'string' && pack !== 'travel' ? packGoalSchema : goalSchema).safeParse(value);
+  const journey = !!value && typeof value === 'object' && 'journey' in value;
+  const result = (journey ? journeyGoalSchema : typeof pack === 'string' && pack !== 'travel' ? packGoalSchema : goalSchema).safeParse(
+    value,
+  );
   if (result.success) {
     if (typeof pack === 'string' && pack !== 'travel' && result.data.initial)
       validatePackInitial(result.data.initial, Date.parse(FIXTURE_CLOCK));

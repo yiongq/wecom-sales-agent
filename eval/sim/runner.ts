@@ -1,5 +1,7 @@
 import type { UsageEvent } from '../../src/usage.js';
-import { goalPack, type SimGoal } from './goals.js';
+import type { FinishedTurn } from '../../src/trace/recorder.js';
+import type { Finding, PartRow } from './audit.js';
+import { goalPack, type JourneySpec, type SimGoal } from './goals.js';
 import { judge, type Evidence, type SimTurn, type Snapshot, type Verdict } from './judge.js';
 import { computeMetrics, turnMetric, type Metrics, type TurnMetric } from './metrics.js';
 
@@ -58,13 +60,32 @@ export interface SimDeps {
   /** attach（12 R13）：eval/fixtures/attachments/ 下的样本名；有它时这条消息是文件，say 不进引擎（渠道写占位），返回的 SimTurn.customer.say 是占位 */
   sales(id: string, customer: { say: string; done: boolean; attach?: string }): Promise<SimTurn>;
   end(id: string): Promise<void>;
+  /** 16 R2：审批替身调真实 approveQuote / rejectQuote，返回写进客户历史的通知文字和决定之后的快照 */
+  decide?(orderId: string, d: NonNullable<JourneySpec['approver']>): Promise<{ notice: string | null; state: Snapshot }>;
+  /** 16 R4：审计用的产品库，直接读 data/packs/industrial 的 JSON，不经包。journey 目标才用 */
+  catalog?: PartRow[];
 }
-export type RunStatus = 'passed' | 'failed' | 'customer_protocol' | 'budget_stop';
+export type RunStatus = 'passed' | 'failed' | 'customer_protocol' | 'customer_http' | 'customer_drift' | 'budget_stop';
+export type FailBucket =
+  | 'model_error'
+  | 'runner_error'
+  | 'rule_violation'
+  | 'unneeded_handoff'
+  | 'quote_missing'
+  | 'wrong_lines'
+  | 'wrong_total'
+  | 'not_approved'
+  | 'not_accepted'
+  | 'not_rejected'
+  | 'missed_handoff'
+  | 'wrong_handoff'
+  | 'unexpected_quote'
+  | 'no_evidence';
 export interface RunResult extends Evidence {
   goalId: string;
   repetition: number;
   status: RunStatus;
-  endedBy: 'done' | 'maxTurns' | 'customer_protocol' | 'budget_stop' | 'runner_error';
+  endedBy: 'done' | 'maxTurns' | 'customer_protocol' | 'budget_stop' | 'runner_error' | 'handoff';
   verdicts: Verdict[];
   reasons: string[];
   customerAttempts: { raw: string; valid: boolean; turn: number; retry: boolean }[];
@@ -73,6 +94,26 @@ export interface RunResult extends Evidence {
   turnMetrics: TurnMetric[];
   /** 第一遍客户没按协议出话，这是整遍重跑后的结果 */
   rerun: boolean;
+  // ---- 16：只加字段，现有目标不填 ----
+  /** 失败桶（status 是 failed 时） */
+  bucket?: FailBucket;
+  /** 运行结束时的最新状态；判分、审计、转人工即停都读它，不读最后一轮的 SimTurn.state */
+  finalState?: Snapshot;
+  decided?: { orderId: string; decision: 'approve' | 'reject' }[];
+  /** 写进客户历史的卡片文字 */
+  notices?: string[];
+  /** 被整遍重跑替换掉的一遍（费用已并进外层的 charges，汇总时不要再加一次） */
+  replaced?: RunResult;
+  /** 销售这一轮抛错时的 trace */
+  failedTurn?: FinishedTurn;
+  /** 本遍的审计命中（16 R4），含原稿计数 */
+  findings?: Finding[];
+  /** 所属运行的 runId，进 Finding.id */
+  runId?: string;
+  /** 这一遍后来被整遍重跑替换了，进 Finding.id */
+  wasReplaced?: true;
+  /** 最后一轮客户只表达结束、一句话没说（R3 customer_drift 第二种） */
+  leftSilently?: true;
 }
 export interface Summary {
   id: string;
