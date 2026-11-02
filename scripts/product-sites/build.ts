@@ -73,7 +73,10 @@ export async function buildProductSites(mode: 'all' | 'site' | 'docs', filename:
           siteTitle: `${PRODUCT_NAME}文档`,
           nav: [
             { text: '官网', link: baseUrl(input.bases.www) },
-            { text: '登录后台', link: baseUrl(input.bases.app) },
+            { text: '产品能力', link: baseUrl(input.bases.www, 'product/') },
+            { text: '开源代码', link: input.sourceRepositoryUrl },
+            { text: '登录', link: baseUrl(input.bases.app) },
+            { text: '申请试用', link: `${baseUrl(input.bases.www)}#apply` },
           ],
           sidebar: links,
           outline: { label: '本页内容' },
@@ -101,7 +104,7 @@ export async function buildProductSites(mode: 'all' | 'site' | 'docs', filename:
       // VitePress 默认生成的 404 只有客户端挂载壳；替换为无 JS 可读的错误页。
       fs.writeFileSync(
         path.join(docsDist, '404.html'),
-        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>页面未找到 · 单来文档</title><link rel="stylesheet" href="/fonts/fonts.css"><style>body{font-family:Geist,"Noto Sans SC",sans-serif;color:#18181b;background:#f6f6f7;margin:10%;line-height:1.8}h1{font-weight:600}a{color:#255cdf}a:focus-visible{outline:3px solid #2b63e6;outline-offset:4px}</style></head><body><main><h1>页面未找到</h1><p>这个地址没有对应的指南，请从目录重新开始阅读。</p><a href="/">回到首页</a></main></body></html>',
+        '<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>页面未找到 · 单来文档</title><link rel="stylesheet" href="/fonts/fonts.css"><style>body{font-family:Geist,"Noto Sans SC",sans-serif;color:#171717;background:#fcfcfc;margin:0;line-height:1.7}main{width:min(1120px,calc(100% - 64px));margin-inline:auto;padding:72px 0}h1{margin:0 0 12px;font-size:32px;font-weight:500;line-height:1.25}p{margin:0 0 16px;color:#646464}a{color:#255cdf;text-underline-offset:4px}a:focus-visible{outline:3px solid #2b63e6;outline-offset:3px}</style></head><body><main><h1>页面未找到</h1><p>这个地址没有对应的指南，请从目录重新开始阅读。</p><a href="/">回到首页</a></main></body></html>',
       );
       roots.push({ directory: docsDist, base: input.bases.docs });
     }

@@ -16,6 +16,8 @@
   --amber-soft: #fff3dc;
   --bad: #c62f27;
   --ok: #1f7a4d;
+  --gutter: 12px;
+  --cell-inset: 20px;
   font-family: 'Geist', 'Noto Sans SC', sans-serif;
   color: var(--text);
   background: var(--bg);
@@ -236,7 +238,7 @@ nav a[aria-current='page'] {
 .hero {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 40px;
+  gap: var(--gutter);
   align-items: center;
   padding: 96px 0 48px;
 }
@@ -258,7 +260,7 @@ nav a[aria-current='page'] {
 .cells {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 12px;
+  gap: var(--gutter);
 }
 .cell {
   position: relative;
@@ -266,7 +268,7 @@ nav a[aria-current='page'] {
   display: flex;
   flex-direction: column;
   min-height: 320px;
-  padding: 20px;
+  padding: var(--cell-inset);
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--card);
@@ -521,16 +523,26 @@ nav a[aria-current='page'] {
 }
 .stats {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--gutter);
   box-shadow:
     -1px 0 0 var(--line),
     1px 0 0 var(--line);
 }
 .stats div {
-  padding: 32px;
+  position: relative;
+  padding: 32px var(--cell-inset);
 }
-.stats div + div {
-  box-shadow: -1px 0 0 var(--line);
+.stats div:last-child {
+  grid-column: span 2;
+}
+.stats div + div::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--gutter) / -2);
+  border-left: 1px solid var(--line);
 }
 .stats dt {
   font-size: 32px;
@@ -585,14 +597,31 @@ figcaption {
 }
 .shot-pair {
   display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gutter);
   margin-top: 24px;
 }
 .shot-pair img {
   height: 400px;
   object-fit: cover;
   object-position: left top;
+}
+/* 报价单是窄图：按原始比例放在中间，别撑满半栏把字放得比主图大 */
+.shot-pair figure:first-child .shot {
+  display: flex;
+  justify-content: center;
+  height: 400px;
+  padding-top: 28px;
+  background-color: var(--tile);
+  background-image: radial-gradient(var(--line) 1px, transparent 1px);
+  background-size: 14px 14px;
+}
+.shot-pair figure:first-child img {
+  width: 340px;
+  height: auto;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--card);
 }
 
 /* ---------------- 护栏：单选框页签，不用脚本 ---------------- */
@@ -604,8 +633,8 @@ figcaption {
 }
 .guard-grid {
   display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: 56px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gutter);
   align-items: center;
   padding: 72px 0;
 }
@@ -688,8 +717,8 @@ figcaption {
 }
 .faq-grid {
   display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: 56px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gutter);
 }
 .faq-list {
   border-top: 1px solid var(--line);
@@ -733,16 +762,14 @@ details p {
 .steps {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--gutter);
   margin-top: 32px;
+}
+.steps li {
+  padding: var(--cell-inset);
   border: 1px solid var(--line);
   border-radius: 16px;
   background: var(--card);
-}
-.steps li {
-  padding: 20px;
-}
-.steps li + li {
-  box-shadow: -1px 0 0 var(--line);
 }
 .steps span {
   color: var(--muted);
@@ -767,9 +794,14 @@ details p {
 }
 .chapter-grid {
   display: grid;
-  grid-template-columns: minmax(0, 5fr) minmax(0, 7fr);
-  gap: 56px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gutter);
   align-items: center;
+}
+.guard-grid > :first-child,
+.chapter-grid > :first-child,
+.hero > :first-child {
+  padding-right: 56px;
 }
 .chapter .checks {
   margin-top: 16px;
@@ -847,8 +879,8 @@ details p {
 }
 .spec-sheet div {
   display: grid;
-  grid-template-columns: 200px minmax(0, 1fr);
-  gap: 24px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--gutter);
   padding: 12px 0;
   border-bottom: 1px solid var(--line);
   font-size: 15px;
@@ -857,16 +889,20 @@ details p {
   font-weight: 500;
 }
 .spec-sheet dd {
+  grid-column: span 3;
   color: var(--muted);
 }
 .limit-list {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--gutter);
   margin-top: 24px;
 }
+.limit-list li:nth-child(2) {
+  grid-column: span 2;
+}
 .limit-list li {
-  padding: 20px;
+  padding: var(--cell-inset);
   border: 1px solid var(--line);
   border-radius: 16px;
   color: var(--muted);
@@ -877,39 +913,44 @@ details p {
 /* ---------------- 申请试用 ---------------- */
 .apply {
   margin-top: 88px;
-  padding: 88px 0;
-  text-align: center;
+  padding: 72px 0 88px;
   box-shadow: inset 0 1px 0 var(--line);
   scroll-margin-top: 60px;
 }
+.apply-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--gutter);
+}
 .apply h2 {
-  margin-bottom: 16px;
   font-size: clamp(26px, 2.8vw, 40px);
   line-height: 1.2;
   letter-spacing: -0.02em;
 }
-.apply p {
-  max-width: 40em;
-  margin-inline: auto;
+.apply-grid p {
   color: var(--muted);
 }
-.apply .actions {
-  justify-content: center;
+.apply-grid p + p {
+  margin-top: 8px;
 }
 .apply .note {
-  margin-top: 24px;
+  margin-top: 16px;
 }
 
 /* ---------------- 正文页与页脚 ---------------- */
 .prose {
-  width: min(800px, calc(100% - 64px));
+  width: min(1120px, calc(100% - 64px));
   min-height: 65vh;
   margin-inline: auto;
   padding: 72px 0;
 }
+.prose > * {
+  max-width: 760px;
+}
 .prose h1 {
   margin-bottom: 12px;
-  font-size: 36px;
+  font-size: 32px;
+  line-height: 1.25;
 }
 .prose .button {
   margin-top: 16px;
@@ -961,15 +1002,24 @@ footer p {
   .hero,
   .guard-grid,
   .faq-grid,
-  .chapter-grid {
+  .chapter-grid,
+  .apply-grid {
     grid-template-columns: minmax(0, 1fr);
     gap: 24px;
+  }
+  .guard-grid > :first-child,
+  .chapter-grid > :first-child,
+  .hero > :first-child {
+    padding-right: 0;
   }
   .steps {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .limit-list {
     grid-template-columns: minmax(0, 1fr);
+  }
+  .limit-list li:nth-child(2) {
+    grid-column: auto;
   }
 }
 @media (max-width: 760px) {
@@ -1003,13 +1053,18 @@ footer p {
     box-shadow: none;
   }
   .stats div {
-    padding: 20px 0;
+    padding: 16px 0;
   }
-  .stats div + div {
-    box-shadow: 0 -1px 0 var(--line);
+  .stats div:last-child {
+    grid-column: auto;
   }
-  .steps li + li {
-    box-shadow: 0 -1px 0 var(--line);
+  .stats div + div::before {
+    top: calc(var(--gutter) / -2);
+    right: 0;
+    bottom: auto;
+    left: 0;
+    border-top: 1px solid var(--line);
+    border-left: 0;
   }
   /* 整张后台缩到手机宽就读不了字：放大后只露出对话和报价单 */
   .shot-main img {
@@ -1019,6 +1074,13 @@ footer p {
   }
   .shot-pair img {
     height: 300px;
+  }
+  .shot-pair figure:first-child .shot {
+    height: 300px;
+  }
+  .shot-pair figure:first-child img {
+    width: min(300px, 100%);
+    height: auto;
   }
   .screens,
   .faq,
@@ -1043,6 +1105,9 @@ footer p {
   .spec-sheet div {
     grid-template-columns: minmax(0, 1fr);
     gap: 2px;
+  }
+  .spec-sheet dd {
+    grid-column: auto;
   }
 }
 @media (prefers-reduced-motion: reduce) {
