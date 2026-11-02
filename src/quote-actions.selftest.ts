@@ -216,6 +216,13 @@ try {
     assert.equal(store.getAnyOrder(order.id), undefined);
     assert.deepEqual(order.approval, approval, '重置不改审批历史');
   }
+  // 客户确认只认有效的已批准单，其余状态不留接受时间。
+  for (const state of ['pending', 'expired', 'rejected', 'withdrawn', 'superseded', 'paid'] as const) {
+    const { session, order } = await fresh(state);
+    const before = JSON.stringify(order);
+    assert.throws(() => actions.recordQuoteAccepted(session, order.id, now), code('invalid'), state);
+    assert.equal(JSON.stringify(order), before, state);
+  }
   console.log('QUOTE MATRIX PASS: 七状态 × 六动作（新单含自动批准），金额不可变、过期撤回仍通知');
 
   for (const first of ['approve', 'reject'] as const) {
