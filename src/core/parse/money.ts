@@ -122,6 +122,8 @@ const AMOUNT_RE_DEC =
   /(?:¥|￥)\s*(\d{1,3}(?:,\d{3})+|\d+)(\.\d{1,2})?(?!\d|[.,]\d)|(?<![万千.\d])(?<!\d,)(\d{1,3}(?:,\d{3})+|\d+)(\.\d{1,2})?\s*(多|余|来)?\s*(元|块)/g;
 /** decimals 模式的不带单位数字：1–2 位小数，只在紧跟价格词时才当金额（TIGHT_HINT_DEC） */
 const BARE_NUM_RE_DEC = /(?<![\d,.万千¥￥])(\d{1,3}(?:,\d{3})+|\d+)(\.\d{1,2})?(?!\d|\.\d)/g;
+/** 价格词后面的数不一定是价：「报价：6213-2RS」「报价：6205ZZ」「单价：8×30」是型号，「单价：1-9件」是数量档。 */
+const NOT_PRICE_AFTER = /^(?:-\d*[A-Za-z]|(?!RMB|CNY|USD|yuan)[A-Za-z]|\s*[×*]\s*\d|\s*[-–—~～]\s*\d+\s*(?:件|个|套|pcs))/i;
 
 /**
  * 「块」后面紧跟的汉字如果属于价格说法而不是名词，这个「块」才是钱：块钱 / 块一个 / 块起 / 块左右 / 块的 / 块包邮。
@@ -218,6 +220,7 @@ function amountHitsDecimal(text: string, options: MoneyParseOptions): AmountHit[
     const after = text.slice(m.index + m[0].length);
     if (/^\s*(?:多|余|来)?\s*(?:元|块|万|千|[wW])/.test(after)) continue; // 带单位的由上面和口语金额那边读
     if (!TIGHT_HINT_DEC.test(text.slice(Math.max(0, m.index - 12), m.index))) continue;
+    if (NOT_PRICE_AFTER.test(after)) continue;
     const ap = /^\s*(?:多|余|来)/.exec(after);
     const rest = ap ? after.slice(ap[0].length) : after;
     if (MEASURE_AFTER.test(rest) || CLASSIFIER_AFTER.test(rest)) continue; // 「报价 3 档」「每个 2 人」

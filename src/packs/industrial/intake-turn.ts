@@ -107,20 +107,38 @@ export function intakePreModel(ctx: TurnContext, sources: Pick<PackSources, 'cur
   return null;
 }
 
-const EXPLICIT = /^(?:确认|确认无误|按这个报|就这些)$/u;
+const COUNT = '[\\d一二两三四五六七八九十]+[行条项]';
+const POLITE = '(?:请|麻烦|帮我|那就|就|直接)*';
+const CALC = '(?:算价|试算|报价|核算|计算|算|报)(?:一下)?';
+const CLAUSE_END = '(?:吧|了|的|就行|即可)?';
+/** 「确认，六行都对，按这个试算吧」：多说半句也是确认。每个分句都得在这张表里，否定、修改、问号都不在表里。 */
+const CONFIRM_CLAUSE = new RegExp(
+  `^(?:确认(?:无误|清单)?)?(?:` +
+    `${POLITE}按这(?:个|份|张|${COUNT})?(?:清单|单子)?(?:来|走|${CALC})?` +
+    `|(?:${COUNT}|行数|数量|型号|清单|全部|和|都)*(?:对|没问题|无误|正确)` +
+    `|${POLITE}${CALC}` +
+    `|就这些` +
+    `)?${CLAUSE_END}$`,
+  'u',
+);
+function explicitConfirm(text: string): boolean {
+  const compact = half(text).replace(/\s+/gu, '');
+  const clauses = compact.split(/[,;。.!~、]+/u).filter(Boolean);
+  return /确认|按这|就这些/u.test(compact) && clauses.every((clause) => CONFIRM_CLAUSE.test(clause));
+}
 const GENERAL = /^(?:对的|是的|没问题|可以)$/u;
 /**
  * R9 确认：明确说法在清单待确认时就算；泛化肯定只有上一条 AI 消息就是这份清单时才算。
- * 都必须整句、允许句末标点，所以带否定或问号的句子天然不匹配。
+ * 泛化肯定必须整句、允许句末标点；明确说法逐分句对表。带否定或问号的句子都不匹配。
  */
 export function confirmsIntake(session: Session, text: string): boolean {
   const intake = pendingIntake(session);
   if (!intake) return false;
+  if (explicitConfirm(text)) return true;
   const sentence = text
     .trim()
     .replace(/[。.!！~～,，；;]+$/u, '')
     .trim();
-  if (EXPLICIT.test(sentence)) return true;
   if (!GENERAL.test(sentence)) return false;
   const reply = session.messages.findLastIndex((message) => message.role === 'agent');
   const message = session.messages[reply];

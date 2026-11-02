@@ -352,6 +352,22 @@ eq(parseMoney('3块6毛5', dec), [{ amount: 3.65, currency: 'CNY', unit: '块' }
 eq(parseMoney('三块六毛五', dec), [{ amount: 3.65, currency: 'CNY', unit: '块' }], '三块六毛五 的币种与单位');
 eq(parseMoney('单价3.80', dec), [{ amount: 3.8, currency: null, unit: '' }], '不带单位不推断币种');
 
+// ---------------- 价格词后面跟的是型号或数量档：16 验收里这样的整句被当成编价删掉 ----------------
+no('您已确认接受该报价：6213-2RS');
+no('有效报价：6211-2RS 密封深沟球轴承');
+no('报价：6205ZZ');
+no('报价 M8×30');
+no('单价：8×30');
+no('单价：1-9件');
+no('单价 1~9 件');
+no('单价：1–9个');
+yes('单价：1-9件 21.10元，10件起 18.99元', [21.1, 18.99]);
+yes('报价：6213-2RS，合计425.70元', [425.7]);
+// 真报价不受影响：裸数、货币缩写和区间端点照旧。
+yes('单价：3.80', [3.8]);
+yes('单价3.8RMB', [3.8]);
+yes('报价 12.5，请确认', [12.5]);
+
 // ---------------- PackRuntime.money 是可选的选项成员（类型层面，typecheck 检查） ----------------
 const noMoney: Pick<PackRuntime, 'money'> = {};
 const withMoney: Pick<PackRuntime, 'money'> = { money: dec };

@@ -11,6 +11,7 @@ import { normalizePartNo } from './normalize.js';
 import { handoffVocab } from './handoff-vocab.js';
 import {
   industrialReplyGuard,
+  PROMISE_FALLBACK,
   industrialFollowupGuard,
   quoteClaimStep,
   rfqTrimStep,
@@ -159,6 +160,7 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
         ...moneyProvenanceStep({
           staticAmounts: (raw) => Object.values(IndustrialPolicySchema.parse(raw).shipping),
           fallback: '金额需要先试算，请告诉我型号和数量。',
+          refusal: PROMISE_FALLBACK,
         }),
         after: ['stage_advance', 'link_whitelist'],
       },

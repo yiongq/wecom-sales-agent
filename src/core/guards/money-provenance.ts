@@ -7,6 +7,8 @@ import { sentenceUnits } from '../parse/sentences.js';
 export interface MoneyProvenanceOptions {
   /** 单位为分；policy 是本轮的已发布快照。 */
   staticAmounts(policy: unknown): readonly number[];
+  /** 拒绝的话带着没出处的金额时换成这一句，不带金额；缺省时和别的句子一样删掉。 */
+  refusal?: string;
 }
 
 /** 组合入口注入读取能力；步骤本身不 import 存储或配置。 */
@@ -15,6 +17,11 @@ export interface MoneyProvenanceSources {
   getOrder(id: string): AnyOrder | undefined;
   followupPolicy(): unknown;
 }
+
+const ASIDE = /[（(][^（）()]*[）)]/g;
+/** 「能不能」「可不可以」是在问，不算拒绝。 */
+const REFUSED = /(?<!能)不能|(?<!可)不可以|无法|没法|没办法|做不到|办不到|给不了|改不了|减不了|降不了|不接受|不支持|不行/;
+const HEADING = /[：:]\s*$/;
 
 function dropUnbacked(
   ctx: FollowupGuardContext,
@@ -36,12 +43,26 @@ function dropUnbacked(
     }
   }
   const values = [...allowed].filter((fen) => Number.isSafeInteger(fen) && fen >= 0).map((fen) => fen / 100);
-  return sentenceUnits(ctx.text)
-    .filter(({ start, end }) =>
-      parseMoney(ctx.text.slice(start, end), money).every(({ amount }) => values.some((value) => Math.abs(value - amount) <= 0.005)),
-    )
-    .map(({ start, end }) => ctx.text.slice(start, end))
-    .join('');
+  const backed = (text: string) => parseMoney(text, money).every(({ amount }) => values.some((value) => Math.abs(value - amount) <= 0.005));
+  const units = sentenceUnits(ctx.text).map(({ start, end }) => ctx.text.slice(start, end));
+  let refused = false;
+  const kept = units.map((unit): string | null => {
+    if (backed(unit)) return unit;
+    // 括号里的旁注编了数：括号外的金额全有出处时只删旁注，别让一句税前价把报价拖走。
+    const trimmed = unit.replace(ASIDE, (aside) => (backed(aside) ? aside : ''));
+    if (trimmed !== unit && backed(trimmed) && parseMoney(trimmed, money).length) return trimmed;
+    if (!options.refusal || refused || !REFUSED.test(unit)) return null;
+    refused = true;
+    return options.refusal + (unit.endsWith('\n') ? '\n' : '');
+  });
+  // 标题下面的内容删掉了，标题也不留。
+  kept.forEach((unit, i) => {
+    if (unit === null || !HEADING.test(unit)) return;
+    const next = units.findIndex((text, j) => j > i && text.trim());
+    if (next >= 0 && kept[next] === null) kept[i] = null;
+  });
+  const text = kept.filter((unit) => unit !== null).join('');
+  return text === ctx.text ? text : text.trimStart();
 }
 
 export function moneyProvenanceStep(

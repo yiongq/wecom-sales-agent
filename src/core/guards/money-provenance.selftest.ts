@@ -90,6 +90,56 @@ await check('请确认。\n单价3.80元！单价3.65元？', '请确认。\n单
 await check('先看规格。单价3.80元。\n', '先看规格。\n', 'drop_sentence');
 await check('  单价3.80元。\n', options.fallback, 'replace');
 
+// 16 验收：括号旁注编了数时只删旁注，括号外全有出处的价格保得住；括号外没有出处还是整句删。
+await check('单价 3.65 元（税前 3.23 元），现货。', '单价 3.65 元，现货。', 'drop_sentence');
+await check('单价 3.65 元（含税，税前 3.23 元）。请确认规格。', '单价 3.65 元。请确认规格。', 'drop_sentence');
+await check('单价 3.65 元（含税）。', '单价 3.65 元（含税）。', 'pass');
+await check('单价 3.65 元（含税）（税前 3.23 元）。', '单价 3.65 元（含税）。', 'drop_sentence');
+await check('单价 3.80 元（税前 3.23 元）。继续核验。', '继续核验。', 'drop_sentence');
+await check('（税前 3.23 元）请确认规格。继续核验。', '继续核验。', 'drop_sentence');
+await check('单价 3.65 元（税前 3.23 元），合计 7.30 元。继续核验。', '继续核验。', 'drop_sentence');
+
+// 16 验收：标题下面的内容删光时标题一起删，不留「试算结果：」；下面还有内容就保留。
+await check('试算结果如下：\n单价 3.80 元。\n请确认规格。', '请确认规格。', 'drop_sentence');
+await check('请确认规格。\n试算结果：单价 3.80 元。', '请确认规格。\n', 'drop_sentence');
+await check('试算结果：\n单价 3.65 元。\n单价 3.80 元。', '试算结果：\n单价 3.65 元。\n', 'drop_sentence');
+await check('试算结果：\n单价 3.80 元。', options.fallback, 'replace');
+await check('试算结果：\n\n单价 3.80 元。\n\n需要起草吗？', '需要起草吗？', 'drop_sentence');
+await check('请核对：\n型号 6205。', '请核对：\n型号 6205。', 'pass');
+
+// 16 验收：拒绝的话带着没出处的金额时换成包给的固定句，客户不至于没等到答复；固定句不带数，放行集合不变。
+const refusal = '价格按数量档位执行。';
+const refusing = loadGuardPipeline([
+  noop('stage_advance'),
+  moneyProvenanceStep({ ...options, refusal }, () => sources),
+  noop('takeover_check:post'),
+  noop('turn_failure'),
+]);
+for (const [text, expected] of [
+  ['抱歉，没法按1元一件报。请确认规格。', `${refusal}请确认规格。`],
+  ['没法按1元一件报\n请确认规格。', `${refusal}\n请确认规格。`],
+  ['550元这个整数额优惠给不了。', refusal],
+  ['我不能改成1元或自行调价。', refusal],
+  ['这个价做不到，90元实在不行。', refusal],
+  // 暗示底价的说法同样不留数。
+  ['不能低于9元。', refusal],
+  // 一条回复只说一次。
+  ['无法按1元报价。也不能给到2元。请确认规格。', `${refusal}请确认规格。`],
+  // 「能不能」「可不可以」是在问，不是拒绝。
+  ['能不能给到1.5元？请确认规格。', '请确认规格。'],
+  ['可不可以按1.5元？请确认规格。', '请确认规格。'],
+  // 不是拒绝的编价照旧删。
+  ['可以按1.5元。请确认规格。', '请确认规格。'],
+  // 拒绝的话里没有金额，或金额都有出处，不用动。
+  ['价格不能改。单价 3.65 元。', '价格不能改。单价 3.65 元。'],
+  ['单价 3.65 元不能改。', '单价 3.65 元不能改。'],
+] as const) {
+  assert.equal((await refusing.run(context(text))).text, expected, text);
+  count++;
+}
+// 包没给固定句时拒绝的话照旧删，行为不变。
+await check('没法按1元报。请确认规格。', '请确认规格。', 'drop_sentence');
+
 // 不放行客户提出的价格；也不读取整库或本轮工具结果里未声明的数。
 const untrusted = context('就按3.80元成交。');
 untrusted.session.messages.push({ role: 'customer', content: '3.80元就买', at: 0 });

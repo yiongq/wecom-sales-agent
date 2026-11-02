@@ -369,7 +369,69 @@ try {
   });
   assert.deepEqual(await prefetched('HS1000 改成5件'), []);
   assert.deepEqual(await prefetched('HS1000 5件，HS1001 6件'), quoted(['HS1000', 5], ['HS1001', 6]));
-  console.log('工业预取：品名夹在中间/无单位/×、多行、精确未给数量查、否定与年份不算数量、重复与未决走旧路、进行中询价只整份重算通过');
+  assert.deepEqual(await prefetched('改成5件'), [], '多行询价不知道改哪一行');
+
+  // 16 验收：客户只改数量、不重写型号时模型常常自己乘，金额被护栏删掉后客户拿不到价格；单行询价由引擎按新数量替算。
+  writeState(fresh, { rfqDraft: { at: now, lines: [{ code: 'part-0', version: 1, match: 'exact', qty: 19 }] } });
+  for (const [text, qty] of [
+    ['20件。', 20],
+    ['6件就够了。', 6],
+    ['改成20件重新试算一下，满20件能到下一档。', 20],
+    ['数量改成20件吧，你按20件重新试算一下。', 20],
+    ['这样吧，凑个整数，按100件重新试算一下，价格能落在100件档位29.4元那档。', 100],
+    ['加到５０件试算', 50],
+  ] as const)
+    assert.deepEqual(await prefetched(text), quoted(['HS1000', qty]), text);
+  for (const text of [
+    '19件。',
+    '改成19件',
+    '再加5件',
+    '再加5件试算一下',
+    '比20件便宜吗',
+    '改成20件比19件便宜吧',
+    '不要20件',
+    '20件不够',
+    '每箱按20件算',
+    '改成10件和20件分别算一下',
+    '改成10件或20件试算',
+    '上次买过20件',
+    '重新算第3个',
+    '重新试算，交期5个工作日',
+    '交期5个工作日',
+    '按第3个算',
+    '这批要得急',
+    '改成0件',
+    '您好',
+  ])
+    assert.deepEqual(await prefetched(text), [], text);
+  // 已批准的报价单同样只有一行时，改数量也替算；数量没变不动。
+  const quote: LineOrder = {
+    v: 2,
+    id: 'ord_requantify',
+    sessionId: fresh.id,
+    status: 'pending_payment',
+    createdAt: now,
+    totalFen: 100,
+    lines: [{ kind: 'part', code: 'part-1', title: 'HS1001', qty: 3, unit: '件', unitPriceFen: 50, amountFen: 100 }],
+    approval: { state: 'approved', requestedAt: now + 1, decidedAt: now + 1 },
+  };
+  orderStore.set(quote.id, quote);
+  fresh.orderIds.push(quote.id);
+  assert.deepEqual(await prefetched('改成8件'), quoted(['HS1001', 8]));
+  assert.deepEqual(await prefetched('3件'), []);
+  orderStore.delete(quote.id);
+  fresh.orderIds.pop();
+  // 目录里已经没有这个条目，或清单待确认：工具闸会拒绝，不替算。
+  writeState(fresh, { rfqDraft: { at: now, lines: [{ code: 'gone', version: 1, match: 'exact', qty: 19 }] } });
+  assert.deepEqual(await prefetched('改成20件'), []);
+  writeState(fresh, {
+    rfqDraft: { at: now, lines: [{ code: 'part-0', version: 1, match: 'exact', qty: 19 }] },
+    rfqIntake: { id: 'int_0123456789ab', at: now, status: 'pending', lines: [{ q: 'HS1000', qty: 2, m: 'exact' }] },
+  });
+  assert.deepEqual(await prefetched('改成20件'), []);
+  console.log(
+    '工业预取：品名夹在中间/无单位/×、多行、精确未给数量查、否定与年份不算数量、重复与未决走旧路、进行中询价只整份重算、单行改数量替算通过',
+  );
 
   const { tenantImage, tenantRenderer, contractInputs, readImageSop } = await import('./config/brand.js');
   const { checkSopContract } = await import('./sop/contract.js');
