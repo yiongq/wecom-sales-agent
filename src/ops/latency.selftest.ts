@@ -84,9 +84,10 @@ async function suite(real: boolean) {
     for (let i = 1; i <= 3; i++) {
       await samples(base + i * 300_000, 8001);
       await check(base + i * 300_000);
+      assert.equal((await row())!.badStreak, i);
+      assert.equal((await row())!.active, i === 3, `第 ${i} 个慢窗`);
+      assert.equal(net.messages.length, i === 3 ? 1 : 0, '前两个慢窗不告警，第三个才告警');
     }
-    assert.equal((await row())!.active, true);
-    assert.equal(net.messages.length, 1, '三个合格慢窗触发一次');
     await check(base + 900_000);
     assert.equal(net.messages.length, 1, '同窗重复无效');
     // 进程内告警表清空，持久 active 的两好窗仍能发恢复。

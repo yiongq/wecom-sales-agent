@@ -212,6 +212,19 @@ try {
     setPolicy({ autoApproveMaxFen: 100000 });
     if (mode === 'stock') active = await updateCatalogItem(ctx, 'part', data.id, { rev: active.rev, set: { stock: 1000 } });
   }
+  // R6 第 3 条按订单行判定：另一行精确也不能替这一行作证。
+  for (const match of ['exact', 'ambiguous', 'none'] as const) {
+    const session = fresh();
+    const second = match === 'exact' ? { match, code: 'part-b', version: 1, qty: 1 } : { match, qty: 1 };
+    writeState(session, { rfqDraft: { at: now, lines: [{ match: 'exact', code: data.id, version: 1, qty: 100 }, second] } });
+    now++;
+    const items = [
+      { code: data.id, qty: 100 },
+      { code: 'part-b', qty: 1 },
+    ];
+    const result = JSON.parse(await registry.execute('create_quote_sheet', { items }, context(session)));
+    assert.equal(result.state, match === 'exact' ? 'approved' : 'pending', match);
+  }
   const inaccessible = { ...config.packSources(), currentCatalog: () => ({ ...config.currentCatalog(), items: {} }) };
   assert.equal(createIndustrialRuntime(inaccessible).quotes!.autoApprovable!(approved.order, auto), false);
   console.log('INDUSTRIAL AUTO PASS: 800元/1000元阈值、全现货、exact批准；三条件各自失败及读不到库存均待审');
@@ -612,6 +625,28 @@ try {
     assert.equal(await acceptanceJobs(order.id), 1);
     console.log('MODEL HANDOFF PASS: 回复照发、接受记下、顾问通知排上');
   }
+
+  // 预取判定有效之后还隔着模型调用：这期间报价失效，不记接受、不通知顾问。这一轮怎么收场不是这里的契约。
+  for (const mode of ['withdrawn', 'superseded'] as const) {
+    const session = fresh();
+    await estimate(session);
+    const { order } = await make(session);
+    now++;
+    const action = mockAction;
+    mockAction = async (opts) => {
+      if (mode === 'withdrawn') await actions.withdrawQuote(order.id, actor);
+      else await opts.executeTool('create_quote_sheet', { items: [{ code: data.id, qty: 101 }] });
+      return '可以开专票。';
+    };
+    await handleMessage(session.id, '确认下单，能开专票吗', 'wecom').catch((error: unknown) => {
+      assert.ok(error instanceof actions.QuoteStateError, mode);
+    });
+    mockAction = action;
+    assert.equal(quoteState(order, now), mode === 'withdrawn' ? 'invalid' : 'superseded');
+    assert.equal(order.approval!.acceptedAt, undefined, mode);
+    assert.equal(await acceptanceJobs(order.id), 0, mode);
+  }
+  console.log('STALE ACCEPT PASS: 模型调用期间被撤回或取代的报价不记接受、不通知');
 
   // 16 复核：模型说报价单已提交却没调工具。客户要了就补建，照常人审；没要就改回实话。
   {

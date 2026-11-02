@@ -271,6 +271,7 @@ assert.deepEqual(draftParts(session, { ...sources, configMode: () => 'db' }), []
 for (const line of [
   { match: 'exact', qty: 1 },
   { match: 'none', code: 'a', qty: 1 },
+  { match: 'ambiguous', code: 'a', qty: 1 },
   { match: 'exact', code: 'a', version: 0, qty: 1 },
   { match: 'none', qty: 0 },
 ])

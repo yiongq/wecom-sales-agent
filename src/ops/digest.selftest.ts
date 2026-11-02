@@ -270,6 +270,19 @@ async function digestSuite(real: boolean) {
       await run(t + 600_000);
       assert.equal(net.messages.length, 1, 'unknown 不重试');
     }
+    // 认领已提交、执行体却没拿到结果时任务会重试：上一次发没发不知道，只能归 unknown，不再发。
+    await clear();
+    await schedule();
+    await fx.query("update ops_daily_reports set status='sending', claim_token=gen_random_uuid() where tenant_id=$1 and day=$2", [
+      fx.host.id,
+      day,
+    ]);
+    await run(t);
+    assert.equal((await report())!.status, 'unknown');
+    assert.equal((await report())!.errorCode, 'commit_failed');
+    await schedule();
+    await run(t + 600_000);
+    assert.equal(net.messages.length, 0, 'sending 提交结果不明时不重发');
     await clear();
     await schedule();
     net.set({ status: 400 });
