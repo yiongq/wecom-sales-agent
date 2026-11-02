@@ -212,6 +212,30 @@ try {
   runtime.preModel = () => ({ text: '非标需求由顾问继续确认。', fixedId: 'fixture.nonstandard', statePatch: { quoteAccepted: true } });
   await assert.rejects(handleMessage('wecom:wmENoSchema', '核验请求', 'wecom'), /schema/);
   runtime.sessionState = stateSchema;
+  // 没给 quoteAcceptStaleText 的包：报价在发送前失效时回 fallbackReply，不说已记下，也不写状态。
+  const staleSession = store.getOrCreateSession('wecom:wmEStale', 'wecom');
+  const staleQuote = await createLineOrder(staleSession, [{ kind: 'widget', code: 'w-page', qty: 100 }]);
+  assert.ok('order' in staleQuote);
+  await approveQuote(staleQuote.order.id, actor);
+  const [fixedBefore, preModelBefore] = [runtime.fixedReplies, runtime.preModel];
+  runtime.fixedReplies = fixedBefore!.map((entry) =>
+    entry.id === 'fixture.accepted'
+      ? {
+          ...entry,
+          samples: async () => {
+            await withdrawQuote(staleQuote.order.id, actor);
+            return entry.samples();
+          },
+        }
+      : entry,
+  );
+  runtime.preModel = originalPreModel;
+  const staleReply = await handleMessage(staleSession.id, '确认报价', 'wecom');
+  runtime.fixedReplies = fixedBefore;
+  runtime.preModel = preModelBefore;
+  assert.equal(staleReply.text, '请告诉我需要核验的内容');
+  assert.equal(staleSession.packState?.quoteAccepted, undefined);
+  assert.equal(staleQuote.order.approval!.acceptedAt, undefined);
   const realError = console.error;
   const errors: string[] = [];
   try {

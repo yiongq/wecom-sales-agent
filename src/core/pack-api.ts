@@ -894,6 +894,8 @@ export function boundPack(): PackBinding | null {
 export interface EnginePackHooks {
   quoteRejectedText?(order: LineOrder): string;
   quoteWithdrawnText?(order: LineOrder): string;
+  /** 客户确认的报价在发送前失效时，这一轮对客户说的话；不提供时用 fallbackReply。 */
+  quoteAcceptStaleText?(session: Session): string;
   afterSales?(input: AfterSalesInput): AfterSalesStep | null;
   isComplaint(text: string): boolean;
   isHandoffIntent(text: string): boolean;

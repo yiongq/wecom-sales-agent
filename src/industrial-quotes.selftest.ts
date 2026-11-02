@@ -30,7 +30,7 @@ enterTenantScopeForTest(rt);
 const testing = await tenancy.withoutTenantScope(() => import('./db/testing.js'));
 const config = await import('./config/source.js');
 const store = await import('./store.js');
-const { bindPack, createLineOrder, partsOf, quoteState } = await import('./core/pack-api.js');
+const { bindPack, createLineOrder, orderDisplay, partsOf, quoteState, quoteValidUntil } = await import('./core/pack-api.js');
 await import('./core/engine/sources.js');
 const { insertTenant } = await import('./db/repo/tenants.js');
 const { createCatalogItem, activateCatalogItem, updateCatalogItem } = await import('./config/catalog.js');
@@ -80,6 +80,8 @@ try {
   const { app } = await import('./server.js');
   const { handleMessage } = await import('./core/engine/index.js');
   const actions = await import('./payment/orders.js');
+  const { __llmTest } = await import('./core/llm/client.js');
+  const { onTurnEnd } = await import('./trace/recorder.js');
   const takeover = await import('./handoff/takeover.js');
   const sent: { id: string; text: string }[] = [];
   takeover.setReplyTransport(async (id, text) => {
@@ -626,27 +628,146 @@ try {
     console.log('MODEL HANDOFF PASS: 回复照发、接受记下、顾问通知排上');
   }
 
-  // 预取判定有效之后还隔着模型调用：这期间报价失效，不记接受、不通知顾问。这一轮怎么收场不是这里的契约。
-  for (const mode of ['withdrawn', 'superseded'] as const) {
+  // 判定有效之后还隔着模型调用和异步步骤：这期间报价失效，不记接受、不通知顾问、不写确认状态。
+  // 这一轮照常收场，发给客户的和会话记录是同一句，模型说的「已确认」不能发出去。
+  const staleClaim = '好的，已确认您接受这份报价，可以开专票。';
+  const staleText = '这份报价刚有变动，您这次确认没有生效。需要的话请告诉我型号和数量，我重新算价。';
+  const askAgain = '这份报价还需要您明确确认：请回复「接受这份报价」，我再通知顾问安排付款和发货。';
+  const stateAfter = {
+    withdrawn: 'invalid',
+    superseded: 'superseded',
+    expired: 'expired',
+    paid: 'paid',
+    filtered: 'invalid',
+    repeat: 'invalid',
+  };
+  const turns: import('./trace/recorder.js').FinishedTurn[] = [];
+  const stopTurns = onTurnEnd((turn) => turns.push(turn));
+  for (const mode of ['withdrawn', 'superseded', 'expired', 'paid', 'filtered', 'repeat'] as const) {
     const session = fresh();
     await estimate(session);
     const { order } = await make(session);
     now++;
+    if (mode === 'repeat') await handleMessage(session.id, '确认下单', 'wecom');
+    const before = { confirmedQuoteAt: readState(session).confirmedQuoteAt, acceptedAt: order.approval!.acceptedAt };
+    const resume = now;
     const action = mockAction;
     mockAction = async (opts) => {
-      if (mode === 'withdrawn') await actions.withdrawQuote(order.id, actor);
-      else await opts.executeTool('create_quote_sheet', { items: [{ code: data.id, qty: 101 }] });
-      return '可以开专票。';
+      if (mode === 'superseded') await opts.executeTool('create_quote_sheet', { items: [{ code: data.id, qty: 101 }] });
+      else if (mode === 'expired') now = quoteValidUntil(order) + 1;
+      else if (mode === 'paid') await actions.markPaidByAdvisor(order.id, actor);
+      else await actions.withdrawQuote(order.id, actor);
+      if (mode === 'filtered') throw __llmTest.httpError(400, '{"code":1301}');
+      return staleClaim;
     };
-    await handleMessage(session.id, '确认下单，能开专票吗', 'wecom').catch((error: unknown) => {
-      assert.ok(error instanceof actions.QuoteStateError, mode);
-    });
+    const reply = await handleMessage(session.id, '确认下单，能开专票吗', 'wecom');
     mockAction = action;
-    assert.equal(quoteState(order, now), mode === 'withdrawn' ? 'invalid' : 'superseded');
-    assert.equal(order.approval!.acceptedAt, undefined, mode);
-    assert.equal(await acceptanceJobs(order.id), 0, mode);
+    assert.equal(quoteState(order, now), stateAfter[mode], mode);
+    const latest = store.getAnyOrder(readState(session).lastQuoteId as string) as LineOrder;
+    const expected =
+      mode === 'paid'
+        ? staleClaim
+        : mode === 'superseded'
+          ? `报价单：/quote/${latest.id}\n合计${orderDisplay(latest).totalText}\n${askAgain}`
+          : staleText;
+    assert.equal(reply.text, expected, mode);
+    assert.equal(session.messages.at(-1)!.content, reply.text, mode);
+    if (mode === 'superseded')
+      assert.deepEqual(
+        partsOf(reply.text).map((part) => part.url),
+        [`/quote/${latest.id}`],
+      );
+    if (mode === 'superseded')
+      assert.deepEqual((session.messages.at(-1) as unknown as Record<string, unknown>).quoteStates, { [latest.id]: 'approved' });
+    assert.equal(readState(session).confirmedQuoteAt, before.confirmedQuoteAt, mode);
+    assert.equal(order.approval!.acceptedAt, before.acceptedAt, mode);
+    assert.equal(await acceptanceJobs(order.id), mode === 'repeat' ? 1 : 0, mode);
+    assert.equal(
+      turns.at(-1)!.turn.guards.some((event) => event.guard === 'quote_accept_stale' && event.action === 'replace'),
+      mode !== 'paid',
+      mode,
+    );
+    now = resume + 1;
   }
-  console.log('STALE ACCEPT PASS: 模型调用期间被撤回或取代的报价不记接受、不通知');
+
+  // 确定性路径：判定之后还要等核对固定句。
+  {
+    const session = fresh();
+    await estimate(session);
+    const { order } = await make(session);
+    now++;
+    const fixed = runtime.fixedReplies!.find((entry) => entry.id === 'industrial.accepted')!;
+    const samples = fixed.samples;
+    fixed.samples = async () => {
+      await actions.withdrawQuote(order.id, actor);
+      return samples();
+    };
+    const reply = await handleMessage(session.id, '确认下单', 'wecom');
+    fixed.samples = samples;
+    assert.equal(reply.text, staleText);
+    assert.equal(session.messages.at(-1)!.content, reply.text);
+    assert.equal(readState(session).confirmedQuoteAt, undefined);
+    assert.equal(order.approval!.acceptedAt, undefined);
+    assert.equal(await acceptanceJobs(order.id), 0);
+  }
+
+  // 判定和记接受是同一个时刻：时钟走过有效期末尾时，这一轮要么记下要么说实话，不能整轮报错。
+  {
+    const clock = Date.now;
+    const action = mockAction;
+    for (const [text, filtered] of [
+      ['确认下单', false],
+      ['确认下单，能开专票吗', false],
+      ['确认下单，能开专票吗', true],
+    ] as const) {
+      mockAction = async () => {
+        if (filtered) throw __llmTest.httpError(400, '{"code":1301}');
+        return '可以开专票。';
+      };
+      const outcomes = new Set<boolean>();
+      for (let margin = 0; margin < 200; margin++) {
+        const label = `${text} ${filtered} ${margin}`;
+        const session = fresh();
+        await estimate(session);
+        const { order } = await make(session);
+        const resume = ++now;
+        await store.drainStore(5000);
+        now = quoteValidUntil(order) - margin;
+        Date.now = () => now++;
+        const reply = await handleMessage(session.id, text, 'wecom').finally(() => {
+          Date.now = clock;
+        });
+        const recorded = order.approval!.acceptedAt !== undefined;
+        outcomes.add(recorded);
+        assert.notEqual(reply.text, recorded ? staleText : '好的，顾问会尽快联系您确认付款和发货', label);
+        assert.equal(session.messages.at(-1)!.content, reply.text, label);
+        assert.equal(readState(session).confirmedQuoteAt !== undefined, recorded, label);
+        assert.equal(await acceptanceJobs(order.id), recorded ? 1 : 0, label);
+        now = resume + 1;
+      }
+      assert.equal(outcomes.size, 2, `${text} ${filtered}：有效期末尾两种结果都要走到`);
+    }
+    mockAction = action;
+  }
+
+  // 复核只认本会话的这张报价；替换用的固定句已登记。
+  {
+    const session = fresh();
+    await estimate(session);
+    const { order } = await make(session);
+    assert.equal(actions.acceptanceState(session, order.id, now), 'approved');
+    assert.equal(actions.acceptanceState({ ...session }, order.id, now), 'invalid');
+    assert.equal(actions.acceptanceState(fresh(), order.id, now), 'invalid');
+    assert.equal(actions.acceptanceState(session, 'ord_missing', now), 'invalid');
+    const plain = await createLineOrder(session, [{ kind: 'part', code: data.id, qty: 1 }], { approval: false });
+    assert.ok('order' in plain);
+    assert.equal(actions.acceptanceState(session, plain.order.id, now), 'invalid');
+    assert.throws(() => actions.recordQuoteAccepted(session, plain.order.id), actions.QuoteStateError);
+    const samples = await runtime.fixedReplies!.find((entry) => entry.id === 'industrial.quote_changed')!.samples();
+    assert.ok(samples.every((sample) => sample.text === staleText));
+  }
+  stopTurns();
+  console.log('STALE ACCEPT PASS: 发送前报价失效：不记接受、不通知、不写确认状态，回复说实话且与会话记录一致');
 
   // 16 复核：模型说报价单已提交却没调工具。客户要了就补建，照常人审；没要就改回实话。
   {

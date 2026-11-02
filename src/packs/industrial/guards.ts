@@ -1,11 +1,13 @@
 // R8 / R9：只读会话与已发布配置；跟进版本只删，不调用业务工具。
 import {
+  orderDisplay,
   partsOf,
   sentenceUnits,
   type FollowupGuardContext,
   type GuardStep,
   type PackSources,
   type ReplyGuardContext,
+  type Session,
 } from '../../core/pack-api.js';
 import { latestQuoteCandidate, expiredQuoteAwaitingConfirmation } from './quote-candidate.js';
 import { mentionedParts, unresolvedParts, FIXED } from './turn.js';
@@ -22,6 +24,7 @@ export const PAYMENT_FALLBACK = '收款账户以顾问提供的公司账户为�
 export const NOTE_FALLBACK = '发货和备注要求请和顾问确认。';
 export const NOT_SUBMITTED = '报价单还没有提交，需要的话请告诉我，我马上起草。';
 export const ACCEPT_ASK = '这份报价还需要您明确确认：请回复「接受这份报价」，我再通知顾问安排付款和发货。';
+export const QUOTE_CHANGED = '这份报价刚有变动，您这次确认没有生效。需要的话请告诉我型号和数量，我重新算价。';
 export const TRIM_FALLBACK = '询价明细较多，需要的话我出一份正式报价单。';
 export const trimNote = (n: number): string => `另外 ${n} 行已算好，需要的话我出一份正式报价单`;
 const nonAssertion =
@@ -128,6 +131,13 @@ function evidence(ctx: FollowupGuardContext, sources: PackSources): Evidence[] {
 
 const acceptPending = (quote: ReturnType<typeof latestQuoteCandidate>): boolean =>
   quote?.kind === 'quote' && quote.state === 'approved' && quote.order.approval?.acceptedAt === undefined;
+/** 客户确认的报价发送前失效：被新批准的单取代就发新单请客户确认，其余说明这次确认没生效。不提顾问会联系：这条路不通知顾问。 */
+export function staleAcceptText(session: Session): string {
+  const quote = latestQuoteCandidate({ ...session, packState: {} }, Date.now());
+  return quote?.kind === 'quote' && acceptPending(quote)
+    ? `报价单：/quote/${quote.order.id}\n合计${orderDisplay(quote.order).totalText}\n${ACCEPT_ASK}`
+    : QUOTE_CHANGED;
+}
 const unitsOf = (text: string): string[] => sentenceUnits(text).map(({ start, end }) => text.slice(start, end));
 /** 说了没发生的事：整句换成实话，多句只换一次，其余内容留着。 */
 function correctClaim(text: string, claim: RegExp, truth: string): string {

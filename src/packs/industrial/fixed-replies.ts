@@ -12,6 +12,7 @@ import {
   NOTE_FALLBACK,
   NOT_SUBMITTED,
   ACCEPT_ASK,
+  QUOTE_CHANGED,
   TRIM_FALLBACK,
   trimNote,
 } from './guards.js';
@@ -59,6 +60,13 @@ export const fixedReplies: readonly FixedReply[] = [
     producedBy: { outside: 'preModel 确定性出口，核心校验全文及副作用' },
     samples: () => FIXED_REPLY_MODES.map((mode) => ({ mode, text })),
   })),
+  {
+    id: 'industrial.quote_changed',
+    source: 'src/packs/industrial/guards.ts',
+    kind: 'plain',
+    producedBy: { outside: '发送前最后一步由引擎整条替换，不再经过出口护栏' },
+    samples: () => FIXED_REPLY_MODES.map((mode) => ({ mode, text: QUOTE_CHANGED })),
+  },
   ...[
     ['industrial.empty', '请告诉我型号和数量。', 'rfq_trim'],
     ['industrial.tax', taxInvoiceText(defaultIndustrialPolicy), 'industrial_claims'],
