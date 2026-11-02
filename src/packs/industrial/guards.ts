@@ -21,6 +21,7 @@ export const PROMISE_FALLBACK = '价格按数量档位执行，额外优惠需�
 export const PAYMENT_FALLBACK = '收款账户以顾问提供的公司账户为准。';
 export const NOTE_FALLBACK = '发货和备注要求请和顾问确认。';
 export const NOT_SUBMITTED = '报价单还没有提交，需要的话请告诉我，我马上起草。';
+export const ACCEPT_ASK = '这份报价还需要您明确确认：请回复「接受这份报价」，我再通知顾问安排付款和发货。';
 export const TRIM_FALLBACK = '询价明细较多，需要的话我出一份正式报价单。';
 export const trimNote = (n: number): string => `另外 ${n} 行已算好，需要的话我出一份正式报价单`;
 const nonAssertion =
@@ -52,6 +53,9 @@ const noteClaim =
   /已(?:经)?(?:同步|写入|加了?|添加|注明|记下|记录|登记)[^，,。；;\n]{0,8}备注|已(?:经)?备注|备注已(?:经)?(?:注明|写|加|同步)|已(?:在|把)[^，,。；;\n]{0,10}备注/;
 const quoteSubmitted =
   /(?:报价单|单据)[^，,。；;\n]{0,8}已(?:经)?(?:提交|生成|起草|创建|建好|送审)|已(?:经)?(?:为您|帮您|给您)?(?:提交|生成|起草|创建)[^，,。；;\n]{0,10}(?:报价单|单据)|(?:报价单|单据)[^，,。；;\n]{0,6}(?:审核中|待审|待顾问审核)/;
+// 只有 acceptance.ts 记下才算接受；模型说客户已确认，顾问却收不到通知。
+const acceptClaim =
+  /您已(?:经)?确认|已(?:经)?(?:收到|记下|记录)您?的?(?:确认|接受)|已(?:为您)?(?:确认|记下)(?:采购|下单|您)|已记录您接受|确认您接受|(?:订单|采购)已(?:经)?(?:进入|确认|受理|开始)|进入[^，,。；;\n]{0,4}流程|已按[^，,。；;\n]{0,14}(?:确认|安排|下单)/;
 const wantsQuoteSheet = /(?:出|起草|生成|做|开|发|要)[^，,。；;\n]{0,6}报价单|正式报价/;
 const declinesQuoteSheet = /暂不|先别|不用|不要|不需要|不出/;
 const hasModel = (text: string, model: string): boolean => normalizePartNo(text).includes(normalizePartNo(model));
@@ -114,6 +118,23 @@ function evidence(ctx: FollowupGuardContext, sources: PackSources): Evidence[] {
   return [...latest.values()];
 }
 
+const acceptPending = (quote: ReturnType<typeof latestQuoteCandidate>): boolean =>
+  quote?.kind === 'quote' && quote.state === 'approved' && quote.order.approval?.acceptedAt === undefined;
+const unitsOf = (text: string): string[] => sentenceUnits(text).map(({ start, end }) => text.slice(start, end));
+/** 说了没发生的事：整句换成实话，多句只换一次，其余内容留着。 */
+function correctClaim(text: string, claim: RegExp, truth: string): string {
+  let replaced = false;
+  return unitsOf(text)
+    .map((unit) => {
+      if (!claim.test(unit)) return unit;
+      if (replaced) return '';
+      replaced = true;
+      return truth;
+    })
+    .join('')
+    .trim();
+}
+
 // 09 R1：工具账本证明金额出处，试算标识证明身份；待审正式金额不能借账本放行。
 const moneyText = /(?:[¥￥]\s*\d|\d+(?:\.\d+)?\s*元)/;
 function quoteBehaviorText(ctx: FollowupGuardContext, sources: PackSources, followup: boolean): string {
@@ -124,10 +145,13 @@ function quoteBehaviorText(ctx: FollowupGuardContext, sources: PackSources, foll
     const units = sentenceUnits(text).map(({ start, end }) => text.slice(start, end));
     if (units.some(unsafe)) text = followup ? units.filter((unit) => !unsafe(unit)).join('') : FIXED.pending;
   }
-  if (followup && !quote && quoteSubmitted.test(text))
-    text = sentenceUnits(text)
-      .map(({ start, end }) => text.slice(start, end))
+  if (followup && !quote)
+    text = unitsOf(text)
       .filter((unit) => !quoteSubmitted.test(unit))
+      .join('');
+  if (followup && acceptPending(quote))
+    text = unitsOf(text)
+      .filter((unit) => !acceptClaim.test(unit))
       .join('');
   if (quote?.kind === 'quote' && quote.state === 'expired') {
     if (followup) {
@@ -393,14 +417,21 @@ export function trimRfq(text: string, models: readonly string[], followup = fals
   }
   return render();
 }
-/** 模型说报价单提交了却没建单：客户空等，顾问也看不到。客户这轮要了正式报价就补建，建出来照常人审；否则改回实话。 */
+/** 模型说报价单提交了却没建单：客户空等，顾问也看不到。客户这轮要了正式报价就补建，建出来照常人审；否则改回实话。
+ *  说客户已确认报价却没记下接受：不替客户决定，改成请客户明确确认。 */
 export function quoteClaimStep(): GuardStep<ReplyGuardContext> {
   return {
     id: 'quote_claim',
     after: ['takeover_check:pre'],
     async run(ctx) {
-      if (ctx.session.handedOver || !quoteSubmitted.test(ctx.text)) return { action: 'pass' };
-      if (latestQuoteCandidate({ ...ctx.session, packState: {} }, Date.now())) return { action: 'pass' };
+      if (ctx.session.handedOver) return { action: 'pass' };
+      const quote = latestQuoteCandidate({ ...ctx.session, packState: {} }, Date.now());
+      if (acceptPending(quote) && acceptClaim.test(ctx.text)) {
+        const text = correctClaim(ctx.text, acceptClaim, ACCEPT_ASK);
+        ctx.recordGuard('quote_claim', ctx.text, text, 'replace');
+        return { action: 'replace', text };
+      }
+      if (quote || !quoteSubmitted.test(ctx.text)) return { action: 'pass' };
       const lines = readState(ctx.session).rfqDraft?.lines ?? [];
       const repairable =
         !ctx.toolSources.some((call) => call.name === 'create_quote_sheet') &&
@@ -424,17 +455,7 @@ export function quoteClaimStep(): GuardStep<ReplyGuardContext> {
           return { action: 'replace', text };
         }
       }
-      let replaced = false;
-      const text = sentenceUnits(ctx.text)
-        .map(({ start, end }) => ctx.text.slice(start, end))
-        .map((unit) => {
-          if (!quoteSubmitted.test(unit)) return unit;
-          if (replaced) return '';
-          replaced = true;
-          return NOT_SUBMITTED;
-        })
-        .join('')
-        .trim();
+      const text = correctClaim(ctx.text, quoteSubmitted, NOT_SUBMITTED);
       ctx.recordGuard('quote_claim', ctx.text, text, 'replace');
       return { action: 'replace', text };
     },
