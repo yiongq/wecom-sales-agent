@@ -2160,6 +2160,24 @@ check('应急话术与 spec 逐字相同', __triggerTest.EMERGENCY_REPLY === EME
       s7.messages.at(-1)?.content === tk.TAKEN_OVER_NOTE,
     json(s7.messages.slice(-3)),
   );
+  // 模型还在生成时有人接手：这一轮不发回复，后面的工具调用也不再执行，不能替顾问建单。
+  const s7a = fresh('TK7A', 'discovery');
+  const ledgerBefore = requests.length;
+  armed = { sid: s7a.id, act: () => tk.takeover(s7a.id, A) };
+  const r7a = await say(s7a.id, '就这条，帮我下单', [
+    { toolCalls: [{ name: 'search_routes', args: { destination: '云南' } }] },
+    { toolCalls: [{ name: 'create_order', args: { routeId: 'r-yunnan-mid', travelers: 2, departDate: '2026-12-10' } }] },
+    { content: '订单已创建' },
+  ]);
+  check(
+    '接手代次：接手之后模型再调建单工具 → 不执行，告诉模型已接手，这一轮不发',
+    r7a.silent === true &&
+      s7a.orderIds.length === 0 &&
+      !s7a.messages.some((m) => m.content.includes('订单已创建')) &&
+      s7a.messages.at(-1)?.content === tk.TAKEN_OVER_NOTE &&
+      JSON.stringify(requests.slice(ledgerBefore).at(-1)).includes(tk.TAKEN_OVER_NOTE),
+    json({ orders: s7a.orderIds, messages: s7a.messages.slice(-2) }),
+  );
   // 模型自己调了转人工、同时又有人接手：同样不发（之前只看 handedOver，会把模型那句转接话术发出去）
   const s8 = fresh('TK8', 'discovery');
   armed = { sid: s8.id, act: () => void 0 };

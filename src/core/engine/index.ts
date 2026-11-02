@@ -874,6 +874,8 @@ function turnTools(state: TurnState) {
         execute: async (args: unknown, ctx: TurnToolContext) => {
           ctx.cancel?.throwIfAborted();
           if (state.opts.stillCurrent && !state.opts.stillCurrent()) throw new Error('sandbox_binding_changed');
+          // 这一轮里有人接手：回复本来就不发，建单、换报价这些也不能再做（不变量 28）。
+          if (state.takenOver()) return JSON.stringify({ error: TAKEN_OVER_NOTE });
           ctx.hints = runtime.engineHooks.hintsFor(def.function.name, ctx);
           const result = await spec.execute(args, ctx);
           ctx.cancel?.throwIfAborted();
