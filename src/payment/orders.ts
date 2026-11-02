@@ -194,11 +194,21 @@ export async function rejectQuote(orderId: string, actor: Actor, reason: string)
   return order;
 }
 
+function acceptanceTarget(session: import('../types.js').Session, orderId: string): LineOrder | null {
+  const order = getAnyOrder(orderId);
+  return order && isLineOrder(order) && order.sessionId === session.id && getSession(session.id) === session ? order : null;
+}
+
+/** 这张报价此刻的状态，只读。引擎在发送前用它复核，再用同一个 at 调 recordQuoteAccepted。 */
+export function acceptanceState(session: import('../types.js').Session, orderId: string, at: number): ReturnType<typeof quoteState> {
+  const order = acceptanceTarget(session, orderId);
+  return order ? quoteState(order, at) : 'invalid';
+}
+
 /** R8：同步段内把首次确认时间和提醒一起入会话快照。R11 的确定性回复复用此入口。 */
 export function recordQuoteAccepted(session: import('../types.js').Session, orderId: string, at = Date.now()): boolean {
-  const order = getAnyOrder(orderId);
-  if (!order || !isLineOrder(order) || !order.approval || order.sessionId !== session.id || getSession(session.id) !== session)
-    throw new QuoteStateError('invalid');
+  const order = acceptanceTarget(session, orderId);
+  if (!order?.approval) throw new QuoteStateError('invalid');
   if (order.approval.acceptedAt != null) return false;
   if (quoteState(order, at) !== 'approved') throw new QuoteStateError('invalid');
   if (storeLagging(session.id)) throw new StoreLaggingError(session.id);
