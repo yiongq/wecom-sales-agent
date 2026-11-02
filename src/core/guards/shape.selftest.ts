@@ -98,6 +98,26 @@ assert.deepEqual(trim(short), { text: short, trimmed: 0 });
   const fresh = trim('好的～\n每人 ¥19,800 起\n祝您愉快\n期待回复\n随时找我', { lineCap: 3, priorAmounts: new Set(['16800']) });
   assert.ok(fresh.text.includes('¥19,800'));
 }
+// 金额首现句命中可删规则、或是多余问句，也不删；同一金额在这条回复里再出现才可删
+{
+  const bless = trim('祝您 ¥19,800 的行程愉快\n好的～\n第一点\n第二点');
+  assert.deepEqual(bless, { text: '祝您 ¥19,800 的行程愉快\n好的～\n第一点\n第二点', trimmed: 0 }, '可删句里的新金额');
+  const question = trim('每人 ¥19,800 这个价可以吗？\n第一点\n您几位出行？\n什么时候出发？');
+  assert.equal(question.text, '每人 ¥19,800 这个价可以吗？\n第一点\n什么时候出发？', '多余问句里的新金额');
+  const twice = trim('祝您 ¥19,800 的行程愉快\n好的～\n第一点\n祝这个 ¥19,800 的价合适');
+  assert.equal(twice.text, '祝您 ¥19,800 的行程愉快\n好的～\n第一点', '只保护第一次出现');
+}
+// 复述例外只看最近 3 条回复：更早报过的金额算首现；最近报过、客户又问价的也受保护
+{
+  const text = '祝您 ¥16,800 起的行程愉快\n好的～\n第一点\n第二点';
+  const priorAmounts = new Set(['16800']);
+  const older = trim(text, { priorReplies: ['每人 ¥16,800 起', '好的', '好的呀', '好的呢'], priorAmounts });
+  assert.ok(older.text.includes('¥16,800'), '第 4 条之前报的不算复述');
+  const recent = trim(text, { priorReplies: ['每人 ¥16,800 起'], priorAmounts });
+  assert.ok(!recent.text.includes('¥16,800'), '最近报过又没问价，算复述可删');
+  const asked = trim(text, { priorReplies: ['每人 ¥16,800 起'], priorAmounts, inputText: '多少钱' });
+  assert.ok(asked.text.includes('¥16,800'), '问价时不算复述');
+}
 // 收尾轮：结尾句受保护，祝福不删（非收尾轮才删）
 {
   const text = '好的，您先商量～\n祝您生活愉快！\n有问题随时在微信上问我～\n期待您的消息～';
@@ -114,6 +134,11 @@ assert.deepEqual(trim(short), { text: short, trimmed: 0 });
 }
 // 不会删光：只剩一个单位时不删
 assert.equal(trim('祝您愉快！期待回复！随时联系！\n祝你好\n祝你好呀\n祝好\n祝好呀', { lineCap: 1 }).text.trim() !== '', true);
+// 行数删到 1 行就不超了，能走到这条线的只有字数：最后一句本身超字数又可删，也要留下
+{
+  const huge = `祝${'好'.repeat(320)}！`;
+  assert.deepEqual(trim(`${huge}\n期待回复！`), { text: huge, trimmed: 1 });
+}
 
 // 方案书链接的 ?v= 版本后缀不断句
 {
