@@ -108,6 +108,8 @@ function child(args: string[]) {
       DATABASE_OWNER_URL: 'postgresql://127.0.0.1:1/sim',
       CONFIG_SOURCE: 'db',
       TMPDIR: path.resolve(root, 'tmp'),
+      // 部署门禁在 git archive 解出的目录里跑，没有 .git，用下面造的一次性仓库。
+      GIT_DIR: path.join(root, 'git', '.git'),
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
