@@ -35,8 +35,8 @@ export const SOP_CHECK_LABEL: Readonly<Record<ViolationCode, string>> = {
   unknown_tool: '工具名都存在',
   unknown_field: '字段名都存在',
   consistency: CONSISTENCY_CHECK_LABEL,
-  policy_invalid: '退改条款有效',
-  policy_mismatch: '话术与退改条款一致',
+  policy_invalid: '政策条款有效',
+  policy_mismatch: '话术与政策条款一致',
   over_budget: '字数在额度内',
 };
 

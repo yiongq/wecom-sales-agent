@@ -8535,20 +8535,49 @@ const byIdCalls = (id?: string): number =>
   await guest.unmount();
 }
 
+// 工业包没有退款规则：这两项是 null，不能显示成「0 元」「未开启」。
+{
+  const m = await rootFor(
+    <PolicyCard
+      published={{ clauses: [{ id: 'fees', title: '询价政策', text: '报价含税' }], approvalThresholdYuan: null, selfService: null }}
+    />,
+  );
+  check('政策卡：包没有的事实不显示', !m.box.querySelector('.sop-policy-facts') && text(m.box).includes('报价含税'));
+  await m.render(
+    <PolicyCard
+      published={{
+        clauses: [
+          { id: 'a', title: '询价政策', text: '报价含税' },
+          { id: 'b', title: '询价政策', text: '运费0.00元' },
+        ],
+        approvalThresholdYuan: null,
+        selfService: null,
+      }}
+    />,
+  );
+  check(
+    '政策卡：连续同标题只写一次',
+    m.box.querySelectorAll('.sop-policy-clauses strong').length === 1 && text(m.box).includes('运费0.00元'),
+  );
+  await m.render(<PolicyCard published={{ clauses: [], approvalThresholdYuan: 0, selfService: null }} />);
+  check('政策卡：阈值 0 是事实要显示，缺的另一项不显示', text(m.box).includes('审批阈值') && !text(m.box).includes('自助退款'));
+  await m.unmount();
+}
+
 // 07 R4：政策卡只读；出处、原句、金额单位与草稿差异完整呈现。
 {
   const published = {
-    clauses: [{ id: 'd30', title: '退改条款第1条', text: '出发前30天及以上取消，退全款' }],
+    clauses: [{ id: 'd30', title: '政策条款第1条', text: '出发前30天及以上取消，退全款' }],
     approvalThresholdYuan: 30000,
     selfService: true,
   };
   const draft = {
-    clauses: [{ id: 'd15', title: '退改条款第1条', text: '出发前15天及以上取消，退80%' }],
+    clauses: [{ id: 'd15', title: '政策条款第1条', text: '出发前15天及以上取消，退80%' }],
     approvalThresholdYuan: 25000,
     selfService: false,
   };
   const m = await rootFor(<PolicyCard published={published} draft={draft} />);
-  check('政策卡：出处与原句完整展示', text(m.box).includes('退改条款第1条') && text(m.box).includes(published.clauses[0]!.text));
+  check('政策卡：出处与原句完整展示', text(m.box).includes('政策条款第1条') && text(m.box).includes(published.clauses[0]!.text));
   check('政策卡：金额用千分位与元，不使用货币符号', text(m.box).includes('30,000 元') && !text(m.box).includes('¥'));
   check(
     '政策卡：草稿的档位、阈值、开关差异可展开查看',
@@ -8566,7 +8595,7 @@ const byIdCalls = (id?: string): number =>
 // 07 R4：CLI 只改 policy 时，正文完全相同也能在后台发布，抽屉里有可复核条款。
 {
   const publishedPolicy = {
-    clauses: [{ id: 'd30', title: '退改条款第1条', text: '出发前30天及以上取消，退全款' }],
+    clauses: [{ id: 'd30', title: '政策条款第1条', text: '出发前30天及以上取消，退全款' }],
     approvalThresholdYuan: 30000,
     selfService: true,
   };
@@ -8580,12 +8609,12 @@ const byIdCalls = (id?: string): number =>
   srv.check = () => ({ ...FIXED_CHECK(), violations: [] });
   const m = await mountPage('/console/sop?section=tone', travelOwner, state, FAST);
   await waitFor(() => summaryOf(m) === '10/10通过');
-  check('仅改 policy：发布条识别为可发布改动', !barBlocked(m) && barText(m).summary === '草稿修改了退改条款');
+  check('仅改 policy：发布条识别为可发布改动', !barBlocked(m) && barText(m).summary === '草稿修改了政策条款');
   await clickEv(barButton(m, '发布…'));
   await waitFor(() => !!drawerOf('发布草稿'));
   const d = drawerOf('发布草稿')!;
   check('仅改 policy：发布抽屉里有条款差异', text(d).includes('25,000 元') && !text(d).includes('草稿和线上一样'));
-  await setText(d.querySelector<HTMLTextAreaElement>('textarea')!, '调整退改条款审批金额');
+  await setText(d.querySelector<HTMLTextAreaElement>('textarea')!, '调整政策条款审批金额');
   await clickEv(drawerButton(d, '发布'));
   await waitFor(() => srv.state.draft === null);
   check('仅改 policy：可以提交后台发布请求', posted('/draft/publish').length === 1);

@@ -8,7 +8,8 @@ import {
   PAYMENT_FALLBACK,
   PROMISE_FALLBACK,
 } from './packs/industrial/guards.js';
-import { defaultIndustrialPolicy } from './packs/industrial/policy.js';
+import { defaultIndustrialPolicy, industrialPolicy } from './packs/industrial/policy.js';
+import { policyView } from './config/sop.js';
 import { fixedReplies } from './packs/industrial/fixed-replies.js';
 import type { ReplyGuardContext } from './core/pack-api.js';
 import { performance } from 'node:perf_hooks';
@@ -526,4 +527,12 @@ for (const text of ['我已同步备注：32件等齐一起发货，', '备注�
 }
 for (const text of ['需要备注的请告诉顾问。', '开票时请备注税号。', '已转给顾问跟进。']) assert.equal(await guardClaim(text), text, text);
 assert.equal(await guardClaim('报价单已提交，顾问审核中。还有别的型号吗？', [], true), '还有别的型号吗？');
+// 后台政策卡：工业包没有退改条款，要看到费用说明，退款两项是空而不是默认值。
+const policyCard = policyView(defaultIndustrialPolicy, industrialPolicy)!;
+assert.deepEqual(
+  policyCard.clauses.map((clause) => clause.text),
+  ['报价含税，税率13%', '运费0.00元', '库存与交期以顾问确认为准'],
+);
+assert.equal(policyCard.approvalThresholdYuan, null);
+assert.equal(policyCard.selfService, null);
 console.log('INDUSTRIAL CLAIMS PASS: 库存交期有效期放行与回退、括号、免责句去重、运费与付款说法，主回复和跟进都通过');

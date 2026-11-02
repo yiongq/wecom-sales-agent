@@ -90,16 +90,19 @@ function draftPolicy(pack: PackPolicy | undefined, raw: unknown): ReturnType<typ
   try {
     return policySnapshot(pack, pack?.upgrade(raw ?? undefined));
   } catch {
-    throw new SopContractError([{ code: 'policy_invalid', sectionKey: null, detail: '退改条款不符合政策 schema' }]);
+    throw new SopContractError([{ code: 'policy_invalid', sectionKey: null, detail: '政策条款不符合政策 schema' }]);
   }
 }
 
-function policyView(raw: unknown, pack: PackPolicy | undefined): PolicyView | null {
+export function policyView(raw: unknown, pack: PackPolicy | undefined): PolicyView | null {
   if (!pack) return null;
   const policy = pack.upgrade(raw);
   const refund = pack.refund(policy);
+  const clauses = pack.clauses(policy);
+  const terms = clauses.filter((c) => c.topic === 'refund' || c.topic === 'change');
   return {
-    clauses: pack.clauses(policy).filter((c) => c.topic === 'refund' || c.topic === 'change'),
+    // 没有退改条款的包（工业询价只有费用说明）就看它实际有的条款，不留一张空卡。
+    clauses: terms.length ? terms : clauses,
     approvalThresholdYuan: refund?.approvalThresholdYuan ?? null,
     selfService: refund?.selfService ?? null,
   };

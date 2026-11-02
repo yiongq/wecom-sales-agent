@@ -85,7 +85,7 @@ export function publishedNames(
   if (!previous) return [];
   const textOf = (x: Pick<SopVersion, 'sections'>, key: string): string => x.sections.find((s) => s.key === key)?.text ?? '';
   const names = spec.filter((s) => !s.locked && textOf(previous, s.key) !== textOf(v, s.key)).map((s) => s.heading ?? PREAMBLE_NAME);
-  if (JSON.stringify(previous.policy ?? null) !== JSON.stringify(v.policy ?? null)) names.push('退改条款');
+  if (JSON.stringify(previous.policy ?? null) !== JSON.stringify(v.policy ?? null)) names.push('政策条款');
   return names;
 }
 

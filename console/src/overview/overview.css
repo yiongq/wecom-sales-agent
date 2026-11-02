@@ -212,6 +212,7 @@ a.ov-todo:hover .ov-todo-action {
 @media (max-width: 1279px) {
   .ov-todos-row {
     flex-direction: column;
+    align-items: stretch;
   }
   .ov-todos-kpi {
     flex: 0 0 auto;

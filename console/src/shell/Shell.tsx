@@ -130,7 +130,7 @@ function Frame({ viewer: v }: { viewer: Framed }) {
   const mac = isMac();
   const shortcut = paletteShortcut(mac);
 
-  // 收起：每页有默认（销售话术默认收起）；用户在这一页切过就按切的，换到别的页回到那一页的默认
+  // 收起：每页有默认（会话工作台默认收起）；用户在这一页切过就按切的，换到别的页回到那一页的默认
   const pageKey = selected ?? path;
   const [override, setOverride] = useState<{ page: string; collapsed: boolean } | null>(null);
   const collapsed = override?.page === pageKey ? override.collapsed : collapsedByDefault(path);
