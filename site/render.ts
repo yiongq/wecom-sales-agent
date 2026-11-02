@@ -61,7 +61,7 @@ export function buildSite(input: ProductPublishInput, output: string): void {
     chapter(
       'pricing',
       '算价格',
-      '单价不靠模型记，靠档位算。',
+      '单价不靠模型记，<br>靠档位算。',
       '阶梯价、起订量和库存都在产品库里。试算由代码完成，模型只负责把结果讲清楚。',
       ['按数量自动选档，不用人工翻价目表', '产品库支持 CSV 批量导入', '库存是产品库快照，ERP 按商家单独开通'],
       tierVisual,
