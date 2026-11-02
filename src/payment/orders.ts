@@ -32,7 +32,7 @@ import {
   listAnyOrders,
   queueJobs,
 } from '../store.js';
-import { isLineOrder, orderTotalFen, quoteState, type LineOrder, type AnyOrder } from '../core/order-view.js';
+import { isLineOrder, orderTotalFen, quoteState, snapshotQuoteApproval, type LineOrder, type AnyOrder } from '../core/order-view.js';
 import type { ChatMessage, OrderStatus } from '../types.js';
 import { terminalStageKey } from '../handoff/record.js';
 import { quoteNotifyOps } from '../jobs/notify.js';
@@ -130,7 +130,7 @@ export async function approveQuote(orderId: string, actor: Actor): Promise<LineO
   }
   if (storeLagging(order.sessionId)) throw new StoreLaggingError(order.sessionId);
   const now = Date.now();
-  order.approval = { ...order.approval, state: 'approved', decidedAt: now, decidedBy: who(actor) };
+  order.approval = snapshotQuoteApproval(order, { ...order.approval, state: 'approved', decidedAt: now, decidedBy: who(actor) });
   order.confirmedAt = now;
   order.confirmedBy = who(actor);
   for (const old of listAnyOrders()) {
