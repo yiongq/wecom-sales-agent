@@ -21,6 +21,7 @@ import { normalizePartNo } from './packs/industrial/normalize.js';
 import { createMatcher, matchInMemory } from './packs/industrial/match.js';
 import { StateSchema, writeState, draftParts } from './packs/industrial/state.js';
 import { createIndustrialTools, projectRejections } from './packs/industrial/tools.js';
+import { GUARD_DEMOS } from '../site/guard-demos.js';
 
 const part: Part = {
   id: 'bearing-a',
@@ -520,6 +521,11 @@ assert.equal(await guardClaim('款到发货，款项支付给顾问，款项付�
 const paymentFixed = fixedReplies.find((reply) => reply.id === 'industrial.payment')!;
 assert.deepEqual(paymentFixed.producedBy, { pipeline: 'reply', step: 'industrial_claims' });
 for (const sample of await paymentFixed.samples()) assert.equal(sample.text, PAYMENT_FALLBACK);
+// 官网写的是「护栏的真实输出」：演示句必须和真实护栏一致，改护栏时这里会先红。
+const policyBeforeDemos = promisePolicy;
+promisePolicy = structuredClone(defaultIndustrialPolicy);
+for (const demo of GUARD_DEMOS) assert.equal(await guardClaim(demo.draft), demo.sent, demo.draft);
+promisePolicy = policyBeforeDemos;
 // 备注：系统没有这个动作，说记下了顾问也看不到。
 for (const text of ['我已同步备注：32件等齐一起发货，', '备注已注明：32件整单一起发出。', '已在报价单上备注等齐发货。']) {
   assert.equal(await guardClaim(text), NOTE_FALLBACK, text);
