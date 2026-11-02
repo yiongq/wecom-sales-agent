@@ -192,12 +192,16 @@ assert.deepEqual(
   tools[0]!.amounts!(JSON.stringify(find), {}).map((entry) => entry.fen),
   [1000, 800, 600, 400],
 );
+assert.ok(tools[0]!.amounts!(JSON.stringify(find), {}).every((entry) => entry.subject === '62052RS'));
 const result = JSON.parse(await tools[1]!.execute({ items: Array.from({ length: 30 }, () => ({ query: '6205 2rs', qty: 10 })) }, ctx));
 assert.equal(result.lines.length, 30);
 assert.equal(result.total, 2400);
 assert.equal(result.unmatched, 0);
 assert.ok(result.lines.every((line: { unitPrice: number; amount: number }) => line.unitPrice === 8 && line.amount === 80));
 assert.equal(tools[1]!.amounts!(JSON.stringify(result), {}).at(-1)!.fen, 240000);
+const quoteAmounts = tools[1]!.amounts!(JSON.stringify(result), {});
+assert.ok(quoteAmounts.slice(0, -1).every((entry) => entry.subject === '62052RS'));
+assert.equal(Object.hasOwn(quoteAmounts.at(-1)!, 'subject'), false, '试算合计不绑定型号');
 const draft = structuredClone(session.packState);
 assert.deepEqual(JSON.parse(await tools[1]!.execute({ items: Array.from({ length: 31 }, () => ({ query: '6205 2rs', qty: 10 })) }, ctx)), {
   error: 'too_many_lines',

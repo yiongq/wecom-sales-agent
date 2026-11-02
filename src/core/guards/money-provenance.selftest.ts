@@ -1,6 +1,6 @@
 // 08 R8：两个工厂的删句、兜底、金额来源与步骤位置契约。
 import assert from 'node:assert/strict';
-import type { GuardStep, ReplyGuardContext, StepVerdict } from '../pack-api.js';
+import type { GuardStep, MoneyEntry, ReplyGuardContext, StepVerdict } from '../pack-api.js';
 import type { LineOrder } from '../order-view.js';
 import { loadGuardPipeline } from './execute.js';
 import { moneyProvenanceStep, moneyProvenanceFollowupStep, type MoneyProvenanceSources } from './money-provenance.js';
@@ -191,6 +191,120 @@ const followOrder = context('合计1330元。');
 followOrder.session.orderIds = [order.id];
 assert.equal((await followup.run(followOrder)).text, '合计1330元。');
 count++;
+
+// 型号绑定：同一套用例同时约束主回复与跟进，仍按原来的句子单位删句。
+const subjectMentions = (text: string) =>
+  [...text.matchAll(/A100|B200|C300|ALIAS-A/g)].map((match) => ({
+    subject: match[0] === 'ALIAS-A' ? 'A100' : match[0],
+    start: match.index,
+    end: match.index + match[0].length,
+  }));
+const boundLedger: MoneyEntry[] = [
+  { fen: 365, label: '单价', subject: 'A100' },
+  { fen: 1200, label: '单价', subject: 'B200' },
+  { fen: 133000, label: '合计' },
+];
+const approved: LineOrder = {
+  ...order,
+  approval: { state: 'approved', requestedAt: 0, decidedAt: 0 },
+  lines: [
+    { ...order.lines[0], title: 'A100' },
+    { ...order.lines[1], title: 'B200' },
+  ],
+};
+const boundSources = { ...sources, getOrder: (id: string) => (id === approved.id ? approved : undefined) };
+for (const mode of ['reply', 'followup'] as const) {
+  const step =
+    mode === 'reply'
+      ? moneyProvenanceStep({ ...options, subjectMentions }, () => boundSources)
+      : moneyProvenanceFollowupStep({ ...options, subjectMentions }, () => boundSources);
+  const empty = mode === 'reply' ? options.fallback : '';
+  const cases: { text: string; expected?: string; ledger?: MoneyEntry[]; ordered?: boolean }[] = [
+    { text: 'A100单价12元。B200单价3.65元。', expected: empty },
+    { text: 'A100单价3.65元。B200单价12元。' },
+    { text: 'A100单价3.80元。', expected: empty },
+    { text: 'A100单价12元，B200单价12元。', ledger: [...boundLedger, { fen: 1200, label: '同价', subject: 'A100' }] },
+    { text: 'A100单价3.65元，B200单价3.65元。继续核验。', expected: '继续核验。' },
+    { text: 'A100单价3.65元，B200单价12元。' },
+    { text: 'A100单价12元，B200单价3.65元。继续核验。', expected: '继续核验。' },
+    { text: 'A100合计1330元。' },
+    { text: '单价12元。单价3.65元。' },
+    { text: 'ALIAS-A单价3.65元。' },
+    { text: 'ALIAS-A单价12元。', expected: empty },
+    { text: 'A100单价12元。', ledger: [{ fen: 1200, label: '旧账本' }] },
+    { text: 'A100单价12元。', ledger: [...boundLedger, { fen: 1200, label: '旧账本' }] },
+    { text: 'A100运费10元。' },
+    { text: '单价12元，A100。' },
+    { text: 'A100。单价12元。' },
+    // 同一分句优先；没有型号的分句往同一句左侧找，逗号/分号/顿号均不清空关联。
+    ...['，', ',', '；', ';', '、'].flatMap((mark) => [
+      { text: `A100${mark}单价12元。`, expected: empty },
+      { text: `A100${mark}单价3.65元${mark}B200单价12元。` },
+    ]),
+    { text: 'A100 B200单价3.65元。' },
+    { text: 'A100和B200的单价分别为3.65元、12元。' },
+    // 多型号列表拿不准关联：即使数值互换也放行，这是避免误杀的代价。
+    { text: 'A100和B200的单价分别为12元、3.65元。' },
+    // 多型号组完全跳过错配；数值已有出处即可，即便出处属于组外的型号。
+    { text: 'A100和B200单价3元。', ledger: [{ fen: 300, label: '单价', subject: 'C300' }] },
+    {
+      text: 'A100、B200、C300分别为1元、2元、3元。',
+      ledger: [
+        { fen: 100, label: '单价', subject: 'A100' },
+        { fen: 200, label: '单价', subject: 'B200' },
+        { fen: 300, label: '单价', subject: 'C300' },
+      ],
+    },
+    { text: 'A100和B200一共15.65元，A100单价12元。', ledger: [...boundLedger, { fen: 1565, label: '合计' }], expected: empty },
+    // 同一型号及其别名不构成多个不同对象；列表也不能放行没有出处的数。
+    { text: 'A100和ALIAS-A单价12元。', expected: empty },
+    { text: 'A100和B200单价3.80元。', expected: empty },
+    { text: 'A100单价3块6毛5，B200单价12元。' },
+    { text: 'A100单价3.65元（B200单价3.65元）。', expected: 'A100单价3.65元。' },
+    { text: 'A100单价3.65元（B200单价12元）。' },
+    { text: '试算结果：\nA100单价12元。\n请确认规格。', expected: '请确认规格。' },
+    { text: 'A100单价12元。B200单价3.65元。', ledger: [], ordered: true, expected: empty },
+    { text: 'A100行金额600元。B200行金额730元。', ledger: [], ordered: true, expected: empty },
+    { text: 'A100单价3.65元、行金额730元，B200单价12元、行金额600元。', ledger: [], ordered: true },
+    { text: 'A100合计1330元。', ledger: [], ordered: true },
+  ];
+  for (const { text, expected = text, ledger = boundLedger, ordered: useOrder } of cases) {
+    const ctx = context(text);
+    ctx.session.moneyLedger = ledger;
+    if (useOrder) ctx.session.orderIds = [approved.id];
+    const result = await step.run(ctx);
+    assert.ok(result && result.action !== 'abort');
+    assert.equal(result.action === 'pass' ? text : result.text, expected, `${mode}: ${text}`);
+    assert.equal(result.action, text === expected ? 'pass' : mode === 'reply' && expected === empty ? 'replace' : 'drop_sentence');
+    count++;
+  }
+  // 不提供识别能力的包，即便账本带 subject，错配外观也维持原来的数值判定与输出字节。
+  const legacy = mode === 'reply' ? moneyProvenanceStep(options, () => sources) : moneyProvenanceFollowupStep(options, () => sources);
+  const ctx = context('  A100单价12元，B200单价3.65元。\n');
+  ctx.session.moneyLedger = boundLedger;
+  assert.deepEqual(await legacy.run(ctx), { action: 'pass' });
+  count++;
+
+  let calls = 0;
+  const skipOptions = {
+    ...options,
+    subjectMentions: (text: string) => {
+      calls++;
+      return subjectMentions(text);
+    },
+  };
+  const skip =
+    mode === 'reply' ? moneyProvenanceStep(skipOptions, () => boundSources) : moneyProvenanceFollowupStep(skipOptions, () => boundSources);
+  const noMoney = context('A100和B200请核对规格。');
+  noMoney.session.orderIds = [approved.id];
+  assert.deepEqual(await skip.run(noMoney), { action: 'pass' });
+  assert.equal(calls, 0, '无金额回复不识别型号，也不识别订单行');
+  const mixed = context('请核对规格。A100单价3.65元。');
+  mixed.session.moneyLedger = boundLedger;
+  assert.deepEqual(await skip.run(mixed), { action: 'pass' });
+  assert.equal(calls, 1, '只识别含金额的句子');
+  count += 2;
+}
 
 // 装载即拒绝：少 after、少写声明、放在后置接管或失败计数之后、缺安全尾部。
 for (const bad of [

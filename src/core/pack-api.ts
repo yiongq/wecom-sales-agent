@@ -220,6 +220,8 @@ export type ToolResult = string;
 export interface MoneyEntry {
   fen: number;
   label: string;
+  /** 金额所属对象，由包定义；核心只比较相等，不解释内容。 */
+  subject?: string;
 }
 
 export interface ToolSpec<Context = ToolContext> {

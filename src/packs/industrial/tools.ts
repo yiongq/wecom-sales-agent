@@ -27,8 +27,8 @@ const def = (name: string, description: string, properties: Record<string, unkno
   type: 'function' as const,
   function: { name, description, parameters: { type: 'object', properties, required, additionalProperties: false } },
 });
-const moneyEntries = (values: readonly { value: number; label: string }[]) =>
-  values.map(({ value, label }) => ({ fen: yuanToFen(value), label }));
+const moneyEntries = (values: readonly { value: number; label: string; subject?: string }[]) =>
+  values.map(({ value, label, subject }) => ({ fen: yuanToFen(value), label, ...(subject === undefined ? {} : { subject }) }));
 
 export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolContext>[] {
   const match = createMatcher(sources);
@@ -78,9 +78,11 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
         });
       },
       amounts(result) {
-        const value = JSON.parse(result) as { parts?: { tiers: { unitPrice: number }[] }[] };
+        const value = JSON.parse(result) as { parts?: { partNo: string; tiers: { unitPrice: number }[] }[] };
         return moneyEntries(
-          (value.parts ?? []).flatMap((part) => part.tiers.map((tier) => ({ value: tier.unitPrice, label: '档位单价' }))),
+          (value.parts ?? []).flatMap((part) =>
+            part.tiers.map((tier) => ({ value: tier.unitPrice, label: '档位单价', subject: normalizePartNo(part.partNo) })),
+          ),
         );
       },
     },
@@ -168,11 +170,11 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
         return JSON.stringify({ lines, ...(unmatched === 0 ? { total: totalFen / 100 } : {}), unmatched });
       },
       amounts(result) {
-        const value = JSON.parse(result) as { lines?: { unitPrice?: number; amount?: number }[]; total?: number };
+        const value = JSON.parse(result) as { lines?: { partNo: string; unitPrice?: number; amount?: number }[]; total?: number };
         return moneyEntries([
           ...(value.lines ?? []).flatMap((line) => [
-            ...(line.unitPrice === undefined ? [] : [{ value: line.unitPrice, label: '试算单价' }]),
-            ...(line.amount === undefined ? [] : [{ value: line.amount, label: '试算行金额' }]),
+            ...(line.unitPrice === undefined ? [] : [{ value: line.unitPrice, label: '试算单价', subject: normalizePartNo(line.partNo) }]),
+            ...(line.amount === undefined ? [] : [{ value: line.amount, label: '试算行金额', subject: normalizePartNo(line.partNo) }]),
           ]),
           ...(value.total === undefined ? [] : [{ value: value.total, label: '试算合计' }]),
         ]);
