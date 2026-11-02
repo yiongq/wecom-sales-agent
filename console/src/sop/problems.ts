@@ -76,9 +76,9 @@ export function problemText(v: Pick<LocatedViolation, 'code' | 'match'>): string
     case 'unknown_field':
       return v.match ? `提到了不存在的字段「${v.match}」` : null;
     case 'policy_invalid':
-      return '退改条款无效，请检查档位、比例与审批阈值';
+      return '政策条款无效，请检查各项数值';
     case 'policy_mismatch':
-      return v.match ? `「${v.match}」与退改条款或定价规则不一致` : null;
+      return v.match ? `「${v.match}」与政策条款或定价规则不一致` : null;
     case 'consistency':
       return v.match ? `「${v.match}」和系统里固定的对客文字矛盾，改掉这句` : null;
     default:

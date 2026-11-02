@@ -721,7 +721,7 @@ eq('三类来源的顺序固定', ORIGINS, ['customer', 'visitor', 'seed']);
     published: { ...SOP.published, policy },
     draft: { ...SOP.draft!, sections: SOP.published.sections, policy: { ...policy, approvalThresholdYuan: 25000 } },
   };
-  eq('仅改退改条款的草稿不显示为和线上一样', sopTodo(policyOnly, undefined, TRAVEL)?.title, '修改退改条款');
+  eq('仅改政策条款的草稿不显示为和线上一样', sopTodo(policyOnly, undefined, TRAVEL)?.title, '修改政策条款');
 }
 
 const sop = sopTodo(SOP, CHECK, TRAVEL);
