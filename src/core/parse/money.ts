@@ -679,14 +679,18 @@ export function spokenMoney(text: string, options: MoneyParseOptions): { amounts
 const CURRENCY_SUFFIX =
   /^\s*(元|块|人民币|RMB|rmb|美元|美金|美刀|欧元|日元|港币|港元|英镑|澳元|澳币|加元|加币|新加坡元|新币|新台币|台币|韩元|泰铢|卢布|瑞郎|USD|EUR|JPY|HKD|GBP|AUD|CAD|SGD|TWD|KRW|THB)/;
 
-/** 按回复的金额识别口径返回 Money，保留原单位，不做外币换算或出处裁决。 */
-export function parseMoney(text: string, options: MoneyParseOptions): Money[] {
+/** 回复金额及其原文位置；parseMoney 与出处护栏共用同一识别口径。 */
+export function parseMoneyHits(text: string, options: MoneyParseOptions): { amount: number; at: number; end: number }[] {
   const t = normalizeMoneyText(text);
-  const hits = [
+  return [
     ...amountHits(t, options).map((h) => ({ amount: h.raw, at: h.at, end: h.end })),
     ...parseSpokenAmounts(t, options).map((h) => ({ amount: h.raw, at: h.at, end: h.end })),
   ].toSorted((a, b) => a.at - b.at);
-  return hits.map(({ amount, at, end }) => {
+}
+
+/** 按回复的金额识别口径返回 Money，保留原单位，不做外币换算或出处裁决。 */
+export function parseMoney(text: string, options: MoneyParseOptions): Money[] {
+  return parseMoneyHits(text, options).map(({ amount, at, end }) => {
     const body = text.slice(at, end);
     const suffix = CURRENCY_SUFFIX.exec(text.slice(end))?.[1];
     // 口语「3块6毛5」整段是一个金额，单位在中间；这类 body 以数字 + 块 / 元开头

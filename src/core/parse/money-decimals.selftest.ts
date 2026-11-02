@@ -7,6 +7,7 @@ import {
   parseAmounts,
   parseCnAmounts,
   parseMoney,
+  parseMoneyHits,
   parseRangeEndpoints,
   parseSpokenAmounts,
   spokenMoney,
@@ -30,10 +31,20 @@ function eq(actual: unknown, expected: unknown, label: string): void {
 
 const amountsOf = (text: string, options: MoneyParseOptions = dec): number[] => parseMoney(text, options).map((m) => m.amount);
 
+assert.deepEqual(parseMoneyHits('单价３．６５元，运费两千元。', dec), [
+  { amount: 3.65, at: 2, end: 7 },
+  { amount: 2000, at: 10, end: 12 },
+]);
+
 /** 正例：parseMoney 读出的金额恰为 want；只有一个金额时，客户侧的 spokenMoney 也读出同一个数 */
 function yes(text: string, want: number[], options: MoneyParseOptions = dec): void {
   positives += 1;
   eq(amountsOf(text, options), want, `正例 ${text}`);
+  eq(
+    parseMoneyHits(text, options).map((hit) => hit.amount),
+    want,
+    `位置解析 ${text}`,
+  );
   if (want.length === 1) eq(spokenMoney(text, options).amounts, want, `正例（客户侧）${text}`);
 }
 

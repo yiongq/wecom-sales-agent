@@ -29,7 +29,10 @@ export function createToolRegistry<Context = ToolContext>(tools: readonly ToolSp
         if (entries.length) {
           if (!ctx || typeof ctx !== 'object' || !('session' in ctx)) throw new Error(`工具 ${name} 记账缺少会话`);
           const session = ctx.session as Session;
-          session.moneyLedger = [...(session.moneyLedger ?? []), ...entries.map(({ fen, label }) => ({ fen, label }))].slice(-200);
+          session.moneyLedger = [
+            ...(session.moneyLedger ?? []),
+            ...entries.map(({ fen, label, subject }) => ({ fen, label, ...(subject === undefined ? {} : { subject }) })),
+          ].slice(-200);
         }
       }
       recorder?.recordResult(name, result);

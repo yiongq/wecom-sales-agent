@@ -1,7 +1,7 @@
 // 工具分派契约：包钩子相对调用/结果记录的顺序、拒绝与错误边界、定义字节。
 import assert from 'node:assert/strict';
 import { createToolRegistry } from './registry.js';
-import type { ToolCallRecorder, ToolSpec } from '../pack-api.js';
+import type { MoneyEntry, ToolCallRecorder, ToolSpec } from '../pack-api.js';
 
 const events: unknown[] = [];
 const ctx = { value: 0 };
@@ -99,4 +99,16 @@ const failing = createToolRegistry(
 await assert.rejects(failing.execute('fixture', {}, ctx, recorder), (e) => e === failure);
 assert.deepEqual([...events], [['call', 'fixture', {}]]);
 assert.throws(() => createToolRegistry([tool, tool]), /重复工具: fixture/);
+// 记账必须复制并保留 subject；旧条目的形状不增加 undefined 键。
+const entries: MoneyEntry[] = [
+  { fen: 365, label: '单价', subject: 'A100' },
+  { fen: 730, label: '合计' },
+];
+const moneyContext = { value: 0, session: { moneyLedger: [] as MoneyEntry[] } };
+const accounting = createToolRegistry([{ ...tool, amounts: () => entries }]);
+await accounting.execute('fixture', {}, moneyContext);
+assert.deepEqual(moneyContext.session.moneyLedger, entries);
+assert.equal(Object.hasOwn(moneyContext.session.moneyLedger[1]!, 'subject'), false);
+entries[0]!.subject = 'B200';
+assert.equal(moneyContext.session.moneyLedger[0]!.subject, 'A100');
 console.log('tools registry selftest: 钩子顺序、参数修正、拒绝、异常与定义字节通过');

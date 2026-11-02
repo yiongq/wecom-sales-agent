@@ -2,7 +2,7 @@ import type { DeterministicReply, TurnContext, PackSources, PrefetchResult, Turn
 import { latestQuoteCandidate, expiredQuoteAwaitingConfirmation } from './quote-candidate.js';
 import { quoteAcceptance } from './acceptance.js';
 import { refreshParts } from './live.js';
-import { PartSchema } from './catalog.js';
+import { PartSchema, type Part } from './catalog.js';
 import { matchInMemory } from './match.js';
 import { FIXED, inquiryLines } from './inquiry.js';
 import { confirmsIntake, intakeNewer, intakeParts, intakePreModel, intakeQuoteLines, sameQuoteItems } from './intake-turn.js';
@@ -56,8 +56,11 @@ export function contextNote(ctx: TurnContext): string[] {
 }
 
 /** 只识别客户原话中的字面型号；不从模型挑出的候选反推客户选择。 */
-export function mentionedParts(text: string, sources: PackSources) {
-  const parts = (sources.currentCatalog().items.part ?? []).map((part) => PartSchema.parse(part));
+export function mentionedParts(
+  text: string,
+  sources: PackSources,
+  parts: readonly Part[] = (sources.currentCatalog().items.part ?? []).map((part) => PartSchema.parse(part)),
+) {
   const tokens = [...text.matchAll(/[A-Za-z0-9][A-Za-z0-9_×*\-/]*/g)];
   const mentions = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -87,7 +90,7 @@ export function mentionedParts(text: string, sources: PackSources) {
       );
     const raw = qtyText && !/[不别没无]/.test(qtyText[1] ?? qtyText[2] ?? '') ? (qtyText[3] ?? qtyText[4]) : undefined;
     const qty = raw ? ({ 一: 1, 二: 2, 两: 2 }[raw] ?? Number(raw)) : undefined;
-    mentions.push({ query, ...found, qty });
+    mentions.push({ query, ...found, qty, start: token.index!, end });
   }
   return mentions;
 }
