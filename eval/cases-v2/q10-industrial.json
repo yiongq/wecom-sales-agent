@@ -629,6 +629,10 @@
               "action": "pass"
             },
             {
+              "id": "quote_claim",
+              "action": "pass"
+            },
+            {
               "id": "stage_advance",
               "action": "pass"
             },
@@ -800,6 +804,10 @@
               "action": "pass"
             },
             {
+              "id": "quote_claim",
+              "action": "pass"
+            },
+            {
               "id": "stage_advance",
               "action": "pass"
             },
@@ -886,6 +894,10 @@
             },
             {
               "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "quote_claim",
               "action": "pass"
             },
             {
@@ -978,6 +990,10 @@
               "action": "pass"
             },
             {
+              "id": "quote_claim",
+              "action": "pass"
+            },
+            {
               "id": "stage_advance",
               "action": "pass"
             },
@@ -1064,6 +1080,10 @@
             },
             {
               "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "quote_claim",
               "action": "pass"
             },
             {
@@ -1156,6 +1176,10 @@
               "action": "pass"
             },
             {
+              "id": "quote_claim",
+              "action": "pass"
+            },
+            {
               "id": "stage_advance",
               "action": "pass"
             },
@@ -1245,6 +1269,10 @@
               "action": "pass"
             },
             {
+              "id": "quote_claim",
+              "action": "pass"
+            },
+            {
               "id": "stage_advance",
               "action": "pass"
             },
@@ -1331,6 +1359,10 @@
             },
             {
               "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "quote_claim",
               "action": "pass"
             },
             {
@@ -1621,6 +1653,10 @@
             },
             {
               "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "quote_claim",
               "action": "pass"
             },
             {

@@ -4,6 +4,7 @@ import {
   industrialReplyGuard,
   industrialFollowupGuard,
   INVENTORY_FALLBACK,
+  NOTE_FALLBACK,
   PAYMENT_FALLBACK,
   PROMISE_FALLBACK,
 } from './packs/industrial/guards.js';
@@ -518,4 +519,11 @@ assert.equal(await guardClaim('款到发货，款项支付给顾问，款项付�
 const paymentFixed = fixedReplies.find((reply) => reply.id === 'industrial.payment')!;
 assert.deepEqual(paymentFixed.producedBy, { pipeline: 'reply', step: 'industrial_claims' });
 for (const sample of await paymentFixed.samples()) assert.equal(sample.text, PAYMENT_FALLBACK);
+// 备注：系统没有这个动作，说记下了顾问也看不到。
+for (const text of ['我已同步备注：32件等齐一起发货，', '备注已注明：32件整单一起发出。', '已在报价单上备注等齐发货。']) {
+  assert.equal(await guardClaim(text), NOTE_FALLBACK, text);
+  assert.equal(await guardClaim(text, [], true), '', text);
+}
+for (const text of ['需要备注的请告诉顾问。', '开票时请备注税号。', '已转给顾问跟进。']) assert.equal(await guardClaim(text), text, text);
+assert.equal(await guardClaim('报价单已提交，顾问审核中。还有别的型号吗？', [], true), '还有别的型号吗？');
 console.log('INDUSTRIAL CLAIMS PASS: 库存交期有效期放行与回退、括号、免责句去重、运费与付款说法，主回复和跟进都通过');

@@ -9,7 +9,7 @@ import { live } from './live.js';
 import { createIntake } from './intake.js';
 import { normalizePartNo } from './normalize.js';
 import { handoffVocab } from './handoff-vocab.js';
-import { industrialReplyGuard, industrialFollowupGuard, rfqTrimStep, rfqTrimFollowupStep } from './guards.js';
+import { industrialReplyGuard, industrialFollowupGuard, quoteClaimStep, rfqTrimStep, rfqTrimFollowupStep } from './guards.js';
 import { IndustrialPolicySchema, quoteNotes } from './policy.js';
 import { preModel, contextNote, prefetch, beforeTool } from './turn.js';
 import { intakeNewer, intakeNotes } from './intake-turn.js';
@@ -141,8 +141,10 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     fixedReplies,
     consistencyRules,
     knownFields: { names: industrial.entities[0]!.fields.map((field) => field.key), sourceFiles: ['src/packs/industrial/catalog.ts'] },
-    replyAnchors: { markdown: 'industrial_claims', 'takeover_check:post': 'rfq_trim' },
+    // 补建要算进这一轮的阶段，所以阶段推进排在 quote_claim 之后。
+    replyAnchors: { stage_advance: 'quote_claim', markdown: 'industrial_claims', 'takeover_check:post': 'rfq_trim' },
     replySteps: [
+      quoteClaimStep(),
       industrialReplyGuard(sources),
       { ...linkWhitelistStep(), after: ['shape_check'] },
       {

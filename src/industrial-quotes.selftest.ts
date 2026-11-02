@@ -612,6 +612,54 @@ try {
     console.log('MODEL HANDOFF PASS: 回复照发、接受记下、顾问通知排上');
   }
 
+  // 16 复核：模型说报价单已提交却没调工具。客户要了就补建，照常人审；没要就改回实话。
+  {
+    const action = mockAction;
+    const said = '好的，报价单已提交，合计885元，顾问审核中。';
+    mockAction = async () => said;
+    const stateOf = (session: Session) => {
+      const quote = latestQuoteCandidate({ ...session, packState: {} }, now);
+      return quote?.kind === 'quote' ? quote.state : undefined;
+    };
+
+    setPolicy({ autoApproveMaxFen: 0 });
+    const pending = fresh();
+    await estimate(pending);
+    now++;
+    const held = await handleMessage(pending.id, '麻烦出一份正式报价单给我', 'wecom');
+    assert.equal(held.text, '最新的报价单还在顾问审核，审好马上发您', '待审不说金额');
+    assert.equal(stateOf(pending), 'pending', '补建的单走人审');
+    assert.equal(pending.stage, 'quote', '补建算进这一轮的阶段');
+
+    setPolicy({ autoApproveMaxFen: 100000 });
+    const approved = fresh();
+    await estimate(approved);
+    now++;
+    const link = await handleMessage(approved.id, '麻烦出一份正式报价单给我', 'wecom');
+    assert.match(link.text, /^报价单：\/quote\/ord_[0-9a-f]+\n合计/);
+    assert.equal(stateOf(approved), 'approved');
+
+    setPolicy({ autoApproveMaxFen: 0 });
+    for (const text of ['好的，我等结果', '先别出正式报价单']) {
+      const session = fresh();
+      await estimate(session);
+      now++;
+      assert.equal((await handleMessage(session.id, text, 'wecom')).text, '报价单还没有提交，需要的话请告诉我，我马上起草。', text);
+      assert.equal(session.orderIds.length, 0, text);
+    }
+
+    // 已有单时模型说的是真话，不动也不重复建。
+    const existing = fresh();
+    await estimate(existing);
+    await make(existing);
+    now++;
+    mockAction = async () => '报价单已提交，顾问审核中。';
+    assert.equal((await handleMessage(existing.id, '麻烦出一份正式报价单给我', 'wecom')).text, '报价单已提交，顾问审核中。');
+    assert.equal(existing.orderIds.length, 1);
+    mockAction = action;
+    console.log('QUOTE CLAIM PASS: 要了就补建并人审，没要改回实话，已有单不重复建');
+  }
+
   // 非接受终态、更新的试算/清单和转人工仍先于客户接受；纯接受与混合问题都验证。
   for (const mode of [
     'pending',
