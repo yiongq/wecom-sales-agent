@@ -1,13 +1,14 @@
 // 登录页（05 spec「界面 · 登录页」，2026-10-12 owner 定的设计稿 B；设计系统 §2.3 display、§3「登录页控件 40」）。
 // demo：左栏字标、标题「登录」、一句说明、表单，下方一行「没有账号？免登录体验」（没配沙箱时是「只看演示数据」）；
 // 右栏是产品画面图，图与 alt 由 /api/console/entry 下发，console 源码不出现行业词。
-// prod：左栏表单，右栏用一条询价的流程说明产品（窄屏隐藏），没有体验入口。
+// prod：和官网同一张网格：顶栏字标、左栏表单、右栏用一条询价的流程说明产品（窄屏隐藏），没有体验入口。
 // 登录成功后重新判断来者：并发取 /me 与 /pack（shell/boot.ts），进成员外壳；地址不变，登录前在哪一页，登录后还在哪一页
 import { useQueryClient } from '@tanstack/react-query';
 import { useRouterState } from '@tanstack/react-router';
 import { type MouseEvent, useEffect, useRef } from 'react';
 import { LoginForm } from '../LoginForm.js';
 import { useDocumentTitle } from '../shell/hooks.js';
+import { siteLinks } from '../site-links.js';
 import { type PublicEntryBrand, type Showcase } from '../../../src/shared/entry-ui.js';
 import { cjk } from '../typography.js';
 import { type AnonViewer, type Viewer, VIEWER_KEY } from '../viewer.js';
@@ -23,9 +24,8 @@ function LoginStory() {
   return (
     <aside className="login-story" aria-label="产品说明">
       <h2>
-        {cjk('接住每条询价，')}
-        <br />
-        {cjk('把报价交给规则。')}
+        {cjk('接住每条询价')}
+        <span>{cjk('把报价交给规则')}</span>
       </h2>
       <p className="login-story-lead">{cjk('让AI整理需求，让顾问把住报价与承诺。')}</p>
       <ol className="login-story-steps">
@@ -77,57 +77,94 @@ export function LoginPage({
     qc.setQueryData<Viewer>(VIEWER_KEY, demo);
   };
 
-  return (
-    <div className={`login-page ${demo ? 'login-demo' : 'login-prod'}`}>
-      <main id="main" className="login-panel">
-        {/* prod 的卡片标题已是产品名，再放字标就重复了。 */}
-        {demo && <div className="entry-wordmark">单来</div>}
-        <div className="login-column">
-          <h1 className="login-title">单来</h1>
-          <p className="login-lead">
-            {brand ? (
-              cjk(brand.name)
+  const panel = (
+    <main id="main" className="login-panel">
+      {demo && <div className="entry-wordmark">单来</div>}
+      <div className="login-column">
+        <h1 className="login-title">{demo ? '单来' : '登录'}</h1>
+        <p className="login-lead">
+          {brand ? (
+            cjk(brand.name)
+          ) : (
+            <>
+              {cjk('在企业微信里接收工业询价，')}
+              <br />
+              {cjk('匹配产品、试算报价、审批与人工接手。')}
+            </>
+          )}
+        </p>
+        <LoginForm autoFocus onSuccess={() => void qc.resetQueries({ queryKey: VIEWER_KEY })} />
+        {demo && (
+          <p className="login-back">
+            没有账号？
+            {tryUrl ? (
+              <a href={`${tryUrl}?start=1`} rel="nofollow">
+                免登录体验
+              </a>
             ) : (
-              <>
-                {cjk('在企业微信里接收工业询价，')}
-                <br />
-                {cjk('匹配产品、试算报价、审批与人工接手。')}
-              </>
+              <a href="/console/?view=demo" onClick={backToDemo}>
+                只看演示数据
+              </a>
             )}
           </p>
-          <LoginForm autoFocus onSuccess={() => void qc.resetQueries({ queryKey: VIEWER_KEY })} />
-          {demo && (
-            <p className="login-back">
-              没有账号？
-              {tryUrl ? (
-                <a href={`${tryUrl}?start=1`} rel="nofollow">
-                  免登录体验
-                </a>
-              ) : (
-                <a href="/console/?view=demo" onClick={backToDemo}>
-                  只看演示数据
-                </a>
-              )}
-            </p>
-          )}
-          {demo && back && tryUrl && (
-            <p className="login-back">
-              <a href={href} onClick={backToDemo}>
-                返回演示
-              </a>
-            </p>
+        )}
+        {demo && back && tryUrl && (
+          <p className="login-back">
+            <a href={href} onClick={backToDemo}>
+              返回演示
+            </a>
+          </p>
+        )}
+      </div>
+    </main>
+  );
+
+  if (demo) {
+    return (
+      <div className="login-page login-demo">
+        {panel}
+        {image && (
+          <aside className="entry-showcase" aria-label="产品画面">
+            <div className="entry-showcase-content">
+              <img src={image.src} alt={image.alt} width="460" />
+              <h2>单来</h2>
+              <p>接收工业询价，匹配产品、试算报价、审批与人工接手</p>
+            </div>
+          </aside>
+        )}
+      </div>
+    );
+  }
+
+  const links = siteLinks(window.location.hostname);
+  return (
+    <div className="login-page login-prod">
+      <header className="login-bar">
+        <div className="login-wrap">
+          <span className="login-brand">
+            {/* 正式图形标识是私有素材，不进公开仓库；app 域的 /favicon.ico 由 Caddy 指向官网产物 */}
+            {links && <img src="/favicon.ico" alt="" width="24" height="24" onError={(e) => (e.currentTarget.hidden = true)} />}
+            单来
+          </span>
+          {links && (
+            <nav aria-label="站点">
+              <a href={links.docs}>使用文档</a>
+              <a href={links.www}>返回官网</a>
+            </nav>
           )}
         </div>
-      </main>
-      {!demo && <LoginStory />}
-      {demo && image && (
-        <aside className="entry-showcase" aria-label="产品画面">
-          <div className="entry-showcase-content">
-            <img src={image.src} alt={image.alt} width="460" />
-            <h2>单来</h2>
-            <p>接收工业询价，匹配产品、试算报价、审批与人工接手</p>
+      </header>
+      <div className="login-wrap login-grid">
+        {panel}
+        <LoginStory />
+      </div>
+      {links && (
+        <footer className="login-foot">
+          <div className="login-wrap">
+            <a href={links.privacy}>隐私政策</a>
+            <a href={links.terms}>服务条款</a>
           </div>
-        </aside>
+        </footer>
       )}
     </div>
   );
