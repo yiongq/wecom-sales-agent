@@ -110,22 +110,25 @@
   background: var(--frame);
   border-left: 1px solid var(--divider);
 }
+.login-story > * {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 480px;
+}
 .login-story h2 {
-  margin: 0;
+  margin: 0 auto;
   font-size: 34px;
   line-height: 44px;
   font-weight: 600;
   letter-spacing: 0;
 }
 .login-story-lead {
-  max-width: 440px;
-  margin: 12px 0 36px;
+  margin: 12px auto 36px;
   color: var(--text-2);
 }
 .login-story-steps {
   display: grid;
-  max-width: 480px;
-  margin: 0;
+  margin: 0 auto;
   padding: 8px 20px;
   list-style: none;
   border-radius: var(--r-xl);
