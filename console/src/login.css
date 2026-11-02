@@ -83,88 +83,164 @@
   line-height: 22px;
   color: var(--text-2);
 }
+.login-prod {
+  flex-direction: column;
+  flex-wrap: nowrap;
+}
+/* 和官网同一张网格：内容宽 1120、两栏间距 12，logo、表单、页脚在同一条左边，右栏对齐官网第二栏 */
+.login-wrap {
+  width: min(1120px, calc(100% - 64px));
+  margin-inline: auto;
+}
+.login-bar {
+  border-bottom: 1px solid var(--divider);
+}
+.login-bar .login-wrap {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 60px;
+}
+.login-brand {
+  display: inline-flex;
+  gap: 9px;
+  align-items: center;
+  font-size: 18px;
+  line-height: 28px;
+  font-weight: 600;
+}
+.login-brand img {
+  width: 24px;
+  height: 24px;
+}
+.login-bar nav {
+  display: flex;
+  gap: 8px;
+}
+.login-bar nav a {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text);
+  text-decoration: none;
+}
+.login-bar nav a:hover {
+  background: var(--frame);
+}
+.login-grid {
+  display: grid;
+  flex: 1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: center;
+  padding: 56px 0;
+}
 .login-prod .login-panel {
   display: flex;
-  flex: 1 1 480px;
+  flex: none;
   align-items: center;
-  justify-content: center;
-  padding: 48px 32px;
+  justify-content: flex-start;
+  min-width: 0;
+  padding: 0;
 }
 .login-prod .login-column {
-  max-width: 340px;
+  max-width: 360px;
+  margin: 0;
 }
 .login-prod .login-title {
   font-size: 28px;
   line-height: 36px;
-  font-weight: 600;
+  font-weight: 500;
 }
 .login-prod .login-lead {
   margin-top: 4px;
+  font-size: 15px;
+}
+.login-prod .login-label {
+  font-size: 14px;
+}
+.login-prod .login-control,
+.login-prod .login-control input,
+.login-prod .login-submit {
+  font-size: 15px;
+}
+.login-prod .login-control,
+.login-prod .login-submit {
+  border-radius: var(--r-md);
+}
+.login-prod .login-submit,
+.login-prod .login-submit:not(:disabled):hover {
+  color: #fff;
+  background: var(--accent);
+}
+.login-prod .login-submit:not(:disabled):hover {
+  filter: brightness(0.92);
 }
 .login-story {
-  display: flex;
-  flex: 1 1 560px;
-  flex-direction: column;
-  justify-content: center;
-  padding: 64px clamp(40px, 7vw, 104px);
-  background: var(--frame);
-  border-left: 1px solid var(--divider);
-}
-.login-story > * {
-  box-sizing: border-box;
-  width: 100%;
-  max-width: 480px;
+  min-width: 0;
 }
 .login-story h2 {
-  margin: 0 auto;
-  font-size: 34px;
-  line-height: 44px;
-  font-weight: 600;
+  margin: 0;
+  font-size: 32px;
+  line-height: 42px;
+  font-weight: 500;
   letter-spacing: 0;
 }
+.login-story h2 span {
+  display: block;
+  color: var(--accent-text);
+}
 .login-story-lead {
-  margin: 12px auto 36px;
+  margin: 8px 0 24px;
+  font-size: 16px;
+  line-height: 26px;
   color: var(--text-2);
 }
 .login-story-steps {
   display: grid;
-  margin: 0 auto;
-  padding: 8px 20px;
+  margin: 0;
+  padding: 4px 20px;
   list-style: none;
-  border-radius: var(--r-xl);
+  border: 1px solid var(--border);
+  border-radius: 16px;
   background: var(--panel);
-  box-shadow: var(--shadow-panel);
 }
 .login-story-steps li {
   display: flex;
   gap: 16px;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 0;
+  padding: 12px 0;
 }
 .login-story-steps li + li {
   border-top: 1px solid var(--divider);
 }
 .login-story-steps strong {
   display: block;
-  font-size: 14px;
+  font-size: 15px;
   line-height: 22px;
-  font-weight: 600;
+  font-weight: 500;
 }
 .login-story-steps span {
   display: block;
-  font-size: 13px;
-  line-height: 20px;
+  font-size: 14px;
+  line-height: 21px;
   color: var(--text-2);
 }
 .login-story-steps em {
   flex: none;
-  padding: 2px 8px;
+  padding: 1px 8px;
   border-radius: 6px;
-  font-size: 12px;
-  line-height: 18px;
+  font-size: 14px;
+  line-height: 20px;
   font-style: normal;
-  color: var(--text-3);
+  color: var(--text-2);
 }
 .login-story-steps em[data-tone='done'] {
   color: var(--success);
@@ -174,9 +250,34 @@
   color: var(--warning);
   background: var(--warning-bg);
 }
+.login-foot {
+  padding: 20px 0 24px;
+  border-top: 1px solid var(--divider);
+  font-size: 14px;
+}
+.login-foot a {
+  margin-right: 20px;
+  color: var(--text-2);
+  text-decoration: none;
+}
+.login-foot a:hover {
+  color: var(--text);
+}
+.login-bar a:focus-visible,
+.login-foot a:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
 @media (max-width: 960px) {
   .login-story {
     display: none;
+  }
+  .login-grid {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 40px 0;
+  }
+  .login-prod .login-panel {
+    justify-content: center;
   }
 }
 @media (max-width: 767px) {
@@ -190,8 +291,8 @@
   .login-demo .login-panel {
     padding: 112px 24px 48px;
   }
-  .login-prod .login-panel {
-    padding: 24px;
+  .login-wrap {
+    width: calc(100% - 32px);
   }
 }
 /* ---------------- 表单：标签在上 13/20/500，标签到控件 6，字段之间 20（§3「表单」、§5.2） ---------------- */

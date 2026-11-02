@@ -35,6 +35,7 @@ import type { EntityType, IndustryPack } from '../../../src/shared/pack.js';
 import { ToastHost } from '../parts/toast.js';
 import { endMemberSession, isSessionExpired } from '../session.js';
 import { PageHeader } from '../shell/PageHeader.js';
+import { siteLinks } from '../site-links.js';
 import { setReduceMotion } from '../theme/prefs.js';
 import { ThemeProvider } from '../theme/ThemeProvider.js';
 import { loadViewer, toLogin, type Viewer, VIEWER_KEY } from '../viewer.js';
@@ -299,6 +300,18 @@ async function mount(path: string, pages: { path: string; component: () => React
   );
 }
 
+// ---------------- 官网入口：只从正式地址推，公开仓库不写域名 ----------------
+
+eq('站点入口：app.<根域> 推出官网、文档、隐私和条款', siteLinks('app.example.test'), {
+  www: 'https://www.example.test/',
+  docs: 'https://docs.example.test/',
+  privacy: 'https://www.example.test/privacy/',
+  terms: 'https://www.example.test/terms/',
+});
+for (const host of ['localhost', '127.0.0.1', 'app.localhost', 'tenant.example.test', 'myapp.example.test']) {
+  eq(`站点入口：${host} 没有官网，不显示`, siteLinks(host), null);
+}
+
 // ---------------- 1–5. prod ----------------
 
 {
@@ -310,7 +323,13 @@ async function mount(path: string, pages: { path: string; component: () => React
   // 1. 版式与文案
   eq('prod：启动只取 /me、/pack 各一次', [count('GET /api/console/me'), count('GET /api/console/pack')], [1, 1]);
   check('prod：是登录页，没有外壳（侧栏）', m.$('.login-page') !== null && document.querySelector('.sidebar') === null);
-  eq('prod：main 地标里只有一栏，h1 是「登录」', [m.$$('main').length, m.$$('h1').map(m.text)], [1, ['单来']]);
+  eq('prod：main 地标里只有一栏，h1 是「登录」', [m.$$('main').length, m.$$('h1').map(m.text)], [1, ['登录']]);
+  eq(
+    'prod：顶栏字标是平台名；本机没有官网，不显示站点入口和 logo',
+    [m.text(m.$('.login-brand')), m.$$('.login-bar nav').length, m.$$('.login-foot').length, m.$$('.login-brand img').length],
+    ['单来', 0, 0, 0],
+  );
+  eq('prod：右栏第二行是规则那句', m.text(m.$('.login-story h2 span')), '把报价交给规则');
   check('prod：h1 用登录页标题样式', m.$('h1')?.className === 'login-title');
   eq(
     'prod：一句说明（中文与字母之间不打空格）',
@@ -327,14 +346,14 @@ async function mount(path: string, pages: { path: string; component: () => React
     ['center', 4],
   );
   eq(
-    'prod 标题 28/36/600，说明距标题4',
+    'prod 标题 28/36/500，说明距标题4',
     [
       computed('.login-title').fontSize,
       computed('.login-title').lineHeight,
       computed('.login-title').fontWeight,
       computed('.login-lead').marginTop,
     ],
-    ['28px', '36px', '600', '4px'],
+    ['28px', '36px', '500', '4px'],
   );
   for (const width of [1440, 360]) {
     win.happyDOM.setViewport({ width, height: 900 });
@@ -751,7 +770,7 @@ for (const demo of [true, false]) {
   };
   server = { demo, brand, loggedIn: false, login: 'check' };
   const m = await mount('/console/');
-  eq('15 验收 2 平台名与组织名分层', m.$('.login-title')?.textContent, '单来');
+  eq('15 验收 2 平台名与组织名分层', m.$(demo ? '.login-title' : '.login-brand')?.textContent, '单来');
   eq('公开品牌：副标题来自entry', m.$('.login-lead')?.textContent, brand.name);
   eq('公开品牌：文档标题', document.title, `登录 · ${brand.name} · 单来`);
   check('公开品牌：HTML字符已转义，无标签注入', !m.$('img') && !m.$('script') && !m.$('[onerror]'));
