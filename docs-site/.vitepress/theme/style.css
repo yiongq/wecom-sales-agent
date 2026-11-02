@@ -343,6 +343,12 @@ b {
     margin-left: var(--vp-sidebar-width);
   }
 }
+/* 1440 起侧栏随窗口变宽，算式和 VPSidebar 保持一致，否则页脚左侧被盖住。 */
+@media (min-width: 1440px) {
+  .site-foot {
+    margin-left: calc((100% - (var(--vp-layout-max-width) - 64px)) / 2 + var(--vp-sidebar-width) - 32px);
+  }
+}
 .not-found {
   max-width: 720px;
   margin: 96px auto;
