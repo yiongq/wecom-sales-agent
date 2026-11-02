@@ -196,7 +196,12 @@ try {
         await invoke();
         const next = i === 0 ? (state === 'pending' ? 'approved' : state) : i === 3 ? 'paid' : 'invalid';
         assert.equal(quoteState(order, now), next, `${state}/${i}`);
-        if (i === 0) assert.equal(sent.length - sendBefore, state === 'pending' ? 1 : 0, '一次批准只发一次');
+        if (i === 0) {
+          // 已批准但客户没收到过链接时，重复批准要补发；已经发过的不再发。
+          assert.equal(sent.length - sendBefore, state === 'pending' || state === 'approved' ? 1 : 0, '一次批准只发一次');
+          await actions.approveQuote(order.id, actor);
+          assert.equal(sent.length - sendBefore, state === 'pending' || state === 'approved' ? 1 : 0, '重试不重复发');
+        }
         if (i === 1) {
           assert.equal(order.cancelReason, '顾问驳回：仅顾问可见');
           assert.equal(session.assignee?.name, actor.name);
@@ -277,7 +282,40 @@ try {
       const approvals = sent.slice(sendBefore).filter((m) => m.text === `/quote/${order.id}`);
       assert.equal(approvals.length, 0, `${change}: 提交后失效不发旧报价`);
     }
-  console.log('QUOTE CONCURRENCY PASS: 审批两种先后、提交期间撤回/重置/另一单批准，旧链接零推送');
+  // 批准写进内存后等提交超时：顾问看到失败，重试时提交已经成功，要把链接补发给客户，并发重试也只发一次。
+  {
+    const { session, order } = await fresh();
+    const sendBefore = sent.length;
+    const links = () => sent.slice(sendBefore).filter((m) => m.text === `/quote/${order.id}`).length;
+    let release!: () => void;
+    fx.faults.gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await assert.rejects(actions.approveQuote(order.id, actor), /还没落库/);
+    assert.equal(quoteState(order, now), 'approved');
+    assert.equal(links(), 0, '没提交不发');
+    fx.faults.gate = null;
+    release();
+    await Promise.all([actions.approveQuote(order.id, actor), actions.approveQuote(order.id, actor)]);
+    assert.equal(links(), 1, '重试补发一次');
+    await actions.approveQuote(order.id, actor);
+    assert.equal(links(), 1, '补发过不再发');
+    assert.equal(session.messages.filter((m) => m.role === 'agent' && m.content === `/quote/${order.id}`).length, 1);
+    // 模型回复里已经带过链接：顾问再点批准不重复发。
+    const { session: told, order: linked } = await fresh('approved');
+    told.messages.push({ role: 'agent', content: `报价单在这里：/quote/${linked.id}`, at: now });
+    store.saveSession(told, false);
+    const before = sent.length;
+    await actions.approveQuote(linked.id, actor);
+    assert.equal(sent.length, before);
+    // 客户自己贴过链接不算发过。
+    const { session: pasted, order: unsent } = await fresh('approved');
+    pasted.messages.push({ role: 'customer', content: `这个链接打不开：/quote/${unsent.id}`, at: now });
+    store.saveSession(pasted, false);
+    await actions.approveQuote(unsent.id, actor);
+    assert.equal(sent.at(-1)!.text, `/quote/${unsent.id}`);
+  }
+  console.log('QUOTE CONCURRENCY PASS: 审批两种先后、提交期间撤回/重置/另一单批准，旧链接零推送；提交超时后重试补发一次');
 
   for (const role of ['owner', 'admin', 'supervisor', 'agent', 'viewer', 'shared'] as const) {
     for (const ownership of ['ai', 'mine', 'other', 'unassigned'] as const) {
