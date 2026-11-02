@@ -649,6 +649,20 @@ try {
       assert.equal(session.orderIds.length, 0, text);
     }
 
+    // 草稿里有没对上的行：不能只拿精确行建一张缺行的单，改回实话。
+    setPolicy({ autoApproveMaxFen: 100000 });
+    for (const match of ['ambiguous', 'none'] as const) {
+      const partial = fresh();
+      await estimate(partial);
+      const { at, lines } = readState(partial).rfqDraft!;
+      writeState(partial, { rfqDraft: { at, lines: [...lines, { match, qty: 5 }] } });
+      now++;
+      const reply = await handleMessage(partial.id, '麻烦出一份正式报价单给我', 'wecom');
+      assert.equal(reply.text, '报价单还没有提交，需要的话请告诉我，我马上起草。', match);
+      assert.equal(partial.orderIds.length, 0, match);
+    }
+    setPolicy({ autoApproveMaxFen: 0 });
+
     // 已有单时模型说的是真话，不动也不重复建。
     const existing = fresh();
     await estimate(existing);

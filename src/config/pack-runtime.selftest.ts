@@ -59,6 +59,48 @@ if (process.argv[2] !== 'worker') {
       assert.ok(turns[0]?.turn.guardVerdicts?.some((v) => v.id === 'fixture_guard' && v.action === 'replace'));
       assert.ok(turns[0]?.turn.guards.some((e) => e.guard === 'fixture_guard'));
       assert.equal(await guardOutbound(getSession('fixture-conv')!, '正常跟进', { kind: 'followup' }), '正常跟进');
+      // 现有包的跟进步骤都不调工具，这里用假步骤走通：跟进护栏只放行无副作用的已注册工具，其余不执行。
+      const session = getSession('fixture-conv')!;
+      const before = structuredClone(session);
+      const called: Record<string, string> = {};
+      bindPack(
+        {
+          ...runtime,
+          tools: [
+            ...runtime.tools,
+            {
+              def: { type: 'function', function: { name: 'fixture_read', description: '只读夹具', parameters: {} } },
+              sideEffects: [],
+              cacheable: false,
+              blocksRetry: false,
+              execute: async () => '只读结果',
+            },
+          ],
+          followupSteps: [
+            ...runtime.followupSteps,
+            {
+              id: 'fixture_followup_tools',
+              async run(ctx) {
+                for (const [name, args] of [
+                  ['fixture_read', {}],
+                  ['fixture_inspect', {}],
+                  ['fixture_order', { lines: [{ kind: 'widget', code: 'w-1', qty: 1 }] }],
+                  ['fixture_missing', {}],
+                ] as const)
+                  called[name] = await ctx.callTool(name, args).catch((e: Error) => e.message);
+                return { action: 'pass' };
+              },
+            },
+          ],
+        },
+        null,
+      );
+      assert.equal(await guardOutbound(session, '正常跟进', { kind: 'followup' }), '正常跟进');
+      assert.equal(called.fixture_read, '只读结果');
+      for (const name of ['fixture_inspect', 'fixture_order', 'fixture_missing'])
+        assert.equal(called[name], `跟进护栏不允许调用有副作用或未注册的工具：${name}`);
+      assert.deepEqual(session, before, '被拒的工具没有动会话');
+      bindPack(runtime, null);
       offTool();
       offTrace();
       const prior = config.currentPack();
