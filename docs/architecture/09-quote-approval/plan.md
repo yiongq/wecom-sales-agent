@@ -943,6 +943,9 @@ PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b487
 
 ### 报价条款快照修复（2026-11-03）
 
+- 对应 v2 快照 `eval/baselines/v2-09-step19.json`，默认基线改指它。与 `v2-12-step10.json` 逐条比对：原有 923 条只有 `q09-fixture-auto-accepted` 三轮各多 `approval.notes`、`approval.validUntil`，都来自这次快照字段；另有 4 条是之前已加、旧快照未收录的 q10 用例。
+- `src/fixtures/industrial-pre11.json` 同步：订单只多这两个字段。`industrial-followup` 用 `validUntil` 模拟过期，不再改 `decidedAt`。
+
 - [x] owner 定：有效期和商业说明在批准时定格；按本次专门任务说明在 spec 头部追加 Revisions，Status 保持 implemented。
 - [x] QuoteApproval 新增可选 validUntil / notes；人工与自动批准共用 snapshotQuoteApproval，一次读取当时已发布政策，按上海自然日算截止时间，并复制已渲染说明。空说明保存 []，与没有快照的旧单区分。
 - [x] quoteValidUntil 与公开报价页/API 优先读快照；旧单缺少对应字段时保持当前政策回退。人工批准只改 approval 赋值及必要导入；金额、行、审批权限、其他状态机与模型 contextNote 未改。
