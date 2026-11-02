@@ -38,9 +38,17 @@ const giftClaim = /赠送|附赠|送您|送你|送一个|搭赠|返点|返利|�
 // 运费固定为 0 时这些说法都不对；政策有运费或门槛时说「另计」是对的，不拦。
 const shippingDenial =
   /(?:未|不)(?:包)?含运费|运费另(?:计|议|付)(?:为?\s*0(?:\.0+)?\s*元?)?|运费另以[^，,。；;）)]*确认为准|运费(?:按政策另计)?以实际结算为准|运费按政策另计/;
-// 款进公司账户：产品没有收款页，报价单上也没有账户，不能让客户理解成付给顾问个人。
+// 款进公司账户：产品没有收款页，报价单上也没有账户，不能让客户理解成付给顾问或个人。
+// 「转给、打到」也说转接和打电话，要有钱字才算；钱字后面跟这些词说的是别的事（付款问题转给顾问、凭证发给顾问）。
 const payToAdvisor =
-  /(?:款项|货款)[^，,。；;]{0,4}(?:付给|支付给|转给|打给)[^，,。；;]{0,6}顾问|转账[^，,。；;]{0,12}(?:给|至|到(?!账))[^，,。；;]{0,6}顾问(?!提供的?(?:公司|对公)|指定的?对公)|直接转给[^，,。；;]{0,4}顾问收款|报价单上的[^，,。；;]{0,4}账[户号]/;
+  /(?:[货尾余全]款|款项|[定订]金|[把将]款|(?<![价少])钱|转账|打款|(?<![交托])付|汇(?![报总集率]))(?:(?!事|问题|安排|方式|情况|确认|收|发|传|报|我|帮|后|前)[^，,。；;]){0,10}?(?:给|至|[到入](?!账|位|了)|[转打汇](?=顾问[^，,。；;]{0,3}(?:账[户号]|卡)))(?:(?!公司|对公|后|再|才|会)[^，,。；;]){0,6}?(?:顾问(?!(?:提供|指定|给|发|告知)[^，,。；;]{0,6}(?:公司|对公))|(?:个人|私人)的?(?:微信|支付宝))|收款(?:账[户号]|人|方)[是为][^，,。；;]{0,4}?顾问(?!(?:提供|指定|给|发|告知)[^，,。；;]{0,6}(?:公司|对公))|直接转给[^，,。；;]{0,4}顾问收款|报价单上的[^，,。；;]{0,4}账[户号]/;
+const personalAccount = /私户|对私(?!人)|(?:个人|私人)的?(?:银行)?(?:[账帐][户号]|卡(?!片)|收款码)/;
+// 账号只能由顾问给，模型报的都是编的；金额跟在账户后面不算账号。
+const accountNumber =
+  /(?:[账帐][户号]|卡号|银行卡|支付宝|(?:转账|[转打汇付存]款?)[到至入])[^，,。；;\d]{0,10}(?<![\d.¥￥])\d(?:[\s-]?\d){5,}(?![\d.,\s]*(?:万?元|块))|(?<![\d.¥￥])\d(?:[\s-]?\d){5,}(?![\d.,\s]*(?:万?元|块))[^，,。；;\d]{0,8}(?:收款|[账帐][户号]|卡号|银行卡)/;
+// 条件句也是承诺，不放行；否定词要落在收款方前面，或收款方后面明说不行（打给顾问不用走对公仍要拦）。
+const paymentNonAssertion =
+  /[?？]|[吗么呢][。！？?!，,；;]?\s*$|(?:不要|不用|不必|不需要?|不能|不可|不会|不得|不应|不该|不让|不走|不经|不收|不接受|不允许|不支持|不建议|不提供|不是|绝不|没有|无需|无须|无法|没法|(?<![分特个类区])别|勿|禁止|严禁|谨防|防止|避免|小心|警惕|拒绝|如有人|若有人|如遇)[^，,。；;]*(?:顾问|个人|私|\d)|(?:顾问|个人|私|\d)[^，,。；;]*(?:不行|不可以|不能|不是|不安全|不合规|不允许|不接受|不支持|不认|不算|不对|无效|无法|违规|有风险)/;
 const promiseNonAssertion =
   /[吗么呢][。！？?!，,；;]?\s*$|[?？]|是否|有没有|能不能|可以吗|以.{0,8}确认为准|不能|不可|不保证|不承诺|不是|没有|无法|没法|没办法|做不了|不会|给不了|需要?顾问确认|请(?:顾问)?确认|不(?:再|予|提供|支持|享受)?(?:打(?:\s*[一二三四五六七八九十两零〇点\d.]+\s*)?折|包邮|免运费|赠送|附赠|送您|送你|送一个|搭赠|返点|返利|返现|让利|抹零|优惠|折扣)|无(?:额外)?(?:优惠|折扣|赠品|赠送|返点|返利|返现)/;
 
@@ -254,6 +262,12 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
   // 主回复就地改回政策事实，同一括号里的金额不受牵连；跟进只删。
   const body = flatFree && !followup ? ctx.text.replace(new RegExp(shippingDenial, 'g'), '运费0元') : ctx.text;
   const disclaimed = /以顾问(?:最终)?确认为准/.test(body);
+  // 商家发布的付款条款里写明的账号是事实，不算模型编的。
+  const publishedDigits = policy.paymentTerms.replace(/\D/g, '');
+  const inventedAccount = (sentence: string): boolean => {
+    const number = accountNumber.exec(sentence)?.[0].replace(/\D/g, '');
+    return !!number && !publishedDigits.includes(number);
+  };
   // 承诺和库存回退在整条回复只出现一次；其他既有回退仍按原句去重。
   const onceReplacements = new Set<string>();
   // 型号标题常独占一行；延续最近显式主语，新型号（包括未知型号）必须覆盖它。
@@ -351,7 +365,8 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
       if ((tax !== null && tax !== policy.taxIncluded) || !invoiceOk || (rate && Number(rate[1]) !== policy.taxRate))
         text = followup ? '' : taxInvoiceText(policy);
     }
-    if (text === sentence && !/[?？]/.test(sentence) && payToAdvisor.test(sentence)) text = followup ? '' : PAYMENT_FALLBACK;
+    const payment = payToAdvisor.test(sentence) || personalAccount.test(sentence) || inventedAccount(sentence);
+    if (text === sentence && payment && !paymentNonAssertion.test(sentence)) text = followup ? '' : PAYMENT_FALLBACK;
     if (text === sentence && !/[?？]/.test(sentence) && noteClaim.test(sentence)) text = followup ? '' : NOTE_FALLBACK;
     return text;
   };
