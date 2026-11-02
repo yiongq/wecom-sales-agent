@@ -8,6 +8,7 @@ import vm from 'node:vm';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { industrial } from './packs/industrial/console-pack.js';
+import { industrialFollowupGuard } from './packs/industrial/guards.js';
 import { createIndustrialRuntime } from './packs/industrial/runtime.js';
 import { defaultIndustrialPolicy, quoteNotes } from './packs/industrial/policy.js';
 import { writeState, readState, draftParts, StateSchema } from './packs/industrial/state.js';
@@ -658,6 +659,63 @@ try {
     assert.equal(existing.orderIds.length, 1);
     mockAction = action;
     console.log('QUOTE CLAIM PASS: 要了就补建并人审，没要改回实话，已有单不重复建');
+  }
+
+  // 手机实测：批准后客户只回「可以」不算接受，模型却说已确认，顾问收不到通知。
+  {
+    const action = mockAction;
+    setPolicy({ autoApproveMaxFen: 100000 });
+    const claims = [
+      '好的，您已确认该报价单，订单已进入处理流程。',
+      '已收到您的确认，我们开始安排。',
+      '已按这份报价为您确认采购。',
+      '订单已进入发货流程。',
+    ];
+    const ask = '这份报价还需要您明确确认：请回复「接受这份报价」，我再通知顾问安排付款和发货。';
+    const followGuard = industrialFollowupGuard((await import('./core/engine/sources.js')).packSources());
+    for (const claim of claims) {
+      const session = fresh();
+      await estimate(session);
+      const { order } = await make(session);
+      now++;
+      mockAction = async () => `${claim}\n付款方式：款到发货，对公转账。`;
+      const reply = await handleMessage(session.id, '可以', 'wecom');
+      assert.equal(reply.text, `${ask}\n付款方式：款到发货，对公转账。`, claim);
+      assert.equal(order.approval!.acceptedAt, undefined, claim);
+      assert.equal(await acceptanceJobs(order.id), 0, claim);
+      const result = await followGuard.run({
+        session,
+        text: `${claim}还有别的型号吗？`,
+        toolSources: [],
+        recordGuard: () => undefined,
+      } as never);
+      assert.equal(result && 'text' in result ? result.text : '', '还有别的型号吗？', claim);
+    }
+
+    // 话里让客户回的那句要真能记下接受；记下之后再说已确认就是真话，不改。
+    const session = fresh();
+    await estimate(session);
+    const { order } = await make(session);
+    now++;
+    assert.equal(ask.includes('接受这份报价'), true);
+    await handleMessage(session.id, '接受这份报价', 'wecom');
+    assert.ok(order.approval!.acceptedAt !== undefined);
+    assert.equal(await acceptanceJobs(order.id), 1);
+    now++;
+    const said = '您已确认该报价单，顾问会联系您安排付款。';
+    mockAction = async () => said;
+    assert.equal((await handleMessage(session.id, '什么时候能联系我', 'wecom')).text, said);
+
+    // 批准但未接受时的正常话术不改。
+    const open = fresh();
+    await estimate(open);
+    await make(open);
+    now++;
+    const fine = '报价单已审核通过，确认后顾问会与您对接付款安排。';
+    mockAction = async () => fine;
+    assert.equal((await handleMessage(open.id, '报价有效期多久', 'wecom')).text, fine);
+    mockAction = action;
+    console.log('ACCEPT CLAIM PASS: 没记下接受时改成请客户确认，建议说法能记下，真接受和正常话术不改');
   }
 
   // 非接受终态、更新的试算/清单和转人工仍先于客户接受；纯接受与混合问题都验证。

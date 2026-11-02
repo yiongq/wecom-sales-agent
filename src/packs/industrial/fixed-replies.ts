@@ -11,6 +11,7 @@ import {
   PAYMENT_FALLBACK,
   NOTE_FALLBACK,
   NOT_SUBMITTED,
+  ACCEPT_ASK,
   TRIM_FALLBACK,
   trimNote,
 } from './guards.js';
@@ -65,6 +66,7 @@ export const fixedReplies: readonly FixedReply[] = [
     ['industrial.payment', PAYMENT_FALLBACK, 'industrial_claims'],
     ['industrial.note', NOTE_FALLBACK, 'industrial_claims'],
     ['industrial.not_submitted', NOT_SUBMITTED, 'quote_claim'],
+    ['industrial.accept_ask', ACCEPT_ASK, 'quote_claim'],
     ['industrial.inventory', INVENTORY_FALLBACK + '。', 'industrial_claims'],
     ['industrial.substitute', SUBSTITUTE_FALLBACK + '。', 'industrial_claims'],
     ['industrial.trim.fallback', TRIM_FALLBACK, 'rfq_trim'],
