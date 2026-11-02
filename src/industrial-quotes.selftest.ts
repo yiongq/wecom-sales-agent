@@ -631,7 +631,8 @@ try {
   // 判定有效之后还隔着模型调用和异步步骤：这期间报价失效，不记接受、不通知顾问、不写确认状态。
   // 这一轮照常收场，发给客户的和会话记录是同一句，模型说的「已确认」不能发出去。
   const staleClaim = '好的，已确认您接受这份报价，可以开专票。';
-  const staleText = '这份报价刚有变动，您这次确认没有生效。需要的话请告诉我型号和数量，我重新算价。';
+  const withdrawnText = '这份报价单已撤回，顾问会跟您重新确认';
+  const expiredText = '这份报价已过期，您这次确认没有生效。回复「重新报价」，我按原来的型号和数量重新算价。';
   const askAgain = '这份报价还需要您明确确认：请回复「接受这份报价」，我再通知顾问安排付款和发货。';
   const stateAfter = {
     withdrawn: 'invalid',
@@ -669,7 +670,9 @@ try {
         ? staleClaim
         : mode === 'superseded'
           ? `报价单：/quote/${latest.id}\n合计${orderDisplay(latest).totalText}\n${askAgain}`
-          : staleText;
+          : mode === 'expired'
+            ? expiredText
+            : withdrawnText;
     assert.equal(reply.text, expected, mode);
     assert.equal(session.messages.at(-1)!.content, reply.text, mode);
     if (mode === 'superseded')
@@ -704,7 +707,7 @@ try {
     };
     const reply = await handleMessage(session.id, '确认下单', 'wecom');
     fixed.samples = samples;
-    assert.equal(reply.text, staleText);
+    assert.equal(reply.text, withdrawnText);
     assert.equal(session.messages.at(-1)!.content, reply.text);
     assert.equal(readState(session).confirmedQuoteAt, undefined);
     assert.equal(order.approval!.acceptedAt, undefined);
@@ -739,7 +742,7 @@ try {
         });
         const recorded = order.approval!.acceptedAt !== undefined;
         outcomes.add(recorded);
-        assert.notEqual(reply.text, recorded ? staleText : '好的，顾问会尽快联系您确认付款和发货', label);
+        assert.notEqual(reply.text, recorded ? expiredText : '好的，顾问会尽快联系您确认付款和发货', label);
         assert.equal(session.messages.at(-1)!.content, reply.text, label);
         assert.equal(readState(session).confirmedQuoteAt !== undefined, recorded, label);
         assert.equal(await acceptanceJobs(order.id), recorded ? 1 : 0, label);
@@ -748,6 +751,36 @@ try {
       assert.equal(outcomes.size, 2, `${text} ${filtered}：有效期末尾两种结果都要走到`);
     }
     mockAction = action;
+  }
+
+  // 话里让客户回的那句要真能续算：不用重说型号和数量。
+  {
+    const session = fresh();
+    await estimate(session);
+    const { order } = await make(session);
+    now++;
+    const resume = now;
+    const action = mockAction;
+    mockAction = async () => {
+      now = quoteValidUntil(order) + 1;
+      return staleClaim;
+    };
+    assert.equal((await handleMessage(session.id, '确认下单，能开专票吗', 'wecom')).text, expiredText);
+    mockAction = async () => '好的。';
+    const reply = await handleMessage(session.id, '重新报价', 'wecom');
+    mockAction = action;
+    const unitPrice = order.lines[0]!.unitPriceFen / 100;
+    assert.equal(
+      reply.text,
+      `原报价单已过期，已按当前价重新试算，合计${unitPrice * order.lines[0]!.qty}元。请确认本次试算，确认后再起草新的报价单。`,
+    );
+    assert.deepEqual(
+      readState(session).rfqDraft!.lines.map((line) => ['code' in line ? line.code : null, line.qty]),
+      order.lines.map((line) => [line.code, line.qty]),
+    );
+    assert.equal(order.approval!.acceptedAt, undefined);
+    assert.equal(await acceptanceJobs(order.id), 0);
+    now = resume + 1;
   }
 
   // 复核只认本会话的这张报价；替换用的固定句已登记。
@@ -763,8 +796,13 @@ try {
     assert.ok('order' in plain);
     assert.equal(actions.acceptanceState(session, plain.order.id, now), 'invalid');
     assert.throws(() => actions.recordQuoteAccepted(session, plain.order.id), actions.QuoteStateError);
-    const samples = await runtime.fixedReplies!.find((entry) => entry.id === 'industrial.quote_changed')!.samples();
-    assert.ok(samples.every((sample) => sample.text === staleText));
+    for (const [id, text] of [
+      ['industrial.quote_expired', expiredText],
+      ['industrial.quote.withdrawn', withdrawnText],
+    ]) {
+      const samples = await runtime.fixedReplies!.find((entry) => entry.id === id)!.samples();
+      assert.ok(samples.every((sample) => sample.text === text));
+    }
   }
   stopTurns();
   console.log('STALE ACCEPT PASS: 发送前报价失效：不记接受、不通知、不写确认状态，回复说实话且与会话记录一致');

@@ -16,6 +16,7 @@ import {
   rfqTrimStep,
   rfqTrimFollowupStep,
   staleAcceptText,
+  QUOTE_WITHDRAWN,
 } from './guards.js';
 import { IndustrialPolicySchema, quoteNotes } from './policy.js';
 import { preModel, contextNote, prefetch, beforeTool } from './turn.js';
@@ -187,7 +188,7 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
       resetSession() {},
       paidText: () => '付款已收到',
       quoteRejectedText: () => '这份报价需要顾问再核对一下，顾问会直接联系您',
-      quoteWithdrawnText: () => '这份报价单已撤回，顾问会跟您重新确认',
+      quoteWithdrawnText: () => QUOTE_WITHDRAWN,
       quoteAcceptStaleText: staleAcceptText,
     },
     vocab: { handoff: handoffVocab, dejargon: { english: {}, internal: [] } },

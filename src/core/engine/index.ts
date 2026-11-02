@@ -449,7 +449,7 @@ function settleAcceptance(
   const state = acceptanceState(session, notify.orderId, at);
   if (state === 'approved') return { effects, text, at };
   if (state === 'paid') return { effects: undefined, text };
-  const stale = runtime.engineHooks.quoteAcceptStaleText?.(session) ?? runtime.engineHooks.fallbackReply(session.stage);
+  const stale = runtime.engineHooks.quoteAcceptStaleText?.(session, state) ?? runtime.engineHooks.fallbackReply(session.stage);
   noteGuard('quote_accept_stale', text, stale, 'replace');
   return { effects: undefined, text: stale };
 }
