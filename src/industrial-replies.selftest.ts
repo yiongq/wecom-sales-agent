@@ -95,6 +95,45 @@ try {
   assert.match(await guarded('HS1000全部现货。', '', partialFact), /确认为准/);
   assert.match(await guarded('HS1000现货99件，其余约7天。', '', partialFact), /确认为准/);
   session.packState = previousDraft;
+  // 回复出口不允许上下文摘要或 JSON；正常中文括号、标点仍逐字保留。
+  const normal = '型号请核对（含税13%），可以开专票。';
+  assert.equal(await guarded(normal), normal);
+  for (const leak of [
+    '询价摘要：{"at":1,"lines":[]}',
+    '过期报价行：[{"query":"HS1000","qty":2}]',
+    '这里是内部对象 {"code":"part-0","qty":2}，请读取。',
+    '[ { "key" : 2 } ]',
+    '询价摘要：内容已经隐藏',
+    '过期报价行：内容已经隐藏',
+  ])
+    assert.equal(await guarded(`${normal}\n${leak}\n请核对型号。`), `${normal}\n请核对型号。`, leak);
+  assert.equal(await guarded('{"key":2}'), '');
+
+  // 「约需」不能被当成确定交期；单型号、现货数和剩余交期仍分别校验。
+  const remainingPart = { ...parts[0]!, id: 'remaining', partNo: '6207-2RS', stock: 18, leadDays: 9 };
+  const remainingSources = { ...sources, currentCatalog: () => ({ ...sources.currentCatalog(), items: { part: [remainingPart] } }) };
+  const remainingSession = store.getOrCreateSession('wecom:wmRemaining', 'wecom');
+  writeState(remainingSession, { rfqDraft: { at: now, lines: [{ match: 'exact', code: remainingPart.id, version: 1, qty: 32 }] } }, [
+    remainingPart,
+  ]);
+  for (const [text, expected] of [
+    ['库存现货18件，其余14件约需9天到货，具体以顾问确认为准。', '库存现货18件，其余14件约需9天到货，具体以顾问确认为准。'],
+    ['6207-2RS库存现货18件，其余约需9天到货。', '6207-2RS库存现货18件，其余约需9天到货。'],
+    ['库存现货18件，其余14件约需5天到货，具体以顾问确认为准。', '库存现货18件，具体以顾问确认为准。'],
+    ['库存现货30件，具体以顾问确认为准。', '具体以顾问确认为准。'],
+    ['其余14件9天到货，具体以顾问确认为准。', '具体以顾问确认为准。'],
+  ]) {
+    const result = await industrialReplyGuard(remainingSources).run({
+      session: remainingSession,
+      text,
+      inputText: '6207-2RS 32件',
+      policy,
+      toolSources: [],
+      recordGuard: () => {},
+    } as unknown as ReplyGuardContext);
+    assert.equal(result?.action === 'pass' ? text : result && 'text' in result ? result.text : '', expected, text);
+  }
+  console.log('上下文回复 PASS: JSON/内部标签整行删除、中文括号保留、剩余交期正反例');
   for (const text of ['如果HS1000有现货就好了。', 'HS1000有货吗？', 'HS1000没有现货。', 'HS1000不能保证交期。'])
     assert.equal(await guarded(text), text);
   assert.equal(await guarded('HS1000可以替代HS1001。'), 'HS1000可以替代HS1001。');

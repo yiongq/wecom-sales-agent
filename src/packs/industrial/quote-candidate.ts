@@ -16,14 +16,24 @@ export function latestQuoteCandidate(session: Session, now: number): QuoteCandid
     if (at === undefined || !Number.isSafeInteger(at) || at < 0) continue;
     candidates.push({ kind: 'quote', at, order, state });
   }
-  return (
-    candidates.toSorted((a, b) => {
-      if (a.at !== b.at) return b.at - a.at;
-      if (a.kind !== b.kind) return a.kind === 'draft' ? -1 : 1;
-      if (a.kind !== 'quote' || b.kind !== 'quote') return 0;
-      return b.order.createdAt - a.order.createdAt || (a.order.id > b.order.id ? -1 : a.order.id < b.order.id ? 1 : 0);
-    })[0] ?? null
-  );
+  const sorted = candidates.toSorted((a, b) => {
+    if (a.at !== b.at) return b.at - a.at;
+    if (a.kind !== b.kind) return a.kind === 'draft' ? -1 : 1;
+    if (a.kind !== 'quote' || b.kind !== 'quote') return 0;
+    return b.order.createdAt - a.order.createdAt || (a.order.id > b.order.id ? -1 : a.order.id < b.order.id ? 1 : 0);
+  });
+  const latestQuote = sorted.find((candidate) => candidate.kind === 'quote');
+  // 仅重复最新报价单且该单有效获批时，重试算不构成新需求；不越过更新的待审单。
+  const repeatsApproved =
+    draft &&
+    draft.lines.length > 0 &&
+    latestQuote?.state === 'approved' &&
+    latestQuote.order.lines.length === draft.lines.length &&
+    draft.lines.every((line, i) => {
+      const quoted = latestQuote.order.lines[i]!;
+      return line.match === 'exact' && line.code === quoted.code && line.version === quoted.version && line.qty === quoted.qty;
+    });
+  return sorted.find((candidate) => !repeatsApproved || candidate.kind !== 'draft') ?? null;
 }
 
 /** 过期续算必须跨过一次对客报价和新的客户回合，不能在同一轮试算后建单。 */

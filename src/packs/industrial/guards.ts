@@ -1,6 +1,7 @@
 // R8 / R9：只读会话与已发布配置；跟进版本只删，不调用业务工具。
 import {
   orderDisplay,
+  getAnyOrder,
   partsOf,
   sentenceUnits,
   type quoteState,
@@ -202,14 +203,28 @@ function quoteBehaviorText(ctx: FollowupGuardContext, sources: PackSources, foll
       .join('');
   }
   const input = 'inputText' in ctx ? String(ctx.inputText) : (ctx.session.messages.findLast((m) => m.role === 'customer')?.content ?? '');
-  const ambiguous = unresolvedParts(input, sources);
+  if ('acceptingOrderId' in ctx && ctx.acceptingOrderId) return text;
+  // 客户消息在 preflight 先入会话，预取 / 模型工具随后才执行；同毫秒也不借本轮工具反推客户选择。
+  const before = followup ? Infinity : ctx.session.messages.findLast((message) => message.role === 'customer')?.at;
+  const selected = new Set<string>();
+  if (before !== undefined) {
+    if (draft && draft.at < before) for (const line of draft.lines) if (line.match === 'exact') selected.add(line.code);
+    for (const id of ctx.session.orderIds) {
+      const order = getAnyOrder(id);
+      if (!order || !('v' in order) || order.sessionId !== ctx.session.id || !order.approval) continue;
+      if (order.createdAt >= before || order.approval.requestedAt >= before) continue;
+      for (const line of order.lines) selected.add(line.code);
+    }
+  }
+  const ambiguous = unresolvedParts(input, sources).filter((mention) => !mention.parts.some((part) => selected.has(part.id)));
   // 非字面（语义）候选也由工具结果决定，不把候选缓存当成已选型号。
   const candidates = ambiguous.flatMap((m) => m.parts.map((part) => part.partNo));
   for (const call of ctx.toolSources) {
     if (call.name !== 'find_parts' || !call.result) continue;
-    const result = JSON.parse(call.result) as { match?: string; parts?: { partNo: string }[] };
+    const result = JSON.parse(call.result) as { match?: string; parts?: { partNo: string; code?: string }[] };
     if (
       result.match === 'ambiguous' &&
+      !result.parts?.some((part) => part.code && selected.has(part.code)) &&
       !mentionedParts(input, sources).some((m) => m.match === 'exact' && result.parts?.some((part) => part.partNo === m.parts[0]?.partNo))
     )
       candidates.push(...(result.parts ?? []).map((part) => part.partNo));
@@ -226,12 +241,23 @@ function quoteBehaviorText(ctx: FollowupGuardContext, sources: PackSources, foll
       !/哪种|哪个|哪一款|选择|确认.{0,6}型号|型号.{0,6}确认/.test(text) ||
       /已为您选|替您选/.test(text)
     )
-      text = `查到多个候选，请选择需要的型号：\n${models.map((model) => `· ${model}`).join('\n')}`;
+      text =
+        models.length === 1
+          ? `查到的是 ${models[0]}，请确认是不是这个型号。`
+          : `查到多个候选，请选择需要的型号：\n${models.map((model) => `· ${model}`).join('\n')}`;
   }
   return text;
 }
 
 function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: boolean, rawPolicy: unknown): string {
+  // 上下文格式供工具策略读取；只在回复出口整行删掉内部摘要和 JSON。
+  ctx = {
+    ...ctx,
+    text: ctx.text
+      .split('\n')
+      .filter((line) => !/^\s*(?:询价摘要|过期报价行)[:：]/.test(line) && !/\{\s*"(?:[^"\\]|\\.)*"\s*:/.test(line))
+      .join('\n'),
+  };
   ctx = { ...ctx, text: quoteBehaviorText(ctx, sources, followup) };
   const policy = IndustrialPolicySchema.parse(rawPolicy);
   const cache = readState(ctx.session).partsInPlay ?? [];
@@ -337,7 +363,10 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
         claimed.every((model) => {
           const fact = facts.find((entry) => normalizePartNo(entry.partNo) === model);
           if (!fact) return false;
-          if (/库存(?:有?\s*\d+)|保证交期|今天.{0,3}发|明天.{0,3}发|(?<!约\s*)\d+\s*天到/.test(inventory)) return false;
+          // 单型号的剩余数量「约需 N 天到」仍是约期，后续继续核对部分现货与实际天数。
+          const deliveryClaim =
+            claimed.length === 1 ? inventory.replace(/((?:其余|剩余|余量)(?:\s*\d+\s*件)?\s*)约需(?=\s*\d+\s*天到)/g, '$1约') : inventory;
+          if (/库存(?:有?\s*\d+)|保证交期|今天.{0,3}发|明天.{0,3}发|(?<!约\s*)\d+\s*天到/.test(deliveryClaim)) return false;
           const delivery = fact.delivery ?? '';
           const stock = fact.stock ?? (delivery === '现货' ? '现货' : delivery.startsWith('现货') ? '部分现货' : '无现货');
           if (/有货|库存充足|全(?:部|都)?现货/.test(inventory) && stock !== '现货') return false;
