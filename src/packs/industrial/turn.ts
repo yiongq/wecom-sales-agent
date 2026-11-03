@@ -81,6 +81,16 @@ export function mentionedParts(
       i = j;
       break;
     }
+    // 完整型号优先（M8×30）；只有去掉数量后能精确匹配才缩短原文区间。
+    if (found.match === 'none') {
+      const base = query.replace(/[×*]\d+$/, '');
+      const exact = matchInMemory(base, parts);
+      if (base !== query && exact.match === 'exact') {
+        query = base;
+        end = token.index! + base.length;
+        found = exact;
+      }
+    }
     if (found.match === 'none') continue;
     // 型号与数量之间可夹品名（「6205-2RS轴承100个」）；隔了逗号只认「数量 / 要 / 共」（「6205-2RS，数量19件」），免得把别处的数量算到它头上；
     // 不带单位时数量须在行尾或标点前（「6205-2RS 100」）；夹着否定词不算

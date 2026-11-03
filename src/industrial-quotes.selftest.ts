@@ -8,6 +8,8 @@ import vm from 'node:vm';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { industrial } from './packs/industrial/console-pack.js';
+import { FIXED } from './packs/industrial/turn.js';
+import { ACCEPT_ASK } from './packs/industrial/guards.js';
 import { industrialFollowupGuard } from './packs/industrial/guards.js';
 import { createIndustrialRuntime } from './packs/industrial/runtime.js';
 import { defaultIndustrialPolicy, quoteNotes } from './packs/industrial/policy.js';
@@ -699,6 +701,75 @@ try {
       }
     }
     console.log(`CONFIRM CORPUS ${group}: ${hits}/${corpus.length}`);
+  }
+
+  // 接受这一轮：实际 quote_items 记行金额和合计，建新单取代旧单，再走引擎全部护栏。
+  {
+    const action = mockAction;
+    const bearingA = { ...data, id: 'accept-a', partNo: '6208-2RS', unitPrice: 14.18 };
+    const bearingB = { ...data, id: 'accept-b', partNo: '6211-2RS', unitPrice: 17.28 };
+    const sameModel = { ...data, id: 'accept-c', partNo: 'HS9010', unitPrice: 18.99 };
+    for (const part of [bearingA, bearingB, sameModel]) {
+      const draft = await createCatalogItem(ctx, 'part', part);
+      await activateCatalogItem(ctx, 'part', draft.code, { rev: draft.rev });
+    }
+    const pricedOrder = async (session: Session, part: typeof data, qty: number) => {
+      now++;
+      await registry.execute('quote_items', { items: [{ query: part.partNo, qty }] }, context(session));
+      now++;
+      const result = JSON.parse(await registry.execute('create_quote_sheet', { items: [{ code: part.id, qty }] }, context(session)));
+      assert.equal(result.state, 'approved');
+      return store.getAnyOrder(session.orderIds.at(-1)!) as LineOrder;
+    };
+    const makePair = async (same = false) => {
+      const session = fresh();
+      const old = await pricedOrder(session, same ? sameModel : bearingA, same ? 10 : 20);
+      const current = await pricedOrder(session, same ? sameModel : bearingB, same ? 18 : 26);
+      assert.equal(quoteState(old, now), 'superseded');
+      assert.equal(old.totalFen, same ? 18990 : 28360);
+      assert.equal(current.totalFen, same ? 34182 : 44928);
+      assert.equal(session.moneyLedger!.filter((entry) => entry.label === '试算合计').length, 2);
+      return { session, current };
+    };
+    for (const [modelText, expected, same] of [
+      ['已确认您接受这份报价。', '已确认您接受这份报价。', false],
+      ['已为您确认6211-2RS×26件订单，货款283.60元请安排对公转账（款到发货），顾问将随后与您对接收款与开票事宜。', FIXED.accepted, false],
+      ['货款283.60元请安排对公转账。', FIXED.accepted, false],
+      ['HS9010×18件，货款189.90元请安排对公转账。', FIXED.accepted, true],
+      [
+        '6211-2RS×26件，单价17.28元，行金额449.28元，合计449.28元，运费0元。',
+        '6211-2RS×26件，单价17.28元，行金额449.28元，合计449.28元，运费0元。',
+        false,
+      ],
+    ] as const) {
+      const { session, current } = await makePair(same);
+      mockAction = async () => modelText;
+      now++;
+      const reply = await handleMessage(session.id, '接受这份报价，能开专票吗？', 'wecom');
+      assert.equal(reply.text, expected, modelText);
+      assert.ok(!reply.text.includes(ACCEPT_ASK));
+      assert.ok(current.approval!.acceptedAt !== undefined);
+      assert.equal(await acceptanceJobs(current.id), 1);
+    }
+    const { session, current } = await makePair();
+    mockAction = async (opts) => {
+      // 强制账本截断，验证 turnMoney 按对象身份识别新条目，而非按数组长度取尾部。
+      for (let i = 0; i < 205; i++) await opts.executeTool('find_parts', { query: data.partNo });
+      await opts.executeTool('quote_items', { items: [{ query: data.partNo, qty: 100 }] });
+      assert.equal(session.moneyLedger!.length, 200);
+      return '6205-2RS 共100件，合计900元。';
+    };
+    now++;
+    const reply = await handleMessage(session.id, '接受这份报价，另外 6205-2RS 100 件多少钱？', 'wecom');
+    assert.equal(reply.text, '6205-2RS 共100件，合计900元。');
+    assert.ok(current.approval!.acceptedAt !== undefined);
+    const failed = await makePair();
+    mockAction = async () => '已确认您接受这份报价。';
+    now++;
+    assert.equal((await handleMessage(failed.session.id, '先别接受这份报价，能开专票吗？', 'wecom')).text, ACCEPT_ASK);
+    assert.equal(failed.current.approval!.acceptedAt, undefined);
+    mockAction = action;
+    console.log('ACCEPT TURN PASS: 长句已确认、旧型号/无型号/同型号旧金额拦截、正确金额和本轮新试算放行、未接受仍要求确认');
   }
 
   // 16 开发集：模型在客户接受的同一轮调 handoff_to_human，回复照发，接受不丢。

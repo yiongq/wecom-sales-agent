@@ -559,6 +559,99 @@ try {
     await checkMoney('HS-A单价8元。', undefined, tiers);
     await checkMoney('HS1001单价8元。', empty, tiers);
   }
+  // 单行试算必须同时绑定行金额和合计；多行合计保持无绑定。
+  moneySession.orderIds = [];
+  moneySession.moneyLedger = [];
+  await registry.execute('quote_items', { items: [{ query: 'HS1000', qty: 3 }] }, toolContext);
+  assert.deepEqual(moneySession.moneyLedger, [
+    { fen: 1000, label: '试算单价', subject: 'HS1000' },
+    { fen: 3000, label: '试算行金额', subject: 'HS1000' },
+    { fen: 3000, label: '试算合计', subject: 'HS1000' },
+  ]);
+  const moneyStep = runtime.replySteps.find((step) => step.id === 'money_provenance')!;
+  const moneyRun = (text: string) =>
+    moneyStep.run({
+      session: moneySession,
+      text,
+      policy: defaultIndustrialPolicy,
+      turn: { flags: {} },
+      recordGuard: () => {},
+    } as unknown as ReplyGuardContext);
+  assert.equal((await moneyRun('HS1001共3件，货款30元。'))?.action, 'replace');
+  assert.equal((await moneyRun('HS1000共3件，货款30元。'))?.action, 'pass');
+
+  // × 是真实型号的一部分；仅在完整 token 未知时才尝试剥去最后的数量。
+  {
+    const modelParts = [
+      { ...parts[0]!, id: 'token-a', partNo: '6211-2RS' },
+      { ...parts[1]!, id: 'token-b', partNo: 'M8×30' },
+      { ...parts[2]!, id: 'token-c', partNo: '6208-2RS', unitPrice: 14.18 },
+    ];
+    const tokenSources = { ...sources, currentCatalog: () => ({ ...sources.currentCatalog(), items: { part: modelParts } }) };
+    const tokenRuntime = createIndustrialRuntime(tokenSources);
+    const tokenSession = store.getOrCreateSession('wecom:wmTokens', 'wecom');
+    writeState(tokenSession, {}, modelParts);
+    for (const [text, pass] of [
+      ['6211-2RS×26件。', true],
+      ['6211-2RS*26件。', true],
+      ['M8×30×60件。', true],
+      ['M8×30。', true],
+      ['XR-9420×3件。', false],
+      // mentionedModels 同样必须归一，否则型号事实会被当成另一个对象。
+      ['6211-2RS×26件，现货100件。', true],
+    ] as const) {
+      const result = await industrialReplyGuard(tokenSources).run({
+        session: tokenSession,
+        text,
+        inputText: '',
+        policy: defaultIndustrialPolicy,
+        toolSources: [
+          { name: 'quote_items', args: {}, result: JSON.stringify({ lines: [{ partNo: '6211-2RS', delivery: '现货 100 件' }] }) },
+        ],
+        recordGuard: () => {},
+      } as unknown as ReplyGuardContext);
+      assert.equal(result?.action, pass ? 'pass' : 'replace', text);
+    }
+    const tokenRegistry = createToolRegistry(tokenRuntime.tools);
+    const tokenMoney = tokenRuntime.replySteps.find((step) => step.id === 'money_provenance')!;
+    await tokenRegistry.execute('quote_items', { items: [{ query: '6208-2RS', qty: 20 }] }, { ...toolContext, session: tokenSession });
+    assert.deepEqual(
+      tokenSession.moneyLedger!.map(({ label, fen, subject }) => ({ label, fen, subject })),
+      [
+        { label: '试算单价', fen: 1418, subject: '62082RS' },
+        { label: '试算行金额', fen: 28360, subject: '62082RS' },
+        { label: '试算合计', fen: 28360, subject: '62082RS' },
+      ],
+    );
+    assert.equal(
+      (
+        await tokenMoney.run({
+          session: tokenSession,
+          text: '6211-2RS 共26件，货款283.60元。',
+          policy: defaultIndustrialPolicy,
+          turn: { flags: {} },
+          recordGuard: () => {},
+        } as unknown as ReplyGuardContext)
+      )?.action,
+      'replace',
+    );
+    tokenSession.moneyLedger = [];
+    await tokenRegistry.execute('quote_items', { items: [{ query: '6211-2RS', qty: 3 }] }, { ...toolContext, session: tokenSession });
+    const step = tokenRuntime.replySteps.find((step) => step.id === 'money_provenance')!;
+    for (const [text, pass] of [
+      ['6211-2RS×26件，货款30元。', true],
+      ['M8×30×60件，货款30元。', false],
+    ] as const) {
+      const result = await step.run({
+        session: tokenSession,
+        text,
+        policy: defaultIndustrialPolicy,
+        turn: { flags: {} },
+        recordGuard: () => {},
+      } as unknown as ReplyGuardContext);
+      assert.equal(result?.action, pass ? 'pass' : 'replace', text);
+    }
+  }
   // 同一目录数组只解析一次；替换数组后必须读到新型号，避免缓存跨目录更新污染判定。
   for (const mode of ['reply', 'followup'] as const) {
     let parsed = 0;

@@ -236,6 +236,12 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
   const policy = IndustrialPolicySchema.parse(rawPolicy);
   const cache = readState(ctx.session).partsInPlay ?? [];
   const known = new Set(cache.map((part) => normalizePartNo(part.partNo)));
+  const knownToken = (token: string): string => {
+    const normalized = normalizePartNo(token);
+    if (known.has(normalized)) return normalized;
+    const base = normalizePartNo(token.replace(/[×*]\d+$/, ''));
+    return known.has(base) ? base : normalized;
+  };
   const specs = cache.flatMap((part) => part.specs).map(normalizePartNo);
   const input =
     'inputText' in ctx
@@ -260,7 +266,7 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
         [
           ...named,
           ...tokens(text).filter((token) => token.length >= 4 && /[A-Za-z]/.test(token) && /\d/.test(token) && !specToken.test(token)),
-        ].map(normalizePartNo),
+        ].map(knownToken),
       ),
     ];
   };
@@ -292,7 +298,7 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
       .reduce((text, link) => text.replaceAll(link.url, ''), sentence)
       .replace(/https?:\/\/[^\s，。！？]+/gi, '');
     const unknown = tokens(withoutLinks).some((token) => {
-      const normalized = normalizePartNo(token);
+      const normalized = knownToken(token);
       return (
         token.length >= 4 &&
         /[A-Za-z]/.test(token) &&
@@ -454,7 +460,7 @@ export function quoteClaimStep(): GuardStep<ReplyGuardContext> {
     async run(ctx) {
       if (ctx.session.handedOver) return { action: 'pass' };
       const quote = latestQuoteCandidate({ ...ctx.session, packState: {} }, Date.now());
-      if (acceptPending(quote) && acceptClaim.test(ctx.text)) {
+      if (acceptPending(quote) && quote?.kind === 'quote' && quote.order.id !== ctx.acceptingOrderId && acceptClaim.test(ctx.text)) {
         const text = correctClaim(ctx.text, acceptClaim, ACCEPT_ASK);
         ctx.recordGuard('quote_claim', ctx.text, text, 'replace');
         return { action: 'replace', text };
