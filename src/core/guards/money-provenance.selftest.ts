@@ -306,6 +306,83 @@ for (const mode of ['reply', 'followup'] as const) {
   count += 2;
 }
 
+// 接受轮只认接受单、静态金额和本轮新增条目；历史试算含真实的行金额与合计形状。
+{
+  const old: LineOrder = {
+    ...approved,
+    id: 'ord_old',
+    status: 'superseded',
+    supersededBy: 'ord_current',
+    totalFen: 28360,
+    lines: [{ ...approved.lines[0]!, title: 'A100', qty: 20, unitPriceFen: 1418, amountFen: 28360 }],
+  };
+  const current: LineOrder = {
+    ...approved,
+    id: 'ord_current',
+    totalFen: 44928,
+    lines: [{ ...approved.lines[0]!, title: 'B200', qty: 26, unitPriceFen: 1728, amountFen: 44928 }],
+  };
+  const reads = { ...sources, getOrder: (id: string) => [old, current].find((order) => order.id === id) };
+  const acceptedFallback = '已记下接受，顾问将联系您。';
+  const step = moneyProvenanceStep({ ...options, subjectMentions, acceptedFallback }, () => reads);
+  for (const [text, expected] of [
+    ['货款283.60元。', acceptedFallback],
+    ['A100货款283.60元。', acceptedFallback],
+    ['B200货款283.60元。', acceptedFallback],
+    ['B200单价17.28元，行金额449.28元，合计449.28元，运费10元。', undefined],
+    ['A100货款30元。', undefined],
+  ] as const) {
+    const ctx = context(text);
+    ctx.acceptingOrderId = current.id;
+    ctx.turnMoney = () => [
+      { fen: 3000, label: '试算行金额', subject: 'A100' },
+      { fen: 3000, label: '试算合计', subject: 'A100' },
+    ];
+    ctx.session.orderIds = [old.id, current.id];
+    ctx.session.moneyLedger = [
+      { fen: 1418, label: '试算单价', subject: 'A100' },
+      { fen: 28360, label: '试算行金额', subject: 'A100' },
+      { fen: 28360, label: '试算合计', subject: 'A100' },
+    ];
+    events.length = 0;
+    const result = await step.run(ctx);
+    assert.ok(result && result.action !== 'abort');
+    assert.equal(result.action === 'pass' ? text : result.text, expected ?? text, text);
+    assert.equal(result.action, expected ? 'replace' : 'pass');
+    if (expected) assert.equal(events[0]!.action, 'replace');
+    count++;
+  }
+  // 被取代的单独立于账本不再背书；有试算账本的非接受轮仍照旧放行。
+  for (const mode of ['reply', 'followup'] as const) {
+    const testStep = mode === 'reply' ? step : moneyProvenanceFollowupStep({ ...options, subjectMentions }, () => reads);
+    const ctx = context('A100货款283.60元。');
+    ctx.session.orderIds = [old.id];
+    ctx.session.moneyLedger = [];
+    const result = await testStep.run(ctx);
+    assert.ok(result && result.action !== 'abort' && result.action !== 'pass');
+    assert.equal(result.text, mode === 'reply' ? options.fallback : '');
+    ctx.session.moneyLedger = [
+      { fen: 28360, label: '试算行金额', subject: 'A100' },
+      { fen: 28360, label: '试算合计', subject: 'A100' },
+    ];
+    assert.deepEqual(await testStep.run(ctx), { action: 'pass' });
+    // 单行订单的合计不能把另一个型号的金额错配洗成合法。
+    ctx.session.orderIds = [current.id];
+    ctx.session.moneyLedger = [];
+    ctx.text = 'A100货款449.28元。';
+    assert.notEqual((await testStep.run(ctx))?.action, 'pass');
+    count += 3;
+  }
+  // 其他仍有效订单也不属于本轮接受单；没有提供 acceptedFallback 时逐字沿用旧兜底。
+  const ctx = context('货款1330元。');
+  ctx.acceptingOrderId = current.id;
+  ctx.turnMoney = () => [];
+  ctx.session.orderIds = [approved.id, current.id];
+  const legacy = moneyProvenanceStep(options, () => ({ ...reads, getOrder: (id) => (id === approved.id ? approved : reads.getOrder(id)) }));
+  assert.deepEqual(await legacy.run(ctx), { action: 'replace', text: options.fallback });
+  count++;
+}
+
 // 装载即拒绝：少 after、少写声明、放在后置接管或失败计数之后、缺安全尾部。
 for (const bad of [
   [noop('stage_advance'), { ...main, after: [] }, noop('takeover_check:post'), noop('turn_failure')],

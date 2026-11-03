@@ -176,7 +176,15 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
             ...(line.unitPrice === undefined ? [] : [{ value: line.unitPrice, label: '试算单价', subject: normalizePartNo(line.partNo) }]),
             ...(line.amount === undefined ? [] : [{ value: line.amount, label: '试算行金额', subject: normalizePartNo(line.partNo) }]),
           ]),
-          ...(value.total === undefined ? [] : [{ value: value.total, label: '试算合计' }]),
+          ...(value.total === undefined
+            ? []
+            : [
+                {
+                  value: value.total,
+                  label: '试算合计',
+                  subject: value.lines?.length === 1 ? normalizePartNo(value.lines[0]!.partNo) : undefined,
+                },
+              ]),
         ]);
       },
     },

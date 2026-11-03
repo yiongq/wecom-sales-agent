@@ -9,6 +9,8 @@ export interface MoneyProvenanceOptions {
   staticAmounts(policy: unknown): readonly number[];
   /** 拒绝的话带着没出处的金额时换成这一句，不带金额；缺省时和别的句子一样删掉。 */
   refusal?: string;
+  /** 接受报价这一轮删空时的固定句；未提供则沿用 fallback。 */
+  acceptedFallback?: string;
   /** 只返回明确提到的对象及原文区间（UTF-16，end 不含）；缺省时只核对数值。也用于识别订单行标题。 */
   subjectMentions?(text: string): readonly { subject: string; start: number; end: number }[];
 }
@@ -26,7 +28,7 @@ const REFUSED = /(?<!能)不能|(?<!可)不可以|无法|没法|没办法|做不
 const HEADING = /[：:]\s*$/;
 
 function dropUnbacked(
-  ctx: FollowupGuardContext,
+  ctx: FollowupGuardContext & Partial<Pick<ReplyGuardContext, 'acceptingOrderId' | 'turnMoney'>>,
   options: MoneyProvenanceOptions,
   sources: MoneyProvenanceSources,
   policy: unknown,
@@ -35,15 +37,20 @@ function dropUnbacked(
   // 整条回复没有金额时，连订单行的型号识别也不需要做。
   if (options.subjectMentions && !parseMoneyHits(ctx.text, money).length) return ctx.text;
   const allowed: Pick<MoneyEntry, 'fen' | 'subject'>[] = options.staticAmounts(policy).map((fen) => ({ fen }));
-  allowed.push(...(ctx.session.moneyLedger ?? []));
+  allowed.push(...(ctx.acceptingOrderId ? (ctx.turnMoney?.() ?? []) : (ctx.session.moneyLedger ?? [])));
   for (const id of ctx.session.orderIds) {
     const order = sources.getOrder(id);
     if (!order || order.sessionId !== ctx.session.id || !isLineOrder(order)) continue;
+    if (ctx.acceptingOrderId && order.id !== ctx.acceptingOrderId) continue;
+    if (order.status === 'superseded' || order.supersededBy) continue;
     if (order.approval && order.approval.state !== 'approved') continue;
-    allowed.push({ fen: order.totalFen });
-    for (const line of order.lines) {
+    const lines = order.lines.map((line) => {
       const subjects = new Set(options.subjectMentions?.(line.title).map((mention) => mention.subject));
       const subject = subjects.size === 1 ? [...subjects][0] : undefined;
+      return { line, subject };
+    });
+    allowed.push({ fen: order.totalFen, subject: lines.length === 1 ? lines[0]!.subject : undefined });
+    for (const { line, subject } of lines) {
       allowed.push({ fen: line.unitPriceFen, subject }, { fen: line.amountFen, subject });
     }
   }
@@ -102,7 +109,7 @@ export function moneyProvenanceStep(
     async run(ctx): Promise<StepVerdict> {
       const kept = dropUnbacked(ctx, options, await sources(), ctx.policy);
       if (kept === ctx.text) return { action: 'pass' };
-      const text = kept.trim() ? kept : options.fallback;
+      const text = kept.trim() ? kept : (ctx.acceptingOrderId && options.acceptedFallback) || options.fallback;
       const action = kept.trim() ? 'drop_sentence' : 'replace';
       ctx.turn.flags.guardHit = 'price';
       ctx.recordGuard('money_provenance', ctx.text, text, action);
