@@ -20,7 +20,7 @@ import {
   QUOTE_WITHDRAWN,
 } from './guards.js';
 import { IndustrialPolicySchema, quoteNotes } from './policy.js';
-import { preModel, contextNote, prefetch, beforeTool, mentionedParts } from './turn.js';
+import { FIXED, preModel, contextNote, prefetch, beforeTool, mentionedParts } from './turn.js';
 import { intakeNewer, intakeNotes } from './intake-turn.js';
 import { sopSections, templates, contractRules, hardRequirements } from './sop.js';
 import { fixedReplies, consistencyRules } from './fixed-replies.js';
@@ -172,6 +172,7 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
         ...moneyProvenanceStep({
           staticAmounts: (raw) => Object.values(IndustrialPolicySchema.parse(raw).shipping),
           fallback: '金额需要先试算，请告诉我型号和数量。',
+          acceptedFallback: FIXED.accepted,
           refusal: PROMISE_FALLBACK,
           subjectMentions,
         }),

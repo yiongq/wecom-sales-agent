@@ -34,6 +34,7 @@ import type { PrefetchedCall } from '../llm/types.js';
 import { createToolRegistry } from '../tools/registry.js';
 import type {
   DeterministicReply,
+  MoneyEntry,
   PrefetchResult,
   TurnContext,
   TurnToolContext,
@@ -469,6 +470,7 @@ function applyTurnEffects(session: Session, runtime: PackBinding['runtime'], eff
 interface TurnState {
   onLimited(): void;
   prefetchEffects?: PrefetchResult['effects'];
+  moneyBefore: ReadonlySet<MoneyEntry>;
   sessionId: string;
   text: string;
   channel: string;
@@ -546,6 +548,7 @@ function beginTurn(
     unsentTakenOver,
     calls: [],
     receivedAt,
+    moneyBefore: new Set(session.moneyLedger),
   };
 }
 
@@ -1046,6 +1049,9 @@ async function finishTurn(
     text: raw,
     raw,
     inputText: text,
+    acceptingOrderId: state.prefetchEffects?.notify?.reason === 'quote_accepted' ? state.prefetchEffects.notify.orderId : undefined,
+    // registry 每次新建条目对象，按身份取差集不受账本 slice(-200) 截断影响。
+    turnMoney: () => (session.moneyLedger ?? []).filter((entry) => !state.moneyBefore.has(entry)),
     policy: state.policy,
     policyHash: state.policyHash,
     stageAtStart,
