@@ -30,6 +30,10 @@ export interface QuoteApproval {
   acceptedAt?: number;
   auto?: boolean;
   decidedAt?: number;
+  /** 批准时按上海自然日算好的截止时间；旧单缺省时读取当前政策。 */
+  validUntil?: number;
+  /** 批准时已渲染的商业说明；空数组也表示已定格。 */
+  notes?: string[];
   decidedBy?: { userId: string | null; name: string };
   reason?: string;
 }
@@ -89,19 +93,37 @@ export function quoteState(o: LineOrder, now: number): 'pending' | 'approved' | 
   return now <= quoteValidUntil(o) ? 'approved' : 'expired';
 }
 
-/** 与状态判定共用上海自然日截止点，页面不自行推算。 */
+/** 上海自然日截止时间；批准和旧单回退共用同一算法。 */
+function quoteDeadline(decidedAt: number, days: number): number {
+  if (!Number.isSafeInteger(days) || days < 0) throw new Error('报价有效天数无效');
+  const day = 86_400_000;
+  const offset = 8 * 3_600_000;
+  return (Math.floor((decidedAt + offset) / day) + days + 1) * day - offset - 1;
+}
+
+/** 两条批准路径共用：只读一次已发布政策，说明钩子看到待写入的批准状态。 */
+export function snapshotQuoteApproval(order: LineOrder, approval: QuoteApproval): QuoteApproval {
+  const runtime = currentRuntime();
+  const pack = runtime.pack?.runtime;
+  const quotes = pack?.quotes;
+  if (!quotes || approval.decidedAt == null) throw new Error('报价单尚未批准');
+  const policy = runtime.config.loaded ? runtime.config.loaded.sop.policy : readFilePolicy(pack?.policy).policy;
+  return {
+    ...approval,
+    validUntil: quoteDeadline(approval.decidedAt, quotes.validDays(policy)),
+    notes: [...(quotes.notes?.({ ...order, approval }, policy) ?? [])],
+  };
+}
+
+/** 与状态判定共用上海自然日截止点，页面不自行推算；旧单保持当前政策回退。 */
 export function quoteValidUntil(o: LineOrder): number {
+  if (o.approval?.validUntil != null) return o.approval.validUntil;
   const runtime = currentRuntime();
   const pack = runtime.pack?.runtime;
   const quotes = pack?.quotes;
   if (!quotes || o.approval?.decidedAt == null) throw new Error('报价单尚未批准');
   const policy = runtime.config.loaded ? runtime.config.loaded.sop.policy : readFilePolicy(pack?.policy).policy;
-  const days = quotes.validDays(policy);
-  if (!Number.isSafeInteger(days) || days < 0) throw new Error('报价有效天数无效');
-  const day = 86_400_000;
-  const offset = 8 * 3_600_000;
-  const end = (Math.floor((o.approval.decidedAt + offset) / day) + days + 1) * day - offset;
-  return end - 1;
+  return quoteDeadline(o.approval.decidedAt, quotes.validDays(policy));
 }
 
 /** 08 R3：只读条目与数量，先完整计价再修改存储；同步段内完成复用/作废，不留并发建单窗口。 */
@@ -201,7 +223,7 @@ export async function createLineOrder(
     ...(approval ? { approval: { state: 'pending', requestedAt: now } as QuoteApproval } : {}),
   });
   if (approval && runtime.quotes?.autoApprovable?.(order, session)) {
-    order.approval = { state: 'approved', requestedAt: now, auto: true, decidedAt: now };
+    order.approval = snapshotQuoteApproval(order, { state: 'approved', requestedAt: now, auto: true, decidedAt: now });
     order.confirmedAt = now;
     store.saveOrder(order);
   }

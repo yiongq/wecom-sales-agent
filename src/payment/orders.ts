@@ -32,7 +32,7 @@ import {
   listAnyOrders,
   queueJobs,
 } from '../store.js';
-import { isLineOrder, orderTotalFen, quoteState, type LineOrder, type AnyOrder } from '../core/order-view.js';
+import { isLineOrder, orderTotalFen, quoteState, snapshotQuoteApproval, type LineOrder, type AnyOrder } from '../core/order-view.js';
 import type { ChatMessage, OrderStatus } from '../types.js';
 import { terminalStageKey } from '../handoff/record.js';
 import { quoteNotifyOps } from '../jobs/notify.js';
@@ -126,11 +126,13 @@ export async function approveQuote(orderId: string, actor: Actor): Promise<LineO
   if (order.approval.state === 'approved') {
     await quoteCommitted(order);
     recheckApproved(order, true);
+    // 批准写进内存后等提交超时，顾问看到失败才重试：客户还没收到链接就在这里补发。
+    if (quoteState(order, Date.now()) === 'approved' && !quoteLinkSent(order)) await sendApproved(order);
     return order;
   }
   if (storeLagging(order.sessionId)) throw new StoreLaggingError(order.sessionId);
   const now = Date.now();
-  order.approval = { ...order.approval, state: 'approved', decidedAt: now, decidedBy: who(actor) };
+  order.approval = snapshotQuoteApproval(order, { ...order.approval, state: 'approved', decidedAt: now, decidedBy: who(actor) });
   order.confirmedAt = now;
   order.confirmedBy = who(actor);
   for (const old of listAnyOrders()) {
@@ -143,9 +145,17 @@ export async function approveQuote(orderId: string, actor: Actor): Promise<LineO
   saveOrder(order);
   await quoteCommitted(order);
   recheckApproved(order);
-  await quoteNotice(order, `/quote/${order.id}`, '报价单发送失败，请另行告知客户。', true);
+  await sendApproved(order);
   return order;
 }
+
+/** 会话里已有这份报价的链接：顾问批准发过，或模型回复带过。 */
+function quoteLinkSent(order: LineOrder): boolean {
+  const path = `/quote/${order.id}`;
+  return !!getSession(order.sessionId)?.messages.some((message) => message.role === 'agent' && message.content.includes(path));
+}
+
+const sendApproved = (order: LineOrder) => quoteNotice(order, `/quote/${order.id}`, '报价单发送失败，请另行告知客户。', true);
 
 async function quoteNotice(order: LineOrder, text: string | undefined, failure: string, approved = false): Promise<void> {
   const session = getSession(order.sessionId);

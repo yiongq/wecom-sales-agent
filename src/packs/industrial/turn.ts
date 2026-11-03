@@ -2,7 +2,7 @@ import type { DeterministicReply, TurnContext, PackSources, PrefetchResult, Turn
 import { latestQuoteCandidate, expiredQuoteAwaitingConfirmation } from './quote-candidate.js';
 import { quoteAcceptance } from './acceptance.js';
 import { refreshParts } from './live.js';
-import { PartSchema } from './catalog.js';
+import { PartSchema, type Part } from './catalog.js';
 import { matchInMemory } from './match.js';
 import { FIXED, inquiryLines } from './inquiry.js';
 import { confirmsIntake, intakeNewer, intakeParts, intakePreModel, intakeQuoteLines, sameQuoteItems } from './intake-turn.js';
@@ -56,8 +56,11 @@ export function contextNote(ctx: TurnContext): string[] {
 }
 
 /** 只识别客户原话中的字面型号；不从模型挑出的候选反推客户选择。 */
-export function mentionedParts(text: string, sources: PackSources) {
-  const parts = (sources.currentCatalog().items.part ?? []).map((part) => PartSchema.parse(part));
+export function mentionedParts(
+  text: string,
+  sources: PackSources,
+  parts: readonly Part[] = (sources.currentCatalog().items.part ?? []).map((part) => PartSchema.parse(part)),
+) {
   const tokens = [...text.matchAll(/[A-Za-z0-9][A-Za-z0-9_×*\-/]*/g)];
   const mentions = [];
   for (let i = 0; i < tokens.length; i++) {
@@ -87,7 +90,7 @@ export function mentionedParts(text: string, sources: PackSources) {
       );
     const raw = qtyText && !/[不别没无]/.test(qtyText[1] ?? qtyText[2] ?? '') ? (qtyText[3] ?? qtyText[4]) : undefined;
     const qty = raw ? ({ 一: 1, 二: 2, 两: 2 }[raw] ?? Number(raw)) : undefined;
-    mentions.push({ query, ...found, qty });
+    mentions.push({ query, ...found, qty, start: token.index!, end });
   }
   return mentions;
 }
@@ -114,6 +117,29 @@ function lookups(mentions: ReturnType<typeof mentionedParts>): string[] {
     .slice(0, 5)
     .map((m) => m.query);
 }
+const QTY_REPLY = /^(?:就|要|买|来|订|那就)?\s*\d+\s*(?:件|个|套|米|千克|盒|pcs)\s*(?:吧|就够了|就行|够了|即可)?[。.!！~～]*$/iu;
+const QTY_CHANGE = /改成|改为|换成|调成|调到|加到|按\s*\d|重新|试算/u;
+const NOT_QTY_CHANGE = /比|再加|加上|多要|少要|另外|还要|减|其中|每|不要|不用|不够|不是|别|没|分别/u;
+const QTY_TOKEN = /(?<![第\d.])(\d+)\s*(?:件|个|套|米|千克|盒|pcs)(?!工作日|月|小时|型号|品种|规格)/giu;
+/** 这句在把数量改成多少；说了两个不同的数或相对增减时读不出来。 */
+function changedQty(text: string): number | null {
+  const compact = text.normalize('NFKC').trim();
+  if (NOT_QTY_CHANGE.test(compact) || !(QTY_REPLY.test(compact) || QTY_CHANGE.test(compact))) return null;
+  const quantities = new Set([...compact.matchAll(QTY_TOKEN)].map((m) => Number(m[1])));
+  return quantities.size === 1 ? [...quantities][0]! : null;
+}
+/** 单行询价只改数量：这句没写型号，模型常常不调工具自己乘，金额被护栏删掉后客户拿不到价格，由引擎按新数量替算。 */
+async function requantify(ctx: TurnContext, sources: PackSources): Promise<PrefetchResult | null> {
+  const qty = changedQty(ctx.text);
+  if (!qty || pendingIntake(ctx.session)) return null;
+  const candidate = latestQuoteCandidate(ctx.session, Date.now());
+  const lines = !candidate ? [] : candidate.kind === 'draft' ? candidate.draft.lines : candidate.order.lines;
+  const line = lines.length === 1 ? lines[0]! : null;
+  if (!line || !('code' in line) || line.qty === qty) return null;
+  const part = (sources.currentCatalog().items.part ?? []).map((item) => PartSchema.parse(item)).find((item) => item.id === line.code);
+  if (!part) return null;
+  return { calls: [await ctx.callTool('quote_items', { items: [{ query: part.partNo, qty }] })], timings: [] };
+}
 /** 10 第 21 步的文字询价预取。清单待确认时不替模型续算过期报价单：那样的 quote_items 不是客户本句写的，会被工具闸拒绝。 */
 async function textPrefetch(ctx: TurnContext, sources: PackSources, resumeExpired: boolean): Promise<PrefetchResult | null> {
   const candidate = latestQuoteCandidate(ctx.session, Date.now());
@@ -127,6 +153,7 @@ async function textPrefetch(ctx: TurnContext, sources: PackSources, resumeExpire
   }
   const calls: PrefetchResult['calls'] = [];
   const mentions = mentionedParts(ctx.text, sources);
+  if (!mentions.length) return requantify(ctx, sources);
   // 发现 4：型号精确时引擎先替模型查或试算，模型一次往返就能答（原先查、算、答三次串行往返，整轮十余秒）。
   // 有未决候选时照下面的旧路，由模型列候选让客户选。
   if (!unresolvedParts(ctx.text, sources).length) {

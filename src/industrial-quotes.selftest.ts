@@ -31,6 +31,7 @@ const testing = await tenancy.withoutTenantScope(() => import('./db/testing.js')
 const config = await import('./config/source.js');
 const store = await import('./store.js');
 const { bindPack, createLineOrder, orderDisplay, partsOf, quoteState, quoteValidUntil } = await import('./core/pack-api.js');
+const { snapshotQuoteApproval } = await import('./core/order-view.js');
 await import('./core/engine/sources.js');
 const { insertTenant } = await import('./db/repo/tenants.js');
 const { createCatalogItem, activateCatalogItem, updateCatalogItem } = await import('./config/catalog.js');
@@ -263,7 +264,7 @@ try {
   }
   console.log('INDUSTRIAL LINKS PASS: 网页标题/企微卡片/显式GET资源、跨会话与跨租户隔离');
 
-  // notes 调用范围与当前发布政策；页面和 JSON 共用同一 publicQuote。
+  // 无快照旧单的 notes 调用范围与当前发布政策；新单页面和 JSON 共用批准快照。
   const originalNotes = runtime.quotes!.notes!;
   let noteCalls = 0;
   const frozen = Object.freeze(['合成只读说明']);
@@ -295,7 +296,7 @@ try {
   assert.equal(noteCalls, before404);
   setPolicy({ taxIncluded: false, shipping: { freeOverFen: 50000, feeFen: 1200 } });
   const publicApproved = await getQuote(approved.order.id);
-  assert.deepEqual(publicApproved.body.notes, ['报价不含税，税率13%', '满500.00元免运费，未满运费12.00元', '库存与交期以顾问确认为准']);
+  assert.deepEqual(publicApproved.body.notes, quoteNotes(defaultIndustrialPolicy), '已批准说明不随税费与运费政策改变');
   const page = await app.request(`/quote/${approved.order.id}`);
   assert.equal(page.status, 200);
   class Element {
@@ -333,16 +334,109 @@ try {
   assert.equal((await getQuote(approved.order.id)).body.display!.totalFen, 80000, '已批准的报价金额不随现价改变');
   assert.equal(JSON.stringify(pending.order.lines), lineBytes);
   assert.equal(pending.order.totalFen, 80000);
+  const legacyNotesOrder = (await make(fresh())).order;
+  legacyNotesOrder.approval = { state: 'approved', requestedAt: now, decidedAt: now };
+  store.saveOrder(legacyNotesOrder);
+  assert.deepEqual((await getQuote(legacyNotesOrder.id)).body.notes, quoteNotes(config.currentPolicy().policy));
   runtime.quotes!.notes = () => [];
-  assert.equal(Object.hasOwn((await getQuote(approved.order.id)).body, 'notes'), false);
+  assert.equal(Object.hasOwn((await getQuote(legacyNotesOrder.id)).body, 'notes'), false);
   delete runtime.quotes!.notes;
-  assert.equal(Object.hasOwn((await getQuote(approved.order.id)).body, 'notes'), false);
+  assert.equal(Object.hasOwn((await getQuote(legacyNotesOrder.id)).body, 'notes'), false);
   runtime.quotes!.notes = () => frozen;
-  assert.deepEqual((await getQuote(approved.order.id)).body.notes, frozen);
+  assert.deepEqual((await getQuote(legacyNotesOrder.id)).body.notes, frozen);
+  assert.deepEqual((await getQuote(approved.order.id)).body.notes, quoteNotes(defaultIndustrialPolicy));
   runtime.quotes!.notes = originalNotes;
   // 政策草稿不参与读取：返回值仍是内存已发布快照；底层发布记录由原旅游夹具持有，不修改。
   assert.deepEqual((await withTenant(t.db, { ...ctx, tenantId: original.tenantId }, readPublishedSop))!.policy, original.sop.policy);
-  console.log('INDUSTRIAL NOTES PASS: approved/paid限定、其余状态/404保密、当前发布政策、无钩子/空数组省略、冻结金额不变');
+  console.log('INDUSTRIAL NOTES PASS: approved/paid限定、其余状态/404保密、旧单当前发布政策与无钩子/空数组回退、新单说明及金额定格');
+
+  // 两条实际批准路径：政策缩短不提前失效，延长不复活，下一张按新政策批准。
+  const snapshotOrders: LineOrder[] = [];
+  for (const mode of ['manual', 'auto'] as const) {
+    setPolicy({ autoApproveMaxFen: 0, quoteValidDays: 1, taxIncluded: false });
+    const session = fresh();
+    await estimate(session);
+    const waiting = mode === 'manual' ? (await make(session)).order : undefined;
+    if (waiting) {
+      assert.equal(waiting.approval!.validUntil, undefined);
+      assert.equal(waiting.approval!.notes, undefined);
+    }
+    setPolicy({ autoApproveMaxFen: mode === 'auto' ? 100000 : 0, quoteValidDays: 7 });
+    const order = waiting ?? (await make(session)).order;
+    if (waiting) await actions.approveQuote(order.id, actor);
+    const approval = structuredClone(order.approval!);
+    assert.equal(approval.auto === true, mode === 'auto', mode);
+    assert.equal(approval.validUntil, Date.parse('2026-11-02T15:59:59.999Z'), mode);
+    assert.deepEqual(approval.notes, quoteNotes(defaultIndustrialPolicy), `${mode}: 批准时政策，非起草时政策`);
+    snapshotOrders.push(structuredClone(order));
+    const legacy = structuredClone(order);
+    delete legacy.approval!.validUntil;
+    delete legacy.approval!.notes;
+    setPolicy({ autoApproveMaxFen: mode === 'auto' ? 100000 : 0, quoteValidDays: 0, taxIncluded: false });
+    const afterShortDeadline = approval.decidedAt! + 2 * 86400000;
+    assert.equal(quoteState(order, afterShortDeadline), 'approved', `${mode}: 改短不提前过期`);
+    assert.equal(quoteState(legacy, afterShortDeadline), 'expired', `${mode}: 旧单仍按当前政策`);
+    assert.equal(quoteValidUntil(order), approval.validUntil);
+    const publicBefore = await getQuote(order.id);
+    assert.equal(publicBefore.body.state, 'approved');
+    assert.equal(publicBefore.body.validUntil, approval.validUntil);
+    assert.deepEqual(publicBefore.body.notes, approval.notes);
+    if (mode === 'manual') {
+      await actions.approveQuote(order.id, actor);
+      assert.deepEqual(order.approval, approval, '重复批准不覆盖首次快照');
+    }
+    const newSession = fresh();
+    await estimate(newSession);
+    const newShort = (await make(newSession)).order;
+    if (mode === 'manual') await actions.approveQuote(newShort.id, actor);
+    assert.equal(newShort.approval!.validUntil, Date.parse('2026-10-26T15:59:59.999Z'));
+    assert.deepEqual(newShort.approval!.notes, quoteNotes(config.currentPolicy().policy));
+    assert.notDeepEqual(newShort.approval!.notes, approval.notes);
+    setPolicy({ autoApproveMaxFen: mode === 'auto' ? 100000 : 0, quoteValidDays: 30, taxIncluded: false });
+    assert.equal(quoteState(order, approval.validUntil!), 'approved', `${mode}: 截止毫秒仍有效`);
+    assert.equal(quoteState(order, approval.validUntil! + 1), 'expired', `${mode}: 改长不延后过期`);
+    assert.equal(quoteState(legacy, approval.validUntil! + 1), 'approved', `${mode}: 旧单仍可随政策延长`);
+    assert.deepEqual((await store.drainStore(5000)).undrained, []);
+    const beforeRead = now;
+    try {
+      now = approval.validUntil! + 1;
+      assert.equal((await getQuote(order.id)).body.state, 'expired');
+    } finally {
+      now = beforeRead;
+    }
+    const longSession = fresh();
+    await estimate(longSession);
+    const newLong = (await make(longSession)).order;
+    if (mode === 'manual') await actions.approveQuote(newLong.id, actor);
+    assert.equal(newLong.approval!.validUntil, Date.parse('2026-11-25T15:59:59.999Z'));
+    assert.deepEqual(newLong.approval!.notes, quoteNotes(config.currentPolicy().policy));
+  }
+  // 空说明也要定格；复制钩子给的数组，后续增删不能改写客户手里的说明。
+  setPolicy({ autoApproveMaxFen: 100000 });
+  for (const hook of ['absent', 'empty', 'mutable'] as const) {
+    const notes = hook === 'mutable' ? ['批准时说明'] : [];
+    if (hook === 'absent') delete runtime.quotes!.notes;
+    else runtime.quotes!.notes = () => notes;
+    const session = fresh();
+    await estimate(session);
+    const order = (await make(session)).order;
+    assert.deepEqual(order.approval!.notes, hook === 'mutable' ? ['批准时说明'] : []);
+    notes.push('批准后新增');
+    runtime.quotes!.notes = originalNotes;
+    const response = await getQuote(order.id);
+    assert.deepEqual(response.body.notes, hook === 'mutable' ? ['批准时说明'] : undefined);
+  }
+  assert.deepEqual((await store.drainStore(5000)).undrained, []);
+  for (const order of snapshotOrders) {
+    const stored = await t.pg.transaction(async (tx) => {
+      await tx.exec('SET LOCAL ROLE NONE');
+      return (await tx.query<{ data: LineOrder }>('select data from orders where id=$1', [order.id])).rows[0]!.data;
+    });
+    assert.deepEqual(stored.approval, order.approval, '实际 orders.data 保存完整快照');
+  }
+  console.log(
+    'QUOTE SNAPSHOT PASS: 人工/自动批准，起草与批准政策区分，缩短不失效、延长不复活，说明定格、旧单回退、新单新政策、空说明及数组隔离、JSON落库',
+  );
 
   // 真实 handleMessage → stage_advance；测试 mock 只发工具动作，不替换引擎或阶段推进。
   setPolicy({ autoApproveMaxFen: 100000 });
@@ -946,7 +1040,7 @@ try {
       await estimate(session);
       const { order } = await make(session);
       session.packState = {};
-      if (mode === 'expired') order.approval!.decidedAt = now - 9 * 86400000;
+      if (mode === 'expired') order.approval!.validUntil = now - 1;
       if (mode === 'paid' || mode === 'cancelled' || mode === 'superseded') order.status = mode;
       if (mode === 'none') session.orderIds = [];
       now++;
@@ -1075,6 +1169,14 @@ try {
   rt.store.sessions.clear();
   rt.store.orders.clear();
   await store.initSessionStore(fx.deps);
+  for (const expected of snapshotOrders) {
+    const loaded = store.getAnyOrder(expected.id) as LineOrder;
+    assert.notEqual(loaded, expected);
+    assert.deepEqual(loaded.approval, expected.approval, '清空内存从库重载后批准快照保留');
+    assert.equal(quoteValidUntil(loaded), expected.approval!.validUntil);
+    assert.deepEqual((await getQuote(loaded.id)).body.notes, expected.approval!.notes);
+  }
+  console.log('QUOTE SNAPSHOT RELOAD PASS: 清空会话和订单缓存后从库恢复，人工/自动快照及公开说明不变');
   assert.deepEqual(store.getSession(resetId)!.packState ?? {}, {});
   assert.equal((await getQuote(boundedOrder.order.id)).status, 404);
   assert.equal(
@@ -1085,7 +1187,7 @@ try {
     1,
   );
   assert.deepEqual(store.getSession(engine.id)!.profile.attrs, engine.profile.attrs);
-  // 文件模式同样读当前 policy.json，两个装配入口共用既有读取；公开 notes 不读其他租户。
+  // 文件模式中旧单读当前 policy.json，新批准取当时政策，带快照单不读其他租户的政策。
   const { installPublicHost } = await import('./tenancy/hosts.js');
   const fileRuntime = tenancy.createTenantRuntime({
     id: 'industrial-file',
@@ -1109,7 +1211,20 @@ try {
       orders.set(readable.id, readable);
       const res = await app.request(`/api/quotes/${readable.id}`, { headers: { host: 'file.example.test' } });
       assert.equal(res.status, 200);
-      assert.deepEqual(((await res.json()) as PublicQuote).notes, quoteNotes(filePolicy));
+      assert.deepEqual(((await res.json()) as PublicQuote).notes, approved.order.approval!.notes);
+      delete readable.approval!.validUntil;
+      delete readable.approval!.notes;
+      const legacy = await app.request(`/api/quotes/${readable.id}`, { headers: { host: 'file.example.test' } });
+      assert.deepEqual(((await legacy.json()) as PublicQuote).notes, quoteNotes(filePolicy));
+      // 批准快照的文件政策读取与旧单回退使用同一 policy.json。
+      readable.approval = snapshotQuoteApproval(readable, { state: 'approved', requestedAt: now, decidedAt: now });
+      assert.deepEqual(readable.approval.notes, quoteNotes(filePolicy));
+      const fileDeadline = readable.approval.validUntil;
+      assert.equal(typeof fileDeadline, 'number');
+      fs.writeFileSync(path.join(dir, 'policy.json'), JSON.stringify({ ...filePolicy, quoteValidDays: 0, taxIncluded: true }));
+      assert.equal(quoteValidUntil(readable), fileDeadline);
+      const locked = await app.request(`/api/quotes/${readable.id}`, { headers: { host: 'file.example.test' } });
+      assert.deepEqual(((await locked.json()) as PublicQuote).notes, quoteNotes(filePolicy));
       assert.equal((await app.request(`/api/quotes/${pending.order.id}`, { headers: { host: 'file.example.test' } })).status, 404);
     });
   } finally {

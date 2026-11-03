@@ -175,9 +175,10 @@ try {
     assert.equal(await followup.followUpText(valid), '');
   }
   order.approval!.state = 'approved';
-  order.approval!.decidedAt = now - 9 * 86400000;
+  const { validUntil } = order.approval!;
+  order.approval!.validUntil = now - 1;
   assert.equal(await followup.followUpText(valid), '');
-  order.approval!.decidedAt = now;
+  order.approval!.validUntil = validUntil;
   completion = '点击https://bad.example.test/quote/ord_fake';
   const empty = silent();
   store.saveSession(empty, false);

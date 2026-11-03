@@ -631,6 +631,7 @@ function ReplyBox({
   onSend,
   sending,
   replyError,
+  sendFailed,
 }: {
   channel: string;
   canReply: boolean;
@@ -640,6 +641,7 @@ function ReplyBox({
   onSend: (text: string) => void;
   sending: boolean;
   replyError: unknown;
+  sendFailed: boolean;
 }) {
   const disabled = !canReply || (sendWindow !== null && !sendWindow.canSend);
   const submit = (e: FormEvent): void => {
@@ -683,6 +685,11 @@ function ReplyBox({
         </Button>
       </div>
       <InlineError error={replyError} />
+      {sendFailed && (
+        <p role="alert" className="wb-inline-error">
+          发送失败，请重试
+        </p>
+      )}
     </form>
   );
 }
@@ -966,6 +973,13 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
       unwrap(api.conversations[':id'].reply.$post({ param: { id }, json: { text, clientId } })),
     onSuccess: invalidate,
   });
+  const { reset: resetReply } = reply;
+  const replyIdRef = useRef(id);
+  useEffect(() => {
+    if (replyIdRef.current === id) return;
+    replyIdRef.current = id;
+    resetReply();
+  }, [id, resetReply]);
   const confirmOrder = useMutation({
     mutationFn: (orderId: string) => unwrap(api.orders[':id'].confirm.$post({ param: { id: orderId } })),
     onSuccess: invalidate,
@@ -1163,6 +1177,11 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
               { text, clientId },
               {
                 onSuccess: (result) => {
+                  if (!result.sent) {
+                    // 后端会缓存这个 clientId 的失败结果；下次点击发送要换一个才能真正重发。
+                    clientIdRef.current = null;
+                    return;
+                  }
                   setReplyText('');
                   clientIdRef.current = null;
                   if (!result.persisted) {
@@ -1176,6 +1195,7 @@ function Detail({ id, pack, me }: { id: string; pack: IndustryPack; me: { userId
           }}
           sending={reply.isPending}
           replyError={reply.error}
+          sendFailed={reply.data?.sent === false}
         />
       </div>
       <div className="wb-side">

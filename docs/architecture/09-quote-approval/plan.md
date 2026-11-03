@@ -940,3 +940,33 @@ PREFIX sha256 system=cf3b163c9f694003099d94855cf0a3b2807ab4bf7df8d8d6dc18c96b487
 - 照 08 的做法从 `dev`（`cc0d5b9b`，CI 全绿）开 `release/demo-v10` 进 `main`（#346），合并提交 `1a3f1539`，其树与 `dev` 相同；在它上面打 annotated tag `demo-v10` 并推送。rc 的 tag 只在本地，没推。
 - 线上仍是 `demo-v10-rc3`，与 `demo-v10` 的代码相同，只差文档。
 - 09 第 0–18 步全部完成。
+
+### 报价条款快照修复（2026-11-03）
+
+- 对应 v2 快照 `eval/baselines/v2-09-step19.json`，默认基线改指它。与 `v2-12-step10.json` 逐条比对：原有 923 条只有 `q09-fixture-auto-accepted` 三轮各多 `approval.notes`、`approval.validUntil`，都来自这次快照字段；另有 4 条是之前已加、旧快照未收录的 q10 用例。
+- `src/fixtures/industrial-pre11.json` 同步：订单只多这两个字段。`industrial-followup` 用 `validUntil` 模拟过期，不再改 `decidedAt`。
+
+- [x] owner 定：有效期和商业说明在批准时定格；按本次专门任务说明在 spec 头部追加 Revisions，Status 保持 implemented。
+- [x] QuoteApproval 新增可选 validUntil / notes；人工与自动批准共用 snapshotQuoteApproval，一次读取当时已发布政策，按上海自然日算截止时间，并复制已渲染说明。空说明保存 []，与没有快照的旧单区分。
+- [x] quoteValidUntil 与公开报价页/API 优先读快照；旧单缺少对应字段时保持当前政策回退。人工批准只改 approval 赋值及必要导入；金额、行、审批权限、其他状态机与模型 contextNote 未改。
+- [x] 存储核对：orderToRow 将整个对象经 normalizeForStore 写入 orders.data，rowToOrder 只读 data；无需新增表、列或迁移。实际查询 orders.data 验证人工/自动快照，清空内存后预载验证字段及公开说明；独立新进程重启磁盘 PGlite 再验证完整批准快照。
+- [x] 持久回归：人工/自动两条路径均验证缩短不提前失效、延长不复活、自然日最后一毫秒边界、说明不随政策变、旧单回退、新批准读新政策；另验批准前换政策、重复人工批准不覆盖首次快照、无钩子/空说明定格、说明数组复制、文件政策读取。原有过期夹具改设 validUntil；报价审批套件的自动批准完整对象断言补上新字段。
+- [x] 隔离副本反证：分别撤掉人工写快照、自动写快照、截止时间读快照、说明读快照、说明数组复制，5 项均退出 1，且均为目标回归的 AssertionError；隔离副本已自动删除，没有修改工作树做变异。
+
+指定门禁与关联自测（均退出 0；命令外层加超时）：
+
+| 命令                                                                      | 关键结果                                                                           |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `pnpm -s format:check`                                                    | All matched files use the correct format                                           |
+| `pnpm -s lint`                                                            | boundaries、migrations、console-src、tenant-state 均通过；28 个迁移未变            |
+| `pnpm -s typecheck`                                                       | 退出 0，无类型错误                                                                 |
+| `pnpm -s test:locked`                                                     | 全部七套通过；server 269 项断言全通                                                |
+| `CONFIG_SOURCE=file node --import tsx src/quote-actions.selftest.ts`      | QUOTE PROCESS RESTART PASS，完整条款快照重启保留；状态表、权限、并发和事务回归通过 |
+| `CONFIG_SOURCE=file node --import tsx src/quote-replies.selftest.ts`      | QUOTE REPLIES PASS                                                                 |
+| `CONFIG_SOURCE=file node --import tsx src/industrial-quotes.selftest.ts`  | QUOTE SNAPSHOT PASS、QUOTE SNAPSHOT RELOAD PASS、INDUSTRIAL STATE PASS             |
+| `CONFIG_SOURCE=file node --import tsx src/industrial-replies.selftest.ts` | 工业护栏、词表、确定性回复、预取、发布配置均通过                                   |
+| `CONFIG_SOURCE=file node --import tsx src/quote-approval.selftest.ts`     | QUOTE DATA PASS、QUOTE ENTRIES PASS、QUOTE RECOVERY PASS                           |
+
+- 检查范围：AGENTS.md 所列锁定文件（含 eval/cases.json）无 diff；PR 范围新增行无本机绝对路径与超长假企微 ID；git diff --check 通过。lint 的 public-boundary 因本机未配置私有黑名单按原逻辑跳过，补做上述公开路径与假 ID 扫描。
+- 按任务说明不运行完整 pnpm test，不读取 .env，不调用付费真实模型；真实 PG 分支未设置 PG_TEST_URL，保留 CI 一次性容器覆盖，本地持久化使用 PGlite。
+- 交接：范围 1–5 与指定回归完成，改动只留工作区，不提交、不推送、不开 PR、不操作服务器；无迁移、依赖或产品半成品。下一步由协调者审查 diff 并交 CI 跑全量测试，需要确认的问题：无。

@@ -11,6 +11,7 @@ import { normalizePartNo } from './normalize.js';
 import { handoffVocab } from './handoff-vocab.js';
 import {
   industrialReplyGuard,
+  PROMISE_FALLBACK,
   industrialFollowupGuard,
   quoteClaimStep,
   rfqTrimStep,
@@ -19,7 +20,7 @@ import {
   QUOTE_WITHDRAWN,
 } from './guards.js';
 import { IndustrialPolicySchema, quoteNotes } from './policy.js';
-import { preModel, contextNote, prefetch, beforeTool } from './turn.js';
+import { preModel, contextNote, prefetch, beforeTool, mentionedParts } from './turn.js';
 import { intakeNewer, intakeNotes } from './intake-turn.js';
 import { sopSections, templates, contractRules, hardRequirements } from './sop.js';
 import { fixedReplies, consistencyRules } from './fixed-replies.js';
@@ -28,7 +29,7 @@ import { isComplaint, isHandoffIntent } from './handoff-intent.js';
 // R1 / R17：公开工业包的完整运行时入口，也是部署镜像识别标记。
 import { getAnyOrder, type PackRuntime, type PackSources, type Session, type SalesStage } from '../../core/pack-api.js';
 import { industrial } from './console-pack.js';
-import { partCatalog, MAX_QTY, PartSchema, priceLine } from './catalog.js';
+import { partCatalog, MAX_QTY, PartSchema, priceLine, type Part } from './catalog.js';
 import { StateSchema, readState, resetKeys } from './state.js';
 import { createIndustrialTools } from './tools.js';
 import { industrialPolicy } from './policy.js';
@@ -42,6 +43,18 @@ const profileFields = [
   { key: 'usage', label: '用途' },
 ];
 export function createIndustrialRuntime(sources: PackSources): PackRuntime {
+  const parsedParts = new WeakMap<readonly unknown[], Part[]>();
+  const subjectMentions = (text: string) => {
+    const items = sources.currentCatalog().items.part ?? [];
+    let parts = parsedParts.get(items);
+    if (!parts) {
+      parts = items.map((part) => PartSchema.parse(part));
+      parsedParts.set(items, parts);
+    }
+    return mentionedParts(text, sources, parts).flatMap((mention) =>
+      mention.match === 'exact' ? [{ subject: normalizePartNo(mention.parts[0]!.partNo), start: mention.start, end: mention.end }] : [],
+    );
+  };
   const orders = (session: Session) =>
     session.orderIds.map(getAnyOrder).filter((order) => order && 'v' in order && order.sessionId === session.id);
   return {
@@ -159,6 +172,8 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
         ...moneyProvenanceStep({
           staticAmounts: (raw) => Object.values(IndustrialPolicySchema.parse(raw).shipping),
           fallback: '金额需要先试算，请告诉我型号和数量。',
+          refusal: PROMISE_FALLBACK,
+          subjectMentions,
         }),
         after: ['stage_advance', 'link_whitelist'],
       },
@@ -168,7 +183,10 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
       linkWhitelistFollowupStep(),
       industrialFollowupGuard(sources),
       {
-        ...moneyProvenanceFollowupStep({ staticAmounts: (raw) => Object.values(IndustrialPolicySchema.parse(raw).shipping) }),
+        ...moneyProvenanceFollowupStep({
+          staticAmounts: (raw) => Object.values(IndustrialPolicySchema.parse(raw).shipping),
+          subjectMentions,
+        }),
         after: ['industrial_claims'],
       },
       rfqTrimFollowupStep(sources),

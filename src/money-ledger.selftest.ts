@@ -179,6 +179,16 @@ try {
     assert.equal(turns.at(-1)!.turn.guards[0]!.action, 'replace');
     assert.equal(await reply('合计7.30元。运费10元。'), '运费10元。');
     assert.equal((await loadGuardPipeline(runtime.followupSteps).run(guardContext('单价3.80元。'))).text, '');
+    // 证明包没有启用 subject 识别，带绑定的账本也继续只按数值判定，原文字节不变。
+    const savedLedger = s.moneyLedger;
+    s.moneyLedger = [
+      { fen: 365, label: '查询单价', subject: 'A100' },
+      { fen: 1200, label: '查询单价', subject: 'B200' },
+    ];
+    const swapped = '  A100单价12元，B200单价3.65元。\n';
+    assert.equal(await reply(swapped), swapped);
+    assert.equal((await loadGuardPipeline(runtime.followupSteps).run(guardContext(swapped))).text, swapped);
+    s.moneyLedger = savedLedger;
     console.log('MONEY PIPELINE PASS：365 分放行、380 分删句/兜底、派生合计删除、静态运费、跟进只删；trace 事件与裁决正确');
 
     const ordered = JSON.parse(
@@ -258,7 +268,7 @@ try {
     (e) => e === failure,
   );
   assert.equal(declarations, callsBefore);
-  entries = [{ fen: 0, label: '字'.repeat(20) }];
+  entries = [{ fen: 0, label: '字'.repeat(20), subject: 'A100' }];
   await probeRegistry.execute('fixture_quote', {}, ctx);
   assert.deepEqual(s.moneyLedger!.at(-1), entries[0]);
 

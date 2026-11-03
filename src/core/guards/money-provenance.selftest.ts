@@ -1,6 +1,6 @@
 // 08 R8：两个工厂的删句、兜底、金额来源与步骤位置契约。
 import assert from 'node:assert/strict';
-import type { GuardStep, ReplyGuardContext, StepVerdict } from '../pack-api.js';
+import type { GuardStep, MoneyEntry, ReplyGuardContext, StepVerdict } from '../pack-api.js';
 import type { LineOrder } from '../order-view.js';
 import { loadGuardPipeline } from './execute.js';
 import { moneyProvenanceStep, moneyProvenanceFollowupStep, type MoneyProvenanceSources } from './money-provenance.js';
@@ -90,6 +90,56 @@ await check('请确认。\n单价3.80元！单价3.65元？', '请确认。\n单
 await check('先看规格。单价3.80元。\n', '先看规格。\n', 'drop_sentence');
 await check('  单价3.80元。\n', options.fallback, 'replace');
 
+// 16 验收：括号旁注编了数时只删旁注，括号外全有出处的价格保得住；括号外没有出处还是整句删。
+await check('单价 3.65 元（税前 3.23 元），现货。', '单价 3.65 元，现货。', 'drop_sentence');
+await check('单价 3.65 元（含税，税前 3.23 元）。请确认规格。', '单价 3.65 元。请确认规格。', 'drop_sentence');
+await check('单价 3.65 元（含税）。', '单价 3.65 元（含税）。', 'pass');
+await check('单价 3.65 元（含税）（税前 3.23 元）。', '单价 3.65 元（含税）。', 'drop_sentence');
+await check('单价 3.80 元（税前 3.23 元）。继续核验。', '继续核验。', 'drop_sentence');
+await check('（税前 3.23 元）请确认规格。继续核验。', '继续核验。', 'drop_sentence');
+await check('单价 3.65 元（税前 3.23 元），合计 7.30 元。继续核验。', '继续核验。', 'drop_sentence');
+
+// 16 验收：标题下面的内容删光时标题一起删，不留「试算结果：」；下面还有内容就保留。
+await check('试算结果如下：\n单价 3.80 元。\n请确认规格。', '请确认规格。', 'drop_sentence');
+await check('请确认规格。\n试算结果：单价 3.80 元。', '请确认规格。\n', 'drop_sentence');
+await check('试算结果：\n单价 3.65 元。\n单价 3.80 元。', '试算结果：\n单价 3.65 元。\n', 'drop_sentence');
+await check('试算结果：\n单价 3.80 元。', options.fallback, 'replace');
+await check('试算结果：\n\n单价 3.80 元。\n\n需要起草吗？', '需要起草吗？', 'drop_sentence');
+await check('请核对：\n型号 6205。', '请核对：\n型号 6205。', 'pass');
+
+// 16 验收：拒绝的话带着没出处的金额时换成包给的固定句，客户不至于没等到答复；固定句不带数，放行集合不变。
+const refusal = '价格按数量档位执行。';
+const refusing = loadGuardPipeline([
+  noop('stage_advance'),
+  moneyProvenanceStep({ ...options, refusal }, () => sources),
+  noop('takeover_check:post'),
+  noop('turn_failure'),
+]);
+for (const [text, expected] of [
+  ['抱歉，没法按1元一件报。请确认规格。', `${refusal}请确认规格。`],
+  ['没法按1元一件报\n请确认规格。', `${refusal}\n请确认规格。`],
+  ['550元这个整数额优惠给不了。', refusal],
+  ['我不能改成1元或自行调价。', refusal],
+  ['这个价做不到，90元实在不行。', refusal],
+  // 暗示底价的说法同样不留数。
+  ['不能低于9元。', refusal],
+  // 一条回复只说一次。
+  ['无法按1元报价。也不能给到2元。请确认规格。', `${refusal}请确认规格。`],
+  // 「能不能」「可不可以」是在问，不是拒绝。
+  ['能不能给到1.5元？请确认规格。', '请确认规格。'],
+  ['可不可以按1.5元？请确认规格。', '请确认规格。'],
+  // 不是拒绝的编价照旧删。
+  ['可以按1.5元。请确认规格。', '请确认规格。'],
+  // 拒绝的话里没有金额，或金额都有出处，不用动。
+  ['价格不能改。单价 3.65 元。', '价格不能改。单价 3.65 元。'],
+  ['单价 3.65 元不能改。', '单价 3.65 元不能改。'],
+] as const) {
+  assert.equal((await refusing.run(context(text))).text, expected, text);
+  count++;
+}
+// 包没给固定句时拒绝的话照旧删，行为不变。
+await check('没法按1元报。请确认规格。', '请确认规格。', 'drop_sentence');
+
 // 不放行客户提出的价格；也不读取整库或本轮工具结果里未声明的数。
 const untrusted = context('就按3.80元成交。');
 untrusted.session.messages.push({ role: 'customer', content: '3.80元就买', at: 0 });
@@ -141,6 +191,120 @@ const followOrder = context('合计1330元。');
 followOrder.session.orderIds = [order.id];
 assert.equal((await followup.run(followOrder)).text, '合计1330元。');
 count++;
+
+// 型号绑定：同一套用例同时约束主回复与跟进，仍按原来的句子单位删句。
+const subjectMentions = (text: string) =>
+  [...text.matchAll(/A100|B200|C300|ALIAS-A/g)].map((match) => ({
+    subject: match[0] === 'ALIAS-A' ? 'A100' : match[0],
+    start: match.index,
+    end: match.index + match[0].length,
+  }));
+const boundLedger: MoneyEntry[] = [
+  { fen: 365, label: '单价', subject: 'A100' },
+  { fen: 1200, label: '单价', subject: 'B200' },
+  { fen: 133000, label: '合计' },
+];
+const approved: LineOrder = {
+  ...order,
+  approval: { state: 'approved', requestedAt: 0, decidedAt: 0 },
+  lines: [
+    { ...order.lines[0], title: 'A100' },
+    { ...order.lines[1], title: 'B200' },
+  ],
+};
+const boundSources = { ...sources, getOrder: (id: string) => (id === approved.id ? approved : undefined) };
+for (const mode of ['reply', 'followup'] as const) {
+  const step =
+    mode === 'reply'
+      ? moneyProvenanceStep({ ...options, subjectMentions }, () => boundSources)
+      : moneyProvenanceFollowupStep({ ...options, subjectMentions }, () => boundSources);
+  const empty = mode === 'reply' ? options.fallback : '';
+  const cases: { text: string; expected?: string; ledger?: MoneyEntry[]; ordered?: boolean }[] = [
+    { text: 'A100单价12元。B200单价3.65元。', expected: empty },
+    { text: 'A100单价3.65元。B200单价12元。' },
+    { text: 'A100单价3.80元。', expected: empty },
+    { text: 'A100单价12元，B200单价12元。', ledger: [...boundLedger, { fen: 1200, label: '同价', subject: 'A100' }] },
+    { text: 'A100单价3.65元，B200单价3.65元。继续核验。', expected: '继续核验。' },
+    { text: 'A100单价3.65元，B200单价12元。' },
+    { text: 'A100单价12元，B200单价3.65元。继续核验。', expected: '继续核验。' },
+    { text: 'A100合计1330元。' },
+    { text: '单价12元。单价3.65元。' },
+    { text: 'ALIAS-A单价3.65元。' },
+    { text: 'ALIAS-A单价12元。', expected: empty },
+    { text: 'A100单价12元。', ledger: [{ fen: 1200, label: '旧账本' }] },
+    { text: 'A100单价12元。', ledger: [...boundLedger, { fen: 1200, label: '旧账本' }] },
+    { text: 'A100运费10元。' },
+    { text: '单价12元，A100。' },
+    { text: 'A100。单价12元。' },
+    // 同一分句优先；没有型号的分句往同一句左侧找，逗号/分号/顿号均不清空关联。
+    ...['，', ',', '；', ';', '、'].flatMap((mark) => [
+      { text: `A100${mark}单价12元。`, expected: empty },
+      { text: `A100${mark}单价3.65元${mark}B200单价12元。` },
+    ]),
+    { text: 'A100 B200单价3.65元。' },
+    { text: 'A100和B200的单价分别为3.65元、12元。' },
+    // 多型号列表拿不准关联：即使数值互换也放行，这是避免误杀的代价。
+    { text: 'A100和B200的单价分别为12元、3.65元。' },
+    // 多型号组完全跳过错配；数值已有出处即可，即便出处属于组外的型号。
+    { text: 'A100和B200单价3元。', ledger: [{ fen: 300, label: '单价', subject: 'C300' }] },
+    {
+      text: 'A100、B200、C300分别为1元、2元、3元。',
+      ledger: [
+        { fen: 100, label: '单价', subject: 'A100' },
+        { fen: 200, label: '单价', subject: 'B200' },
+        { fen: 300, label: '单价', subject: 'C300' },
+      ],
+    },
+    { text: 'A100和B200一共15.65元，A100单价12元。', ledger: [...boundLedger, { fen: 1565, label: '合计' }], expected: empty },
+    // 同一型号及其别名不构成多个不同对象；列表也不能放行没有出处的数。
+    { text: 'A100和ALIAS-A单价12元。', expected: empty },
+    { text: 'A100和B200单价3.80元。', expected: empty },
+    { text: 'A100单价3块6毛5，B200单价12元。' },
+    { text: 'A100单价3.65元（B200单价3.65元）。', expected: 'A100单价3.65元。' },
+    { text: 'A100单价3.65元（B200单价12元）。' },
+    { text: '试算结果：\nA100单价12元。\n请确认规格。', expected: '请确认规格。' },
+    { text: 'A100单价12元。B200单价3.65元。', ledger: [], ordered: true, expected: empty },
+    { text: 'A100行金额600元。B200行金额730元。', ledger: [], ordered: true, expected: empty },
+    { text: 'A100单价3.65元、行金额730元，B200单价12元、行金额600元。', ledger: [], ordered: true },
+    { text: 'A100合计1330元。', ledger: [], ordered: true },
+  ];
+  for (const { text, expected = text, ledger = boundLedger, ordered: useOrder } of cases) {
+    const ctx = context(text);
+    ctx.session.moneyLedger = ledger;
+    if (useOrder) ctx.session.orderIds = [approved.id];
+    const result = await step.run(ctx);
+    assert.ok(result && result.action !== 'abort');
+    assert.equal(result.action === 'pass' ? text : result.text, expected, `${mode}: ${text}`);
+    assert.equal(result.action, text === expected ? 'pass' : mode === 'reply' && expected === empty ? 'replace' : 'drop_sentence');
+    count++;
+  }
+  // 不提供识别能力的包，即便账本带 subject，错配外观也维持原来的数值判定与输出字节。
+  const legacy = mode === 'reply' ? moneyProvenanceStep(options, () => sources) : moneyProvenanceFollowupStep(options, () => sources);
+  const ctx = context('  A100单价12元，B200单价3.65元。\n');
+  ctx.session.moneyLedger = boundLedger;
+  assert.deepEqual(await legacy.run(ctx), { action: 'pass' });
+  count++;
+
+  let calls = 0;
+  const skipOptions = {
+    ...options,
+    subjectMentions: (text: string) => {
+      calls++;
+      return subjectMentions(text);
+    },
+  };
+  const skip =
+    mode === 'reply' ? moneyProvenanceStep(skipOptions, () => boundSources) : moneyProvenanceFollowupStep(skipOptions, () => boundSources);
+  const noMoney = context('A100和B200请核对规格。');
+  noMoney.session.orderIds = [approved.id];
+  assert.deepEqual(await skip.run(noMoney), { action: 'pass' });
+  assert.equal(calls, 0, '无金额回复不识别型号，也不识别订单行');
+  const mixed = context('请核对规格。A100单价3.65元。');
+  mixed.session.moneyLedger = boundLedger;
+  assert.deepEqual(await skip.run(mixed), { action: 'pass' });
+  assert.equal(calls, 1, '只识别含金额的句子');
+  count += 2;
+}
 
 // 装载即拒绝：少 after、少写声明、放在后置接管或失败计数之后、缺安全尾部。
 for (const bad of [

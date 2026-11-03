@@ -30,6 +30,7 @@ export const STATE_MANIFEST: Record<
   'src/packs/industrial/intake.ts:MODEL_HEADERS': { kind: 'instance', why: '工业附件识别的固定配置与校验规则，不含租户数据。' },
   'src/packs/industrial/intake.ts:QTY_HEADERS': { kind: 'instance', why: '工业附件识别的固定配置与校验规则，不含租户数据。' },
   'src/packs/industrial/intake.ts:VisionOut': { kind: 'instance', why: '工业附件识别的固定配置与校验规则，不含租户数据。' },
+  'src/packs/industrial/intake-turn.ts:CONFIRM_CLAUSE': { kind: 'instance', why: '工业清单确认的固定说法，不含租户数据。' },
   'src/packs/industrial/state.ts:RfqIntakeSchema': { kind: 'instance', why: '工业附件识别的固定配置与校验规则，不含租户数据。' },
   'src/packs/industrial/fixed-replies.ts:fixedReplies': { kind: 'instance', why: '工业包的固定配置与词表，不含租户数据或运行时快照。' },
   'src/packs/industrial/fixed-replies.ts:consistencyRules': { kind: 'instance', why: '工业包的固定配置与词表，不含租户数据或运行时快照。' },
