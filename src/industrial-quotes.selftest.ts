@@ -14,7 +14,7 @@ import { industrialFollowupGuard } from './packs/industrial/guards.js';
 import { createIndustrialRuntime } from './packs/industrial/runtime.js';
 import { defaultIndustrialPolicy, quoteNotes } from './packs/industrial/policy.js';
 import { writeState, readState, draftParts, StateSchema } from './packs/industrial/state.js';
-import { latestQuoteCandidate } from './packs/industrial/quote-candidate.js';
+import { latestQuoteCandidate, expiredQuoteAwaitingConfirmation } from './packs/industrial/quote-candidate.js';
 import type { LineOrder, Session, TurnToolContext, ChatOptions } from './core/pack-api.js';
 import type { PublicQuote, AnyOrder } from './core/order-view.js';
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'industrial-quotes-'));
@@ -709,7 +709,10 @@ try {
     const bearingA = { ...data, id: 'accept-a', partNo: '6208-2RS', unitPrice: 14.18 };
     const bearingB = { ...data, id: 'accept-b', partNo: '6211-2RS', unitPrice: 17.28 };
     const sameModel = { ...data, id: 'accept-c', partNo: 'HS9010', unitPrice: 18.99 };
-    for (const part of [bearingA, bearingB, sameModel]) {
+    const valveA = { ...data, id: 'context-va', partNo: 'HS-PV25', unitPrice: 28 };
+    const valveB = { ...data, id: 'context-vb', partNo: 'HS-PV27', unitPrice: 29.4 };
+    const remaining = { ...data, id: 'context-rem', partNo: '6207-2RS', stock: 18, leadDays: 9 };
+    for (const part of [bearingA, bearingB, sameModel, valveA, valveB, remaining]) {
       const draft = await createCatalogItem(ctx, 'part', part);
       await activateCatalogItem(ctx, 'part', draft.code, { rev: draft.rev });
     }
@@ -718,9 +721,216 @@ try {
       await registry.execute('quote_items', { items: [{ query: part.partNo, qty }] }, context(session));
       now++;
       const result = JSON.parse(await registry.execute('create_quote_sheet', { items: [{ code: part.id, qty }] }, context(session)));
-      assert.equal(result.state, 'approved');
-      return store.getAnyOrder(session.orderIds.at(-1)!) as LineOrder;
+      const order = store.getAnyOrder(session.orderIds.at(-1)!) as LineOrder;
+      if (result.state === 'pending') await actions.approveQuote(order.id, actor);
+      assert.equal(quoteState(order, now), 'approved');
+      return order;
     };
+    // 旧型号已谈过并建过单，即使被新批准单取代，也不能再要求客户选一遍型号。
+    {
+      const session = fresh();
+      const old = await pricedOrder(session, bearingA, 20);
+      await pricedOrder(session, bearingB, 26);
+      assert.equal(quoteState(old, now), 'superseded');
+      const expected = '是的，6208-2RS那张报价单已经作废，请以6211-2RS的新报价单为准。';
+      mockAction = async (opts) => {
+        await opts.executeTool('find_parts', { query: '6208' });
+        return expected;
+      };
+      now++;
+      assert.equal(
+        (await handleMessage(session.id, '6208那张是不是已经作废了？', 'wecom')).text,
+        expected,
+        'superseded quote still resolves model',
+      );
+    }
+    // 接受轮的客户简称仍指向当前已批准单；真实预取、护栏、接受落账全走。
+    {
+      const session = fresh();
+      const order = await pricedOrder(session, valveB, 100);
+      mockAction = async () => '好的，已为您确认这份报价单：HS-PV27 气动阀 × 100件，合计2940元（含税）。';
+      now++;
+      const reply = await handleMessage(
+        session.id,
+        '这份报价我看过了，100件HS-PV气动阀，合计2940元，没问题，我接受这份报价，就按这个采购。',
+        'wecom',
+      );
+      assert.ok(!reply.text.includes('候选'), reply.text);
+      assert.match(reply.text, /HS-PV27/);
+      assert.ok(order.approval!.acceptedAt !== undefined);
+    }
+    // 接受后即使模型顺手查了别的歧义系列，本轮也不能被候选确认覆盖。
+    {
+      const session = fresh();
+      const order = await pricedOrder(session, valveB, 100);
+      mockAction = async (opts) => {
+        await opts.executeTool('find_parts', { query: '6208' });
+        return 'HS-PV27，100件，已确认您接受这份报价。';
+      };
+      now++;
+      assert.equal((await handleMessage(session.id, '接受这份报价，能开专票吗？', 'wecom')).text, 'HS-PV27，100件，已确认您接受这份报价。');
+      assert.ok(order.approval!.acceptedAt !== undefined);
+    }
+    // 前置工具闸本来会拒绝替客户选型；此组暂时移除它，让真实工具写入，独立验证回复护栏。
+    const beforeTool = runtime.beforeTool;
+    runtime.beforeTool = undefined;
+    try {
+      // 旧型号简称或查询不应覆盖客户本轮讨论的新型号。
+      {
+        const session = fresh();
+        await pricedOrder(session, bearingA, 20);
+        mockAction = async (opts) => {
+          await opts.executeTool('find_parts', { query: '6208' });
+          await opts.executeTool('find_parts', { query: '6211-2RS' });
+          now++;
+          const result = JSON.parse(await opts.executeTool('quote_items', { items: [{ query: '6211-2RS', qty: 26 }] }));
+          assert.equal(result.lines[0].code, bearingB.id);
+          return '6211-2RS，26件，需要重新出报价单。';
+        };
+        for (const input of [
+          '报价单收到了，不过需求有变化：型号改成6211-2RS，数量改为26件，麻烦按这个重新出单，刚才那张6208的报价单请作废。',
+          '不是6208，我要的是6211-2RS，26件，麻烦重新出单。',
+        ]) {
+          now++;
+          assert.equal((await handleMessage(session.id, input, 'wecom')).text, '6211-2RS，26件，需要重新出报价单。');
+        }
+      }
+      // 无候选上下文仍要求客户自己选；唯一候选不称「多个」。
+      for (const [input, query, modelText, expected] of [
+        ['HS-PV 气动阀50件多少钱', 'HS-PV', 'HS-PV27，50件。', /多个候选[\s\S]*HS-PV25[\s\S]*HS-PV27/],
+        ['6208 轴承20件多少钱', '6208', '6208-2RS，20件。', /查到的是 6208-2RS，请确认是不是这个型号/],
+      ] as const) {
+        const session = fresh();
+        mockAction = async (opts) => {
+          await opts.executeTool('find_parts', { query });
+          return modelText;
+        };
+        now++;
+        assert.match((await handleMessage(session.id, input, 'wecom')).text, expected);
+      }
+      // 客户没有选型号：本轮模型新写的草稿 / 新建的报价单都不能充当旧上下文。
+      for (const [tool, elapsed] of [
+        ['quote_items', 0],
+        ['quote_items', 1],
+        ['create_quote_sheet', 0],
+        ['create_quote_sheet', 1],
+      ] as const) {
+        const session = fresh();
+        mockAction = async (opts) => {
+          await opts.executeTool('find_parts', { query: 'HS-PV' });
+          now += elapsed;
+          if (tool === 'quote_items') await opts.executeTool(tool, { items: [{ query: valveB.partNo, qty: 50 }] });
+          // 建单工具内部也有同一道闸；用真实注册表的空工具文本模拟已穿过前置闸，客户原话不变。
+          else await registry.execute(tool, { items: [{ code: valveB.id, qty: 50 }] }, context(session));
+          return 'HS-PV27，50件，合计1470元。';
+        };
+        now++;
+        const reply = await handleMessage(session.id, 'HS-PV 气动阀50件多少钱', 'wecom');
+        assert.match(reply.text, /多个候选[\s\S]*HS-PV25[\s\S]*HS-PV27/, tool);
+        if (tool === 'quote_items') assert.ok(readState(session).rfqDraft);
+        else assert.equal(session.orderIds.length, 1);
+      }
+    } finally {
+      runtime.beforeTool = beforeTool;
+    }
+    // 试算精确行也可解决简称候选，而不必先有正式单。
+    {
+      const session = fresh();
+      await registry.execute('quote_items', { items: [{ query: valveB.partNo, qty: 100 }] }, context(session));
+      mockAction = async (opts) => {
+        await opts.executeTool('find_parts', { query: 'HS-PV' });
+        return 'HS-PV27，100件。';
+      };
+      now++;
+      assert.equal((await handleMessage(session.id, 'HS-PV这款再核对一下', 'wecom')).text, 'HS-PV27，100件。');
+    }
+    // 真正试算带出的部分现货依据与回复出口 JSON 删除。
+    {
+      const session = fresh();
+      mockAction = async () =>
+        '库存现货18件，其余14件约需9天到货，具体以顾问确认为准。\n询价摘要：{"at":1,"lines":[]}\n过期报价行：[]\n{"code":"context-rem","qty":32}';
+      now++;
+      assert.equal(
+        (await handleMessage(session.id, '6207-2RS 32件多少钱', 'wecom')).text,
+        '库存现货18件，其余14件约需9天到货，具体以顾问确认为准。',
+      );
+    }
+    // 同内容试算不阻止接受；数量、型号、版本、行数不同仍是新需求。
+    for (const mode of ['same', 'qty', 'model', 'version', 'extra', 'pending', 'expired'] as const) {
+      const session = fresh();
+      const order = await pricedOrder(session, bearingB, 26);
+      if (mode === 'pending') {
+        order.approval!.state = 'pending';
+        order.approval!.requestedAt = now;
+      }
+      if (mode === 'expired') order.approval!.validUntil = now - 1;
+      now++;
+      if (mode === 'same') {
+        mockAction = async (opts) => {
+          await opts.executeTool('quote_items', { items: [{ query: bearingB.partNo, qty: 26 }] });
+          return '这张6211-2RS，26件的报价单已由顾问批准。';
+        };
+        await handleMessage(session.id, '这张是按6211-2RS、26件重出的并且顾问已批准的报价单吗？', 'wecom');
+        assert.deepEqual((await store.drainStore(5000)).undrained, []);
+      } else
+        await registry.execute(
+          'quote_items',
+          {
+            items: [
+              { query: mode === 'model' ? bearingA.partNo : bearingB.partNo, qty: mode === 'qty' ? 30 : 26 },
+              ...(mode === 'extra' ? [{ query: bearingA.partNo, qty: 20 }] : []),
+            ],
+          },
+          context(session),
+        );
+      if (mode === 'version') {
+        const draft = readState(session).rfqDraft!;
+        writeState(session, { rfqDraft: { ...draft, lines: [{ match: 'exact', code: bearingB.id, version: 999, qty: 26 }] } });
+      }
+      assert.equal(latestQuoteCandidate(session, now)?.kind, mode === 'same' ? 'quote' : 'draft', mode);
+      if (mode === 'expired') {
+        assert.equal(expiredQuoteAwaitingConfirmation(session, now), true);
+        assert.match(
+          runtime.contextNote!({
+            session,
+            text: '',
+            policy: defaultIndustrialPolicy,
+          } as unknown as import('./core/pack-api.js').TurnContext).join(''),
+          /本次试算/,
+        );
+      }
+      mockAction = async () => '已确认您接受这份报价。';
+      now++;
+      const reply = await handleMessage(session.id, '好，这张按6211-2RS 26件出的报价单我确认没问题，接受这单，就按这个价格采购。', 'wecom');
+      assert.deepEqual((await store.drainStore(5000)).undrained, []);
+      assert.equal(order.approval!.acceptedAt !== undefined, mode === 'same', mode);
+      if (mode === 'same') assert.ok(!reply.text.includes(ACCEPT_ASK), reply.text);
+    }
+    // A 已批准，更新的 B 待审；再试算 A 不应删掉草稿而错误指向 B。
+    {
+      const session = fresh();
+      const orderA = await pricedOrder(session, bearingA, 20);
+      const policy = config.currentPolicy().policy as typeof defaultIndustrialPolicy;
+      setPolicy({ autoApproveMaxFen: 0 });
+      now++;
+      const result = JSON.parse(
+        await registry.execute('create_quote_sheet', { items: [{ code: bearingB.id, qty: 26 }] }, context(session)),
+      );
+      setPolicy(policy);
+      assert.equal(result.state, 'pending');
+      const orderB = store.getAnyOrder(session.orderIds.at(-1)!) as LineOrder;
+      assert.equal(quoteState(orderA, now), 'approved');
+      now++;
+      await registry.execute('quote_items', { items: [{ query: bearingA.partNo, qty: 20 }] }, context(session));
+      assert.equal(latestQuoteCandidate(session, now)?.kind, 'draft', 'older approved A must not hide draft behind pending B');
+      mockAction = async () => '请确认本次试算。';
+      now++;
+      await handleMessage(session.id, '接受这份报价，能开专票吗？', 'wecom');
+      assert.equal(orderA.approval!.acceptedAt, undefined);
+      assert.equal(orderB.approval!.acceptedAt, undefined);
+      assert.equal(await acceptanceJobs(orderA.id), 0);
+    }
+    console.log('CONTEXT REPLIES PASS: 接受轮/旧型号/草稿候选、无上下文/单候选、剩余交期/摘要、同内容试算及五种新需求/审批边界');
     const makePair = async (same = false) => {
       const session = fresh();
       const old = await pricedOrder(session, same ? sameModel : bearingA, same ? 10 : 20);
@@ -816,11 +1026,10 @@ try {
     now++;
     if (mode === 'repeat') await handleMessage(session.id, '确认下单', 'wecom');
     const before = { confirmedQuoteAt: readState(session).confirmedQuoteAt, acceptedAt: order.approval!.acceptedAt };
-    const resume = now;
     const action = mockAction;
     mockAction = async (opts) => {
       if (mode === 'superseded') await opts.executeTool('create_quote_sheet', { items: [{ code: data.id, qty: 101 }] });
-      else if (mode === 'expired') now = quoteValidUntil(order) + 1;
+      else if (mode === 'expired') order.approval!.validUntil = now - 1;
       else if (mode === 'paid') await actions.markPaidByAdvisor(order.id, actor);
       else await actions.withdrawQuote(order.id, actor);
       if (mode === 'filtered') throw __llmTest.httpError(400, '{"code":1301}');
@@ -855,7 +1064,6 @@ try {
       mode !== 'paid',
       mode,
     );
-    now = resume + 1;
   }
 
   // 确定性路径：判定之后还要等核对固定句。
@@ -898,9 +1106,9 @@ try {
         const session = fresh();
         await estimate(session);
         const { order } = await make(session);
-        const resume = ++now;
-        await store.drainStore(5000);
-        now = quoteValidUntil(order) - margin;
+        now++;
+        assert.deepEqual((await store.drainStore(5000)).undrained, []);
+        order.approval!.validUntil = now + margin;
         Date.now = () => now++;
         const reply = await handleMessage(session.id, text, 'wecom').finally(() => {
           Date.now = clock;
@@ -911,7 +1119,6 @@ try {
         assert.equal(session.messages.at(-1)!.content, reply.text, label);
         assert.equal(readState(session).confirmedQuoteAt !== undefined, recorded, label);
         assert.equal(await acceptanceJobs(order.id), recorded ? 1 : 0, label);
-        now = resume + 1;
       }
       assert.equal(outcomes.size, 2, `${text} ${filtered}：有效期末尾两种结果都要走到`);
     }
@@ -924,10 +1131,9 @@ try {
     await estimate(session);
     const { order } = await make(session);
     now++;
-    const resume = now;
     const action = mockAction;
     mockAction = async () => {
-      now = quoteValidUntil(order) + 1;
+      order.approval!.validUntil = now - 1;
       return staleClaim;
     };
     assert.equal((await handleMessage(session.id, '确认下单，能开专票吗', 'wecom')).text, expiredText);
@@ -945,7 +1151,6 @@ try {
     );
     assert.equal(order.approval!.acceptedAt, undefined);
     assert.equal(await acceptanceJobs(order.id), 0);
-    now = resume + 1;
   }
 
   // 复核只认本会话的这张报价；替换用的固定句已登记。
