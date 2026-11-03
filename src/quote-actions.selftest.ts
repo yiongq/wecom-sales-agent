@@ -10,7 +10,15 @@ import type { LineOrder } from './core/order-view.js';
 
 // 独立新进程读取同一份磁盘库，证明去重不靠父进程的内存。
 if (process.argv[2] === '--restart') {
-  const [varDir, tenantId, slug, orderId, expectedAt] = process.argv.slice(3) as [string, string, string, string, string];
+  const [varDir, tenantId, slug, orderId, expectedAt, snapshotId, expectedApproval] = process.argv.slice(3) as [
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+    string,
+  ];
   Object.assign(process.env, { VAR_DIR: varDir, PACK_FIXTURES: '1', CONFIG_SOURCE: 'file', LLM_MOCK: '1', SERVER_SELFTEST: '1' });
   const { hostRuntime, withoutTenantScope, identifyRuntime } = await import('./tenancy/runtime.js');
   const { enterTenantScopeForTest } = await import('./tenancy/testing.js');
@@ -35,13 +43,15 @@ if (process.argv[2] === '--restart') {
     await store.initSessionStore(fx.deps);
     const order = store.getAnyOrder(orderId) as LineOrder;
     assert.equal(order.approval!.acceptedAt, Number(expectedAt));
+    const snapshot = store.getAnyOrder(snapshotId) as LineOrder;
+    assert.deepEqual(snapshot.approval, JSON.parse(expectedApproval), '新进程读回完整批准快照');
     const { recordQuoteAccepted } = await import('./payment/orders.js');
     assert.equal(recordQuoteAccepted(store.getSession(order.sessionId)!, orderId), false);
     await store.drainStore(5000);
     await t.pg.exec('RESET ROLE');
     const jobs = await t.pg.query<{ n: number }>('select count(*)::int as n from jobs where dedupe_key=$1', [`quote_accepted:${orderId}`]);
     assert.equal(jobs.rows[0]!.n, 1);
-    console.log('QUOTE PROCESS RESTART PASS: 新进程再次确认，首次时间保留、已完成任务仍只有一个');
+    console.log('QUOTE PROCESS RESTART PASS: 新进程保留批准条款快照，首次确认时间与已完成任务去重保留');
   } finally {
     rt.store.pgBackend?.close();
     rt.store.fileBackend?.reset();
@@ -488,6 +498,9 @@ try {
   tk.setReplyTransport(async () => false);
   const failed = await fresh();
   await actions.approveQuote(failed.order.id, agent);
+  assert.equal(typeof failed.order.approval!.validUntil, 'number');
+  assert.deepEqual(failed.order.approval!.notes, [], '无说明钩子的批准也定格空说明');
+  const persistedApproval = structuredClone(failed.order.approval);
   assert.ok(failed.session.messages.some((m) => m.role === 'system' && m.content.includes('报价单发送失败')));
   for (const id of ['wecom:cust_D01', 'wecom:wmSeed']) {
     const session = store.getOrCreateSession(id, 'wecom');
@@ -549,6 +562,7 @@ try {
   rt.store.orders.clear();
   await store.initSessionStore(fx.deps);
   const loaded = store.getAnyOrder(accepted.order.id) as LineOrder;
+  assert.deepEqual((store.getAnyOrder(failed.order.id) as LineOrder).approval, persistedApproval, '从库重载保留批准条款快照');
   assert.equal(loaded.approval!.acceptedAt, now);
   assert.equal(actions.recordQuoteAccepted(store.getSession(loaded.sessionId)!, loaded.id), false);
   await runJobs();
@@ -586,12 +600,24 @@ try {
   dbClosed = true;
   const restart = spawnSync(
     process.execPath,
-    ['--import', 'tsx', fileURLToPath(import.meta.url), '--restart', dir, tenant.id, tenant.slug, accepted.order.id, String(now)],
+    [
+      '--import',
+      'tsx',
+      fileURLToPath(import.meta.url),
+      '--restart',
+      dir,
+      tenant.id,
+      tenant.slug,
+      accepted.order.id,
+      String(now),
+      failed.order.id,
+      JSON.stringify(persistedApproval),
+    ],
     { encoding: 'utf8', timeout: 60_000, env: process.env },
   );
   assert.equal(restart.status, 0, `${restart.stdout}\n${restart.stderr}`);
   assert.match(restart.stdout, /QUOTE PROCESS RESTART PASS/);
-  console.log('QUOTE PROCESS RESTART PASS: 新进程再次确认，首次时间保留、已完成任务仍只有一个');
+  console.log('QUOTE PROCESS RESTART PASS: 新进程保留批准条款快照，首次确认时间与已完成任务去重保留');
   if (process.env.PG_TEST_URL) {
     await store.drainStore(500);
     rt.store.sessions.clear();

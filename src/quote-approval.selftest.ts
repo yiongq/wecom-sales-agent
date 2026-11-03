@@ -118,7 +118,14 @@ try {
   assert.equal(pending.supersededBy, newer.id);
   const auto = await make(2);
   assert.equal(quoteState(newer, now), 'superseded');
-  assert.deepEqual(auto.approval, { state: 'approved', requestedAt: now, auto: true, decidedAt: now });
+  assert.deepEqual(auto.approval, {
+    state: 'approved',
+    requestedAt: now,
+    auto: true,
+    decidedAt: now,
+    validUntil: Date.parse('2027-01-01T15:59:59.999Z'),
+    notes: [],
+  });
   assert.equal(auto.confirmedAt, now);
   const allowed = runtime.siteLinks![0]!.allowed;
   const { coreSiteLinks } = await import('./core/site-links.js');

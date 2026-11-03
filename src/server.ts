@@ -878,7 +878,7 @@ function publicQuote(id: string): import('./core/order-view.js').PublicQuote | n
   if (!runtime.quotes || !order || !isLineOrder(order) || !order.approval) return null;
   const state = quoteState(order, Date.now());
   const notes =
-    (state === 'approved' || state === 'paid') && runtime.quotes.notes ? runtime.quotes.notes(order, currentPolicy().policy) : undefined;
+    state === 'approved' || state === 'paid' ? (order.approval.notes ?? runtime.quotes.notes?.(order, currentPolicy().policy)) : undefined;
   return {
     id: order.id,
     state,
