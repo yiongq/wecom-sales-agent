@@ -4,7 +4,19 @@ import { followupTemplates } from './auxiliary.js';
 import { defaultIndustrialPolicy, taxInvoiceText } from './policy.js';
 import { INTAKE_FIXED, renderIntake } from './intake.js';
 import { FIXED } from './turn.js';
-import { INVENTORY_FALLBACK, SUBSTITUTE_FALLBACK, TRIM_FALLBACK, trimNote } from './guards.js';
+import {
+  INVENTORY_FALLBACK,
+  SUBSTITUTE_FALLBACK,
+  PROMISE_FALLBACK,
+  PAYMENT_FALLBACK,
+  NOTE_FALLBACK,
+  NOT_SUBMITTED,
+  ACCEPT_ASK,
+  QUOTE_EXPIRED,
+  QUOTE_WITHDRAWN,
+  TRIM_FALLBACK,
+  trimNote,
+} from './guards.js';
 const nonTextHints: Record<string, string> = {
   image: '图片收到了，我暂时看不了图片内容，请把型号和数量打字发来，型号铭牌上的文字也可以打给我。',
   voice: '语音我暂时听不了，请把型号和数量打字发来，我帮您查询。',
@@ -49,9 +61,21 @@ export const fixedReplies: readonly FixedReply[] = [
     producedBy: { outside: 'preModel 确定性出口，核心校验全文及副作用' },
     samples: () => FIXED_REPLY_MODES.map((mode) => ({ mode, text })),
   })),
+  {
+    id: 'industrial.quote_expired',
+    source: 'src/packs/industrial/guards.ts',
+    kind: 'plain',
+    producedBy: { outside: '发送前最后一步由引擎整条替换，不再经过出口护栏' },
+    samples: () => FIXED_REPLY_MODES.map((mode) => ({ mode, text: QUOTE_EXPIRED })),
+  },
   ...[
     ['industrial.empty', '请告诉我型号和数量。', 'rfq_trim'],
     ['industrial.tax', taxInvoiceText(defaultIndustrialPolicy), 'industrial_claims'],
+    ['industrial.promise', PROMISE_FALLBACK, 'industrial_claims'],
+    ['industrial.payment', PAYMENT_FALLBACK, 'industrial_claims'],
+    ['industrial.note', NOTE_FALLBACK, 'industrial_claims'],
+    ['industrial.not_submitted', NOT_SUBMITTED, 'quote_claim'],
+    ['industrial.accept_ask', ACCEPT_ASK, 'quote_claim'],
     ['industrial.inventory', INVENTORY_FALLBACK + '。', 'industrial_claims'],
     ['industrial.substitute', SUBSTITUTE_FALLBACK + '。', 'industrial_claims'],
     ['industrial.trim.fallback', TRIM_FALLBACK, 'rfq_trim'],
@@ -76,7 +100,7 @@ export const fixedReplies: readonly FixedReply[] = [
     'followup.quote': followupTemplates.byStage.quote!,
     'followup.closing': followupTemplates.byStage.closing!,
     'quote.rejected': '这份报价需要顾问再核对一下，顾问会直接联系您',
-    'quote.withdrawn': '这份报价单已撤回，顾问会跟您重新确认',
+    'quote.withdrawn': QUOTE_WITHDRAWN,
   }).map(([id, text]): FixedReply => ({
     id: `industrial.${id}`,
     source: 'src/packs/industrial/runtime.ts',

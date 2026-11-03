@@ -34,6 +34,8 @@ export function isIntakeEdit(text: string): boolean {
   return EDIT.test(half(text));
 }
 const VERB = /^(?:改成|改为|换成|换为|选择|选|改|换)\s*/u;
+const DROP = /剔除|删掉|删除|去掉|不要/u;
+const CLAUSE = /[,，。;；]+/u;
 // 只改数量：「50件」或「数量 50」；单独一个数字是型号（6205），不是数量。
 const QTY_ONLY = /^(?:(-?\d+(?:\.\d+)?)\s*(?:件|个|套|pcs)|数量\s*(?:改成|改为|换成|是|为)?\s*(-?\d+(?:\.\d+)?)\s*(?:件|个|套|pcs)?)$/iu;
 const TRAILING_QTY = /^([\s\S]*?)(?:\s*[,，;；:：]\s*|\s+|(?<=\p{Script=Han}))(-?\d+(?:\.\d+)?)\s*(?:件|个|套|pcs)?$/iu;
@@ -70,6 +72,21 @@ export function editIntake(session: Session, text: string, parts: readonly Part[
         statePatch: patchOf(session, { ...intake, status: 'superseded' }, []),
       };
   } else {
+    // 「第3行 ZZ9999 剔除」「第3行不要了」：写法自然的删行。第一个小句里写了别的型号时读不出来，不猜。
+    const first = rest.split(CLAUSE)[0]!;
+    if (DROP.test(first)) {
+      const named = normalizePartNo(first.replace(DROP, '').replace(/[了吧的\s]/gu, ''));
+      if (named && named !== normalizePartNo(line.q)) return listReply(current, parts, intakeUnreadNote(n));
+      intake.lines.splice(n - 1, 1);
+      if (intake.lines.length) return listReply(intake, parts, undefined, patchOf(session, intake, []));
+      return {
+        fixedId: 'industrial.intake.cleared',
+        text: INTAKE_FIXED.cleared,
+        statePatch: patchOf(session, { ...intake, status: 'superseded' }, []),
+      };
+    }
+    // 多句话不是改行：整段当型号会把后面的话吃进清单。
+    if (rest.split(CLAUSE).filter(Boolean).length > 2) return listReply(current, parts, intakeUnreadNote(n));
     const body = rest.replace(VERB, '');
     const qtyOnly = QTY_ONLY.exec(body);
     const trailing = qtyOnly ? null : TRAILING_QTY.exec(body);
@@ -90,20 +107,38 @@ export function intakePreModel(ctx: TurnContext, sources: Pick<PackSources, 'cur
   return null;
 }
 
-const EXPLICIT = /^(?:确认|确认无误|按这个报|就这些)$/u;
+const COUNT = '[\\d一二两三四五六七八九十]+[行条项]';
+const POLITE = '(?:请|麻烦|帮我|那就|就|直接)*';
+const CALC = '(?:算价|试算|报价|核算|计算|算|报)(?:一下)?';
+const CLAUSE_END = '(?:吧|了|的|就行|即可)?';
+/** 「确认，六行都对，按这个试算吧」：多说半句也是确认。每个分句都得在这张表里，否定、修改、问号都不在表里。 */
+const CONFIRM_CLAUSE = new RegExp(
+  `^(?:确认(?:无误|清单)?)?(?:` +
+    `${POLITE}按这(?:个|份|张|${COUNT})?(?:清单|单子)?(?:来|走|${CALC})?` +
+    `|(?:${COUNT}|行数|数量|型号|清单|全部|和|都)*(?:对|没问题|无误|正确)` +
+    `|${POLITE}${CALC}` +
+    `|就这些` +
+    `)?${CLAUSE_END}$`,
+  'u',
+);
+function explicitConfirm(text: string): boolean {
+  const compact = half(text).replace(/\s+/gu, '');
+  const clauses = compact.split(/[,;。.!~、]+/u).filter(Boolean);
+  return /确认|按这|就这些/u.test(compact) && clauses.every((clause) => CONFIRM_CLAUSE.test(clause));
+}
 const GENERAL = /^(?:对的|是的|没问题|可以)$/u;
 /**
  * R9 确认：明确说法在清单待确认时就算；泛化肯定只有上一条 AI 消息就是这份清单时才算。
- * 都必须整句、允许句末标点，所以带否定或问号的句子天然不匹配。
+ * 泛化肯定必须整句、允许句末标点；明确说法逐分句对表。带否定或问号的句子都不匹配。
  */
 export function confirmsIntake(session: Session, text: string): boolean {
   const intake = pendingIntake(session);
   if (!intake) return false;
+  if (explicitConfirm(text)) return true;
   const sentence = text
     .trim()
     .replace(/[。.!！~～,，；;]+$/u, '')
     .trim();
-  if (EXPLICIT.test(sentence)) return true;
   if (!GENERAL.test(sentence)) return false;
   const reply = session.messages.findLastIndex((message) => message.role === 'agent');
   const message = session.messages[reply];

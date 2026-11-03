@@ -121,6 +121,18 @@ movedShape.splice(movedShape.findIndex((row) => row.id === 'takeover_check:post'
 });
 rejects(movedShape, 'shape_check', 'takeover_check:post', '形状检查');
 
+// 金额出处的删句要赶上后置接管检查和失败计数：少一步或排到它们后面，装载都失败。跟进表只删句，这两步本来就没有。
+{
+  const money = step('money_provenance', { after: ['stage_advance'], writes: ['guardHit'] });
+  const [stage, post, failure] = [step('stage_advance'), step('takeover_check:post'), step('turn_failure')];
+  accepts([stage, money, post, failure]);
+  rejects([stage, post, money, failure], 'money_provenance', 'takeover_check:post', '金额出处');
+  rejects([stage, post, failure, money], 'money_provenance', 'takeover_check:post', '金额出处');
+  rejects([stage, money, failure], 'money_provenance', 'takeover_check:post', '金额出处');
+  rejects([stage, money, post], 'money_provenance', 'turn_failure', '金额出处');
+  accepts([step('link_whitelist'), step('money_provenance', { after: ['link_whitelist'] })]);
+}
+
 // 完整表的负例；只改夹具，不改开工表，也不靠 after 掩盖读写冲突。
 rejects(
   replyTable.map((row) => (row.id === 'markdown' ? { ...row, after: ['identity'] } : row)),

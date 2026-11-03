@@ -10,6 +10,23 @@ import type { FinishedTurn } from '../../src/trace/recorder.js';
 import { PACK_FILE, readPackFile } from '../../src/config/pack-file.js';
 import { prepareFixture } from './attachment-fixtures.js';
 
+/** 16 R6：只带当前失败轮；错误正文沿用原来的稳定分类，不泄露供应商回包。 */
+export class SalesTurnError extends Error {
+  constructor(
+    cause: unknown,
+    readonly failedTurn: FinishedTurn | undefined,
+  ) {
+    super(cause instanceof Error && cause.message === 'accounting_usage_missing' ? 'accounting_usage_missing' : 'runner_error');
+  }
+}
+
+/** 客户模型重试后仍失败。detail 只有状态码和错误码，供分诊，不含回包正文。 */
+export class CustomerHttpError extends Error {
+  constructor(readonly detail: string) {
+    super('customer_http');
+  }
+}
+
 export const FIXTURE_CLOCK = '2026-10-10T12:00:00+08:00';
 export function fixtureClock(): () => void {
   const RealDate = Date;
@@ -103,20 +120,36 @@ export async function engineRuntime(
   meter: Meter,
   customerModel: string | undefined,
   overrides: Record<string, PriceRow> = {},
-  options: { configDir?: string; vision?: boolean } = {},
+  options: {
+    configDir?: string;
+    vision?: boolean;
+    strictNet?: boolean;
+    varDir?: string;
+    retryDelay?: (attempt: number) => Promise<void>;
+  } = {},
 ): Promise<{
   deps: SimDeps;
   close(): Promise<void>;
   metadata: Record<string, unknown>;
 }> {
-  const configDir = options.configDir === undefined ? undefined : await resolveConfigDir(options.configDir);
+  const savedEnv = { ...process.env };
+  // journal 模式在任何引擎模块装载之前去掉数据库入口；关闭时恢复调用方环境。
+  if (options.strictNet)
+    for (const key of Object.keys(process.env))
+      if (/^(?:DATABASE_|POSTGRES_|PG(?:HOST|PORT|USER|PASSWORD|DATABASE|_TEST_URL)$)/u.test(key)) delete process.env[key];
+  let configDir: string | undefined;
+  try {
+    configDir = options.configDir === undefined ? undefined : await resolveConfigDir(options.configDir);
+  } catch (e) {
+    Object.assign(process.env, savedEnv);
+    throw e;
+  }
   const restoreClock = fixtureClock();
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'wecom-sim-'));
+  const temp = options.varDir ?? (await fs.mkdtemp(path.join(os.tmpdir(), 'wecom-sim-')));
   // 被信号终止（闸超时）时 src/shutdown.ts 经 process.exit 退出，exit 钩子把临时目录一并清掉。
   // store 的 exit 钩子会把没落盘的状态写回 VAR_DIR，所以引擎模块装载之后还要再挂一次，保证排在它后面。
   const removeTemp = (): void => rmSync(temp, { recursive: true, force: true });
   process.on('exit', removeTemp);
-  const savedEnv = { ...process.env };
   process.env.VAR_DIR = temp;
   process.env.CONFIG_SOURCE = 'file';
   process.env.SOP_PATH = configDir ? path.join(configDir, 'sop.md') : path.resolve('data/sop.md');
@@ -145,7 +178,9 @@ export async function engineRuntime(
     const tools = await import('../../src/tools.js');
     const source = await import('../../src/config/source.js');
     const orderView = await import('../../src/core/order-view.js');
-    return { usage, llm, engine, recorder, store, tools, source, orderView };
+    const orders = await import('../../src/payment/orders.js');
+    const takeover = await import('../../src/handoff/takeover.js');
+    return { usage, llm, engine, recorder, store, tools, source, orderView, orders, takeover };
   };
   const modules = await load().catch(async (e: unknown) => {
     await restoreProcess();
@@ -157,6 +192,8 @@ export async function engineRuntime(
   const { llmCfg, llmStats } = modules.llm;
   const { handleMessage } = modules.engine;
   const { onTurnEnd } = modules.recorder;
+  // 模拟器没有真实渠道；只有 decide 的短窗口接收审批通知。
+  modules.takeover.setReplyTransport(async () => false);
   const store = modules.store;
   const { createQuote, routeVersion } = modules.tools;
   const { createLineOrder } = modules.orderView;
@@ -182,6 +219,17 @@ export async function engineRuntime(
       : costOf(model, t.promptTokens, t.completionTokens, t.cachedTokens);
   };
   const realFetch = globalThis.fetch;
+  const allowedOrigins = new Set<string>();
+  if (options.strictNet) {
+    try {
+      const { embedCfg } = await import('../../src/retrieval.js');
+      for (const url of [salesCfg.baseUrl, llmCfg(true).baseUrl, customerCfg.baseUrl, embedCfg().baseUrl])
+        allowedOrigins.add(new URL(url).origin);
+    } catch {
+      await restoreProcess();
+      throw new Error('sim_model_origin_invalid');
+    }
+  }
   let accountingError = false;
   const unsubscribe = onUsage((e) => {
     try {
@@ -201,10 +249,23 @@ export async function engineRuntime(
   // onUsage 发生在每次模型回包后。下一次 HTTP（含同一销售轮的工具往返）先检查预算，
   // 共享 abort signal 取消已在途请求。生产客户端及其配置不改。
   globalThis.fetch = (input, init) => {
+    if (options.strictNet) {
+      let origin: string;
+      try {
+        origin = new URL(input instanceof Request ? input.url : String(input)).origin;
+      } catch {
+        return Promise.reject(new Error('sim_egress_forbidden'));
+      }
+      if (!allowedOrigins.has(origin)) return Promise.reject(new Error('sim_egress_forbidden'));
+    }
     if (meter.stopped) return Promise.reject(new Error('budget_stop'));
     if (accountingError) return Promise.reject(new Error('accounting_usage_missing'));
     const requestSignal = init?.signal ?? (input instanceof Request ? input.signal : null);
-    return realFetch(input, { ...init, signal: requestSignal ? AbortSignal.any([requestSignal, meter.signal]) : meter.signal });
+    return realFetch(input, {
+      ...init,
+      ...(options.strictNet ? { redirect: 'error' } : {}),
+      signal: requestSignal ? AbortSignal.any([requestSignal, meter.signal]) : meter.signal,
+    });
   };
   const snapshot = (id: string): Snapshot => {
     const s = store.getSession(id)!;
@@ -260,64 +321,125 @@ export async function engineRuntime(
       customerModel: customerCfg.model,
       configDir,
       pack,
+      ...(configDir && pack === 'industrial'
+        ? { catalog: JSON.parse(await fs.readFile(path.join(configDir, 'catalog/part.json'), 'utf8')) }
+        : {}),
       price,
-      async customer(persona, history, retry) {
-        const response = await fetch(`${customerCfg.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', authorization: `Bearer ${customerCfg.apiKey}` },
-          signal: AbortSignal.timeout(30_000),
-          body: JSON.stringify({
-            model: customerCfg.model,
-            stream: false,
-            // 智谱 glm-5.3 强制思考、默认最高档：不压档时思考吃光上限，JSON 被截断（第 5 步实测）
-            max_tokens: 2048,
-            ...(customerCfg.baseUrl.includes('bigmodel')
-              ? /^glm-5\.3/i.test(customerCfg.model)
-                ? { thinking: { type: 'enabled' }, reasoning_effort: 'low' }
-                : { thinking: { type: 'disabled' } }
-              : {}),
-            messages: [
-              {
-                role: 'system',
-                content: `你扮演客户，遵循下面的隐藏设定，只输出 JSON {"say":string,"done":boolean}。say 是下一句话，done 表示本句之后结束；只结束时 say 可为空。不得替销售回答。\n今天是 2026-10-10。\n${persona}`,
-              },
-              ...history,
-              {
-                role: 'user',
-                content: retry ? '上次输出不符合协议，请只输出含 say 字符串和 done 布尔值的 JSON。' : '请说客户的下一句话。',
-              },
-            ],
-          }),
+      async decide(orderId, d) {
+        const order = store.getAnyOrder(orderId);
+        if (!order) throw new Error('quote_missing');
+        const session = store.getSession(order.sessionId);
+        if (!session) throw new Error('session_missing');
+        let notice: string | null = null;
+        modules.takeover.setReplyTransport(async (id, text) => {
+          if (id !== session.id) return false;
+          if (d.decision === 'approve') {
+            const link = currentPack().runtime.siteLinks?.find((l) => l.linkKind === 'quote');
+            const card = link?.card?.(text, session);
+            if (!card) throw new Error('quote_card_missing');
+            notice = `${card.title}\n${card.desc}`;
+          } else notice = text;
+          return true;
         });
-        if (!response.ok) throw new Error('customer_http');
-        const data = (await response.json()) as {
-          choices?: { message?: { content?: string } }[];
-          usage?: {
-            prompt_tokens?: number;
-            completion_tokens?: number;
-            prompt_tokens_details?: { cached_tokens?: number };
-            prompt_cache_hit_tokens?: number;
-            completion_tokens_details?: { reasoning_tokens?: number };
+        try {
+          const actor = { userId: null, name: '审批替身', role: 'supervisor' as const };
+          if (d.decision === 'approve') await modules.orders.approveQuote(orderId, actor);
+          else await modules.orders.rejectQuote(orderId, actor, d.reason);
+          return { notice, state: snapshot(session.id) };
+        } finally {
+          modules.takeover.setReplyTransport(async () => false);
+        }
+      },
+      async customer(persona, history, retry) {
+        const backoff = options.retryDelay ?? ((n: number) => new Promise<void>((r) => setTimeout(r, 1000 * 2 ** n)));
+        for (let attempt = 0; ; attempt++) {
+          const response = await fetch(`${customerCfg.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', authorization: `Bearer ${customerCfg.apiKey}` },
+            signal: AbortSignal.timeout(30_000),
+            body: JSON.stringify({
+              model: customerCfg.model,
+              stream: false,
+              // 智谱 glm-5.3 强制思考、默认最高档：不压档时思考吃光上限，JSON 被截断（第 5 步实测）
+              max_tokens: 2048,
+              ...(customerCfg.baseUrl.includes('bigmodel')
+                ? /^glm-5\.3/i.test(customerCfg.model)
+                  ? { thinking: { type: 'enabled' }, reasoning_effort: 'low' }
+                  : { thinking: { type: 'disabled' } }
+                : {}),
+              messages: [
+                {
+                  role: 'system',
+                  content: `你扮演客户，遵循下面的隐藏设定，只输出 JSON {"say":string,"done":boolean}。say 是下一句话，done 表示本句之后结束；只结束时 say 可为空。不得替销售回答。\n今天是 2026-10-10。\n${persona}`,
+                },
+                ...history,
+                {
+                  role: 'user',
+                  content: retry ? '上次输出不符合协议，请只输出含 say 字符串和 done 布尔值的 JSON。' : '请说客户的下一句话。',
+                },
+              ],
+            }),
+          }).catch((e: unknown) => {
+            // 超时和断连算客户接口的问题，不记到销售头上；预算截断和越界访问照原样抛。
+            if (!options.strictNet || meter.stopped || (e instanceof Error && e.message === 'sim_egress_forbidden')) throw e;
+            return null;
+          });
+          if (!response) {
+            if (attempt >= 3) throw new CustomerHttpError('network');
+            await backoff(attempt);
+            continue;
+          }
+          if (!response.ok) {
+            let code: number | undefined;
+            if (options.strictNet) {
+              const body = (await response.json().catch(() => null)) as {
+                error?: { code?: number | string };
+                code?: number | string;
+              } | null;
+              code = Number(body?.error?.code ?? body?.code);
+            } else await response.body?.cancel();
+            if (options.strictNet && (response.status === 429 || response.status >= 500 || [1302, 1305].includes(code!)) && attempt < 3) {
+              await backoff(attempt);
+              continue;
+            }
+            throw new CustomerHttpError(`${response.status}${code ? `:${code}` : ''}`);
+          }
+          const data = (await response.json()) as {
+            error?: { code?: number | string };
+            code?: number | string;
+            choices?: { message?: { content?: string } }[];
+            usage?: {
+              prompt_tokens?: number;
+              completion_tokens?: number;
+              prompt_tokens_details?: { cached_tokens?: number };
+              prompt_cache_hit_tokens?: number;
+              completion_tokens_details?: { reasoning_tokens?: number };
+            };
           };
-        };
-        const u = data.usage;
-        if (
-          !u ||
-          !Number.isFinite(u.prompt_tokens) ||
-          !Number.isFinite(u.completion_tokens) ||
-          u.prompt_tokens! < 0 ||
-          u.completion_tokens! < 0
-        )
-          throw new Error('accounting_usage_missing');
-        return {
-          raw: data.choices?.[0]?.message?.content ?? '',
-          tokens: {
-            promptTokens: u.prompt_tokens!,
-            completionTokens: u.completion_tokens!,
-            cachedTokens: u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? 0,
-            reasoningTokens: u.completion_tokens_details?.reasoning_tokens ?? 0,
-          },
-        };
+          if (options.strictNet && [1302, 1305].includes(Number(data.error?.code ?? data.code))) {
+            if (attempt >= 3) throw new CustomerHttpError(`200:${data.error?.code ?? data.code}`);
+            await backoff(attempt);
+            continue;
+          }
+          const u = data.usage;
+          if (
+            !u ||
+            !Number.isFinite(u.prompt_tokens) ||
+            !Number.isFinite(u.completion_tokens) ||
+            u.prompt_tokens! < 0 ||
+            u.completion_tokens! < 0
+          )
+            throw new Error('accounting_usage_missing');
+          return {
+            raw: data.choices?.[0]?.message?.content ?? '',
+            tokens: {
+              promptTokens: u.prompt_tokens!,
+              completionTokens: u.completion_tokens!,
+              cachedTokens: u.prompt_tokens_details?.cached_tokens ?? u.prompt_cache_hit_tokens ?? 0,
+              reasoningTokens: u.completion_tokens_details?.reasoning_tokens ?? 0,
+            },
+          };
+        }
       },
       async start(seed) {
         if (seed && pack !== 'travel') {
@@ -400,6 +522,8 @@ export async function engineRuntime(
             trace,
             state: snapshot(id),
           };
+        } catch (e) {
+          throw new SalesTurnError(e, trace);
         } finally {
           off();
         }
@@ -423,6 +547,9 @@ export async function engineRuntime(
         policyHash,
         salesModel: salesCfg.model,
         customerModel: customerCfg.model,
+        ...(options.strictNet
+          ? { hedgeModel: llmStats().hedgeModel, hedgeMs: llmStats().hedgeModel ? llmStats().hedgeMs : null, pricesCheckedAt: '2026-11-01' }
+          : {}),
         pricesSource: 'src/usage.ts costOf; --prices 覆盖项由运行者提供，待协调者核对',
         priceOverrides: overrides,
         toolResults: '现有 onTurnEnd: resultHead 前4096字节 + resultBytes；可能截断',

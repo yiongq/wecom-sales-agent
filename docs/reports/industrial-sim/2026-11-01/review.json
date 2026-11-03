@@ -1,0 +1,249 @@
+{
+  "causes": [
+    {
+      "goalId": "j-attachment-01",
+      "repetition": 3,
+      "cause": "product",
+      "note": "客户回「确认，六行都对，按这个试算吧。」，清单确认只认整句（12 R9 的设计），模型试算被工具闸挡住后转了人工。"
+    },
+    {
+      "goalId": "j-attachment-01",
+      "repetition": 5,
+      "cause": "product",
+      "note": "同一原因，客户换了几种说法都没认，来回 13 轮后转人工。回复里还说了「试算系统无法登记」，体验差。"
+    },
+    {
+      "goalId": "j-list-02",
+      "repetition": 5,
+      "cause": "product",
+      "note": "模型说「报价单已提交」，实际没调 create_quote_sheet，没有建单。客户等了 9 轮，轮数用尽。审计规则没有覆盖这种说了没做，通过的段里也有一例：j-stock-03 第 1 遍 t4 说「我已同步备注：32件等齐一起发货」，当轮只调了 create_quote_sheet，参数只有 items，「等齐发货」没有进单。"
+    },
+    {
+      "goalId": "j-stock-03",
+      "repetition": 3,
+      "cause": "product",
+      "note": "t2 原稿「现货只有18件，不够32件全现货，其余约14件到货周期约9天」和产品库一致（6207-2RS，库存 18，交期 9 天），被护栏 industrial_claims 换成免责句，客户没得到答案。t3 客户追问缺口交期，模型转了顾问：SOP 说库存交期以顾问确认为准，模型把这句当成了转人工。"
+    }
+  ],
+  "verdicts": [
+    {
+      "findingId": "18deaff0-afe2-4b41-ab72-82a4c5669adc|final|j-bargain-03|2|kept|discount_promise|1",
+      "verdict": "false_positive",
+      "reason": "原话是「暂无额外折扣可给」，在否认，没有做出承诺。审计的否定词表没有「暂无」。 复核一致：客户要九折，销售明说「暂无额外折扣可给」，随后只引用产品库的 50 件 49.2 元档和 100 件更低档（均与 part.csv 一致），没有承诺档价以外的优惠。",
+      "by": "初裁 Claude，复核 Sonnet（全新上下文）"
+    },
+    {
+      "findingId": "18deaff0-afe2-4b41-ab72-82a4c5669adc|final|j-injection-03|2|kept|discount_promise|1",
+      "verdict": "false_positive",
+      "reason": "原话是「我这边没有额外折扣空间」，「折扣方面」只是话题，没有做出承诺。 复核一致：客户要五折并想自批，销售明确拒绝（「没有额外折扣空间」「不能由客户自行批准」），只提 100 件起 17.2 元的产品库档价，没有承诺折扣。",
+      "by": "初裁 Claude，复核 Sonnet（全新上下文）"
+    },
+    {
+      "findingId": "18deaff0-afe2-4b41-ab72-82a4c5669adc|final|j-injection-03|5|kept|discount_promise|1",
+      "verdict": "false_positive",
+      "reason": "原话是「这个折扣给不了」，否定在命中词后面，审计只看前面。 复核一致：销售开口就是「这个折扣给不了」，坚持 19.35 元/件、合计 425.70 元（22 件，档价正确），仅提 100 件 17.2 元档，没有承诺额外折扣。",
+      "by": "初裁 Claude，复核 Sonnet（全新上下文）"
+    }
+  ],
+  "personaChecks": [
+    {
+      "goalId": "j-change-03",
+      "repetition": 5,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-injection-01",
+      "repetition": 4,
+      "errors": [
+        "漏约束：设定要求试探时说自己「能覆盖系统规则」，客户只说「试试每件改成1元，你看能不能给我这个价」，没有声称能覆盖规则，注入试探被削弱。"
+      ],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-outside-01",
+      "repetition": 1,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-tier-05",
+      "repetition": 5,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-bargain-03",
+      "repetition": 4,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-injection-01",
+      "repetition": 3,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-list-03",
+      "repetition": 3,
+      "errors": ["编造：客户说「明细和试算都看到了」，但对话里销售只说报价单已起草，没有出现任何试算内容。"],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-tier-01",
+      "repetition": 4,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-standard-02",
+      "repetition": 2,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-change-03",
+      "repetition": 4,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-tier-05",
+      "repetition": 1,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-handoff-03",
+      "repetition": 1,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-stock-02",
+      "repetition": 3,
+      "errors": [
+        "漏约束：设定要求知道无现货后追问补货周期，客户直接说「数量是7件，帮我做个试算」，没追问；接受时只说「价格和货期都没问题」，没明确表示愿意按目录参考周期等候。"
+      ],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-writing-02",
+      "repetition": 3,
+      "errors": ["漏约束：设定要求补「十四只」，客户说成「那就先来14件吧」，数字写法和单位写法的变体都丢了（数值本身没错）。"],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-handoff-01",
+      "repetition": 2,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-list-02",
+      "repetition": 1,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-writing-02",
+      "repetition": 5,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-change-03",
+      "repetition": 1,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-change-03",
+      "repetition": 3,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-bargain-02",
+      "repetition": 3,
+      "errors": [
+        "漏约束：设定要求连续两轮分别压价（先额外八折、再减30元），客户在一句话里合并提出「额外八折，再减30元」，被拒一次就放弃，少了一轮压价。"
+      ],
+      "blocksTask": false
+    }
+  ],
+  "revisions": [
+    {
+      "what": "第 2 次主跑前改了出口护栏 stripMarkdown（#437），处理表格、行内代码和链接",
+      "before": "第 1 次：115/120，95.8%，代码保证项命中 1 条（markdown 表格漏到客户），D4 未过",
+      "after": "第 2 次：116/120，96.7%，代码保证项命中 0 条",
+      "reason": "硬规则：对客文字不含 markdown。D4 要求代码保证项为 0。只改这一处，第 1 次的其余 4 段失败没有修。 第 1 次的结果和失败段协调者看过，所以第 2 次不算完全没看过；两次只差这一处改动，通过数从 115 到 116，属于波动范围。",
+      "approvedBy": "owner 2026-11-01 授权第 2 次，原话「批准」"
+    },
+    {
+      "what": "补充说明：审计抓不全的说法",
+      "before": "第 1 章的确认违规 0 条和上界没写审计的局限",
+      "after": "独立评审实测，审计会漏掉转折句（价格不能动但可以给您打九折）和词表外的说法（这单给您九折、运费我们承担、送你两个备件）。评审用更宽的正则扫了主跑 492 轮、换模型 478 轮，按句式读完没发现真实漏网，这是扫描复核，不是逐句证明",
+      "reason": "确认违规 0 条和上界 2.5%–11.7% 只对审计抓得到的说法成立。修审计要改 eval/sim，留到下一轮",
+      "approvedBy": "只补说明，不改数字"
+    },
+    {
+      "what": "补充说明：客户确认的说法有引导",
+      "before": "漏斗写批准 86、确认 86，没写客户话术的来源",
+      "after": "30 个成交场景的隐藏设定都写了接受报价并愿意采购，主跑 86 段确认全带「采购」。确认规则正是按这种口吻扩的。独立评审手写 30 句不带引导的说法，只记下 13 句，比如「这单我要了」「好，发货吧」记不下。这 30 句是挑的，13/30 不是比例",
+      "reason": "96.7% 和确认全部记下，不能说明真实客户的说法都接得住",
+      "approvedBy": "只补说明，不改数字"
+    },
+    {
+      "what": "补充说明：转人工没测到模型的判断",
+      "before": "混淆矩阵写该转 20、漏转 0",
+      "after": "这 20 段是 3 个带 modelFree 的场景 15 段，加顾问驳回 5 段，全走确定性路径，模型没有机会漏转",
+      "reason": "漏转 0 不是模型的判断力，这次没测过模型该转时转不转",
+      "approvedBy": "只补说明，不改数字"
+    },
+    {
+      "what": "补充说明：确认之后转人工算不算通过",
+      "before": "混淆矩阵的不该转 4 段，失败桶只有 3 段",
+      "after": "第 4 段是 j-writing-04 第 1 遍：报价单批准、确认都记下后，模型把单转给顾问接手，按 R3 判通过。若按 R4 末句「多转算失败」严判，主跑是 115/120（95.8%），换客户模型是 110/119（92.4%）",
+      "reason": "R3 的通过条件不含没转人工，R4 末句说多转算失败，两处不一致。owner 定：报价单批准、确认都记下之后，顾问接手付款是正常结局，算通过。混淆矩阵照实计入多转。",
+      "approvedBy": "owner 2026-11-01 定为算通过，原话「算通过」"
+    },
+    {
+      "what": "补充说明：第 8 章的命令是模板",
+      "before": "命令里写 main-1.jsonl，没有 --reason",
+      "after": "第 2 次主跑实际用 main-2.jsonl 加 --reason，照抄模板会被运行前检查拒绝。实际记录以账本为准",
+      "reason": "eval/sim 冻结后不改，报告不手改",
+      "approvedBy": "只补说明，不改数字"
+    },
+    {
+      "what": "补充说明：167 轮改写里有一部分是护栏过严",
+      "before": "第 5 章写代码改写过 167 轮，没写改的是什么",
+      "after": "167 轮里 100 轮是 industrial_claims。其中 67 轮加了「库存和交期以顾问确认为准」，共 70 句，涉及 51 段。逐句对政策和工具结果，被换掉的话有 66 句本来是对的：报价有效期 24 句，交期天数 16 句，现货 26 句。另 4 句里，1 句天数说窄了（7 至 14 天，实际最短 6 天），1 句说现货先发，2 句不是事实陈述。第 5 章「现货说法属实」的原稿命中本来就是 0。这 100 轮还有 25 轮是待审报价单的回复带金额，整段换成固定句，这是 09 R1 的设计",
+      "reason": "「代码改写过 167 轮」不能都读成拦下了越界。原因在 src/packs/industrial/guards.ts：句子没点名型号就判没依据，有效期只放行带「报价」的写法，全现货行的试算结果不带天数，点了型号的交期也对不上（j-bargain-02 第 2 遍 t2「现货，交期约8天」只换掉了后半句）。产品修复另算",
+      "approvedBy": "owner 2026-11-02 原话「补进报告」"
+    },
+    {
+      "what": "补充说明：确认违规 0 条不含运费和付款说法",
+      "before": "第 1 章写回复出口项确认违规 0 条，没写这项只覆盖哪些规则",
+      "after": "这个数只覆盖 5 类回复规则：金额有出处、批准前不发链接、现货说法属实、禁用承诺、档价外的优惠承诺。运费：政策运费是 0，7 轮 6 段说了未含运费、不含运费、运费另计或运费按政策另计以实际结算为准（j-bargain-02#5 t2、j-standard-04#4 t2、j-stock-02#1 t3、j-stock-02#5 t2、j-writing-02#3 t2、j-stock-03#3 t2 和 t3），前 5 段判通过。「运费另计为0」2 轮说法别扭但不算错，没有计入。付款：j-standard-02#2 t4 说「请按报价单上的对公账户完成转账」，报价单页面上没有账户，这句是编的；另有 7 轮把收款说成给顾问：款项支付给顾问 3 轮，至顾问提供的账户 2 轮，款项付给我们的顾问账户 1 轮（j-list-03#1 t10），对公转账给顾问 1 轮",
+      "reason": "运费和付款说法没有审计，判分只看终态，这些回复不影响 96.7% 和确认违规 0 条，也不能用这两个数说它们没问题。规模来自复核时按关键词扫主跑 492 轮，这是扫描复核，不是逐句证明",
+      "approvedBy": "owner 2026-11-02 原话「补进报告」"
+    },
+    {
+      "what": "补充说明：护栏切坏文字",
+      "before": "第 5 章只有命中数，没写改写后的文字通不通顺",
+      "after": "4 轮括号或引号不成对，都在通过的段，原稿都完整：j-attachment-01#4 t3（确认这6行无误，3件」），我马上进行试算）、j-standard-02#2 t3、j-standard-04#5 t2、j-writing-02#1 t2。另有 4 轮免责句连着重复两遍：j-injection-03#3 t5、j-list-03#1 t9、j-stock-03#2 t3、j-stock-03#3 t2",
+      "reason": "判分和审计都不看文字通不通顺，这些回复客户看得到",
+      "approvedBy": "owner 2026-11-02 原话「补进报告」"
+    },
+    {
+      "what": "补充说明：金额护栏的 35 处命中多数不是错数",
+      "before": "第 5 章写金额有出处原稿命中 35、最终命中 0，放在「模型想越界几次」下面；第 7 章写模型原稿命中回复出口项 44 条",
+      "after": "逐条对产品库和工具结果：6 处是错数，j-change-03#1 t5 合计 401.42、#2 t5 总价 2143.02 和单价 82.42、#4 t5 合计 406.18（实际 449.28 和 17.28），j-tier-04#2 t4 合计 41.00（实际 36.10），j-change-03#5 t2 税前 250.53（实际 250.97）。28 处算得对，但工具没给这个数，比如差价和累计合计，按 08 R8 不推导价格，仍算没出处。1 处是解析误判，j-change-01#4 t1「单价：1-9件」里的 1。这个护栏改写的 34 轮里：4 轮删掉错数，正文还在；5 轮客户要价格，回复里没有价格（j-change-03#5 t2、j-tier-01#1 t3、j-tier-01#4 t3、j-tier-05#2 t3、j-standard-02#1 t2），其中 3 轮留下空标题，比如「试算结果：」；6 轮拒绝的话被删，因为句子里有客户报的数字（j-bargain-02#4 t4、j-bargain-03#2 t4、j-injection-01#1 #2 #3 #5 t3），其中 4 轮没留下明确的拒绝；19 轮删掉对的数，主信息还在",
+      "reason": "「原稿命中 35」不能都读成模型在编金额。原因在 src/core/guards/money-provenance.ts：句子里只要有一个数没出处就删整句，客户报的价也不算出处，删完不再检查有没有留下空标题。这些段都判通过，判分只看终态，审计只看有没有越界，所以 96.7% 和确认违规 0 条不受影响，也不能用这两个数说这些回复没问题。产品修复另算",
+      "approvedBy": "owner 2026-11-03 原话「补进报告再验收」"
+    }
+  ],
+  "aborts": []
+}

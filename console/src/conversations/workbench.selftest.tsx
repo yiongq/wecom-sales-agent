@@ -471,6 +471,7 @@ function respond(method: string, url: URL, bodyText: string): Response {
     // 非 200 的覆盖（409、503 这类）：什么都不改，照样回错误
     if (r && r.status !== 200) return json(r.status, r.body);
     const persisted = (r?.body as { persisted?: boolean } | undefined)?.persisted ?? true;
+    const sent = (r?.body as { sent?: boolean } | undefined)?.sent ?? true;
     const seq = 1000 + server.extraMessages.length;
     server.extraMessages.push({
       seq,
@@ -484,7 +485,7 @@ function respond(method: string, url: URL, bodyText: string): Response {
       guarded: null,
       delivery: null,
     });
-    return json(200, { sent: true, seq, persisted });
+    return json(200, { sent, seq, persisted });
   }
   if (p === '/quick-replies' && method === 'GET') return json(200, { items: server.quickReplies ?? [] });
   if (p === '/quick-replies' && method === 'POST') {
@@ -1278,6 +1279,76 @@ for (const sandbox of [true, false]) {
     'persisted:false：消息下写「已发出，记录稍后保存」',
     m.texts('.wb-pending-note').some((t) => t.includes('已发出，记录稍后保存')),
   );
+  await m.unmount();
+}
+
+// 2.13a 明确未发送时保留草稿；重试换 clientId，避免命中后端缓存的失败结果
+for (const persisted of [true, false]) {
+  server = {
+    cur: detail({
+      row: row({ handedOver: true, assignee: { userId: 'u1', name: '老板' } }),
+      can: { takeover: false, reply: true, release: true, reassign: false, confirmOrder: true, markPaid: false, traces: false },
+      sendWindow: { lastCustomerAt: NOW, closesAt: NOW + 3_600_000, used: 0, remaining: 5 },
+    }),
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  const m = await mount(member('owner'));
+  const box = m.$('textarea')[0] as HTMLTextAreaElement;
+  const draft = '  这条人工回复需要重试  ';
+  await m.type(box, draft);
+  const send = () => m.$('button').find((b) => b.textContent?.replace(/\s+/g, '') === '发送');
+  server.replyNext = { status: 200, body: { sent: false, persisted } };
+  await m.click(send());
+  eq(`sent:false persisted:${persisted}：草稿原样保留`, box.value, draft);
+  check(
+    `sent:false persisted:${persisted}：就地提示发送失败并可重试`,
+    m.texts('.wb-inline-error').some((t) => t.includes('发送失败') && t.includes('请重试')),
+  );
+  check(`sent:false persisted:${persisted}：仍可点击发送`, !(send() as HTMLButtonElement)?.disabled);
+  eq(`sent:false persisted:${persisted}：不显示已发出的保存提示`, m.texts('.wb-pending-note').length, 0);
+
+  server.replyNext = { status: 200, body: { sent: true, persisted } };
+  await m.click(send());
+  eq(`sent:true persisted:${persisted}：草稿清空`, box.value, '');
+  eq(`sent:false 后重试 persisted:${persisted}：使用新的 clientId`, new Set(server.seenClientIds).size, 2);
+  eq(`sent:true persisted:${persisted}：失败提示消失`, m.texts('.wb-inline-error').length, 0);
+  eq(
+    `sent:true persisted:${persisted}：保留原有稍后保存提示规则`,
+    m.texts('.wb-pending-note').some((t) => t.includes('已发出，记录稍后保存')),
+    !persisted,
+  );
+  await m.unmount();
+}
+
+// 切换路由时复用 Detail，A 的发送失败状态不能带到 B。
+{
+  server = {
+    cur: detail({
+      row: row({ handedOver: true, assignee: { userId: 'u1', name: '老板' } }),
+      can: { takeover: false, reply: true, release: true, reassign: false, confirmOrder: true, markPaid: false, traces: false },
+    }),
+    seenClientIds: [],
+    extraMessages: [],
+  };
+  const m = await mount(member('owner'));
+  await m.type(m.$('textarea')[0] as HTMLTextAreaElement, '会话A的回复');
+  server.replyNext = { status: 200, body: { sent: false, persisted: true } };
+  await m.click(m.$('button').find((b) => b.textContent?.replace(/\s+/g, '') === '发送'));
+  check(
+    '切换会话前：A 显示发送失败提示',
+    m.texts('.wb-inline-error').some((t) => t.includes('发送失败，请重试')),
+  );
+
+  const nextId = 'wecom:wmDraftB';
+  server.cur = detail({ row: row({ id: nextId }) });
+  server.extraMessages = [];
+  await act(async () => {
+    await m.router.navigate({ to: '/conversations/$id', params: { id: nextId } });
+  });
+  await settle(m.qc);
+  eq('切换会话后：B 的详情已加载', m.qc.getQueryData<ConversationDetail>(['conversations', 'one', nextId])?.row.id, nextId);
+  check('切换会话后：B 不显示 A 的发送失败提示', !m.texts('.wb-inline-error').some((t) => t.includes('发送失败，请重试')));
   await m.unmount();
 }
 

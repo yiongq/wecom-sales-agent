@@ -322,8 +322,8 @@ export function sopProblemText(v: ContractViolation, pack: IndustryPack, sop: Pi
     unknown_field: `${where}有个字段名写错了`,
     over_budget: '字数超出了额度',
     consistency: `${where}有和固定对客文字矛盾的话`,
-    policy_invalid: '退改条款无效',
-    policy_mismatch: `${where}有和退改条款或定价规则不一致的话`,
+    policy_invalid: '政策条款无效',
+    policy_mismatch: `${where}有和政策条款或定价规则不一致的话`,
   };
   return Object.hasOwn(text, v.code) ? text[v.code] : `${where}有个问题`;
 }
@@ -351,7 +351,7 @@ export function sopTodo(sop: SopOverview, check: DraftCheck | undefined, pack: I
     title: changes.length
       ? `改了${changes.length}节：${names.join('、')}`
       : JSON.stringify(sop.draft.policy ?? null) !== JSON.stringify(sop.published.policy ?? null)
-        ? '修改退改条款'
+        ? '修改政策条款'
         : '草稿和线上一样',
     context,
     action: '继续编辑',

@@ -629,6 +629,10 @@
               "action": "pass"
             },
             {
+              "id": "quote_claim",
+              "action": "pass"
+            },
+            {
               "id": "stage_advance",
               "action": "pass"
             },
@@ -800,6 +804,10 @@
               "action": "pass"
             },
             {
+              "id": "quote_claim",
+              "action": "pass"
+            },
+            {
               "id": "stage_advance",
               "action": "pass"
             },
@@ -886,6 +894,10 @@
             },
             {
               "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "quote_claim",
               "action": "pass"
             },
             {
@@ -978,6 +990,10 @@
               "action": "pass"
             },
             {
+              "id": "quote_claim",
+              "action": "pass"
+            },
+            {
               "id": "stage_advance",
               "action": "pass"
             },
@@ -1064,6 +1080,10 @@
             },
             {
               "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "quote_claim",
               "action": "pass"
             },
             {
@@ -1156,6 +1176,10 @@
               "action": "pass"
             },
             {
+              "id": "quote_claim",
+              "action": "pass"
+            },
+            {
               "id": "stage_advance",
               "action": "pass"
             },
@@ -1245,6 +1269,10 @@
               "action": "pass"
             },
             {
+              "id": "quote_claim",
+              "action": "pass"
+            },
+            {
               "id": "stage_advance",
               "action": "pass"
             },
@@ -1331,6 +1359,10 @@
             },
             {
               "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "quote_claim",
               "action": "pass"
             },
             {
@@ -1538,6 +1570,217 @@
           },
           {
             "content": "未达起订量{{call:create_quote_sheet.rejected.0.moq}}件，无法建单。"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "pack": "industrial",
+    "tags": ["q10", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "id": "q10-industrial-colloquial-acceptance-pending",
+    "desc": "口语接受加开票问题仍受顾问待审闸约束",
+    "turns": [
+      {
+        "say": "6205-2RS两件正式报价",
+        "expect": {
+          "tools": ["quote_items", "create_quote_sheet"],
+          "replyMatches": ["^最新的报价单还在顾问审核，审好马上发您$"],
+          "orders": {
+            "count": 1
+          }
+        },
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "create_quote_sheet",
+                "args": {
+                  "items": [
+                    {
+                      "code": "bearing-02",
+                      "qty": 2
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "content": "最新的报价单还在顾问审核，审好马上发您"
+          }
+        ]
+      },
+      {
+        "say": "好的，下单吧，能开专票吗",
+        "expect": {
+          "tools": [],
+          "replyMatches": ["^最新的报价单还在顾问审核，审好马上发您$"],
+          "orders": {
+            "count": 1
+          },
+          "handoff": false
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "pack": "industrial",
+    "tags": ["q10", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "id": "q10-industrial-extra-promises",
+    "desc": "模型额外折扣、免运费及赠送承诺被确定性回退替换且整条去重",
+    "turns": [
+      {
+        "say": "这批能再优惠吗",
+        "expect": {
+          "replyMatches": ["^价格按数量档位执行，额外优惠需要顾问确认。$"],
+          "replyExcludes": ["打九折", "免运费", "送您配件"],
+          "orders": {
+            "count": 0
+          },
+          "guardVerdicts": [
+            {
+              "id": "pre_clean",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:pre",
+              "action": "pass"
+            },
+            {
+              "id": "quote_claim",
+              "action": "pass"
+            },
+            {
+              "id": "stage_advance",
+              "action": "pass"
+            },
+            {
+              "id": "industrial_claims",
+              "action": "replace"
+            },
+            {
+              "id": "markdown",
+              "action": "pass"
+            },
+            {
+              "id": "dangling",
+              "action": "pass"
+            },
+            {
+              "id": "advisor_prefix",
+              "action": "pass"
+            },
+            {
+              "id": "identity",
+              "action": "pass"
+            },
+            {
+              "id": "shape_check",
+              "action": "pass"
+            },
+            {
+              "id": "link_whitelist",
+              "action": "pass"
+            },
+            {
+              "id": "money_provenance",
+              "action": "pass"
+            },
+            {
+              "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "takeover_check:post",
+              "action": "pass"
+            },
+            {
+              "id": "turn_failure",
+              "action": "pass"
+            },
+            {
+              "id": "final_clean",
+              "action": "pass"
+            }
+          ]
+        },
+        "script": [
+          {
+            "content": "给您打九折，免运费。送您配件。"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "pack": "industrial",
+    "tags": ["q10", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "id": "q10-industrial-model-handoff-reply",
+    "desc": "模型调 handoff_to_human 的那一轮，回复照发给客户",
+    "turns": [
+      {
+        "say": "这单麻烦让顾问跟我对接付款",
+        "expect": {
+          "tools": ["handoff_to_human"],
+          "orders": {
+            "count": 0
+          },
+          "handoff": true,
+          "replyMatches": ["已转交顾问"]
+        },
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "handoff_to_human",
+                "args": {
+                  "reason": "客户要顾问对接付款"
+                }
+              }
+            ]
+          },
+          {
+            "content": "已转交顾问，稍后与您对接。"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "pack": "industrial",
+    "tags": ["q10", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "id": "q10-industrial-markdown-table",
+    "desc": "模型写的 markdown 表格不漏到客户",
+    "turns": [
+      {
+        "say": "你们主要卖什么",
+        "expect": {
+          "replyMatches": ["轴承，紧固件"],
+          "replyExcludes": ["\\|", "---"],
+          "orders": {
+            "count": 0
+          }
+        },
+        "script": [
+          {
+            "content": "品类如下：\n| 类别 | 说明 |\n|---|---|\n| 轴承，紧固件 | 常用件 |"
           }
         ]
       }

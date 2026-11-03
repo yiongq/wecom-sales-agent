@@ -1,3 +1,5 @@
+import { ensureDigest, runDigest } from '../ops/digest.js';
+import { recoverReports } from '../db/repo/ops-reports.js';
 import { TenantObservers } from '../tenancy/observers.js';
 import { scopedState } from '../tenancy/scoped-state.js';
 import { registerTenantState } from '../tenancy/state.js';
@@ -89,6 +91,7 @@ interface Lane {
 const LANES: readonly Lane[] = [
   { name: 'notify', kinds: ['handoff_notify', 'retention_purge'] },
   { name: 'followup', kinds: ['followup'] },
+  { name: 'ops', kinds: ['ops_daily_digest'] },
 ];
 /** 执行体出错（推送之前）的重试退避：1、5、15 分钟，之后每 15 分钟 */
 const RETRY_MS = [60_000, 5 * 60_000, 15 * 60_000];
@@ -150,6 +153,7 @@ const errName = (e: unknown): string => {
 };
 
 const handlers: Record<JobKind, JobHandler> = {
+  ops_daily_digest: (job, now) => runDigest(job, now),
   followup: (job, now, ctx) => followupJobs.run(job, now, ctx),
   handoff_notify: (job, now) => runHandoffNotifyJob(job, now),
   retention_purge: (job, now) => runRetentionPurgeJob(job, now),
@@ -250,7 +254,8 @@ function jobFailed(f: JobFailure): void {
 /** 结果写进库之后：跟进的排程认识跟着改（见 followupJobs.afterSettle）；用完重试的通知与清理报给告警 */
 function afterSettled(job: JobRow, out: JobOutcome): void {
   if (job.kind === 'followup') followupJobs.afterSettle(job, out);
-  else if (out.status === 'failed') jobFailed({ kind: job.kind, lastError: out.lastError ?? null, count: 1 });
+  else if (job.kind !== 'ops_daily_digest' && out.status === 'failed')
+    jobFailed({ kind: job.kind, lastError: out.lastError ?? null, count: 1 });
 }
 
 async function runClaimed(job: JobRow, now: number): Promise<void> {
@@ -311,8 +316,13 @@ async function retryUnsettled(): Promise<void> {
 async function recover(): Promise<boolean> {
   const own = state();
   try {
-    const r = await withJobsTx(recoverJobsAtStartup);
+    const r = await withJobsTx(async (tx) => {
+      const unknownReports = await recoverReports(tx);
+      return { ...(await recoverJobsAtStartup(tx)), unknownReports };
+    });
     own.recovered = true;
+    if (r.unknownReports)
+      console.error(JSON.stringify({ event: 'ops_report.failed', error_code: 'restart_in_sending', count: r.unknownReports }));
     const n = r.followupRequeued + r.followupAbandoned + r.otherRequeued + r.otherFailed;
     if (r.otherFailed) jobFailed({ kind: null, lastError: null, count: r.otherFailed });
     if (n) {
@@ -363,6 +373,7 @@ async function prelude(now: number): Promise<boolean> {
   }
   await retryUnsettled();
   await ensurePurge(now);
+  await ensureDigest(now).catch(() => logThrottled('[jobs] 摘要排程失败，下一拍重试'));
   return true;
 }
 

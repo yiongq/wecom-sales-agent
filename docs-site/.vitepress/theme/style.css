@@ -1,90 +1,380 @@
 @import url('/fonts/fonts.css');
+/* 颜色、字族和官网 site/style.css 同一套；官网改色时这里一起改。 */
 :root {
+  --line: #e8e8e8;
+  --hover: #c9c9c9;
+  --muted: #646464;
+  --tile: #fafafa;
   --vp-font-family-base: 'Geist', 'Noto Sans SC', sans-serif;
   --vp-font-family-mono: 'Geist Mono', 'Noto Sans SC', monospace;
   --vp-c-brand-1: #255cdf;
-  --vp-c-brand-2: #2b63e6;
-  --vp-c-brand-3: #18181b;
-  --vp-c-bg: #fff;
-  --vp-c-bg-alt: #f6f6f7;
-  --vp-c-text-1: #18181b;
-  --vp-c-text-2: #4d4d55;
+  --vp-c-brand-2: #1b45ad;
+  --vp-c-brand-3: #255cdf;
+  --vp-c-brand-soft: #eaf0fd;
+  --vp-c-bg: #fcfcfc;
+  --vp-c-bg-alt: #fcfcfc;
+  --vp-c-bg-elv: #fff;
+  --vp-c-bg-soft: #f4f4f5;
+  --vp-c-text-1: #171717;
+  --vp-c-text-2: #646464;
+  --vp-c-text-3: #646464;
+  --vp-c-divider: var(--line);
+  --vp-c-gutter: var(--line);
+  --vp-c-border: var(--line);
+  --vp-nav-height: 60px;
+  --vp-nav-bg-color: #fcfcfc;
+  --vp-sidebar-bg-color: #fcfcfc;
+  --vp-sidebar-width: 272px;
+  --vp-code-bg: #f4f4f5;
+  --vp-code-color: #171717;
+  --vp-code-font-size: 14px;
   font-synthesis: none;
+  -webkit-font-smoothing: antialiased;
 }
-h1,
-h2,
-h3,
 strong,
 b {
-  font-weight: 600 !important;
+  font-weight: 600;
 }
 :focus-visible {
   outline: 3px solid #2b63e6;
   outline-offset: 3px;
 }
+
+/* ---------------- 顶栏：高度、字标和官网一致 ---------------- */
+.VPNav {
+  box-shadow: 0 1px 0 var(--line);
+}
+.VPNavBar .divider {
+  display: none;
+}
+.VPNavBarTitle .title {
+  gap: 9px;
+  font-size: 18px;
+  font-weight: 600;
+}
+.VPNavBarTitle .logo {
+  width: 24px;
+  height: 24px;
+  margin-right: 9px;
+  object-fit: contain;
+}
+.VPNavBarMenuLink {
+  font-size: 15px !important;
+  font-weight: 500 !important;
+}
+.VPNavBar .VPNavBarMenuLink.vp-external-link-icon::after {
+  display: none !important;
+}
+.VPNavBarSearch {
+  flex-grow: 0 !important;
+}
+.VPNavBar.has-sidebar .title {
+  border-bottom-color: transparent !important;
+}
+/* 登录和申请试用与官网顶栏同款按钮 */
+.VPNavBarMenu .VPNavBarMenuLink:nth-last-child(-n + 2) {
+  align-self: center;
+  height: 36px;
+  margin-left: 8px;
+  padding: 0 14px;
+  border-radius: 8px;
+  font-size: 14px !important;
+  line-height: 36px;
+  transition:
+    background 160ms,
+    box-shadow 160ms;
+}
+.VPNavBarMenu .VPNavBarMenuLink:nth-last-child(2) {
+  color: #171717;
+  background: #fff;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+.VPNavBarMenu .VPNavBarMenuLink:nth-last-child(2):hover {
+  color: #171717;
+  box-shadow: inset 0 0 0 1px var(--hover);
+}
+.VPNavBarMenu .VPNavBarMenuLink:last-child {
+  color: #fff;
+  background: #255cdf;
+}
+.VPNavBarMenu .VPNavBarMenuLink:last-child:hover {
+  color: #fff;
+  background: #1b45ad;
+}
 .guide-search {
-  margin-right: 24px;
+  margin-right: 16px;
   font-size: 14px;
 }
 .guide-search summary {
+  display: flex;
+  align-items: center;
+  width: 200px;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--muted);
+  background: #fff;
   cursor: pointer;
-  padding: 10px 0;
+  list-style: none;
+  transition: border-color 160ms;
+}
+.guide-search summary:hover {
+  border-color: var(--hover);
+}
+.guide-search summary::-webkit-details-marker {
+  display: none;
 }
 .search-panel {
   position: absolute;
-  top: 64px;
+  top: 60px;
   right: 20px;
   width: min(480px, calc(100vw - 40px));
   max-height: 75vh;
   overflow: auto;
-  padding: 24px;
+  padding: 20px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: #171717;
   background: #fff;
-  color: #18181b;
-  border-radius: 8px;
-  box-shadow:
-    0 0 0 1px rgb(9 9 11 / 12%),
-    0 16px 24px -8px rgb(9 9 11 / 12%);
+  box-shadow: 0 16px 32px -16px rgb(9 9 11 / 18%);
 }
 .search-panel label {
   display: block;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
+  font-size: 15px;
+  font-weight: 500;
 }
 .search-panel input {
   width: 100%;
-  padding: 10px;
+  padding: 9px 12px;
   border: 1px solid #88888f;
-  border-radius: 4px;
+  border-radius: 8px;
 }
 .search-panel button {
+  padding: 10px 0;
   color: #255cdf;
   text-decoration: underline;
-  padding: 10px 0;
 }
 .search-panel p {
-  color: #4d4d55;
   margin: 12px 0;
+  color: var(--muted);
+  font-size: 14px;
 }
 .search-panel li {
-  margin-top: 20px;
+  margin-top: 16px;
 }
 .search-panel a {
   color: #255cdf;
+  font-size: 15px;
   text-decoration: underline;
 }
+
+/* ---------------- 侧栏与本页目录 ---------------- */
+.VPSidebar {
+  box-shadow: 1px 0 0 var(--line);
+}
+.VPSidebarItem .text {
+  font-size: 15px !important;
+  line-height: 24px !important;
+}
+.VPDocAsideOutline .outline-title {
+  font-size: 14px;
+  font-weight: 500;
+}
+.VPDocAsideOutline .outline-link {
+  font-size: 14px;
+}
+
+/* ---------------- 正文：中文大字收一档，小字不低于 14px ---------------- */
+.vp-doc h1 {
+  margin-bottom: 12px;
+  font-size: 32px;
+  font-weight: 500;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+}
+.vp-doc h2 {
+  margin: 40px 0 12px;
+  padding-top: 0;
+  border-top: 0;
+  font-size: 22px;
+  font-weight: 500;
+  line-height: 1.4;
+  letter-spacing: -0.01em;
+}
+.vp-doc h3 {
+  margin: 28px 0 8px;
+  font-size: 18px;
+  font-weight: 500;
+  line-height: 1.5;
+  letter-spacing: 0;
+}
+.vp-doc h1 + p {
+  color: var(--muted);
+  font-size: 17px;
+}
+.vp-doc p,
+.vp-doc li {
+  font-size: 16px;
+  line-height: 1.8;
+}
+.vp-doc a {
+  text-underline-offset: 4px;
+}
+.vp-doc table {
+  display: table;
+  width: 100%;
+  border: 1px solid var(--line);
+  border-collapse: separate;
+  border-spacing: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  font-size: 15px;
+}
+.vp-doc tr,
+.vp-doc tr:nth-child(2n) {
+  border: 0;
+  background: none;
+}
+.vp-doc th,
+.vp-doc td {
+  padding: 10px 14px;
+  border: 0;
+  font-size: 15px;
+}
+.vp-doc th {
+  background: var(--tile);
+  font-weight: 500;
+}
+.vp-doc td {
+  border-top: 1px solid var(--line);
+}
+.vp-doc .custom-block {
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--tile);
+  font-size: 15px;
+}
+.vp-doc [class*='language-'] {
+  border: 1px solid var(--line);
+  border-radius: 12px !important;
+  background: var(--tile);
+}
+
+/* 窄屏目录要靠脚本打开，所以这行入口始终在 HTML 里；宽屏有侧栏时才收起。 */
 .plain-directory {
   display: flex;
   flex-wrap: wrap;
   gap: 8px 20px;
   margin: 0 0 32px;
-  font-size: 13px;
+  font-size: 14px;
 }
 .plain-directory a {
   color: #255cdf;
-  text-decoration: underline;
   text-underline-offset: 4px;
+}
+@media (min-width: 960px) {
+  .plain-directory {
+    display: none;
+  }
+}
+
+/* ---------------- 首页指南卡片、翻页、页脚 ---------------- */
+.guide-cards {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 32px;
+}
+.guide-cards a {
+  display: block;
+  padding: 16px 20px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  color: #171717;
+  background: #fff;
+  text-decoration: none;
+  transition: border-color 200ms;
+}
+.guide-cards a:hover {
+  border-color: var(--hover);
+}
+.guide-cards strong {
+  display: block;
+  font-size: 16px;
+  font-weight: 500;
+}
+.guide-cards span {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.6;
+}
+.VPDocFooter .pager-link {
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: #fff;
+  transition: border-color 200ms;
+}
+.VPDocFooter .pager-link:hover {
+  border-color: var(--hover);
+}
+.VPDocFooter .desc {
+  font-size: 14px !important;
+}
+.VPDocFooter .title {
+  font-size: 15px !important;
+  font-weight: 500 !important;
+}
+.site-foot {
+  position: relative;
+  padding: 28px 32px 40px;
+  color: var(--muted);
+  font-size: 14px;
+  box-shadow: inset 0 1px 0 var(--line);
+}
+.site-foot p {
+  margin: 0 0 4px;
+}
+@media (min-width: 960px) {
+  .site-foot {
+    margin-left: var(--vp-sidebar-width);
+  }
+}
+/* 1440 起侧栏随窗口变宽，算式和 VPSidebar 保持一致，否则页脚左侧被盖住。 */
+@media (min-width: 1440px) {
+  .site-foot {
+    margin-left: calc((100% - (var(--vp-layout-max-width) - 64px)) / 2 + var(--vp-sidebar-width) - 32px);
+  }
 }
 .not-found {
   max-width: 720px;
-  margin: 100px auto;
+  margin: 96px auto;
   padding: 24px;
+}
+.not-found h1 {
+  margin-bottom: 12px;
+  font-size: 32px;
+  font-weight: 500;
+  line-height: 1.25;
+}
+@media (max-width: 767px) {
+  .guide-search {
+    margin-right: 8px;
+  }
+  .guide-search summary {
+    width: auto;
+  }
+  .guide-cards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .guide-search summary,
+  .guide-cards a,
+  .VPDocFooter .pager-link {
+    transition: none;
+  }
 }

@@ -340,6 +340,16 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
      values ($1,$2,'part','synthetic-part',1,'SYN-1',1,'manual',now())`,
     [created.tenantId, erp!.id],
   );
+  await q(
+    `insert into turn_reviews (tenant_id,turn_id,rating,reviewer_user_id)
+    select tenant_id,id,'good',$2 from turn_traces where tenant_id=$1`,
+    [created.tenantId, randomUUID()],
+  );
+  await q(`insert into ops_daily_reports (tenant_id,day) values ($1,current_date)`, [created.tenantId]);
+  await q(`insert into ops_latency_state (tenant_id) values ($1)`, [created.tenantId]);
+  await q(`insert into ops_metric_coverage (tenant_id,day,first_seen_at,last_seen_at) values ($1,current_date,now(),now())`, [
+    created.tenantId,
+  ]);
   await execute(sql`select sandbox_tenant_expire(${created.tenantId})`);
   const expired = await resolve();
   check(

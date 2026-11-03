@@ -11,6 +11,7 @@ import { ArrowUpRight, ScrollText, X } from 'lucide-react';
 import { type MouseEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 import { api, HttpError, unwrap } from '../api.js';
 import { TraceTab } from '../conversations/TraceDetail.js';
+import { ReviewBlock } from './ReviewBlock.js';
 import { ErrorAlert } from '../parts/ErrorAlert.js';
 import { popupRegion } from '../parts/popupRegion.js';
 import { EmptyBlock, Skeleton, StateView } from '../parts/StateView.js';
@@ -34,6 +35,8 @@ import {
   RANGES,
   rowAria,
   rowsOfPages,
+  REASON_OPTIONS,
+  REVIEW_OPTIONS,
   rowView,
   type TraceFilters,
   type TraceRowView,
@@ -59,7 +62,7 @@ const isFileMode = (error: unknown): boolean => error instanceof HttpError && er
 
 // ---------------- 筛选 ----------------
 
-function Filters({ search }: { search: TracesSearch }) {
+function Filters({ search, canReview }: { search: TracesSearch; canReview: boolean }) {
   const navigate = useNavigate();
   const f = filtersOf(search);
   const go = (patch: Parameters<typeof withFilter>[1]): void => void navigate({ to: '/traces', search: withFilter(search, patch) });
@@ -111,6 +114,32 @@ function Filters({ search }: { search: TracesSearch }) {
         popupRender={popupRegion('筛选：转人工原因')}
         onChange={(v: string | undefined) => go({ handoff: v })}
       />
+      {canReview && (
+        <>
+          <Select
+            className="tr-select"
+            aria-label="按评价筛选"
+            placeholder="全部评价"
+            allowClear
+            virtual={false}
+            value={f.review}
+            options={REVIEW_OPTIONS.map((o) => ({ ...o }))}
+            popupRender={popupRegion('筛选：评价')}
+            onChange={(v: string | undefined) => go({ review: v })}
+          />
+          <Select
+            className="tr-select"
+            aria-label="按差评原因筛选"
+            placeholder="差评原因"
+            allowClear
+            virtual={false}
+            value={f.reason}
+            options={REASON_OPTIONS.map((o) => ({ ...o }))}
+            popupRender={popupRegion('筛选：差评原因')}
+            onChange={(v: string | undefined) => go({ reason: v })}
+          />
+        </>
+      )}
       {/* 点文字也能开关：Switch 是 button，放在 label 里就由 label 的文字命名 */}
       <label className="tr-over">
         <Switch checked={f.over} onChange={(on) => go({ over: on ? 1 : undefined })} />
@@ -139,7 +168,7 @@ function TraceTable({
       tableLayout="fixed"
       pagination={false}
       aria-label={`AI记录，共${rows.length}条`}
-      scroll={{ x: 880, scrollToFirstRowOnChange: false }}
+      scroll={{ x: 1016, scrollToFirstRowOnChange: false }}
       onRow={(r) => ({
         className: r.key === selected ? 'tr-row is-selected' : 'tr-row',
         'aria-current': r.key === selected ? 'true' : undefined,
@@ -203,6 +232,12 @@ function TraceTable({
           width: 72,
           render: (_, r) => <span className={r.overLimit ? 'tr-text' : 'tr-dim'}>{r.overLimit ? '超长' : '—'}</span>,
         },
+        {
+          key: 'review',
+          title: '评价',
+          width: 136,
+          render: (_, r) => <span className={r.review === '—' || r.review === '未评' ? 'tr-dim' : 'tr-text'}>{cjk(r.review)}</span>,
+        },
         { key: 'took', title: '耗时', width: 88, align: 'right', render: (_, r) => <span className="tr-num">{r.took}</span> },
       ]}
     />
@@ -221,6 +256,9 @@ const listQuery = (filters: TraceFilters) => ({
 });
 
 function MemberTraces({ pack }: { pack: IndustryPack }) {
+  const viewer = useViewer().data;
+  // 17 R1：沙箱不开放抽检
+  const canReview = viewer?.kind === 'member' && !viewer.me.sandbox;
   const search = useSearch({ from: '/traces' });
   const now = useNow();
   const filters = filtersOf(search);
@@ -311,7 +349,7 @@ function MemberTraces({ pack }: { pack: IndustryPack }) {
     <>
       <Header />
       {/* 文件存储下没有可筛的东西，整行筛选不画 */}
-      {!fileMode && <Filters search={search} />}
+      {!fileMode && <Filters search={search} canReview={canReview} />}
       {body}
       <Drawer
         open={open}
@@ -335,7 +373,11 @@ function MemberTraces({ pack }: { pack: IndustryPack }) {
               </Link>
               <span title={shown.row.whenFull}>{shown.row.when}</span>
             </p>
-            <TraceTab id={shown.row.conversationId} turnId={shown.row.key} />
+            <TraceTab
+              id={shown.row.conversationId}
+              turnId={shown.row.key}
+              review={canReview ? <ReviewBlock turnId={shown.row.key} /> : undefined}
+            />
           </div>
         )}
       </Drawer>

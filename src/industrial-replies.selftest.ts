@@ -12,7 +12,7 @@ import { industrialReplyGuard, trimRfq, TRIM_FALLBACK } from './packs/industrial
 import { preModel, contextNote, inquiryLines, prefetch, FIXED } from './packs/industrial/turn.js';
 import { latestQuoteCandidate } from './packs/industrial/quote-candidate.js';
 import { writeState } from './packs/industrial/state.js';
-import type { ReplyGuardContext, TurnContext, LineOrder } from './core/pack-api.js';
+import type { ReplyGuardContext, TurnContext, LineOrder, MoneyEntry } from './core/pack-api.js';
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'industrial-replies-'));
 Object.assign(process.env, {
   VAR_DIR: dir,
@@ -40,7 +40,8 @@ const parts = Array.from({ length: 15 }, (_, i) => ({
   category: '轴承',
   specs: ['内径25mm', '定位面ZZQ300'],
   unit: '件',
-  unitPrice: 10,
+  unitPrice: i === 1 ? 20 : 10,
+  ...(i === 0 ? { aliases: ['HS-A'], tier2Qty: 10, tier2Price: 8 } : {}),
   moq: 1,
   stock: 100,
   leadDays: 7,
@@ -198,6 +199,21 @@ try {
   assert.ok(runtime.engineHooks.isComplaint('我要投诉'));
   assert.equal(runtime.engineHooks.isComplaint('我不是来投诉的'), false);
   assert.ok(runtime.engineHooks.isHandoffIntent('人工'));
+  // 16 复核：否定说法不转人工；同一条消息里另一小句真要人工仍然转
+  for (const text of [
+    '不用转人工',
+    '不要人工',
+    '不需要转人工，你直接报',
+    '别转人工',
+    '先别转人工客服',
+    '不想找真人',
+    '无需人工顾问',
+    '不接受转人工',
+    '不要退款',
+  ])
+    assert.equal(runtime.engineHooks.isHandoffIntent(text), false, text);
+  for (const text of ['转人工', '我要转人工', '要人工', '人工客服', '不用报价了，转人工', '不要机器人，我要人工', '我要退款'])
+    assert.equal(runtime.engineHooks.isHandoffIntent(text), true, text);
 
   console.log('工业词表：104键（80通用、4不匹配、20改写）逐键与正反例通过');
 
@@ -354,7 +370,69 @@ try {
   });
   assert.deepEqual(await prefetched('HS1000 改成5件'), []);
   assert.deepEqual(await prefetched('HS1000 5件，HS1001 6件'), quoted(['HS1000', 5], ['HS1001', 6]));
-  console.log('工业预取：品名夹在中间/无单位/×、多行、精确未给数量查、否定与年份不算数量、重复与未决走旧路、进行中询价只整份重算通过');
+  assert.deepEqual(await prefetched('改成5件'), [], '多行询价不知道改哪一行');
+
+  // 16 验收：客户只改数量、不重写型号时模型常常自己乘，金额被护栏删掉后客户拿不到价格；单行询价由引擎按新数量替算。
+  writeState(fresh, { rfqDraft: { at: now, lines: [{ code: 'part-0', version: 1, match: 'exact', qty: 19 }] } });
+  for (const [text, qty] of [
+    ['20件。', 20],
+    ['6件就够了。', 6],
+    ['改成20件重新试算一下，满20件能到下一档。', 20],
+    ['数量改成20件吧，你按20件重新试算一下。', 20],
+    ['这样吧，凑个整数，按100件重新试算一下，价格能落在100件档位29.4元那档。', 100],
+    ['加到５０件试算', 50],
+  ] as const)
+    assert.deepEqual(await prefetched(text), quoted(['HS1000', qty]), text);
+  for (const text of [
+    '19件。',
+    '改成19件',
+    '再加5件',
+    '再加5件试算一下',
+    '比20件便宜吗',
+    '改成20件比19件便宜吧',
+    '不要20件',
+    '20件不够',
+    '每箱按20件算',
+    '改成10件和20件分别算一下',
+    '改成10件或20件试算',
+    '上次买过20件',
+    '重新算第3个',
+    '重新试算，交期5个工作日',
+    '交期5个工作日',
+    '按第3个算',
+    '这批要得急',
+    '改成0件',
+    '您好',
+  ])
+    assert.deepEqual(await prefetched(text), [], text);
+  // 已批准的报价单同样只有一行时，改数量也替算；数量没变不动。
+  const quote: LineOrder = {
+    v: 2,
+    id: 'ord_requantify',
+    sessionId: fresh.id,
+    status: 'pending_payment',
+    createdAt: now,
+    totalFen: 100,
+    lines: [{ kind: 'part', code: 'part-1', title: 'HS1001', qty: 3, unit: '件', unitPriceFen: 50, amountFen: 100 }],
+    approval: { state: 'approved', requestedAt: now + 1, decidedAt: now + 1 },
+  };
+  orderStore.set(quote.id, quote);
+  fresh.orderIds.push(quote.id);
+  assert.deepEqual(await prefetched('改成8件'), quoted(['HS1001', 8]));
+  assert.deepEqual(await prefetched('3件'), []);
+  orderStore.delete(quote.id);
+  fresh.orderIds.pop();
+  // 目录里已经没有这个条目，或清单待确认：工具闸会拒绝，不替算。
+  writeState(fresh, { rfqDraft: { at: now, lines: [{ code: 'gone', version: 1, match: 'exact', qty: 19 }] } });
+  assert.deepEqual(await prefetched('改成20件'), []);
+  writeState(fresh, {
+    rfqDraft: { at: now, lines: [{ code: 'part-0', version: 1, match: 'exact', qty: 19 }] },
+    rfqIntake: { id: 'int_0123456789ab', at: now, status: 'pending', lines: [{ q: 'HS1000', qty: 2, m: 'exact' }] },
+  });
+  assert.deepEqual(await prefetched('改成20件'), []);
+  console.log(
+    '工业预取：品名夹在中间/无单位/×、多行、精确未给数量查、否定与年份不算数量、重复与未决走旧路、进行中询价只整份重算、单行改数量替算通过',
+  );
 
   const { tenantImage, tenantRenderer, contractInputs, readImageSop } = await import('./config/brand.js');
   const { checkSopContract } = await import('./sop/contract.js');
@@ -380,6 +458,234 @@ try {
   const pipes = packPipelines(runtime);
   assert.ok(pipes.reply.steps.findIndex((s) => s.id === 'rfq_trim') > pipes.reply.steps.findIndex((s) => s.id === 'money_provenance'));
   console.log('工业发布配置：8节/3可改5锁定、无旅游/渠道名、契约/政策静态检查、管线顺序通过');
+
+  // 实际工具 → registry 记账 → 工业包的主回复/跟进步骤；不手工补 subject。
+  await import('./core/engine/sources.js');
+  const { createToolRegistry } = await import('./core/tools/registry.js');
+  const registry = createToolRegistry(runtime.tools);
+  const moneySession = store.getOrCreateSession('wecom:wmBinding', 'wecom');
+  const toolContext = { session: moneySession, hints: {}, text: '', args: {}, notes: {}, handoffDeclined: false };
+  await registry.execute(
+    'quote_items',
+    {
+      items: [
+        { query: 'HS1000', qty: 3 },
+        { query: 'HS1001', qty: 3 },
+      ],
+    },
+    toolContext,
+  );
+  const ledger = structuredClone(moneySession.moneyLedger!);
+  assert.deepEqual(ledger, [
+    { fen: 1000, label: '试算单价', subject: 'HS1000' },
+    { fen: 3000, label: '试算行金额', subject: 'HS1000' },
+    { fen: 2000, label: '试算单价', subject: 'HS1001' },
+    { fen: 6000, label: '试算行金额', subject: 'HS1001' },
+    { fen: 9000, label: '试算合计' },
+  ]);
+  const approved: LineOrder = {
+    v: 2,
+    id: 'ord_binding',
+    sessionId: moneySession.id,
+    status: 'pending_payment',
+    createdAt: now,
+    totalFen: 9000,
+    approval: { state: 'approved', requestedAt: now, decidedAt: now },
+    lines: [
+      { kind: 'part', code: 'part-0', title: 'HS1000', qty: 3, unit: '件', unitPriceFen: 1000, amountFen: 3000 },
+      { kind: 'part', code: 'part-1', title: 'HS1001', qty: 3, unit: '件', unitPriceFen: 2000, amountFen: 6000 },
+    ],
+  };
+  orderStore.set(approved.id, approved);
+  for (const mode of ['reply', 'followup'] as const) {
+    const step = runtime[mode === 'reply' ? 'replySteps' : 'followupSteps'].find((step) => step.id === 'money_provenance')!;
+    const empty = mode === 'reply' ? '金额需要先试算，请告诉我型号和数量。' : '';
+    const checkMoney = async (text: string, expected = text, entries: MoneyEntry[] = ledger, ordered = false) => {
+      moneySession.moneyLedger = structuredClone(entries);
+      moneySession.orderIds = ordered ? [approved.id] : [];
+      const result = await step.run({
+        session: moneySession,
+        text,
+        policy: defaultIndustrialPolicy,
+        turn: { flags: { guardHit: null } },
+        recordGuard: () => {},
+      } as unknown as ReplyGuardContext);
+      assert.ok(result && result.action !== 'abort');
+      assert.equal(result.action === 'pass' ? text : result.text, expected, `${mode}: ${text}`);
+    };
+    await checkMoney('HS1000单价20元。HS1001单价10元。', empty);
+    await checkMoney('HS1000单价10元。HS1001单价20元。');
+    await checkMoney('HS1000单价10元，HS1001单价10元。请核对。', '请核对。');
+    await checkMoney('HS1000单价10元，HS1001单价20元。');
+    await checkMoney('HS1000和HS1001的单价分别为10元、20元。');
+    // 列表里的互换也无法确定归属，按已定规则维持放行。
+    await checkMoney('HS1000和HS1001的单价分别为20元、10元。');
+    await checkMoney('HS1000、HS1001、HS1002分别为1元、2元、3元。', undefined, [
+      { fen: 100, label: '单价', subject: 'HS1000' },
+      { fen: 200, label: '单价', subject: 'HS1001' },
+      { fen: 300, label: '单价', subject: 'HS1002' },
+    ]);
+    await checkMoney('HS1000和HS1001一共90元，HS1000单价20元。', empty);
+    await checkMoney('HS1000单价20元，HS1001单价10元。', empty);
+    await checkMoney('HS1000合计90元。');
+    await checkMoney('单价20元。单价10元。');
+    await checkMoney('HS-A单价10元。');
+    await checkMoney('HS 1000单价10元，hs-1001单价20元。');
+    await checkMoney('HS 1000单价20元。', empty);
+    await checkMoney('HS-A单价20元。', empty);
+    await checkMoney('HS1000单价20元。', undefined, [{ fen: 2000, label: '旧账本' }]);
+    await checkMoney('HS1000单价20元。HS1001单价10元。', empty, [], true);
+    await checkMoney('HS1000行金额60元。HS1001行金额30元。', empty, [], true);
+    await checkMoney('HS1000单价10元、行金额30元，HS1001单价20元、行金额60元。', undefined, [], true);
+    await checkMoney('HS1000合计90元。', undefined, [], true);
+    // 分句里没有型号时，沿用同一句左侧最近的型号。
+    await checkMoney('HS1000，单价20元。', empty);
+    moneySession.moneyLedger = [];
+    await registry.execute(
+      'quote_items',
+      {
+        items: [
+          { query: 'HS1000', qty: 3 },
+          { query: 'HS1002', qty: 3 },
+        ],
+      },
+      toolContext,
+    );
+    await checkMoney('HS1000单价10元，HS1002单价10元。', undefined, moneySession.moneyLedger!);
+    moneySession.moneyLedger = [];
+    await registry.execute('find_parts', { query: 'HS-A' }, toolContext);
+    const tiers = structuredClone(moneySession.moneyLedger!);
+    assert.ok(tiers.every((entry) => entry.subject === 'HS1000'));
+    await checkMoney('HS-A单价8元。', undefined, tiers);
+    await checkMoney('HS1001单价8元。', empty, tiers);
+  }
+  // 单行试算必须同时绑定行金额和合计；多行合计保持无绑定。
+  moneySession.orderIds = [];
+  moneySession.moneyLedger = [];
+  await registry.execute('quote_items', { items: [{ query: 'HS1000', qty: 3 }] }, toolContext);
+  assert.deepEqual(moneySession.moneyLedger, [
+    { fen: 1000, label: '试算单价', subject: 'HS1000' },
+    { fen: 3000, label: '试算行金额', subject: 'HS1000' },
+    { fen: 3000, label: '试算合计', subject: 'HS1000' },
+  ]);
+  const moneyStep = runtime.replySteps.find((step) => step.id === 'money_provenance')!;
+  const moneyRun = (text: string) =>
+    moneyStep.run({
+      session: moneySession,
+      text,
+      policy: defaultIndustrialPolicy,
+      turn: { flags: {} },
+      recordGuard: () => {},
+    } as unknown as ReplyGuardContext);
+  assert.equal((await moneyRun('HS1001共3件，货款30元。'))?.action, 'replace');
+  assert.equal((await moneyRun('HS1000共3件，货款30元。'))?.action, 'pass');
+
+  // × 是真实型号的一部分；仅在完整 token 未知时才尝试剥去最后的数量。
+  {
+    const modelParts = [
+      { ...parts[0]!, id: 'token-a', partNo: '6211-2RS' },
+      { ...parts[1]!, id: 'token-b', partNo: 'M8×30' },
+      { ...parts[2]!, id: 'token-c', partNo: '6208-2RS', unitPrice: 14.18 },
+    ];
+    const tokenSources = { ...sources, currentCatalog: () => ({ ...sources.currentCatalog(), items: { part: modelParts } }) };
+    const tokenRuntime = createIndustrialRuntime(tokenSources);
+    const tokenSession = store.getOrCreateSession('wecom:wmTokens', 'wecom');
+    writeState(tokenSession, {}, modelParts);
+    for (const [text, pass] of [
+      ['6211-2RS×26件。', true],
+      ['6211-2RS*26件。', true],
+      ['M8×30×60件。', true],
+      ['M8×30。', true],
+      ['XR-9420×3件。', false],
+      // mentionedModels 同样必须归一，否则型号事实会被当成另一个对象。
+      ['6211-2RS×26件，现货100件。', true],
+    ] as const) {
+      const result = await industrialReplyGuard(tokenSources).run({
+        session: tokenSession,
+        text,
+        inputText: '',
+        policy: defaultIndustrialPolicy,
+        toolSources: [
+          { name: 'quote_items', args: {}, result: JSON.stringify({ lines: [{ partNo: '6211-2RS', delivery: '现货 100 件' }] }) },
+        ],
+        recordGuard: () => {},
+      } as unknown as ReplyGuardContext);
+      assert.equal(result?.action, pass ? 'pass' : 'replace', text);
+    }
+    const tokenRegistry = createToolRegistry(tokenRuntime.tools);
+    const tokenMoney = tokenRuntime.replySteps.find((step) => step.id === 'money_provenance')!;
+    await tokenRegistry.execute('quote_items', { items: [{ query: '6208-2RS', qty: 20 }] }, { ...toolContext, session: tokenSession });
+    assert.deepEqual(
+      tokenSession.moneyLedger!.map(({ label, fen, subject }) => ({ label, fen, subject })),
+      [
+        { label: '试算单价', fen: 1418, subject: '62082RS' },
+        { label: '试算行金额', fen: 28360, subject: '62082RS' },
+        { label: '试算合计', fen: 28360, subject: '62082RS' },
+      ],
+    );
+    assert.equal(
+      (
+        await tokenMoney.run({
+          session: tokenSession,
+          text: '6211-2RS 共26件，货款283.60元。',
+          policy: defaultIndustrialPolicy,
+          turn: { flags: {} },
+          recordGuard: () => {},
+        } as unknown as ReplyGuardContext)
+      )?.action,
+      'replace',
+    );
+    tokenSession.moneyLedger = [];
+    await tokenRegistry.execute('quote_items', { items: [{ query: '6211-2RS', qty: 3 }] }, { ...toolContext, session: tokenSession });
+    const step = tokenRuntime.replySteps.find((step) => step.id === 'money_provenance')!;
+    for (const [text, pass] of [
+      ['6211-2RS×26件，货款30元。', true],
+      ['M8×30×60件，货款30元。', false],
+    ] as const) {
+      const result = await step.run({
+        session: tokenSession,
+        text,
+        policy: defaultIndustrialPolicy,
+        turn: { flags: {} },
+        recordGuard: () => {},
+      } as unknown as ReplyGuardContext);
+      assert.equal(result?.action, pass ? 'pass' : 'replace', text);
+    }
+  }
+  // 同一目录数组只解析一次；替换数组后必须读到新型号，避免缓存跨目录更新污染判定。
+  for (const mode of ['reply', 'followup'] as const) {
+    let parsed = 0;
+    const item = (partNo: string) => ({
+      ...parts[0]!,
+      partNo,
+      get unitPrice() {
+        parsed++;
+        return 10;
+      },
+    });
+    let catalog = { ...sources.currentCatalog(), items: { part: [item('HS1000')] } };
+    const cached = createIndustrialRuntime({ ...sources, currentCatalog: () => catalog });
+    const step = cached[mode === 'reply' ? 'replySteps' : 'followupSteps'].find((step) => step.id === 'money_provenance')!;
+    moneySession.orderIds = [];
+    moneySession.moneyLedger = ledger;
+    const run = (text: string) =>
+      step.run({
+        session: moneySession,
+        text,
+        policy: defaultIndustrialPolicy,
+        turn: { flags: {} },
+        recordGuard: () => {},
+      } as unknown as ReplyGuardContext);
+    assert.equal((await run('HS1000单价10元。'))?.action, 'pass');
+    const first = parsed;
+    assert.ok(first > 0);
+    assert.equal((await run('HS1000单价10元。'))?.action, 'pass');
+    assert.equal(parsed, first, '同一数组不再过 zod');
+    catalog = { ...catalog, items: { part: [item('HS3000')] } };
+    assert.equal((await run('HS3000单价10元。'))?.action, mode === 'reply' ? 'replace' : 'drop_sentence');
+    assert.ok(parsed > first, '新数组重新校验并更新匹配');
+  }
+  console.log('工业金额绑定：工具记账、主回复/跟进错配删除、同价/合计/无型号/别名/旧账本放行、批准订单及档位单价通过');
 } finally {
   Date.now = realNow;
   config.__configTest.reset();

@@ -213,6 +213,7 @@ const GOOD: ReadonlyArray<readonly [string, string]> = [
   ],
   // 图标表：限定了文件的通用词只在这个文件里放过
   ['console/src/shell/icons.tsx', `export const ICONS = { route: 1, package: 2, 'bed-double': 3 };`],
+  ['console/src/overview/queries.ts', `export const q = { days: '7' };`],
 ];
 
 function tree(files: ReadonlyArray<readonly [string, string]>): string {

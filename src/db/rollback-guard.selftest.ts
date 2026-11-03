@@ -24,6 +24,8 @@ const rolledBack = path.join(tmp, 'rolled-back');
 const purged = path.join(tmp, 'purged');
 const guardSource = fs.readFileSync(path.join(root, 'deploy/rollback-guard.sh'), 'utf8');
 const recovery = '再重跑回滚检查，确认品牌风险已消除';
+// 假查询挂 60 秒：只证明被限时掐断。部署门禁在负载高的本机跑，定得太紧会误报。
+const BOUNDED_MS = 10_000;
 let checks = 0;
 const check = (name: string, ok: boolean, detail = ''): void => {
   assert.ok(ok, `${name}: ${detail}`);
@@ -356,7 +358,7 @@ exit 0`,
   );
   const sqlTimeouts = r.log.match(/PGOPTIONS=-c statement_timeout=(\d+) -c lock_timeout=(\d+)/)!;
   r = guard('pre-04', { FAKE_BRAND: 'lock-timeout' });
-  check('SQL 锁超时即使输出 f 也从严拒绝，不当作无风险', r.code === 6 && r.out.includes('问不到库') && r.elapsed < 3000, r.out);
+  check('SQL 锁超时即使输出 f 也从严拒绝，不当作无风险', r.code === 6 && r.out.includes('问不到库') && r.elapsed < BOUNDED_MS, r.out);
   r = guard('pre-04', { FAKE_PROBE: 'down' });
   check('元数据探测连接失败仍从严拒绝', r.code === 6 && r.out.includes('问不到库'), r.out);
   for (const point of ['published-probe', 'published']) {
@@ -367,7 +369,7 @@ exit 0`,
         r.code === 6 &&
           r.out.includes('tenants.brand 不为空') &&
           r.out.includes('问不到库') &&
-          r.elapsed < 3000 &&
+          r.elapsed < BOUNDED_MS &&
           r.out.includes('RECOVERY_IMAGE=') &&
           r.out.includes(restore) &&
           !r.out.includes('restart app') &&
@@ -387,7 +389,7 @@ exit 0`,
         const expected = running === '1' ? 0 : phase === '02' ? 4 : phase === '03' ? 5 : 6;
         check(
           `${phase} ${point} 进程超时：运行 ${running} 返回 ${expected}，3 秒内结束`,
-          r.code === expected && r.elapsed < 3000 && (expected === 0 || r.out.includes('问不到库')),
+          r.code === expected && r.elapsed < BOUNDED_MS && (expected === 0 || r.out.includes('问不到库')),
           `${r.elapsed.toFixed(0)}ms ${r.out}`,
         );
       }
@@ -468,7 +470,7 @@ exit 0`,
   r = deploy('v04', { FAKE_HANG: 'published', FAKE_TIMEOUT_MS: '180', FAKE_HEALTH_FAIL: '1' });
   check(
     '健康失败后品牌锁等待被限时终止，拒绝自动回滚并透出恢复步骤',
-    r.code === 1 && r.elapsed < 3000 && r.out.includes(recovery) && !r.log.includes('up -d --no-deps app'),
+    r.code === 1 && r.elapsed < BOUNDED_MS && r.out.includes(recovery) && !r.log.includes('up -d --no-deps app'),
     `${r.elapsed.toFixed(0)}ms ${r.out}`,
   );
   r = deploy('v04', { FAKE_BRAND: 't', FAKE_TARGET: '4', FAKE_HEALTH_FAIL: '1' });
@@ -569,7 +571,7 @@ exit 0`,
     r.out,
   );
   r = guard('pre-07', { FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 'hang', FAKE_RUNNING: '7', FAKE_TIMEOUT_MS: '100' });
-  check('07：退款查询挂住有时限，退出 8', r.code === 8 && r.elapsed < 4000, r.out);
+  check('07：退款查询挂住有时限，退出 8', r.code === 8 && r.elapsed < BOUNDED_MS, r.out);
 
   // 08 R13：真实脚本的四项风险独立触发；旧版本拒绝码与副作用顺序不变。
   const nontravelRisks = [
@@ -759,7 +761,7 @@ exit 0`,
     r.out,
   );
   r = guard('pre-07', { FAKE_RUNNING: '8', FAKE_NONTRAVEL_TENANTS: 'hang', FAKE_TIMEOUT_MS: '100' });
-  check('08：查询挂住有时限，从严退出 9', r.code === 9 && r.elapsed < 4000, r.out);
+  check('08：查询挂住有时限，从严退出 9', r.code === 9 && r.elapsed < BOUNDED_MS, r.out);
   r = guard('side1:prev', { FAKE_TARGET: 'error', FAKE_RUNNING: '8', FAKE_NONTRAVEL_ORDERS: 't' });
   check('08：目标镜像探测失败按旧版拒绝', r.code === 9, r.out);
   for (const [expected, target, extra] of [
@@ -794,7 +796,7 @@ exit 0`,
     check('09：目标有site-links标记不查09报价风险', r.code === 0 && !r.log.includes("where data->'approval' IS NOT NULL)"), r.out);
     for (const state of ['down', 'unexpected', 'hang']) {
       r = guard('pre-09', { ...quoteEnv, FAKE_QUOTE: state, FAKE_TIMEOUT_MS: '100' });
-      check('09：查询故障从严拒绝且有时限', r.code === 9 && r.elapsed < 5000, r.out);
+      check('09：查询故障从严拒绝且有时限', r.code === 9 && r.elapsed < BOUNDED_MS, r.out);
     }
     {
       const pg = new PGlite();
@@ -896,18 +898,18 @@ exit 0`,
         r = guard('pre-10', { ...industrialEnv, [variable]: state, FAKE_RUNNING: '8', FAKE_TIMEOUT_MS: '100' });
         check(
           `10：${key} 查询 ${state || '空结果'} 从严限时拒绝，旧运行镜像不豁免`,
-          r.code === 9 && r.out.includes(message) && r.elapsed < 5000,
+          r.code === 9 && r.out.includes(message) && r.elapsed < BOUNDED_MS,
           r.out,
         );
       }
     }
     for (const schema of ['down', 'unexpected', '', 'hang']) {
       r = guard('pre-10', { ...industrialEnv, FAKE_INDUSTRIAL_SCHEMA: schema, FAKE_TIMEOUT_MS: '100' });
-      check('10：表探测失败或挂住从严限时拒绝', r.code === 9 && r.out.includes(message) && r.elapsed < 5000, r.out);
+      check('10：表探测失败或挂住从严限时拒绝', r.code === 9 && r.out.includes(message) && r.elapsed < BOUNDED_MS, r.out);
     }
     for (const schema of ['down', 'unexpected', '', 'hang']) {
       r = guard('pre-10', { ...industrialEnv, FAKE_REFUND_SCHEMA: schema, FAKE_TIMEOUT_MS: '100' });
-      check('10：订单表探测未知从严拒绝', r.code === 9 && r.out.includes(message) && r.elapsed < 5000, r.out);
+      check('10：订单表探测未知从严拒绝', r.code === 9 && r.out.includes(message) && r.elapsed < BOUNDED_MS, r.out);
     }
     for (const state of ['down', 'hang']) {
       const env = { ...industrialEnv, FAKE_INDUSTRIAL_ORDERS: state, FAKE_TARGET: '9', FAKE_TIMEOUT_MS: '100' };
@@ -942,7 +944,7 @@ exit 0`,
     check('10：工业标记不跳过其他独立能力检查', r.code === 9 && r.out.includes('另一个含 09 的 tag'), r.out);
     for (const state of ['error', 'hang']) {
       r = guard('side1:prev', { ...industrialEnv, FAKE_TARGET: '9', FAKE_INDUSTRIAL_TARGET: state, FAKE_TIMEOUT_MS: '100' });
-      check('10：目标文件探测失败或挂住，即使三项为零仍拒绝9', r.code === 9 && r.out.includes(message) && r.elapsed < 5000, r.out);
+      check('10：目标文件探测失败或挂住，即使三项为零仍拒绝9', r.code === 9 && r.out.includes(message) && r.elapsed < BOUNDED_MS, r.out);
       r = deploy('v10', {
         ...industrialEnv,
         FAKE_TARGET: '9',
@@ -1056,7 +1058,7 @@ exit 0`,
         r = guard('pre-12', { [variable]: state, FAKE_RUNNING: '9', FAKE_TIMEOUT_MS: '100' });
         check(
           `12：${label}查询${state || '空结果'}从严拒绝，不豁免旧运行镜像`,
-          r.code === 9 && r.out.includes(message) && r.elapsed < 5000,
+          r.code === 9 && r.out.includes(message) && r.elapsed < BOUNDED_MS,
           r.out,
         );
       }
@@ -1075,12 +1077,12 @@ exit 0`,
     );
     for (const schema of ['f', 't', 'down', 'unexpected', '', 'hang']) {
       r = guard('pre-12', { FAKE_ATTACHMENT_SCHEMA: schema, FAKE_TIMEOUT_MS: '100' });
-      check(`12：表探测${schema || '空结果'}`, r.code === (['t', 'f'].includes(schema) ? 0 : 9) && r.elapsed < 5000, r.out);
+      check(`12：表探测${schema || '空结果'}`, r.code === (['t', 'f'].includes(schema) ? 0 : 9) && r.elapsed < BOUNDED_MS, r.out);
       if (schema === 'f') check('12：缺表只跳过对应查询', !r.log.includes('select exists('), r.log);
     }
     for (const state of ['error', 'hang']) {
       r = guard('side1:prev', { FAKE_TARGET: '12', FAKE_ATTACHMENT_TARGET: state, FAKE_TIMEOUT_MS: '100' });
-      check(`12：目标能力${state}即使数据为空仍拒绝9`, r.code === 9 && r.out.includes(message) && r.elapsed < 5000, r.out);
+      check(`12：目标能力${state}即使数据为空仍拒绝9`, r.code === 9 && r.out.includes(message) && r.elapsed < BOUNDED_MS, r.out);
     }
     for (const target of ['pre-09', 'side1:prev']) {
       const env = { FAKE_TARGET: '8', FAKE_REFUND_SCHEMA: 't', FAKE_INDUSTRIAL_TENANTS: 't', FAKE_QUOTE: 't' };

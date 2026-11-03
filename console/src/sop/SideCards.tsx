@@ -159,29 +159,35 @@ export const PolicyCard = memo(function PolicyCard({
   const terms = (view: NonNullable<typeof published>) => (
     <>
       <ol className="sop-policy-clauses">
-        {view.clauses.map((c) => (
+        {view.clauses.map((c, i, all) => (
           <li key={c.id}>
-            <strong>{c.title}</strong>
+            {all[i - 1]?.title !== c.title && <strong>{c.title}</strong>}
             <p>{c.text}</p>
           </li>
         ))}
       </ol>
-      <dl className="sop-policy-facts">
-        <div>
-          <dt>审批阈值</dt>
-          <dd>{money(view.approvalThresholdYuan ?? 0, ' 元')}</dd>
-        </div>
-        <div>
-          <dt>自助退款</dt>
-          <dd>{view.selfService ? '已开启' : '未开启'}</dd>
-        </div>
-      </dl>
+      {(view.approvalThresholdYuan !== null || view.selfService !== null) && (
+        <dl className="sop-policy-facts">
+          {view.approvalThresholdYuan !== null && (
+            <div>
+              <dt>审批阈值</dt>
+              <dd>{money(view.approvalThresholdYuan, ' 元')}</dd>
+            </div>
+          )}
+          {view.selfService !== null && (
+            <div>
+              <dt>自助退款</dt>
+              <dd>{view.selfService ? '已开启' : '未开启'}</dd>
+            </div>
+          )}
+        </dl>
+      )}
     </>
   );
   return (
     <section className="sop-card sop-policy-card" aria-labelledby={titleId}>
       <h3 id={titleId} className="sop-card-title">
-        {cjk('退改条款')}
+        {cjk('政策条款')}
       </h3>
       <p className="sop-tools-note">{cjk('已发布')}</p>
       {terms(published)}

@@ -43,6 +43,22 @@ if (!process.env.PG_TEST_URL) {
   let foreignBefore = '';
   const foreign = async () =>
     JSON.stringify(await fx.query('select tenant_id,id,state from conversations where tenant_id<>$1 order by tenant_id,id', [id]));
+  // 17 R3：真实 resetTrial/CLI 必须通过既有行权函数级联清评分；不写评分假门面。
+  async function score(tenantId: string, conversationId: string) {
+    const turnId = randomUUID();
+    await fx.query(
+      `insert into turn_traces(tenant_id,id,conversation_id,started_at,duration_ms,outcome,prefix_hash,catalog_versions,calls,llm)
+      values ($1,$2,$3,now(),1,'replied',$4,'{}','[]','[]')`,
+      [tenantId, turnId, conversationId, '0'.repeat(64)],
+    );
+    await fx.query(
+      `insert into turn_reviews(tenant_id,turn_id,rating,reviewer_user_id)
+      values ($1,$2,'good',$3)`,
+      [tenantId, turnId, randomUUID()],
+    );
+    return turnId;
+  }
+  const hasScore = async (turnId: string) => (await fx.query('select 1 from turn_reviews where turn_id=$1', [turnId])).length === 1;
   async function review() {
     approval = {
       allowlist: [{ tenantId: id, slug: 'trial-industry', packId: 'industrial', kind: 'standard', isHost: false }],
@@ -174,8 +190,10 @@ if (!process.env.PG_TEST_URL) {
         [],
       ),
     );
+    const foreignScore = await score(formalId, 'wecom:wmFormal');
     foreignBefore = await foreign();
     await read((tx) => writeSeedSessions(tx, [old], []));
+    const originalScore = await score(id, old.id);
     await review();
     const original = structuredClone(approval!);
     await rejectUnchanged(
@@ -295,6 +313,8 @@ if (!process.env.PG_TEST_URL) {
     const completed = await cli(batch);
     assert.equal(completed.code, 0, completed.output);
     await read(assertTrialResetComplete);
+    assert.equal(await hasScore(originalScore), false, '真实 CLI 重置后原试用评分消失');
+    assert.equal(await hasScore(foreignScore), true, '另一租户评分保留');
     assert.equal(await authSessionTouch(app.db, id, tokenHash, new Date()), null, '旧 cookie 失效');
     const rows = await read(trialConversations);
     assert.equal(rows.length, 5);
@@ -339,9 +359,16 @@ if (!process.env.PG_TEST_URL) {
     assert.equal((await read(trialConversations)).length, 5);
     // 新一批同时清种子与真实消息，老订单去关联留存，新链接不可复用。
     await read((tx) => writeSeedSessions(tx, [{ ...old, id: 'wecom:wmReset' }], []));
+    const seedScore = await score(id, firstIds[0]!);
+    const realScore = await score(id, 'wecom:wmReset');
     await review();
     const second = await cli();
     assert.equal(second.code, 0, second.output);
+    assert.equal(await hasScore(seedScore), false, '种子评分随真实重置消失');
+    assert.equal(await hasScore(realScore), false, '真实试用评分随重置消失');
+    assert.equal(await hasScore(foreignScore), true, '重置种子/真实会话不伤另一租户评分');
+    assert.deepEqual(await fx.query('select count(*)::int n from turn_reviews where tenant_id=$1', [id]), [{ n: 0 }]);
+    console.log('PASS 17 验收 3：真实 resetTrial/CLI 清除种子与试用评分，不伤另一租户');
     assert.ok((await read(trialConversations)).every((r) => !firstIds.includes(r.id)));
     assert.equal((await read(trialOrderIds)).length, 4);
     const oldOrders = await fx.query<{ session_id: string | null; data: Record<string, unknown> }>(

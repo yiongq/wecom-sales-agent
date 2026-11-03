@@ -220,6 +220,8 @@ export type ToolResult = string;
 export interface MoneyEntry {
   fen: number;
   label: string;
+  /** 金额所属对象，由包定义；核心只比较相等，不解释内容。 */
+  subject?: string;
 }
 
 export interface ToolSpec<Context = ToolContext> {
@@ -600,6 +602,10 @@ export interface ShapePolicy {
 export interface ReplyGuardContext extends GuardContext<GuardContextTypes & { flags: ReplyGuardFlags }> {
   raw: string;
   inputText: string;
+  /** 本轮正在接受、发送时才落账的报价单；不用于跟进。 */
+  acceptingOrderId?: string;
+  /** 本轮预取及模型工具调用新记入的金额。 */
+  turnMoney(): readonly MoneyEntry[];
   /** 本轮开始时捕获的已发布 policy 快照与 policyHash（07 R1，同 TurnContext）：整轮沿用，运行时不读草稿；核心以 unknown 持有 */
   policy?: unknown;
   policyHash?: string;
@@ -894,6 +900,8 @@ export function boundPack(): PackBinding | null {
 export interface EnginePackHooks {
   quoteRejectedText?(order: LineOrder): string;
   quoteWithdrawnText?(order: LineOrder): string;
+  /** 客户确认的报价在发送前失效时，这一轮对客户说的话；不提供时用 fallbackReply。 */
+  quoteAcceptStaleText?(session: Session, state: ReturnType<typeof import('./order-view.js').quoteState>): string;
   afterSales?(input: AfterSalesInput): AfterSalesStep | null;
   isComplaint(text: string): boolean;
   isHandoffIntent(text: string): boolean;

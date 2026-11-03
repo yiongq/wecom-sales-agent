@@ -172,7 +172,7 @@
   display: none;
 }
 @media (min-width: 1440px) {
-  @container (min-width: 1280px) {
+  @container (min-width: 1100px) {
     .sop-body {
       grid-template-columns: 264px minmax(0, 1fr) 296px;
     }
@@ -1337,7 +1337,7 @@
  * @codemirror/merge 自带的红绿只有浅色一套，都盖掉；选择器比它的主题多一层，与插入顺序无关
  */
 @media (min-width: 1440px) {
-  @container (min-width: 1280px) {
+  @container (min-width: 1100px) {
     .sop-body.is-merging {
       grid-template-columns: 264px minmax(0, 1fr);
     }

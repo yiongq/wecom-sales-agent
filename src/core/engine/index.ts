@@ -34,6 +34,7 @@ import type { PrefetchedCall } from '../llm/types.js';
 import { createToolRegistry } from '../tools/registry.js';
 import type {
   DeterministicReply,
+  MoneyEntry,
   PrefetchResult,
   TurnContext,
   TurnToolContext,
@@ -52,7 +53,7 @@ import { promptHashes } from '../../config/hashes.js';
 import { emergencyReason, HANDOFF_REASON, isTerminalStage, enterHandoff, terminalStageKey } from '../../handoff/record.js';
 import { TAKEN_OVER_NOTE, takeoverGen, prepareChannel, pushToChannel, awaitCommit } from '../../handoff/takeover.js';
 import { requestRefund } from '../../payment/refunds.js';
-import { recordQuoteAccepted } from '../../payment/orders.js';
+import { acceptanceState, recordQuoteAccepted } from '../../payment/orders.js';
 import { createHandoffTriggers, type SensitiveCategory } from '../../handoff/trigger-rules.js';
 import {
   awaitingConsent,
@@ -380,17 +381,19 @@ async function handleMessageInner(
     if (state.takenOver()) return state.unsentTakenOver();
     if (deterministic.handoff && (!deterministic.handoff.reason.trim() || [...deterministic.handoff.reason].length > 120))
       throw new Error('行业转人工原因必须为 1–120 字');
-    const statePatch = intake?.statePatch || deterministic.statePatch ? { ...intake?.statePatch, ...deterministic.statePatch } : undefined;
+    const settled = settleAcceptance(session, runtime, deterministic, deterministic.text);
+    const statePatch =
+      intake?.statePatch || settled.effects?.statePatch ? { ...intake?.statePatch, ...settled.effects?.statePatch } : undefined;
     applyTurnEffects(session, runtime, { statePatch });
     intake?.commitResults();
-    const reply = cleanText(answerIdentity(state.text, deterministic.text));
+    const reply = cleanText(answerIdentity(state.text, settled.text));
     const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
     recordQuoteStates(msg, session);
     session.messages.push(msg);
     saveSession(session);
     if (deterministic.handoff)
       enterHandoff(session, { kind: 'pack', reason: deterministic.handoff.reason, at: Date.now(), quote: cleanText(state.text, 200) });
-    applyTurnEffects(session, runtime, { notify: deterministic.notify });
+    applyTurnEffects(session, runtime, { notify: settled.effects?.notify }, settled.at);
     if (effects) saveSession(session);
     return done('deterministic', { text: reply, stage: session.stage, ...(session.handedOver ? { handoff: true } : {}) }, msg);
   }
@@ -414,11 +417,12 @@ async function handleMessageInner(
       // 供应商内容审核拦截：重试也是同样结果，回包里的离题话术兜住，不抛给渠道（06 第 14 步验收）
       if (isContentFiltered(error)) {
         console.warn(`[engine] 模型供应商的内容审核拦下了这一轮，已回固定话术（会话 ${convLabel(sessionId)}）`);
-        const reply = cleanText(brandTexts(runtime, state.binding.brand).offTopicReply);
+        const settled = settleAcceptance(session, runtime, state.prefetchEffects, brandTexts(runtime, state.binding.brand).offTopicReply);
+        const reply = cleanText(settled.text);
         const msg: ChatMessage = { role: 'agent', content: reply, at: Date.now() };
         recordQuoteStates(msg, session);
         session.messages.push(msg);
-        applyTurnEffects(session, runtime, state.prefetchEffects);
+        applyTurnEffects(session, runtime, settled.effects, settled.at);
         saveSession(session);
         return done('deterministic', { text: reply, stage: session.stage }, msg);
       }
@@ -430,14 +434,35 @@ async function handleMessageInner(
   return runtime.erp ? withErpTurn(complete) : complete();
 }
 
+/**
+ * 判定接受之后还隔着模型调用和异步步骤，报价可能已撤回、被取代或过期（10 验收 6）。发送前最后一个同步段再核一次：
+ * 失效就丢掉这组效果（它们只为这次接受而写），回复换成包给的实话；已付款不用再确认，回复不动。
+ */
+function settleAcceptance(
+  session: Session,
+  runtime: PackBinding['runtime'],
+  effects: PrefetchResult['effects'],
+  text: string,
+): { effects: PrefetchResult['effects']; text: string; at?: number } {
+  const notify = effects?.notify;
+  if (notify?.reason !== 'quote_accepted') return { effects, text };
+  const at = Date.now();
+  const state = acceptanceState(session, notify.orderId, at);
+  if (state === 'approved') return { effects, text, at };
+  if (state === 'paid') return { effects: undefined, text };
+  const stale = runtime.engineHooks.quoteAcceptStaleText?.(session, state) ?? runtime.engineHooks.fallbackReply(session.stage);
+  noteGuard('quote_accept_stale', text, stale, 'replace');
+  return { effects: undefined, text: stale };
+}
+
 /** 与本轮回复处在同一同步保存段；不单独提交预取的效果。 */
-function applyTurnEffects(session: Session, runtime: PackBinding['runtime'], effects: PrefetchResult['effects']): void {
+function applyTurnEffects(session: Session, runtime: PackBinding['runtime'], effects: PrefetchResult['effects'], at?: number): void {
   if (effects?.statePatch) {
     if (!runtime.sessionState) throw new Error('行业包未声明状态 schema');
     session.packState = runtime.sessionState.schema.parse({ ...session.packState, ...effects.statePatch });
   }
   const notify: DeterministicReply['notify'] = effects?.notify;
-  if (notify?.reason === 'quote_accepted') recordQuoteAccepted(session, notify.orderId);
+  if (notify?.reason === 'quote_accepted') recordQuoteAccepted(session, notify.orderId, at);
   if (notify?.reason === 'intake_unmatched')
     queueJobs(session.id, intakeUnmatchedNotifyOps(session.id, notify.intakeId, notify.lines, Date.now()));
 }
@@ -445,6 +470,7 @@ function applyTurnEffects(session: Session, runtime: PackBinding['runtime'], eff
 interface TurnState {
   onLimited(): void;
   prefetchEffects?: PrefetchResult['effects'];
+  moneyBefore: ReadonlySet<MoneyEntry>;
   sessionId: string;
   text: string;
   channel: string;
@@ -522,6 +548,7 @@ function beginTurn(
     unsentTakenOver,
     calls: [],
     receivedAt,
+    moneyBefore: new Set(session.moneyLedger),
   };
 }
 
@@ -850,6 +877,8 @@ function turnTools(state: TurnState) {
         execute: async (args: unknown, ctx: TurnToolContext) => {
           ctx.cancel?.throwIfAborted();
           if (state.opts.stillCurrent && !state.opts.stillCurrent()) throw new Error('sandbox_binding_changed');
+          // 这一轮里有人接手：回复本来就不发，建单、换报价这些也不能再做（不变量 28）。
+          if (state.takenOver()) return JSON.stringify({ error: TAKEN_OVER_NOTE });
           ctx.hints = runtime.engineHooks.hintsFor(def.function.name, ctx);
           const result = await spec.execute(args, ctx);
           ctx.cancel?.throwIfAborted();
@@ -1020,6 +1049,9 @@ async function finishTurn(
     text: raw,
     raw,
     inputText: text,
+    acceptingOrderId: state.prefetchEffects?.notify?.reason === 'quote_accepted' ? state.prefetchEffects.notify.orderId : undefined,
+    // registry 每次新建条目对象，按身份取差集不受账本 slice(-200) 截断影响。
+    turnMoney: () => (session.moneyLedger ?? []).filter((entry) => !state.moneyBefore.has(entry)),
     policy: state.policy,
     policyHash: state.policyHash,
     stageAtStart,
@@ -1057,10 +1089,13 @@ async function finishTurn(
     recordSignals: noteSignals,
     appendMessage(message) {
       if (state.opts.stillCurrent && !state.opts.stillCurrent()) return;
+      const settled =
+        message.role === 'agent' && !effectsApplied ? settleAcceptance(session, runtime, state.prefetchEffects, message.content) : null;
+      if (settled) ctx.text = message.content = settled.text;
       recordQuoteStates(message, session);
       session.messages.push(message);
-      if (message.role === 'agent' && !effectsApplied) {
-        applyTurnEffects(session, runtime, state.prefetchEffects);
+      if (settled) {
+        applyTurnEffects(session, runtime, settled.effects, settled.at);
         effectsApplied = true;
       }
       if (message.role === 'agent') replyMsg = message;

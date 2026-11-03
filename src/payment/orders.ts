@@ -32,7 +32,7 @@ import {
   listAnyOrders,
   queueJobs,
 } from '../store.js';
-import { isLineOrder, orderTotalFen, quoteState, type LineOrder, type AnyOrder } from '../core/order-view.js';
+import { isLineOrder, orderTotalFen, quoteState, snapshotQuoteApproval, type LineOrder, type AnyOrder } from '../core/order-view.js';
 import type { ChatMessage, OrderStatus } from '../types.js';
 import { terminalStageKey } from '../handoff/record.js';
 import { quoteNotifyOps } from '../jobs/notify.js';
@@ -126,11 +126,13 @@ export async function approveQuote(orderId: string, actor: Actor): Promise<LineO
   if (order.approval.state === 'approved') {
     await quoteCommitted(order);
     recheckApproved(order, true);
+    // 批准写进内存后等提交超时，顾问看到失败才重试：客户还没收到链接就在这里补发。
+    if (quoteState(order, Date.now()) === 'approved' && !quoteLinkSent(order)) await sendApproved(order);
     return order;
   }
   if (storeLagging(order.sessionId)) throw new StoreLaggingError(order.sessionId);
   const now = Date.now();
-  order.approval = { ...order.approval, state: 'approved', decidedAt: now, decidedBy: who(actor) };
+  order.approval = snapshotQuoteApproval(order, { ...order.approval, state: 'approved', decidedAt: now, decidedBy: who(actor) });
   order.confirmedAt = now;
   order.confirmedBy = who(actor);
   for (const old of listAnyOrders()) {
@@ -143,9 +145,17 @@ export async function approveQuote(orderId: string, actor: Actor): Promise<LineO
   saveOrder(order);
   await quoteCommitted(order);
   recheckApproved(order);
-  await quoteNotice(order, `/quote/${order.id}`, '报价单发送失败，请另行告知客户。', true);
+  await sendApproved(order);
   return order;
 }
+
+/** 会话里已有这份报价的链接：顾问批准发过，或模型回复带过。 */
+function quoteLinkSent(order: LineOrder): boolean {
+  const path = `/quote/${order.id}`;
+  return !!getSession(order.sessionId)?.messages.some((message) => message.role === 'agent' && message.content.includes(path));
+}
+
+const sendApproved = (order: LineOrder) => quoteNotice(order, `/quote/${order.id}`, '报价单发送失败，请另行告知客户。', true);
 
 async function quoteNotice(order: LineOrder, text: string | undefined, failure: string, approved = false): Promise<void> {
   const session = getSession(order.sessionId);
@@ -194,11 +204,21 @@ export async function rejectQuote(orderId: string, actor: Actor, reason: string)
   return order;
 }
 
+function acceptanceTarget(session: import('../types.js').Session, orderId: string): LineOrder | null {
+  const order = getAnyOrder(orderId);
+  return order && isLineOrder(order) && order.sessionId === session.id && getSession(session.id) === session ? order : null;
+}
+
+/** 这张报价此刻的状态，只读。引擎在发送前用它复核，再用同一个 at 调 recordQuoteAccepted。 */
+export function acceptanceState(session: import('../types.js').Session, orderId: string, at: number): ReturnType<typeof quoteState> {
+  const order = acceptanceTarget(session, orderId);
+  return order ? quoteState(order, at) : 'invalid';
+}
+
 /** R8：同步段内把首次确认时间和提醒一起入会话快照。R11 的确定性回复复用此入口。 */
 export function recordQuoteAccepted(session: import('../types.js').Session, orderId: string, at = Date.now()): boolean {
-  const order = getAnyOrder(orderId);
-  if (!order || !isLineOrder(order) || !order.approval || order.sessionId !== session.id || getSession(session.id) !== session)
-    throw new QuoteStateError('invalid');
+  const order = acceptanceTarget(session, orderId);
+  if (!order?.approval) throw new QuoteStateError('invalid');
   if (order.approval.acceptedAt != null) return false;
   if (quoteState(order, at) !== 'approved') throw new QuoteStateError('invalid');
   if (storeLagging(session.id)) throw new StoreLaggingError(session.id);

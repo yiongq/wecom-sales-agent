@@ -788,7 +788,7 @@ function MemberSop({
       setOpening(null);
       if (draftKey !== null) {
         // 预填改了哪几节；自己写过的说明留着，只剩上一次的预填（或空着）时换成这一次的
-        const fill = notePrefill([...changed.map((r) => r.name), ...(policyChanged ? ['退改条款'] : [])]);
+        const fill = notePrefill([...changed.map((r) => r.name), ...(policyChanged ? ['政策条款'] : [])]);
         setNote((n) => (n.trim() === '' || n === prefill ? fill : n));
         setPrefill(fill);
         setPublishError(null);
@@ -1115,7 +1115,7 @@ function MemberSop({
     draft || changed.length > 0
       ? {
           changed: changed.length,
-          same: policyChanged ? '退改条款有改动' : sameAs(compared, online),
+          same: policyChanged ? '政策条款有改动' : sameAs(compared, online),
           hashes: check.result
             ? ([
                 ['prompt', check.result.promptHash.slice(0, 12)],
@@ -1356,7 +1356,7 @@ function MemberSop({
           limit={quota.limit}
           block={block}
           opening={opening !== null}
-          unchanged={policyChanged ? '草稿修改了退改条款' : `草稿${sameAs(compared, online)}`}
+          unchanged={policyChanged ? '草稿修改了政策条款' : `草稿${sameAs(compared, online)}`}
           // 页头吸顶时状态句藏起来，没保存上要在常驻的发布条上也看得见（409 另有横幅，滚进视口）
           saveFailed={saver.status.kind === 'failed'}
           onRetrySave={saver.flush}

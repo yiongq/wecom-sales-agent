@@ -9,9 +9,18 @@ import { live } from './live.js';
 import { createIntake } from './intake.js';
 import { normalizePartNo } from './normalize.js';
 import { handoffVocab } from './handoff-vocab.js';
-import { industrialReplyGuard, industrialFollowupGuard, rfqTrimStep, rfqTrimFollowupStep } from './guards.js';
+import {
+  industrialReplyGuard,
+  PROMISE_FALLBACK,
+  industrialFollowupGuard,
+  quoteClaimStep,
+  rfqTrimStep,
+  rfqTrimFollowupStep,
+  staleAcceptText,
+  QUOTE_WITHDRAWN,
+} from './guards.js';
 import { IndustrialPolicySchema, quoteNotes } from './policy.js';
-import { preModel, contextNote, prefetch, beforeTool } from './turn.js';
+import { FIXED, preModel, contextNote, prefetch, beforeTool, mentionedParts } from './turn.js';
 import { intakeNewer, intakeNotes } from './intake-turn.js';
 import { sopSections, templates, contractRules, hardRequirements } from './sop.js';
 import { fixedReplies, consistencyRules } from './fixed-replies.js';
@@ -20,7 +29,7 @@ import { isComplaint, isHandoffIntent } from './handoff-intent.js';
 // R1 / R17：公开工业包的完整运行时入口，也是部署镜像识别标记。
 import { getAnyOrder, type PackRuntime, type PackSources, type Session, type SalesStage } from '../../core/pack-api.js';
 import { industrial } from './console-pack.js';
-import { partCatalog, MAX_QTY, PartSchema, priceLine } from './catalog.js';
+import { partCatalog, MAX_QTY, PartSchema, priceLine, type Part } from './catalog.js';
 import { StateSchema, readState, resetKeys } from './state.js';
 import { createIndustrialTools } from './tools.js';
 import { industrialPolicy } from './policy.js';
@@ -34,6 +43,18 @@ const profileFields = [
   { key: 'usage', label: '用途' },
 ];
 export function createIndustrialRuntime(sources: PackSources): PackRuntime {
+  const parsedParts = new WeakMap<readonly unknown[], Part[]>();
+  const subjectMentions = (text: string) => {
+    const items = sources.currentCatalog().items.part ?? [];
+    let parts = parsedParts.get(items);
+    if (!parts) {
+      parts = items.map((part) => PartSchema.parse(part));
+      parsedParts.set(items, parts);
+    }
+    return mentionedParts(text, sources, parts).flatMap((mention) =>
+      mention.match === 'exact' ? [{ subject: normalizePartNo(mention.parts[0]!.partNo), start: mention.start, end: mention.end }] : [],
+    );
+  };
   const orders = (session: Session) =>
     session.orderIds.map(getAnyOrder).filter((order) => order && 'v' in order && order.sessionId === session.id);
   return {
@@ -141,14 +162,19 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     fixedReplies,
     consistencyRules,
     knownFields: { names: industrial.entities[0]!.fields.map((field) => field.key), sourceFiles: ['src/packs/industrial/catalog.ts'] },
-    replyAnchors: { markdown: 'industrial_claims', 'takeover_check:post': 'rfq_trim' },
+    // 补建要算进这一轮的阶段，所以阶段推进排在 quote_claim 之后。
+    replyAnchors: { stage_advance: 'quote_claim', markdown: 'industrial_claims', 'takeover_check:post': 'rfq_trim' },
     replySteps: [
+      quoteClaimStep(),
       industrialReplyGuard(sources),
       { ...linkWhitelistStep(), after: ['shape_check'] },
       {
         ...moneyProvenanceStep({
           staticAmounts: (raw) => Object.values(IndustrialPolicySchema.parse(raw).shipping),
           fallback: '金额需要先试算，请告诉我型号和数量。',
+          acceptedFallback: FIXED.accepted,
+          refusal: PROMISE_FALLBACK,
+          subjectMentions,
         }),
         after: ['stage_advance', 'link_whitelist'],
       },
@@ -158,7 +184,10 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
       linkWhitelistFollowupStep(),
       industrialFollowupGuard(sources),
       {
-        ...moneyProvenanceFollowupStep({ staticAmounts: (raw) => Object.values(IndustrialPolicySchema.parse(raw).shipping) }),
+        ...moneyProvenanceFollowupStep({
+          staticAmounts: (raw) => Object.values(IndustrialPolicySchema.parse(raw).shipping),
+          subjectMentions,
+        }),
         after: ['industrial_claims'],
       },
       rfqTrimFollowupStep(sources),
@@ -178,7 +207,8 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
       resetSession() {},
       paidText: () => '付款已收到',
       quoteRejectedText: () => '这份报价需要顾问再核对一下，顾问会直接联系您',
-      quoteWithdrawnText: () => '这份报价单已撤回，顾问会跟您重新确认',
+      quoteWithdrawnText: () => QUOTE_WITHDRAWN,
+      quoteAcceptStaleText: staleAcceptText,
     },
     vocab: { handoff: handoffVocab, dejargon: { english: {}, internal: [] } },
     thresholds: {

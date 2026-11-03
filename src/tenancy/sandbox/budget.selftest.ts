@@ -238,6 +238,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<import('
   };
   const orderSession = scope(orderBox.rt, () => store.getOrCreateSession('sbx-write-once', 'simulator'));
   const route = scope(orderBox.rt, () => orderBox.rt.pack.runtime.retrievalItems()[0]!.code);
+  const departDate = todayIso(new Date(Date.now() + 30 * 86_400_000));
   const fetchBeforeWrite = globalThis.fetch;
   let orderRequests = 0;
   globalThis.fetch = async () => {
@@ -251,7 +252,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<import('
               {
                 id: 'write-once',
                 type: 'function',
-                function: { name: 'create_order', arguments: JSON.stringify({ routeId: route, travelers: 2, departDate: '2026-11-01' }) },
+                function: { name: 'create_order', arguments: JSON.stringify({ routeId: route, travelers: 2, departDate }) },
               },
             ],
           },
@@ -261,7 +262,7 @@ async function suite(db: Db, q: Query, acquire: (id: string) => Promise<import('
     });
   };
   try {
-    await scope(orderBox.rt, () => handleMessage(orderSession.id, '就订这个，2个人，2026-11-01出发', 'simulator'));
+    await scope(orderBox.rt, () => handleMessage(orderSession.id, `就订这个，2个人，${departDate}出发`, 'simulator'));
     check(() => assert.equal(orderWrites, 1, '写型工具已执行后预算不足不重跑 mock'));
     check(() => assert.equal(orderSession.orderIds.length, 1, '预算收尾保留唯一已创建订单'));
     check(() => assert.equal(orderRequests, 1, '第二次往返预占失败不发送'));

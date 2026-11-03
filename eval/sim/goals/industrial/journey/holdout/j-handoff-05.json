@@ -1,0 +1,18 @@
+{
+  "id": "j-handoff-05",
+  "pack": "industrial",
+  "maxTurns": 12,
+  "persona": "你是合成采购客户。先表达人工诉求，销售问才补是轴承选型，需要人接手，本轮拒绝自动报价。转人工即结束。",
+  "customerScript": ["请转人工客服，我要跟人沟通这轮采购。"],
+  "journey": {
+    "family": "必须转人工",
+    "split": "holdout",
+    "expect": {
+      "end": "handoff",
+      "kinds": ["request"]
+    },
+    "facts": [],
+    "baselineScript": ["请转人工客服，我要跟人沟通这轮采购。"],
+    "modelFree": true
+  }
+}

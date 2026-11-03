@@ -272,9 +272,9 @@ a.cell-link:focus-visible {
   line-height: 20px;
   color: var(--text-3);
 }
-/* 更新列：13 text-3，「小林 · 今天13:40」 */
+/* 更新列：12 text-3，「系统导入 · 今天13:40」在 152 宽里放得下 */
 .cell-updated {
-  font-size: 13px;
+  font-size: 12px;
   line-height: 20px;
   color: var(--text-3);
 }

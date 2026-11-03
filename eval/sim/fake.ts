@@ -15,16 +15,35 @@ export interface FakeStep {
   reasoning?: number;
   /** 等这么久再回；客户端先断开就不回（自测里造「跑到一半被杀」） */
   delayMs?: number;
+  status?: number;
+  errorCode?: number;
+  /** 直接断开连接（自测里造接口超时、断连） */
+  destroy?: boolean;
 }
 export async function fakeService(): Promise<{
   url: string;
   script: FakeStep[];
   requests: { model: string; messages: WireMessage[] }[];
+  readonly inFlight: number;
+  readonly maxInFlight: number;
   close(): Promise<void>;
 }> {
   const script: FakeStep[] = [];
   const requests: { model: string; messages: WireMessage[] }[] = [];
+  let inFlight = 0;
+  let maxInFlight = 0;
   const server = http.createServer(async (req, res) => {
+    inFlight++;
+    maxInFlight = Math.max(maxInFlight, inFlight);
+    let finished = false;
+    const finish = () => {
+      if (!finished) {
+        finished = true;
+        inFlight--;
+      }
+    };
+    res.once('finish', finish);
+    res.once('close', finish);
     const chunks: Buffer[] = [];
     for await (const c of req) chunks.push(Buffer.from(c));
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { model: string; messages: WireMessage[]; input?: string[] };
@@ -55,6 +74,15 @@ export async function fakeService(): Promise<{
       });
       if (res.destroyed) return;
     }
+    if (step.destroy) {
+      res.destroy();
+      return;
+    }
+    if (step.status || step.errorCode) {
+      res.statusCode = step.status ?? 200;
+      res.end(JSON.stringify({ error: { code: step.errorCode ?? 'fake_error' } }));
+      return;
+    }
     const message = step.tools
       ? {
           content: null,
@@ -82,6 +110,12 @@ export async function fakeService(): Promise<{
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     script,
     requests,
+    get inFlight() {
+      return inFlight;
+    },
+    get maxInFlight() {
+      return maxInFlight;
+    },
     async close() {
       server.closeAllConnections();
       await new Promise<void>((resolve, reject) => server.close((e) => (e ? reject(e) : resolve())));

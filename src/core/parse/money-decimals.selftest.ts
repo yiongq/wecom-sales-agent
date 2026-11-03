@@ -7,6 +7,7 @@ import {
   parseAmounts,
   parseCnAmounts,
   parseMoney,
+  parseMoneyHits,
   parseRangeEndpoints,
   parseSpokenAmounts,
   spokenMoney,
@@ -30,10 +31,20 @@ function eq(actual: unknown, expected: unknown, label: string): void {
 
 const amountsOf = (text: string, options: MoneyParseOptions = dec): number[] => parseMoney(text, options).map((m) => m.amount);
 
+assert.deepEqual(parseMoneyHits('单价３．６５元，运费两千元。', dec), [
+  { amount: 3.65, at: 2, end: 7 },
+  { amount: 2000, at: 10, end: 12 },
+]);
+
 /** 正例：parseMoney 读出的金额恰为 want；只有一个金额时，客户侧的 spokenMoney 也读出同一个数 */
 function yes(text: string, want: number[], options: MoneyParseOptions = dec): void {
   positives += 1;
   eq(amountsOf(text, options), want, `正例 ${text}`);
+  eq(
+    parseMoneyHits(text, options).map((hit) => hit.amount),
+    want,
+    `位置解析 ${text}`,
+  );
   if (want.length === 1) eq(spokenMoney(text, options).amounts, want, `正例（客户侧）${text}`);
 }
 
@@ -351,6 +362,22 @@ eq(amountsOf('买一块10块钱的'), [10], '句子：一块是量词，10块钱
 eq(parseMoney('3块6毛5', dec), [{ amount: 3.65, currency: 'CNY', unit: '块' }], '3块6毛5 的币种与单位');
 eq(parseMoney('三块六毛五', dec), [{ amount: 3.65, currency: 'CNY', unit: '块' }], '三块六毛五 的币种与单位');
 eq(parseMoney('单价3.80', dec), [{ amount: 3.8, currency: null, unit: '' }], '不带单位不推断币种');
+
+// ---------------- 价格词后面跟的是型号或数量档：16 验收里这样的整句被当成编价删掉 ----------------
+no('您已确认接受该报价：6213-2RS');
+no('有效报价：6211-2RS 密封深沟球轴承');
+no('报价：6205ZZ');
+no('报价 M8×30');
+no('单价：8×30');
+no('单价：1-9件');
+no('单价 1~9 件');
+no('单价：1–9个');
+yes('单价：1-9件 21.10元，10件起 18.99元', [21.1, 18.99]);
+yes('报价：6213-2RS，合计425.70元', [425.7]);
+// 真报价不受影响：裸数、货币缩写和区间端点照旧。
+yes('单价：3.80', [3.8]);
+yes('单价3.8RMB', [3.8]);
+yes('报价 12.5，请确认', [12.5]);
 
 // ---------------- PackRuntime.money 是可选的选项成员（类型层面，typecheck 检查） ----------------
 const noMoney: Pick<PackRuntime, 'money'> = {};

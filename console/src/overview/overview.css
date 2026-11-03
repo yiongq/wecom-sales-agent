@@ -212,6 +212,7 @@ a.ov-todo:hover .ov-todo-action {
 @media (max-width: 1279px) {
   .ov-todos-row {
     flex-direction: column;
+    align-items: stretch;
   }
   .ov-todos-kpi {
     flex: 0 0 auto;
@@ -569,9 +570,170 @@ a.ov-stage:hover {
   color: var(--text-3);
 }
 
+/* ---------------- 趋势（17 R10）：六张小图，三列；颜色只取 brand.css 的变量，亮暗同一套规则 ---------------- */
+.ov-trends-block {
+  margin-top: 28px;
+}
+.ov-trends-block .ov-head {
+  flex-wrap: wrap;
+}
+.ov-trends-block .is-refreshing {
+  opacity: 0.6;
+}
+.ov-trend-computed,
+.ov-trend-stale {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 0 0 8px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.ov-trend-stale {
+  color: var(--warning);
+}
+.ov-trends {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.ov-trend {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 16px 20px 12px;
+  border-radius: var(--r-lg);
+  background: var(--panel);
+  box-shadow: var(--ring);
+}
+.ov-trend-label {
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 500;
+  color: var(--text-2);
+}
+.ov-trend-value {
+  margin-top: 4px;
+  font-size: 22px;
+  line-height: 30px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+}
+.ov-trend-caption {
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.ov-chart {
+  margin: 8px -4px 0;
+  border-radius: var(--r-xs);
+  touch-action: pan-y;
+}
+.ov-chart:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.ov-chart svg {
+  display: block;
+}
+.ov-chart-grid {
+  stroke: var(--divider);
+  stroke-width: 1;
+}
+.ov-chart-tick {
+  fill: var(--text-3);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+.ov-chart-missing {
+  fill: var(--subtle);
+}
+.ov-chart-cross {
+  stroke: var(--control-border);
+  stroke-width: 1;
+}
+.ov-chart-column {
+  fill: var(--accent);
+}
+/* 不是完整日：空心，形状就能分辨，不只靠颜色深浅 */
+.ov-chart-column.is-partial {
+  fill: var(--panel);
+  stroke: var(--accent);
+  stroke-width: 1.5;
+}
+.ov-chart-line {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.ov-chart-line.is-partial {
+  stroke-dasharray: 3 4;
+}
+.ov-chart-dot {
+  fill: var(--accent);
+  stroke: var(--panel);
+  stroke-width: 2;
+}
+.ov-trend-notes {
+  margin: 12px 0 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--text-3);
+}
+.ov-trend-toggle {
+  margin-left: -8px;
+}
+.ov-trend-table-wrap {
+  margin-top: 8px;
+  overflow-x: auto;
+  border-radius: var(--r-lg);
+  box-shadow: var(--ring);
+}
+.ov-trend-table-wrap:focus-visible {
+  outline: 2px solid var(--focus);
+  outline-offset: 2px;
+}
+.ov-trend-table {
+  width: 100%;
+  min-width: 860px;
+  border-collapse: collapse;
+  font-size: 13px;
+  line-height: 20px;
+  font-variant-numeric: tabular-nums;
+}
+.ov-trend-table th,
+.ov-trend-table td {
+  height: 36px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--divider);
+  text-align: right;
+  white-space: nowrap;
+  color: var(--text);
+}
+.ov-trend-table thead th {
+  font-weight: 500;
+  color: var(--text-3);
+}
+.ov-trend-table tbody tr:last-child th,
+.ov-trend-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+.ov-trend-table th:first-child,
+.ov-trend-table td:nth-child(2),
+.ov-trend-table th:nth-child(2) {
+  text-align: left;
+}
+.ov-trend-table tbody th {
+  font-weight: 500;
+}
+
 /* ---------------- 窄屏（spec「可访问性与响应式」：375 宽不横向滚动） ---------------- */
 @media (max-width: 1279px) {
-  .ov-kpis {
+  .ov-kpis,
+  .ov-trends {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -582,7 +744,8 @@ a.ov-stage:hover {
   }
 }
 @media (max-width: 599px) {
-  .ov-kpis {
+  .ov-kpis,
+  .ov-trends {
     grid-template-columns: minmax(0, 1fr);
   }
   /* 待办行：类型挪到对象上面，操作收起（整行本身就是链接） */

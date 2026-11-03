@@ -94,7 +94,17 @@ export async function purgeFinishedJobs(tx: Tx, now: Date): Promise<number> {
   return r?.n ?? 0;
 }
 
+/** 17：清理到期的日账本、业务快照与 coverage；返回受影响行数之和。 */
+export async function purgeOpsData(tx: Tx, now: Date): Promise<number> {
+  const { tenantId } = currentTenantCtx();
+  const [r] = rowsOf<{ n: number }>(
+    await tx.execute(sql`select purge_ops_data(${tenantId}::uuid, ${now.toISOString()}::timestamptz) as n`),
+  );
+  return r?.n ?? 0;
+}
+
 export interface EraseCounts {
+  reviews: number;
   attachments: number;
   conversations: number;
   messages: number;
