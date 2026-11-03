@@ -1,11 +1,13 @@
 # 16 · 工业询价仿真：批量跑全流程，出一份可信报告
 
-Status: ready
+Status: implemented
+Approved: implemented · 2026-11-03 · 「16 改 implemented， 上线」 · 对话
 Approved: ready · 2026-11-01 · 「16 改 ready，standard」 · 对话
 Tier: standard — 扩展评测目标与运行结果的格式，新增公开报告格式，评测跨到审批入口；本 spec 不改生产判定，不碰线上。owner 已于 2026-11-01 确认。
 Phase: 8 of the roadmap in [master-reference](../master-reference.md)「分阶段路线」。
 Depends on: [09](../09-quote-approval/spec.md) 的报价审批入口；[10](../10-industrial-rfq-pack/spec.md)、[12](../12-customer-files/spec.md) 的工业包与附件。实现排在 [17](../17-observability/spec.md) 之后，只对齐 17 R5 的耗时口径，不依赖其代码。
 Amends: [04](../04-industry-packs/spec.md) R11、[06](../06-reply-quality/spec.md) R2、[10](../10-industrial-rfq-pack/spec.md) R15 的模拟评测：只加新目标类型、新枚举值和新文件，现有目标、发布闸与判定不变。04、06、10 顶部已补反向标记。
+Revisions: 2026-11-03 owner 确认验收，原话「16 改 implemented， 上线」，翻 `implemented`：依据第 5 次留出集报告（`docs/reports/industrial-sim/2026-11-03/`，main 117/119、换客户模型 119/120，代码保证项 0）；判分覆盖不到的 4 类已知问题按 owner「先验收发版再修」在 `demo-v13` 发版后修，推算金额按设计不修。
 Revisions: 2026-11-01 owner 定 R3 和 R4 末句不一致的口径，原话「算通过」：报价单批准、确认都记下之后转人工，判通过；混淆矩阵照实计入多转。
 Revisions: 2026-11-01 回写留出集实测到 R9。
 Revisions: 2026-11-01 回写账单对账结果到 R9；开放问题 2 查实：线上开着对冲，配置与跑批相同。
