@@ -857,14 +857,13 @@ try {
     }
     // 同内容试算不阻止接受；数量、型号、版本、行数不同仍是新需求。
     for (const mode of ['same', 'qty', 'model', 'version', 'extra', 'pending', 'expired'] as const) {
-      const before = now;
       const session = fresh();
       const order = await pricedOrder(session, bearingB, 26);
       if (mode === 'pending') {
         order.approval!.state = 'pending';
         order.approval!.requestedAt = now;
       }
-      if (mode === 'expired') now = quoteValidUntil(order) + 1;
+      if (mode === 'expired') order.approval!.validUntil = now - 1;
       now++;
       if (mode === 'same') {
         mockAction = async (opts) => {
@@ -872,6 +871,7 @@ try {
           return '这张6211-2RS，26件的报价单已由顾问批准。';
         };
         await handleMessage(session.id, '这张是按6211-2RS、26件重出的并且顾问已批准的报价单吗？', 'wecom');
+        assert.deepEqual((await store.drainStore(5000)).undrained, []);
       } else
         await registry.execute(
           'quote_items',
@@ -902,9 +902,9 @@ try {
       mockAction = async () => '已确认您接受这份报价。';
       now++;
       const reply = await handleMessage(session.id, '好，这张按6211-2RS 26件出的报价单我确认没问题，接受这单，就按这个价格采购。', 'wecom');
+      assert.deepEqual((await store.drainStore(5000)).undrained, []);
       assert.equal(order.approval!.acceptedAt !== undefined, mode === 'same', mode);
       if (mode === 'same') assert.ok(!reply.text.includes(ACCEPT_ASK), reply.text);
-      if (mode === 'expired') now = before;
     }
     // A 已批准，更新的 B 待审；再试算 A 不应删掉草稿而错误指向 B。
     {
@@ -1026,11 +1026,10 @@ try {
     now++;
     if (mode === 'repeat') await handleMessage(session.id, '确认下单', 'wecom');
     const before = { confirmedQuoteAt: readState(session).confirmedQuoteAt, acceptedAt: order.approval!.acceptedAt };
-    const resume = now;
     const action = mockAction;
     mockAction = async (opts) => {
       if (mode === 'superseded') await opts.executeTool('create_quote_sheet', { items: [{ code: data.id, qty: 101 }] });
-      else if (mode === 'expired') now = quoteValidUntil(order) + 1;
+      else if (mode === 'expired') order.approval!.validUntil = now - 1;
       else if (mode === 'paid') await actions.markPaidByAdvisor(order.id, actor);
       else await actions.withdrawQuote(order.id, actor);
       if (mode === 'filtered') throw __llmTest.httpError(400, '{"code":1301}');
@@ -1065,7 +1064,6 @@ try {
       mode !== 'paid',
       mode,
     );
-    now = resume + 1;
   }
 
   // 确定性路径：判定之后还要等核对固定句。
@@ -1108,9 +1106,9 @@ try {
         const session = fresh();
         await estimate(session);
         const { order } = await make(session);
-        const resume = ++now;
-        await store.drainStore(5000);
-        now = quoteValidUntil(order) - margin;
+        now++;
+        assert.deepEqual((await store.drainStore(5000)).undrained, []);
+        order.approval!.validUntil = now + margin;
         Date.now = () => now++;
         const reply = await handleMessage(session.id, text, 'wecom').finally(() => {
           Date.now = clock;
@@ -1121,7 +1119,6 @@ try {
         assert.equal(session.messages.at(-1)!.content, reply.text, label);
         assert.equal(readState(session).confirmedQuoteAt !== undefined, recorded, label);
         assert.equal(await acceptanceJobs(order.id), recorded ? 1 : 0, label);
-        now = resume + 1;
       }
       assert.equal(outcomes.size, 2, `${text} ${filtered}：有效期末尾两种结果都要走到`);
     }
@@ -1134,10 +1131,9 @@ try {
     await estimate(session);
     const { order } = await make(session);
     now++;
-    const resume = now;
     const action = mockAction;
     mockAction = async () => {
-      now = quoteValidUntil(order) + 1;
+      order.approval!.validUntil = now - 1;
       return staleClaim;
     };
     assert.equal((await handleMessage(session.id, '确认下单，能开专票吗', 'wecom')).text, expiredText);
@@ -1155,7 +1151,6 @@ try {
     );
     assert.equal(order.approval!.acceptedAt, undefined);
     assert.equal(await acceptanceJobs(order.id), 0);
-    now = resume + 1;
   }
 
   // 复核只认本会话的这张报价；替换用的固定句已登记。
