@@ -1,6 +1,7 @@
 # 01 · Postgres 底座 + 配置入库 + 后台 v0
 
 Status: implemented
+Amended by: [18 · 代码出数、仿真闭环、主备切换与混合检索](../18-verifiable-upgrades/spec.md) — R5 增加可选的等锁启动（`TENANT_LOCK_WAIT=forever`）、失锁即停收与按租户的 epoch 栅栏；不设时启动与失锁行为不变。
 Amended by: [15 · 产品门面：单来官网、文档与设置中心](../15-product-surface/spec.md) — 只读成员投影及受限认证函数，保留 app 无登录表直接权限与成员变更 CLI（15 R4、R6）。
 Superseded in part by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md) — 产品库的 kind 只能是 `route` / `hotel`：「编辑规则」的 `CatalogKind`（第 564 行）、「DDL」里 `catalog_items.kind` 的 CHECK（第 781 行）、「后台 API 与页面」`/catalog/:kind` 的取值（第 1016–1021 行）、「导入、导出与回滚」`catalog-fix` 的 `--kind route|hotel`（第 1097 行）；「产品库：存储、快照、编辑、检索」导入时用 `RouteSchema` / `HotelSchema` 校验（第 550 行）；启动时没有 active 线路就拒绝：「两种模式与启动装载」第 7 步（第 236 行）、验收 8 末条（第 1244 行）与验收 13 的「没有 active 线路」（第 1283 行）。kind 改由包定义，库里只做格式检查，写入用包的 schema 校验，启动检查由包给出；旅游的取值、schema、`no_active_routes` 与文案都不变（08 R2）。按 08 的 plan 落地。
 Amended by: [08 · 核心去旅游化：产品种类、通用订单与金额](../08-pack-generalization/spec.md)（只做新增，全文见该 spec 顶部 `Amends:`：「两种模式与启动装载」的 `CatalogSnapshot` 加 `items`，`routes` / `hotels` 保留（第 185–192 行）；`ConfigStartupError` 的原因加 `catalog_startup`（第 261–266 行），见 08 R2）。

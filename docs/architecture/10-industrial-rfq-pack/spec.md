@@ -1,6 +1,7 @@
 # 10 · 第二个行业包：工业品询价（与演示租户）
 
 Status: implemented
+Superseded in part by: [18 · 代码出数、仿真闭环、主备切换与混合检索](../18-verifiable-upgrades/spec.md) — R3「匹配顺序」第 (4) 步与「结果」里 `ambiguous` 的排序（改为属性过滤加关键词与向量的融合名次，18 R5）；验收 9 的「v2 不新增审批种子字段」（v2 工业夹具新增审批种子与 `moneyLedger`，18 R2）。
 Superseded in part by: [15 · 产品门面：单来官网、文档与设置中心](../15-product-surface/spec.md) — R16「演示租户」的线上网页体验部署选择，改为复用现有工业租户作为 prod 试用公司；2026-10-27 R16 修订中产品登录页用租户品牌作主标题，改为平台主标题与租户辅助信息，渠道和客户页面仍按租户隔离（15 R10–R12）。
 Superseded in part by: [11 · 外部业务系统连接器：Odoo 实时库存（只读）](../11-erp-connector/spec.md) — R4「行属性」里判现货用的「库存」与 R6 自动批准条件（2）「每一行在建单这一刻都是库存 ≥ 数量」：租户有启用的 ERP 连接器时，库存以 ERP 的新鲜值为准，自动批准要求每一行都有新鲜值且新鲜值 ≥ 数量（11 R7）；没有连接器时仍按原文。另 R9 的库存与交期护栏只做收紧：连接器启用时，由 `rfqDraft` 推出的证据只认新鲜值（11 R7）。
 Superseded in part by: [12 · 客户发来的图片与文件：询价单识别与确认](../12-customer-files/spec.md) — R16 修订里工业包的 `non-text.image` / `non-text.file` / `non-text.video` 三句提示（图片、表格改由识别流程接管，视频改为转顾问）；R11「确认下单」的候选判定（有更新的待确认清单时不接受更早的报价）；R7 的 `packState` 上限（8,192 → 10,240 字节）、必留摘要与 `resetKeys`（加 `rfqIntake`）；不变量 5 的适用范围（只约束经模型回复管线的回复）。

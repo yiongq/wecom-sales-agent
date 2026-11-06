@@ -1,6 +1,7 @@
 # 16 · 工业询价仿真：批量跑全流程，出一份可信报告
 
 Status: implemented
+Amended by: [18 · 代码出数、仿真闭环、主备切换与混合检索](../18-verifiable-upgrades/spec.md) — R6 的 journal 每轮新增 `sessionBefore`；R7 的报告新增「疑似坏轮」附表；既有字段、章节与判分口径不变。
 Approved: implemented · 2026-11-03 · 「16 改 implemented， 上线」 · 对话
 Approved: ready · 2026-11-01 · 「16 改 ready，standard」 · 对话
 Tier: standard — 扩展评测目标与运行结果的格式，新增公开报告格式，评测跨到审批入口；本 spec 不改生产判定，不碰线上。owner 已于 2026-11-01 确认。
