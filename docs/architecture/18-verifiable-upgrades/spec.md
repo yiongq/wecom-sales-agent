@@ -1,6 +1,7 @@
 # 18 · 代码出数、仿真闭环、主备切换与混合检索
 
 Status: ready
+Revisions: 2026-11-07 第 1 步审查：验收 7 的 j-change-03#2 原标为第 5 次 main，核对 journal 实际出在第 5 次换客户模型那一遍（第 4、5 轮），改正标注，检测器口径不变。
 Revisions: 2026-11-07 第 4.1 步开工核对：`PartSchema` 的 `category` 只允许 4 个值，R5 原写「至少 8 个类目」会改产品库契约，改为「4 个类目下至少 8 种产品子类型」，评测意图不变。
 Revisions: 2026-11-07 owner 定 ready，原话「改 ready，heavy」：Status 改为 ready，Tier 定为 heavy；同次补 01、03、10、16 顶部反向标记及总参考登记。
 Revisions: 2026-11-07 按 Codex 只读交叉评审（12 条，Claude 逐条核实）就地修订，尚无代码依赖：R1 改为按可报价程度分三种模板、块计入 12 行 / 600 字预算、渲染与放置拆成两步、改用显式旗标 `blocksSuppressed`（原写「有步骤以 replace 结束就不附块」，局部纠正也返回 replace，会让客户拿不到价）；R2 的 `price_withheld` 只认商品金额，journal 增加 `sessionBefore`，v2 夹具增加 `moneyLedger` 与审批种子，定向复跑不用留出集场景；R3 增加发送前检查、`stale` 结果、重取锁后核对 epoch、`var/` 规则直接定案、失锁关闭监听、巡检两个端口；R4 改为每个间隔独立 msgid 的成对实验，补发截止时刻传到发送层；不变量与验收相应重排。
@@ -380,7 +381,7 @@ node --import tsx src/cli/wecom-dedup-probe.ts --account <key> --to <运行时�
 
 **仿真闭环**
 
-7. 检测器回溯第 1、2、4、5 次 main，下列已知问题每一条至少有一个检测器命中：第 2 次的 5 轮要价没拿到（j-change-03#5 第 2 轮、j-tier-01#1 第 3 轮、j-tier-01#4 第 3 轮、j-tier-05#2 第 3 轮、j-standard-02#1 第 2 轮）；第 4 次接受后还要确认的 31 段和 j-change-03#3 第 5 轮的旧单金额；第 5 次的 j-tier-05#5、j-change-03#2（候选改写）、j-injection-03#5（JSON 进回复）、j-tier-05#4、j-list-03#5、j-stock-03#4（删对的内容）。
+7. 检测器回溯第 1、2、4、5 次 main 与第 5 次换客户模型那一遍，下列已知问题每一条至少有一个检测器命中：第 2 次的 5 轮要价没拿到（j-change-03#5 第 2 轮、j-tier-01#1 第 3 轮、j-tier-01#4 第 3 轮、j-tier-05#2 第 3 轮、j-standard-02#1 第 2 轮）；第 4 次接受后还要确认的 31 段和 j-change-03#3 第 5 轮的旧单金额；第 5 次的 j-tier-05#5 第 5 轮（候选改写）、第 5 次换客户模型那一遍的 j-change-03#2 第 4、5 轮（推回旧型号）、j-injection-03#5（JSON 进回复）、j-tier-05#4、j-list-03#5、j-stock-03#4（删对的内容）。
 8. 第 5 步开发集新 journal 里确认的疑似，至少一条经 `promote.ts` 生成用例：在找到问题的提交上失败、修复后通过，并随 `pnpm test` 运行。开发集没有确认的疑似时，用自测里的合成 journal 走同一流程，并在 plan 记明。旧 journal 交给 `promote.ts` 时提示「只能手写用例」。
 9. 第 6 次报告的附表给出第 1、2、4、5、6 次每个检测器的疑似数、确认数和误报率，并注明第 3 次中止不计。
 
