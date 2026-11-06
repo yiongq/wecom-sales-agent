@@ -378,6 +378,7 @@ owner 对「宿主和定位都按推荐定吗」答「都按推荐」：对外�
 - 2026-11-01 implemented（11、14、15）：owner 原话「11 14 15 改 implemented」。三份随 `demo-v12-rc1` 联合上线，线上转正式模式，工业询价对外开放试用，旅游停用并保留为回归基线；线上证据与限制见各 plan 的上线记录。
 - 2026-11-01 owner 定 16 `ready`，原话「16 改 ready，standard」，决策卡 D1–D8 全部照 ★ 定案（「16 D1–D8 按推荐」「D3=A，D7=A」）。spec 见 [16 · 工业询价仿真](./16-industrial-sim/spec.md)（[docs/architecture/16-industrial-sim/](./16-industrial-sim/)）：用模型扮客户批量跑工业询价全流程，产出公开报告；只用合成数据，不连线上，不进 CI 和发布闸，整份费用上限 ¥45（账本口径）。Status 为 ready、Tier 为 standard，实现排在 17 之后。评审查出的确认识别和折扣承诺两个产品缺口走独立 PR，在冻结前修。
 - 2026-11-01 implemented（17）：owner 原话「翻 implemented」。人工抽检、差评回归草稿、7/30 天趋势、每日摘要、延迟告警、告警分级与运维手册已合入 `dev`，未发版未部署，两个线上开关默认关；Langfuse 只在本机按 3.122.0 验证。证据与限制见 [17 plan](./17-observability/plan.md)「第 10 步 验收逐条」。
+- 2026-11-07 owner 定 18 `ready`，原话「改 ready，heavy」，Tier 定为 heavy；决策卡 D1–D7 已全部照 ★ 定案（「都按推荐」）。spec 见 [18 · 代码出数、仿真闭环、主备切换与混合检索](./18-verifiable-upgrades/spec.md)：试算金额由代码渲染成价格块、仿真坏轮检测与回归用例生成、等锁主备加 epoch 栅栏、企微 msgid 去重实测、工业混合检索与 5000 条检索评测；用第 6 次留出集给前后数字。开工即调整 11-03 定的「功能收尾，只修 bug」。
 - 候选：
   - 第二个真实行业包：模板机制要靠它来验证。
   - 电商售后参考包。
