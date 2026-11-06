@@ -125,6 +125,16 @@ const NETWORK_BUILTINS = new Set(['http', 'https', 'net', 'tls', 'dns']);
 
 const IMPORT_RULES: ImportRule[] = [
   {
+    desc: '18 R2：仿真审计与检测器不 import src/packs、src/core/guards',
+    applies: (f) => ['eval/sim/audit.ts', 'eval/sim/triage.ts', 'eval/sim/promote.ts'].includes(f),
+    bad: (i) => under(i.target, 'src/packs/') || under(i.target, 'src/core/guards/'),
+  },
+  {
+    desc: '18 R2：检测器的运行时依赖限于 node 内置、独立审计与 journal',
+    applies: (f) => f === 'eval/sim/triage.ts',
+    bad: (i) => !i.typeOnly && !(i.pkg?.startsWith('node:') || ['eval/sim/audit.ts', 'eval/sim/journal.ts'].includes(i.target ?? '')),
+  },
+  {
     desc: '11 R2：连接器网络只经 src/net/egress.ts，不 import 网络内置模块',
     applies: checksConnectorNetwork,
     bad: (i) => NETWORK_BUILTINS.has(i.spec.replace(/^node:/, '').split('/')[0]),
