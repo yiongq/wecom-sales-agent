@@ -36,7 +36,7 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
     {
       def: def(
         'find_parts',
-        '收到型号即可查询，无需数量。query 是客户型号或名称，不是内部 code；仅多个候选时让客户选择',
+        '收到型号即可查询，无需数量。query 是客户型号或名称，不是内部 code；仅多个候选时让客户选择。精确命中可用 {{档位价}}，由系统填写档位金额，正文不写商品金额',
         { query: { type: 'string' }, category: { type: 'string' } },
         ['query'],
       ),
@@ -63,6 +63,7 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
         sources.saveSession(session);
         return JSON.stringify({
           match: found.match,
+          ...(found.match === 'exact' ? { block: '{{档位价}}' } : {}),
           parts: found.parts.map((part) => ({
             code: part.id,
             partNo: part.partNo,
@@ -70,7 +71,10 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
             unit: part.unit,
             specs: part.specs,
             moq: part.moq,
-            tiers: tiersOf(part),
+            tiers: tiersOf(part).map((tier, index, tiers) => ({
+              ...tier,
+              ...(tiers[index + 1] ? { maxQty: tiers[index + 1]!.minQty - 1 } : {}),
+            })),
             stock: part.stock >= part.moq ? '现货' : part.stock > 0 ? '部分现货' : '无现货',
             leadDays: part.leadDays,
             substitutes: part.substitutes ?? [],
@@ -89,7 +93,7 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
     {
       def: def(
         'quote_items',
-        '型号与数量齐全必须试算，一次最多30行。query 是客户型号或名称，不是内部 code；可直接匹配，单价与合计由代码计算',
+        '型号与数量齐全必须试算，一次最多30行。query 是客户型号或名称，不是内部 code；可直接匹配，单价与合计由代码计算。回复写 {{试算明细}}，由系统填写金额与交期，正文不写商品金额',
         {
           items: {
             type: 'array',
@@ -162,12 +166,19 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
           const fen = price.unitPriceFen! * qty;
           totalFen += fen;
           if (!Number.isSafeInteger(fen) || !Number.isSafeInteger(totalFen)) throw new Error('询价金额超出范围');
-          lines.push({ ...base, unitPrice: price.unitPriceFen! / 100, amount: fen / 100, delivery: price.attrs!['交期'] });
+          const nextTier = tiersOf(current).find((tier) => tier.minQty > qty);
+          lines.push({
+            ...base,
+            unitPrice: price.unitPriceFen! / 100,
+            amount: fen / 100,
+            delivery: price.attrs!['交期'],
+            ...(nextTier ? { nextTier } : {}),
+          });
         }
         cancel?.throwIfAborted();
         writeState(session, { rfqDraft: draft }, shown);
         sources.saveSession(session);
-        return JSON.stringify({ lines, ...(unmatched === 0 ? { total: totalFen / 100 } : {}), unmatched });
+        return JSON.stringify({ block: '{{试算明细}}', lines, ...(unmatched === 0 ? { total: totalFen / 100 } : {}), unmatched });
       },
       amounts(result) {
         const value = JSON.parse(result) as { lines?: { partNo: string; unitPrice?: number; amount?: number }[]; total?: number };

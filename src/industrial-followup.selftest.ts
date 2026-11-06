@@ -547,8 +547,10 @@ try {
     };
     for (let i = 0; i < 2; i++) {
       const reply = await handleMessage(multi.id, '请试算6205-2RS 2件', 'wecom');
+      // 18：正文只删行，保留9行正文加三行试算块，不再另补正文裁剪说明。
       assert.equal((reply.text.match(/6205-2RS/g) ?? []).length, 10);
-      assert.match(reply.text, /另外 5 行已算好/);
+      assert.doesNotMatch(reply.text, /行已算好/);
+      assert.match(reply.text, /试算：[\s\S]*小计20\.00元[\s\S]*合计20\.00元/);
       assert.ok(reply.text.split('\n').length <= 12);
     }
     action = async (opts) => {

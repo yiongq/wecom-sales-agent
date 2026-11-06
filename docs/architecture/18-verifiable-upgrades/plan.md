@@ -21,13 +21,13 @@
   - [ ] 2.1 16 的 journal 每轮写 `sessionBefore`（`eval/sim/runtime.ts`），旧字段不变
   - [ ] 2.2 v2 工业夹具加 `moneyLedger` 与审批种子（`eval/v2/schema.ts`、worker）
   - [ ] 2.3 `eval/sim/promote.ts` 与自测：订单 id 换序号、预取不进脚本、旧 journal 报「只能手写用例」
-- [ ] 3. 价格块
-  - [ ] 3.1 `pack-api` 的 `ReplyBlocks`、核心 `reply_blocks:render` / `reply_blocks:place` 两步，`blocksSuppressed` 旗标的读写声明与步骤表校验
-  - [ ] 3.2 工业包三种试算模板、档位价、应付金额；`quote_items` 结果加 `block` 与下一档；`find_parts` 加 `block`
-  - [ ] 3.3 `shape_check`、`rfq_trim` 按「正文 + 块」算预算、只改正文
-  - [ ] 3.4 按 0.9 的清单在固定话术分支写旗标
-  - [ ] 3.5 【硬性要求】与工具说明；trace `turn.blocks`
-  - [ ] 3.6 自测与 v2 用例（验收 1、6）；锁定套件、旅游 v2 快照 0 差异
+- [x] 3. 价格块
+  - [x] 3.1 `pack-api` 的 `ReplyBlocks`、核心 `reply_blocks:render` / `reply_blocks:place` 两步，`blocksSuppressed` 旗标的读写声明与步骤表校验
+  - [x] 3.2 工业包三种试算模板、档位价、应付金额；`quote_items` 结果加 `block` 与下一档；`find_parts` 加 `block`
+  - [x] 3.3 `shape_check`、`rfq_trim` 按「正文 + 块」算预算、只改正文
+  - [x] 3.4 按 0.9 的清单在固定话术分支写旗标
+  - [x] 3.5 【硬性要求】与工具说明；trace `turn.blocks`
+  - [x] 3.6 自测与 v2 用例（验收 1、6）；锁定套件、旅游 v2 快照 0 差异
 - [x] 4. 混合检索
   - [x] 4.1 `eval/retrieval/` 生成器、手写查询、`run.ts`，假嵌入自测。5000 条产品（种子 1805，用种子重新生成逐字节一致），704 条查询，8 类各 88 条，其中手写 64 条。指标改为截断 recall@5 加 precision@5，定向三类查询的相关条目限 1–5 个，宽泛查询单列（spec 已改）
   - [x] 4.2 真实嵌入跑 `current` 基线：owner 11-07 授权。和 4.4 同一次付费运行，90 次请求、312,968 tokens、¥0.156；向量缓存后复跑 0 次请求，指标逐项一致。`run.ts --embed real` 与离线自测另由 Codex 落进检索分支
@@ -73,3 +73,35 @@
 - 检索：评测口径中途改成截断 recall，假嵌入下先跑通。owner 授权后用真实嵌入跑了一次，费用 ¥0.156，报告在 `docs/reports/retrieval/2026-11-07/`。
 - 真实嵌入的评测入口（`eval/retrieval/real-embed.ts`、`run.ts --embed real`）由 Codex 补进检索分支。#471 合入后，检索的两个提交和报告提交 cherry-pick 到从 `dev` 新建的分支，合成一个 PR；`package.json` 的 test 行两边各加的自测都保留。
 - 下一步：第 2 步（`sessionBefore`、v2 字段、`promote.ts`）与第 3 步（价格块）可以并行。
+
+2026-11-07：第 3 步完成。Codex 实现，Claude 审查后返工两轮，验收定位见下表。
+
+- 返工一：需确认的行合成一行并始终保留，不计入「已算好」；全部不可报价只写一行「暂时报不了价」；没有交期不出残句；应付金额写明是客户接受的那份。
+- 返工二：试算块会出现时，`rfq_trim` 裁正文不再补自己的裁剪说明，此前同一条回复里会出现两句「已算好」。
+- 已有 v2 用例的客户输入和模型原稿保持不变，只改期望；占位符写法另加 `q18-blocks-basic.json`。`TRIM_FALLBACK` 是整段固定替换，写抑制旗标。
+- 复跑：工业与核心护栏自测、回复管线、trace、锁定套件通过；v2 933/933，927 条快照 0 差异（旅游 857 条不变）；format、lint、typecheck 通过。
+- 完整 `pnpm test` 在本机两次卡在 `src/store/store.selftest.ts` 的一条计时断言上，当时机器上同时跑着另一路 Codex。该断言没改过，交给 CI 判断。
+
+### 第 3 步验收定位（2026-11-07）
+
+验收 1 的六项均在 `src/industrial-replies.selftest.ts`，使用真实工具与整条主回复管线：
+
+| 项                 | 断言位置（变量 / 断言标识）                                                                                                                                                                                                     |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 三模板           | `complete` 的金额/下一档/交期逐字段断言；`partialBlock` 的「部分可报价不写合计」及单行需确认摘要；`noneBlock` 的「全不可报价没有金额」；`moqBlock` 起订量原因（含件）及全不可报价单行                                           |
+| 2 缺占位符自动附后 | `appended` 的「没写占位符自动附后」及 trace `placed=appended`；`moneyDropped` 的「错价删句之后仍有价格块」                                                                                                                      |
+| 3 无效占位符       | `unknownBlock` 的「未知或无数据占位符整句删除」和 `droppedTokens=2`；另测三个原型属性名与末次工具失败，不漏花括号                                                                                                               |
+| 4 抑制旗标         | `suppressed` 的「抑制旗标不放块也不漏占位符」及空 rendered；另测待审、自动补建批准单、金额删空、失败转人工和裁剪兜底                                                                                                            |
+| 5 局部 replace     | `corrected` 的 quote_claim 裁决 replace、旗标仍空、块照常附上；`shippingFixed` 的运费局部纠正保留块                                                                                                                             |
+| 6 三十行长度       | `many` 的「三十行展开不超过12行600字」、正文两行保留、裁剪说明和 900.00 元合计；`longBody` 验剩余正文预算；`manyUnpriced` 验未报价警示不丢；`mixedBudget` 验只数被裁可报价行；`summaryOverflow/noneOverflow` 验单行省略及总预算 |
+
+不变量 1–6 的保证：
+
+| 不变量                       | 自测或装载校验                                                                                                                                                                                                                               |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1 只格式化字段、不补合计     | `literalFields` 刻意用不相乘的单价/行金额/合计，断言原字段输出；`partialBlock` / `noneBlock` 不写合计；`payable` 只用本轮接受订单；`tierBlock` 边界由工具给出                                                                                |
+| 2 放置后不删块、正文仍过护栏 | `completeRun` 断言 place 后只有 takeover_check:post、turn_failure、final_clean；`syncBlocks` 断言两新步骤不返回 Promise；`moneyDropped` 验正文错价仍被删；validate 自测拒绝窗口倒置及 place 后任意删句步骤，execute 自测保留同步尾部竞态保护 |
+| 3 最终不超 12 行 / 600 字    | `many`、`longBody`、`manyUnpriced`、`fallbackBlock`；最终 replyShape 与 turn.blocks.finalShape 等于展开后文本                                                                                                                                |
+| 4 抑制即无块                 | `suppressed`、`pendingBlock`、`repaired`、`emptied`、`failureBlock`、`fallbackBlock`；`industrial-quotes.selftest.ts` 最终接受核验失效时 trace.suppressed 与固定替换一致                                                                     |
+| 5 非声明包及跟进表不变       | 旅游主回复 33 步、旅游跟进 11 步、工业跟进 4 步逐项断言；857 条旅游 v2 保持原快照，全部锁定文件无 diff                                                                                                                                       |
+| 6 对客无占位符               | `unknownBlock` / 原型属性占位符 / `noData` / `duplicate` / `suppressed` 及对客文本无花括号和 markdown 的汇总断言；新增 q18 v2 也断言不含花括号                                                                                               |

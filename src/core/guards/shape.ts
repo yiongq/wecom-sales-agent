@@ -4,6 +4,7 @@ import type { ReplyGuardContext, ReplyShape, ShapePolicy } from '../pack-api.js'
 import { registeredTextLinks } from '../site-links.js';
 import { sentenceUnits } from '../parse/sentences.js';
 import { stripMarkdown } from './text.js';
+import { expandedReply } from './reply-blocks.js';
 import { replyStep } from './reply-step.js';
 
 /** 行数：先去 markdown，再数非空行；「·」开头的每一项各占一行，所以与普通行同样计数。 */
@@ -104,6 +105,7 @@ export interface ShapeTrimResult {
 export function trimToShape(input: {
   text: string;
   lineCap: number;
+  expanded?: (text: string) => string;
   policy: ShapePolicy;
   inputText: string;
   priorReplies: readonly string[];
@@ -113,7 +115,8 @@ export function trimToShape(input: {
   /** 本轮是否转人工或已有订单文本等：传 true 时调用方不应走到这里 */
 }): ShapeTrimResult {
   const { text, lineCap, policy } = input;
-  const over = (t: string): boolean => replyLineCount(t) > lineCap || replyCharCount(t) > policy.maxChars;
+  const over = (t: string): boolean =>
+    replyLineCount(input.expanded?.(t) ?? t) > lineCap || replyCharCount(input.expanded?.(t) ?? t) > policy.maxChars;
   if (!over(text)) return { text, trimmed: 0 };
 
   const lines = text.split('\n');
@@ -201,6 +204,7 @@ export function shapeCheckStep<Context extends ReplyGuardContext>() {
       const before = ctx.text;
       const r = trimToShape({
         text: before,
+        expanded: (text) => expandedReply(ctx, text),
         lineCap,
         policy,
         inputText: ctx.inputText,
@@ -214,8 +218,8 @@ export function shapeCheckStep<Context extends ReplyGuardContext>() {
         ctx.recordGuard('shape_check', before, ctx.text, 'drop_sentence');
       }
     }
-    const lines = replyLineCount(ctx.text);
-    const chars = replyCharCount(ctx.text);
+    const lines = replyLineCount(expandedReply(ctx));
+    const chars = replyCharCount(expandedReply(ctx));
     const shape: ReplyShape = {
       class: rich ? 'rich' : 'plain',
       lines,

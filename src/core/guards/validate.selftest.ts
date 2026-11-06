@@ -162,4 +162,54 @@ rejects(
   'after',
 );
 
+// 18：块步骤须成对、处在指定窗口，放置后只允许同步安全尾部。
+{
+  const rows = [
+    step('quote_claim', { writes: ['blocksSuppressed'] }),
+    step('stage_advance'),
+    step('reply_blocks:render', { after: ['stage_advance'] }),
+    step('shape_check'),
+    step('rfq_trim'),
+    step('reply_blocks:place', { reads: ['blocksSuppressed'] }),
+    step('takeover_check:post'),
+    step('turn_failure'),
+    step('final_clean'),
+  ];
+  accepts(rows);
+  rejects(
+    rows.filter((s) => s.id !== 'reply_blocks:render'),
+    'reply_blocks:render',
+    'stage_advance',
+    '价格块',
+  );
+  rejects(
+    rows.filter((s) => s.id !== 'reply_blocks:place'),
+    'reply_blocks:place',
+    'rfq_trim',
+    '价格块',
+  );
+  rejects(
+    [rows[0]!, rows[2]!, rows[1]!, ...rows.slice(3)].map((s) => ({ ...s, after: [] })),
+    'reply_blocks:render',
+    'stage_advance',
+    '价格块',
+  );
+  rejects([...rows.slice(0, 2), rows[3]!, rows[2]!, ...rows.slice(4)], 'reply_blocks:render', 'shape_check', '价格块');
+  rejects([...rows.slice(0, 4), rows[5]!, rows[4]!, ...rows.slice(6)], 'reply_blocks:place', 'rfq_trim', '价格块');
+  rejects([...rows.slice(0, 5), rows[6]!, rows[5]!, ...rows.slice(7)], 'reply_blocks:place', 'takeover_check:post', '价格块');
+  rejects(
+    rows.map((s) => (s.id === 'reply_blocks:place' ? { ...s, reads: [] } : s)),
+    'reply_blocks:place',
+    'blocksSuppressed',
+    '抑制旗标',
+  );
+  rejects([...rows.slice(0, 6), step('delete_sentence'), ...rows.slice(6)], 'reply_blocks:place', 'delete_sentence', '删句');
+  rejects(
+    rows.map((s) => (s.id === 'quote_claim' ? { ...s, writes: [] } : s)),
+    'reply_blocks:place',
+    '<无写者>',
+    'blocksSuppressed',
+  );
+}
+
 console.log(`guard validation selftest: ${count} 项通过（含主回复 33 行夹具）`);

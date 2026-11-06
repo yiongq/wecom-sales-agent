@@ -82,6 +82,7 @@ async function sample(
   // 在场缓存不等于库存依据；第二、第三个型号没有询价事实。
   writeState(s, {}, parts.slice(1));
   raw = text;
+  let quoteTotal: number | undefined;
   prepare = async (opts) => {
     const found = JSON.parse(await opts.executeTool('find_parts', { query }));
     assert.equal(found.match, 'exact');
@@ -90,17 +91,29 @@ async function sample(
     const result = JSON.parse(
       await opts.executeTool('quote_items', { items: [{ query, qty }, ...(extraQuery ? [{ query: extraQuery, qty }] : [])] }),
     );
+    quoteTotal = result.total;
     if (qty > 1000000) assert.equal(result.lines[0].note, 'over_max');
   };
   for (const route of ['reply', 'followup'] as const) {
     try {
       process.env.LLM_MOCK = route === 'reply' ? '1' : '0';
-      const actual =
+      let actual =
         route === 'reply'
           ? (await handleMessage(s.id, `请查${query} ${qty}件`, 'wecom')).text
           : text.includes('\n')
             ? await guardOutbound(s, text, { kind: 'followup' })
             : await followUpText(s);
+      if (route === 'reply') {
+        // 18：新增的代码块另核合计和总预算；原有库存/交期断言仍只检查模型正文，
+        // 避免块里的合法事实让正文护栏漏拦也被判绿。
+        const at = actual.search(/\n(?:试算：|暂时报不了价：)/);
+        assert.ok(at >= 0, '本轮试算应自动附在正文后');
+        const block = actual.slice(at + 1);
+        if (quoteTotal === undefined) assert.doesNotMatch(block, /合计/);
+        else assert.ok(block.endsWith(`合计${quoteTotal.toFixed(2)}元`));
+        assert.ok(actual.split('\n').length <= 12 && [...actual.replace(/\s/g, '')].length <= 600);
+        actual = actual.slice(0, at);
+      }
       if (typeof expected === 'string') assert.equal(actual, expected);
       else if (route === 'followup' && /确认为准|能否替代/.test(expected.source)) assert.equal(actual, followupExpected);
       else assert.match(actual, expected);

@@ -19,7 +19,7 @@ import { normalizeForStore } from '../store/project.js';
 import type { ChatMessage, SalesStage } from '../types.js';
 import type { TurnSignals } from '../handoff/triggers.js';
 import { onUsage } from '../usage.js';
-import type { GuardVerdict, ReplyShape } from '../core/pack-api.js';
+import type { GuardVerdict, ReplyShape, TurnBlocks } from '../core/pack-api.js';
 
 /** 一次工具调用：参数是执行时的那份，结果只留前 4,096 字节（按 UTF-8，不切开字符） */
 export interface TraceCall {
@@ -79,6 +79,7 @@ export interface TurnContext {
   guardVerdicts: GuardVerdict[] | null;
   /** 06 R10：本轮回复的形状，未进入主回复流水线为 null。 */
   replyShape?: ReplyShape | null;
+  blocks?: TurnBlocks;
   /** 模型原稿（chat() 的 raw）；没调模型的轮次为 null */
   draft: string | null;
 }
@@ -204,6 +205,12 @@ export function notePrefix(sopVersion: number | null, prefixHash: string): void 
 export function noteGuardVerdict(verdict: GuardVerdict): void {
   const h = live();
   if (h) (h.ctx!.guardVerdicts ??= []).push({ ...verdict });
+}
+
+/** 18 R1：只记块的元数据，不复制工具结果或价格正文。 */
+export function noteReplyBlocks(blocks: TurnBlocks): void {
+  const h = live();
+  if (h) h.ctx!.blocks = structuredClone(blocks);
 }
 
 /** 06 R10：shape_check 算出的本轮形状，引擎在轮次结束前送来。 */

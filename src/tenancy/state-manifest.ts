@@ -26,6 +26,10 @@ export const STATE_MANIFEST: Record<
   'src/core/attachment-intake.ts:counts': { kind: 'tenant', state: 'attachment.daily' },
   'src/packs/industrial/auxiliary.ts:followupTemplates': { kind: 'instance', why: '工业包的固定配置与词表，不含租户数据或运行时快照。' },
   'src/packs/industrial/auxiliary.ts:insightPrompts': { kind: 'instance', why: '工业包的固定配置与词表，不含租户数据或运行时快照。' },
+  'src/packs/industrial/reply-blocks.ts:industrialReplyBlocks': {
+    kind: 'instance',
+    why: '价格块的固定声明；本轮工具结果、文本与裁剪计数只存于回复 context，不持有租户状态。',
+  },
   'src/packs/industrial/auxiliary.ts:mock': { kind: 'instance', why: '工业包的固定配置与词表，不含租户数据或运行时快照。' },
   'src/packs/industrial/intake.ts:MODEL_HEADERS': { kind: 'instance', why: '工业附件识别的固定配置与校验规则，不含租户数据。' },
   'src/packs/industrial/intake.ts:QTY_HEADERS': { kind: 'instance', why: '工业附件识别的固定配置与校验规则，不含租户数据。' },

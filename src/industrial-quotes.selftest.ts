@@ -768,7 +768,10 @@ try {
         return 'HS-PV27，100件，已确认您接受这份报价。';
       };
       now++;
-      assert.equal((await handleMessage(session.id, '接受这份报价，能开专票吗？', 'wecom')).text, 'HS-PV27，100件，已确认您接受这份报价。');
+      assert.equal(
+        (await handleMessage(session.id, '接受这份报价，能开专票吗？', 'wecom')).text,
+        'HS-PV27，100件，已确认您接受这份报价。\n您接受的这份报价合计2940.00元',
+      );
       assert.ok(order.approval!.acceptedAt !== undefined);
     }
     // 前置工具闸本来会拒绝替客户选型；此组暂时移除它，让真实工具写入，独立验证回复护栏。
@@ -792,7 +795,10 @@ try {
           '不是6208，我要的是6211-2RS，26件，麻烦重新出单。',
         ]) {
           now++;
-          assert.equal((await handleMessage(session.id, input, 'wecom')).text, '6211-2RS，26件，需要重新出报价单。');
+          assert.equal(
+            (await handleMessage(session.id, input, 'wecom')).text,
+            '6211-2RS，26件，需要重新出报价单。\n试算：\n6211-2RS × 26：单价17.28元，小计449.28元；现货，以顾问确认为准\n合计449.28元',
+          );
         }
       }
       // 无候选上下文仍要求客户自己选；唯一候选不称「多个」。
@@ -852,7 +858,7 @@ try {
       now++;
       assert.equal(
         (await handleMessage(session.id, '6207-2RS 32件多少钱', 'wecom')).text,
-        '库存现货18件，其余14件约需9天到货，具体以顾问确认为准。',
+        '库存现货18件，其余14件约需9天到货，具体以顾问确认为准。\n试算：\n6207-2RS × 32：单价8.00元，小计256.00元；现货 18 件，其余约 9 天，以顾问确认为准\n合计256.00元',
       );
     }
     // 同内容试算不阻止接受；数量、型号、版本、行数不同仍是新需求。
@@ -956,7 +962,11 @@ try {
       mockAction = async () => modelText;
       now++;
       const reply = await handleMessage(session.id, '接受这份报价，能开专票吗？', 'wecom');
-      assert.equal(reply.text, expected, modelText);
+      assert.equal(
+        reply.text,
+        expected === FIXED.accepted ? expected : `${expected}\n您接受的这份报价合计${(current.totalFen / 100).toFixed(2)}元`,
+        modelText,
+      );
       assert.ok(!reply.text.includes(ACCEPT_ASK));
       assert.ok(current.approval!.acceptedAt !== undefined);
       assert.equal(await acceptanceJobs(current.id), 1);
@@ -971,7 +981,10 @@ try {
     };
     now++;
     const reply = await handleMessage(session.id, '接受这份报价，另外 6205-2RS 100 件多少钱？', 'wecom');
-    assert.equal(reply.text, '6205-2RS 共100件，合计900元。');
+    assert.equal(
+      reply.text,
+      '6205-2RS 共100件，合计900元。\n试算：\n6205-2RS × 100：单价9.00元，小计900.00元；现货，以顾问确认为准\n合计900.00元\n您接受的这份报价合计449.28元',
+    );
     assert.ok(current.approval!.acceptedAt !== undefined);
     const failed = await makePair();
     mockAction = async () => '已确认您接受这份报价。';
@@ -996,7 +1009,7 @@ try {
     const reply = await handleMessage(session.id, '这份报价我确认接受，请安排后续对接', 'wecom');
     mockAction = action;
     assert.equal(reply.silent, undefined);
-    assert.equal(reply.text, '已为您转交顾问，稍后与您对接付款和发货。');
+    assert.equal(reply.text, '已为您转交顾问，稍后与您对接付款和发货。\n您接受的这份报价合计900.00元');
     assert.ok(session.handedOver);
     assert.ok(order.approval!.acceptedAt !== undefined);
     assert.equal(await acceptanceJobs(order.id), 1);
@@ -1041,13 +1054,18 @@ try {
     const latest = store.getAnyOrder(readState(session).lastQuoteId as string) as LineOrder;
     const expected =
       mode === 'paid'
-        ? staleClaim
+        ? `${staleClaim}\n您接受的这份报价合计${(order.totalFen / 100).toFixed(2)}元`
         : mode === 'superseded'
           ? `报价单：/quote/${latest.id}\n合计${orderDisplay(latest).totalText}\n${askAgain}`
           : mode === 'expired'
             ? expiredText
             : withdrawnText;
     assert.equal(reply.text, expected, mode);
+    assert.equal(
+      turns.at(-1)!.turn.blocks?.suppressed,
+      mode === 'filtered' ? undefined : mode !== 'paid',
+      '18 最终接受核验整段替换的块 trace 与实际回复一致',
+    );
     assert.equal(session.messages.at(-1)!.content, reply.text, mode);
     if (mode === 'superseded')
       assert.deepEqual(

@@ -618,7 +618,15 @@
         "say": "6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件",
         "expect": {
           "tools": ["quote_items"],
-          "replyMatches": ["另外 2 行已算好", "正式报价单"],
+          "replyMatches": [
+            "6205-2RS 金额20元",
+            "另外 5 行已算好",
+            "试算：",
+            "合计240\\.00元",
+            "(?<![\\s\\S])(?:[^\\n]*\\n){0,11}[^\\n]*(?![\\s\\S])",
+            "(?<![\\s\\S])(?!(?:\\s*\\S){601})[\\s\\S]*(?![\\s\\S])"
+          ],
+          "replyExcludes": ["行已算好[\\s\\S]*行已算好"],
           "guardVerdicts": [
             {
               "id": "pre_clean",
@@ -634,6 +642,10 @@
             },
             {
               "id": "stage_advance",
+              "action": "pass"
+            },
+            {
+              "id": "reply_blocks:render",
               "action": "pass"
             },
             {
@@ -670,6 +682,10 @@
             },
             {
               "id": "rfq_trim",
+              "action": "replace"
+            },
+            {
+              "id": "reply_blocks:place",
               "action": "replace"
             },
             {
@@ -812,6 +828,10 @@
               "action": "pass"
             },
             {
+              "id": "reply_blocks:render",
+              "action": "pass"
+            },
+            {
               "id": "industrial_claims",
               "action": "replace"
             },
@@ -845,6 +865,10 @@
             },
             {
               "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "reply_blocks:place",
               "action": "pass"
             },
             {
@@ -905,6 +929,10 @@
               "action": "pass"
             },
             {
+              "id": "reply_blocks:render",
+              "action": "pass"
+            },
+            {
               "id": "industrial_claims",
               "action": "replace"
             },
@@ -938,6 +966,10 @@
             },
             {
               "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "reply_blocks:place",
               "action": "pass"
             },
             {
@@ -998,6 +1030,10 @@
               "action": "pass"
             },
             {
+              "id": "reply_blocks:render",
+              "action": "pass"
+            },
+            {
               "id": "industrial_claims",
               "action": "replace"
             },
@@ -1031,6 +1067,10 @@
             },
             {
               "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "reply_blocks:place",
               "action": "pass"
             },
             {
@@ -1091,6 +1131,10 @@
               "action": "pass"
             },
             {
+              "id": "reply_blocks:render",
+              "action": "pass"
+            },
+            {
               "id": "industrial_claims",
               "action": "replace"
             },
@@ -1124,6 +1168,10 @@
             },
             {
               "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "reply_blocks:place",
               "action": "pass"
             },
             {
@@ -1184,6 +1232,10 @@
               "action": "pass"
             },
             {
+              "id": "reply_blocks:render",
+              "action": "pass"
+            },
+            {
               "id": "industrial_claims",
               "action": "replace"
             },
@@ -1217,6 +1269,10 @@
             },
             {
               "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "reply_blocks:place",
               "action": "pass"
             },
             {
@@ -1277,6 +1333,10 @@
               "action": "pass"
             },
             {
+              "id": "reply_blocks:render",
+              "action": "pass"
+            },
+            {
               "id": "industrial_claims",
               "action": "pass"
             },
@@ -1310,6 +1370,10 @@
             },
             {
               "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "reply_blocks:place",
               "action": "pass"
             },
             {
@@ -1370,6 +1434,10 @@
               "action": "pass"
             },
             {
+              "id": "reply_blocks:render",
+              "action": "pass"
+            },
+            {
               "id": "industrial_claims",
               "action": "pass"
             },
@@ -1403,6 +1471,10 @@
             },
             {
               "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "reply_blocks:place",
               "action": "pass"
             },
             {
@@ -1664,6 +1736,10 @@
               "action": "pass"
             },
             {
+              "id": "reply_blocks:render",
+              "action": "pass"
+            },
+            {
               "id": "industrial_claims",
               "action": "replace"
             },
@@ -1697,6 +1773,10 @@
             },
             {
               "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "reply_blocks:place",
               "action": "pass"
             },
             {

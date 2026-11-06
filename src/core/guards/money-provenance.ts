@@ -105,12 +105,13 @@ export function moneyProvenanceStep(
   return {
     id: 'money_provenance',
     after: ['stage_advance'],
-    writes: ['guardHit'],
+    writes: ['guardHit', 'blocksSuppressed'],
     async run(ctx): Promise<StepVerdict> {
       const kept = dropUnbacked(ctx, options, await sources(), ctx.policy);
       if (kept === ctx.text) return { action: 'pass' };
       const text = kept.trim() ? kept : (ctx.acceptingOrderId && options.acceptedFallback) || options.fallback;
       const action = kept.trim() ? 'drop_sentence' : 'replace';
+      if (!kept.trim()) ctx.turn.flags.blocksSuppressed = true;
       ctx.turn.flags.guardHit = 'price';
       ctx.recordGuard('money_provenance', ctx.text, text, action);
       return { action, text };

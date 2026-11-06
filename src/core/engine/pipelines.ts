@@ -1,5 +1,6 @@
 // 组合根按 after 合并包步骤与核心步骤；校验仍由原执行器负责。
 import type { PackRuntime, GuardStep, ReplyGuardContext } from '../pack-api.js';
+import { replyBlockSteps } from '../guards/reply-blocks.js';
 import { coreReplySteps } from '../guards/reply.js';
 import { loadGuardPipeline } from '../guards/execute.js';
 import { GuardStepValidationError } from '../guards/validate.js';
@@ -15,7 +16,15 @@ export function packPipelines(runtime: PackRuntime) {
 
 function assemblePipelines(runtime: PackRuntime) {
   const pending: GuardStep<ReplyGuardContext>[] = [
-    ...coreReplySteps().map((step) => (runtime.replyAnchors?.[step.id] ? { ...step, after: [runtime.replyAnchors[step.id]!] } : step)),
+    ...(runtime.replyBlocks ? replyBlockSteps(runtime.replyBlocks) : []),
+    ...coreReplySteps().map((original) => {
+      const step = runtime.replyAnchors?.[original.id] ? { ...original, after: [runtime.replyAnchors[original.id]!] } : original;
+      if (!runtime.replyBlocks) return step;
+      if (step.id === 'turn_failure' || step.id === 'final_clean') return { ...step, writes: [...(step.writes ?? []), 'blocksSuppressed'] };
+      if (step.id === 'shape_check') return { ...step, after: [...(step.after ?? []), 'reply_blocks:render'] };
+      if (step.id === 'takeover_check:post') return { ...step, after: ['reply_blocks:place'] };
+      return step;
+    }),
     ...runtime.replySteps,
   ];
   const steps: GuardStep<ReplyGuardContext>[] = [];

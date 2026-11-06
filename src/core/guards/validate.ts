@@ -66,6 +66,31 @@ export function validateGuardSteps<Context extends GuardContext>(steps: readonly
     throw new GuardStepValidationError('turn_failure', 'takeover_check:post', '后置接管检查必须排在交互失败判定之前');
   }
 
+  const render = positions.get('reply_blocks:render');
+  const place = positions.get('reply_blocks:place');
+  if (render !== undefined || place !== undefined) {
+    for (const [id, before, after] of [
+      ['reply_blocks:render', 'stage_advance', 'shape_check'],
+      ['reply_blocks:place', 'rfq_trim', 'takeover_check:post'],
+    ] as const) {
+      const at = positions.get(id);
+      for (const [anchor, earlier] of [
+        [before, true],
+        [after, false],
+      ] as const) {
+        const other = positions.get(anchor);
+        if (at === undefined || other === undefined || (earlier ? other >= at : other <= at))
+          throw new GuardStepValidationError(id, anchor, '价格块步骤顺序不合法');
+      }
+    }
+    if (!steps[place!]!.reads?.includes('blocksSuppressed'))
+      throw new GuardStepValidationError('reply_blocks:place', 'blocksSuppressed', '价格块必须声明读取抑制旗标');
+    for (const step of steps.slice(place! + 1)) {
+      if (!['takeover_check:post', 'turn_failure', 'final_clean'].includes(step.id))
+        throw new GuardStepValidationError('reply_blocks:place', step.id, '价格块放置后不能再执行删句护栏');
+    }
+  }
+
   // 06 R10：形状检查可能 await 重写，必须在后置接管检查之前，接管检查到写消息之间不能有 await。
   const shape = positions.get('shape_check');
   if (shape !== undefined && (takeover === undefined || takeover <= shape)) {
