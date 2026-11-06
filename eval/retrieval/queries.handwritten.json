@@ -1,0 +1,560 @@
+[
+  {
+    "id": "hand-01",
+    "type": "exact",
+    "text": "bg000-1",
+    "where": {
+      "ids": ["part-0000"]
+    }
+  },
+  {
+    "id": "hand-02",
+    "type": "exact",
+    "text": "型号 TR000-1",
+    "where": {
+      "ids": ["part-0001"]
+    }
+  },
+  {
+    "id": "hand-03",
+    "type": "exact",
+    "text": "HB000 / 1",
+    "where": {
+      "ids": ["part-0002"]
+    }
+  },
+  {
+    "id": "hand-04",
+    "type": "exact",
+    "text": "HN000_1",
+    "where": {
+      "ids": ["part-0003"]
+    }
+  },
+  {
+    "id": "hand-05",
+    "type": "exact",
+    "text": "SV000-1电磁阀",
+    "where": {
+      "ids": ["part-0004"]
+    }
+  },
+  {
+    "id": "hand-06",
+    "type": "exact",
+    "text": "气缸CY000-1",
+    "where": {
+      "ids": ["part-0005"]
+    }
+  },
+  {
+    "id": "hand-07",
+    "type": "exact",
+    "text": "ＡＣ０００－１",
+    "where": {
+      "ids": ["part-0006"]
+    }
+  },
+  {
+    "id": "hand-08",
+    "type": "exact",
+    "text": "CB000-1",
+    "where": {
+      "ids": ["part-0007"]
+    }
+  },
+  {
+    "id": "hand-09",
+    "type": "alias",
+    "text": "BG别称0000",
+    "where": {
+      "ids": ["part-0000"]
+    }
+  },
+  {
+    "id": "hand-10",
+    "type": "alias",
+    "text": "TR别称0000",
+    "where": {
+      "ids": ["part-0001"]
+    }
+  },
+  {
+    "id": "hand-11",
+    "type": "alias",
+    "text": "HB别称0000",
+    "where": {
+      "ids": ["part-0002"]
+    }
+  },
+  {
+    "id": "hand-12",
+    "type": "alias",
+    "text": "HN别称0000",
+    "where": {
+      "ids": ["part-0003"]
+    }
+  },
+  {
+    "id": "hand-13",
+    "type": "alias",
+    "text": "SV别称0000",
+    "where": {
+      "ids": ["part-0004"]
+    }
+  },
+  {
+    "id": "hand-14",
+    "type": "alias",
+    "text": "CY别称0000",
+    "where": {
+      "ids": ["part-0005"]
+    }
+  },
+  {
+    "id": "hand-15",
+    "type": "alias",
+    "text": "AC别称0000",
+    "where": {
+      "ids": ["part-0006"]
+    }
+  },
+  {
+    "id": "hand-16",
+    "type": "alias",
+    "text": "CB别称0000",
+    "where": {
+      "ids": ["part-0007"]
+    }
+  },
+  {
+    "id": "hand-17",
+    "type": "prefix",
+    "text": "BG000",
+    "where": {
+      "prefix": "BG000"
+    }
+  },
+  {
+    "id": "hand-18",
+    "type": "prefix",
+    "text": "TR000",
+    "where": {
+      "prefix": "TR000"
+    }
+  },
+  {
+    "id": "hand-19",
+    "type": "prefix",
+    "text": "HB000",
+    "where": {
+      "prefix": "HB000"
+    }
+  },
+  {
+    "id": "hand-20",
+    "type": "prefix",
+    "text": "HN000",
+    "where": {
+      "prefix": "HN000"
+    }
+  },
+  {
+    "id": "hand-21",
+    "type": "prefix",
+    "text": "SV000",
+    "where": {
+      "prefix": "SV000"
+    }
+  },
+  {
+    "id": "hand-22",
+    "type": "prefix",
+    "text": "CY000",
+    "where": {
+      "prefix": "CY000"
+    }
+  },
+  {
+    "id": "hand-23",
+    "type": "prefix",
+    "text": "AC000",
+    "where": {
+      "prefix": "AC000"
+    }
+  },
+  {
+    "id": "hand-24",
+    "type": "prefix",
+    "text": "CB000",
+    "where": {
+      "prefix": "CB000"
+    }
+  },
+  {
+    "id": "hand-25",
+    "type": "attributes",
+    "text": "内径 25mm 的轴承，要BG000系列",
+    "where": {
+      "category": "轴承",
+      "specs": ["内径25mm"],
+      "prefix": "BG000"
+    }
+  },
+  {
+    "id": "hand-26",
+    "type": "attributes",
+    "text": "外径32mm，轴承，要BG000系列",
+    "where": {
+      "category": "轴承",
+      "specs": ["外径32mm"],
+      "prefix": "BG000"
+    }
+  },
+  {
+    "id": "hand-27",
+    "type": "attributes",
+    "text": "深沟球的，内径 5，要BG000系列",
+    "where": {
+      "name": "密封深沟球轴承",
+      "specs": ["内径5mm"],
+      "prefix": "BG000"
+    }
+  },
+  {
+    "id": "hand-28",
+    "type": "attributes",
+    "text": "圆锥滚子轴承，内径10mm，要TR000系列",
+    "where": {
+      "name": "圆锥滚子轴承",
+      "specs": ["内径10mm"],
+      "prefix": "TR000"
+    }
+  },
+  {
+    "id": "hand-29",
+    "type": "attributes",
+    "text": "螺纹M8，长度20mm，紧固件，要HB000系列",
+    "where": {
+      "category": "紧固件",
+      "specs": ["螺纹M8", "长度20mm"],
+      "prefix": "HB000"
+    }
+  },
+  {
+    "id": "hand-30",
+    "type": "attributes",
+    "text": "内六角螺栓 M4 长度10mm，要HB000系列",
+    "where": {
+      "name": "内六角螺栓",
+      "specs": ["螺纹M4", "长度10mm"],
+      "prefix": "HB000"
+    }
+  },
+  {
+    "id": "hand-31",
+    "type": "attributes",
+    "text": "六角螺母，M6 长度15mm，要HN000系列",
+    "where": {
+      "name": "六角螺母",
+      "specs": ["螺纹M6", "长度15mm"],
+      "prefix": "HN000"
+    }
+  },
+  {
+    "id": "hand-32",
+    "type": "attributes",
+    "text": "DC24V 气动元件，要SV000系列",
+    "where": {
+      "category": "气动元件",
+      "specs": ["线圈DC24V"],
+      "prefix": "SV000"
+    }
+  },
+  {
+    "id": "hand-33",
+    "type": "broad",
+    "text": "电磁阀 缸径10mm 行程30mm",
+    "where": {
+      "name": "电磁阀",
+      "specs": ["缸径10mm", "行程30mm"]
+    }
+  },
+  {
+    "id": "hand-34",
+    "type": "broad",
+    "text": "气缸 缸径5mm 行程20mm",
+    "where": {
+      "name": "气缸",
+      "specs": ["缸径5mm", "行程20mm"]
+    }
+  },
+  {
+    "id": "hand-35",
+    "type": "broad",
+    "text": "低压电器，IP65，DC24V",
+    "where": {
+      "category": "低压电器",
+      "specs": ["防护IP65", "线圈DC24V"]
+    }
+  },
+  {
+    "id": "hand-36",
+    "type": "broad",
+    "text": "小型断路器 额定电流6A 防护IP54",
+    "where": {
+      "name": "小型断路器",
+      "specs": ["额定电流6A", "防护IP54"]
+    }
+  },
+  {
+    "id": "hand-37",
+    "type": "descriptive",
+    "text": "设备要用密封深沟球轴承，要BG000系列",
+    "where": {
+      "name": "密封深沟球轴承",
+      "prefix": "BG000"
+    }
+  },
+  {
+    "id": "hand-38",
+    "type": "descriptive",
+    "text": "圆锥滚子轴承有吗，要TR000系列",
+    "where": {
+      "name": "圆锥滚子轴承",
+      "prefix": "TR000"
+    }
+  },
+  {
+    "id": "hand-39",
+    "type": "descriptive",
+    "text": "内六角螺栓，耐油设备上用，要HB000系列",
+    "where": {
+      "name": "内六角螺栓",
+      "specs": ["用途耐油设备"],
+      "prefix": "HB000"
+    }
+  },
+  {
+    "id": "hand-40",
+    "type": "descriptive",
+    "text": "给通用设备找六角螺母，要HN000系列",
+    "where": {
+      "name": "六角螺母",
+      "specs": ["用途通用设备"],
+      "prefix": "HN000"
+    }
+  },
+  {
+    "id": "hand-41",
+    "type": "descriptive",
+    "text": "耐油设备的电磁阀，要SV000系列",
+    "where": {
+      "name": "电磁阀",
+      "specs": ["用途耐油设备"],
+      "prefix": "SV000"
+    }
+  },
+  {
+    "id": "hand-42",
+    "type": "descriptive",
+    "text": "通用设备用气缸，要CY000系列",
+    "where": {
+      "name": "气缸",
+      "specs": ["用途通用设备"],
+      "prefix": "CY000"
+    }
+  },
+  {
+    "id": "hand-43",
+    "type": "descriptive",
+    "text": "交流接触器 碳钢，要AC000系列",
+    "where": {
+      "name": "交流接触器",
+      "specs": ["材质碳钢"],
+      "prefix": "AC000"
+    }
+  },
+  {
+    "id": "hand-44",
+    "type": "descriptive",
+    "text": "小型断路器，不锈钢，要CB000系列",
+    "where": {
+      "name": "小型断路器",
+      "specs": ["材质不锈钢"],
+      "prefix": "CB000"
+    }
+  },
+  {
+    "id": "hand-45",
+    "type": "broad",
+    "text": "不锈钢内六角螺栓",
+    "where": {
+      "name": "内六角螺栓",
+      "specs": ["材质不锈钢"]
+    }
+  },
+  {
+    "id": "hand-46",
+    "type": "broad",
+    "text": "碳钢六角螺母",
+    "where": {
+      "name": "六角螺母",
+      "specs": ["材质碳钢"]
+    }
+  },
+  {
+    "id": "hand-47",
+    "type": "colloquial",
+    "text": "老板找下密封深沟球轴成，要BG000系列",
+    "where": {
+      "name": "密封深沟球轴承",
+      "prefix": "BG000"
+    }
+  },
+  {
+    "id": "hand-48",
+    "type": "colloquial",
+    "text": "圆锥滚子轴成有没有呀，要TR000系列",
+    "where": {
+      "name": "圆锥滚子轴承",
+      "prefix": "TR000"
+    }
+  },
+  {
+    "id": "hand-49",
+    "type": "colloquial",
+    "text": "内六角罗栓给看看，要HB000系列",
+    "where": {
+      "name": "内六角螺栓",
+      "prefix": "HB000"
+    }
+  },
+  {
+    "id": "hand-50",
+    "type": "colloquial",
+    "text": "六角罗母有现货吗，要HN000系列",
+    "where": {
+      "name": "六角螺母",
+      "prefix": "HN000"
+    }
+  },
+  {
+    "id": "hand-51",
+    "type": "colloquial",
+    "text": "想要那个电兹阀，要SV000系列",
+    "where": {
+      "name": "电磁阀",
+      "prefix": "SV000"
+    }
+  },
+  {
+    "id": "hand-52",
+    "type": "colloquial",
+    "text": "汽缸给我瞅瞅，要CY000系列",
+    "where": {
+      "name": "气缸",
+      "prefix": "CY000"
+    }
+  },
+  {
+    "id": "hand-53",
+    "type": "colloquial",
+    "text": "交流接处器，麻烦了，要AC000系列",
+    "where": {
+      "name": "交流接触器",
+      "prefix": "AC000"
+    }
+  },
+  {
+    "id": "hand-54",
+    "type": "colloquial",
+    "text": "小型断露器这种，要CB000系列",
+    "where": {
+      "name": "小型断路器",
+      "prefix": "CB000"
+    }
+  },
+  {
+    "id": "hand-55",
+    "type": "broad",
+    "text": "轴承来个内径25的",
+    "where": {
+      "category": "轴承",
+      "specs": ["内径25mm"]
+    }
+  },
+  {
+    "id": "hand-56",
+    "type": "broad",
+    "text": "防护IP65的电器有没",
+    "where": {
+      "category": "低压电器",
+      "specs": ["防护IP65"]
+    }
+  },
+  {
+    "id": "hand-57",
+    "type": "absent",
+    "text": "ZZZ99999QQ",
+    "where": {
+      "absent": true
+    }
+  },
+  {
+    "id": "hand-58",
+    "type": "absent",
+    "text": "M99999",
+    "where": {
+      "absent": true
+    }
+  },
+  {
+    "id": "hand-59",
+    "type": "absent",
+    "text": "DC99999V",
+    "where": {
+      "absent": true
+    }
+  },
+  {
+    "id": "hand-60",
+    "type": "absent",
+    "text": "IP99999",
+    "where": {
+      "absent": true
+    }
+  },
+  {
+    "id": "hand-61",
+    "type": "absent",
+    "text": "量子传送器",
+    "where": {
+      "absent": true
+    }
+  },
+  {
+    "id": "hand-62",
+    "type": "absent",
+    "text": "反重力悬浮器",
+    "where": {
+      "absent": true
+    }
+  },
+  {
+    "id": "hand-63",
+    "type": "absent",
+    "text": "不存在的液压泵",
+    "where": {
+      "absent": true
+    }
+  },
+  {
+    "id": "hand-64",
+    "type": "absent",
+    "text": "HB999999-9",
+    "where": {
+      "absent": true
+    }
+  }
+]

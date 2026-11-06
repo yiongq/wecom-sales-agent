@@ -410,6 +410,27 @@ export async function semanticRecall(query: string, topK = 8): Promise<{ id: str
     .slice(0, topK);
 }
 
+/** 候选集上计算，不先截断全局名次；沿用同一查询嵌入与租户清理栅栏。 */
+export async function semanticScores(query: string, ids: readonly string[]): Promise<ReadonlyMap<string, number> | null> {
+  const rt = currentRuntime();
+  const local = state();
+  const index = local.index;
+  if (!index?.length || !query.trim() || rt.cancel.aborted) return null;
+  const wanted = new Set(ids);
+  if (!wanted.size) return new Map();
+  const q = await rt.inflight.track(embed([query]));
+  if (rt.cancel.aborted) throw new Error('tenant_closing');
+  const queryVector = q?.[0];
+  if (
+    !indexes.owns(rt, local) ||
+    !Array.isArray(queryVector) ||
+    queryVector.length !== index[0].vec.length ||
+    !queryVector.every(Number.isFinite)
+  )
+    return null;
+  return new Map(index.filter((item) => wanted.has(item.id)).map((item) => [item.id, cosine(queryVector, item.vec)]));
+}
+
 registerTenantState({ name: 'retrieval.index', ...indexes.registration((s) => Number(s.index !== null)) });
 
 registerTenantState({ name: 'retrieval.building', ...indexes.registration((s) => Number(s.building !== null)) });

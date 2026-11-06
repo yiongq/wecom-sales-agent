@@ -997,6 +997,8 @@ export interface FollowupGuardContext extends GuardContext {
 
 /** 包工厂的存储、配置与检索能力，组合根提供，包不引用运行时模块。 */
 export interface PackSources extends Omit<TravelToolSources, 'budgetVerdict'> {
+  /** 指定候选集的余弦分数；不可用时返回 null，每次至多一次查询嵌入。 */
+  semanticScores(query: string, ids: readonly string[]): Promise<ReadonlyMap<string, number> | null>;
   erp: {
     /** availability、fresh、mapped 的 code 均为产品库条目 code，不是型号的归一值。 */
     active(kind: string): boolean;
@@ -1031,3 +1033,5 @@ registerTenantState({
 });
 
 export type { LineOrder } from './order-view.js';
+
+export { buildKeywordIndex, tokenize, bm25, rrf, type KeywordIndex } from './retrieval-hybrid.js';

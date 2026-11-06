@@ -202,6 +202,7 @@ export const STATE_MANIFEST: Record<
   'src/core/retrieval.ts:RETRY_BACKOFF_MS': { kind: 'instance', why: '固定规则、词表或能力对象；无按租户变化的业务数据' },
   'src/core/retrieval.ts:VAR_DIR': { kind: 'instance', why: '进程部署路径快照；租户文件读写由所属运行时的后端控制。' },
   'src/core/retrieval.ts:__retrievalTest': { kind: 'instance', why: '自测能力出口；本对象不另存租户数据，所读写状态按各自条目归类' },
+  'src/packs/industrial/match.ts:snapshots': { kind: 'object-keyed' },
   'src/core/retrieval.ts:indexes': { kind: 'tenant', state: 'retrieval.index' },
   'src/core/retrieval.ts:retryBackoff': { kind: 'instance', why: '进程测试时钟 / 时序配置 / 测试接线，不保存生产租户数据' },
   'src/core/retrieval.ts:shared': { kind: 'tenant', state: 'retrieval.shared' },

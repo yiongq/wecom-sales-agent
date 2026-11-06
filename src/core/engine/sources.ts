@@ -10,7 +10,7 @@ import {
   ConfigNotReadyError,
   installRuntimeSources,
 } from '../../config/source.js';
-import { indexReady, semanticRecall } from '../retrieval.js';
+import { indexReady, semanticRecall, semanticScores } from '../retrieval.js';
 import { createOrder, getOrder, queueJobs, saveSession, supersedeOrder } from '../../store.js';
 import { todayIso } from '../../env.js';
 import { paymentMode } from '../../payment/mode.js';
@@ -34,6 +34,7 @@ export function packSources(): PackSources {
     currentPolicy,
     indexReady,
     semanticRecall,
+    semanticScores,
     createOrder,
     getOrder,
     queueJobs,

@@ -257,5 +257,10 @@
   "src/tenancy/hosts.selftest.ts": 1,
   "src/tenancy/sandbox/pages.selftest.ts": 1,
   "src/tenancy/seed-fixture.selftest.ts": 1,
-  "src/tenancy/trial/notice.selftest.ts": 1
+  "src/tenancy/trial/notice.selftest.ts": 1,
+  "src/core/retrieval-hybrid.selftest.ts": 1,
+  "eval/retrieval/retrieval.selftest.ts": 2,
+  "src/packs/industrial/attributes.selftest.ts": 1,
+  "src/industrial-retrieval.selftest.ts": 2,
+  "src/industrial-retrieval-scores.selftest.ts": 2
 }

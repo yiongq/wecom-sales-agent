@@ -110,10 +110,9 @@ assert.equal(matchInMemory('M8×30 螺栓', [...namedParts, aliasConflict]).part
 const recalledQueries: string[] = [];
 const matcher = createMatcher({
   currentCatalog: () => ({ ...snapshot, items: { part: namedParts } }),
-  indexReady: () => true,
-  semanticRecall: async (query) => {
+  semanticScores: async (query) => {
     recalledQueries.push(query);
-    return [{ id: part.id }] as Awaited<ReturnType<PackSources['semanticRecall']>>;
+    return new Map([[part.id, 1]]);
   },
 });
 const snapshot: ReturnType<PackSources['currentCatalog']> = {
