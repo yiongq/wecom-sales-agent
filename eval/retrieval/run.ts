@@ -8,6 +8,7 @@ import { normalizePartNo } from '../../src/packs/industrial/normalize.js';
 import type { PackSources } from '../../src/core/pack-api.js';
 import { fakeEmbed, fakeCosine } from './fake-embed.js';
 import { validateQueryCardinality, type Query } from './gen-queries.js';
+import { createRealProvider, loadEmbedEnv, type RealEmbedUsage } from './real-embed.js';
 
 export interface Observation {
   query: Query;
@@ -62,7 +63,7 @@ export async function runEvaluation(
   realProvider?: EmbeddingProvider,
 ) {
   validateQueryCardinality(options.queries);
-  if (options.embed === 'real' && !realProvider) throw new Error('real 仅预留 EmbeddingProvider 接口；本任务不调用真实接口');
+  if (options.embed === 'real' && !realProvider) throw new Error('real 需要传入 EmbeddingProvider');
   const provider =
     options.embed === 'fake' ? { embed: async (texts: readonly string[]) => texts.map((text) => fakeEmbed(text)) } : realProvider!;
   // embedding 全部在计时外生成；匹配器内仍执行真实的候选余弦计算。
@@ -145,52 +146,94 @@ export async function runEvaluation(
       'GC heap deltas: catalog vectors + id map, plus matcher snapshot indexes; excludes input catalog and query vectors; without --expose-gc includes allocation noise',
     embeddingCalls,
     overall: metrics(rows),
+    bySource: {
+      generated: metrics(rows.filter((row) => row.query.source === 'generated')),
+      handwritten: metrics(rows.filter((row) => row.query.source === 'handwritten')),
+    },
+    handwrittenByType: Object.fromEntries(
+      [...new Set(options.queries.filter((q) => q.source === 'handwritten').map((q) => q.type))].map((type) => [
+        type,
+        metrics(rows.filter((row) => row.query.source === 'handwritten' && row.query.type === type)),
+      ]),
+    ),
     byType: Object.fromEntries(
       [...new Set(options.queries.map((q) => q.type))].map((type) => [type, metrics(rows.filter((row) => row.query.type === type))]),
     ),
   };
 }
-export function markdown(report: Awaited<ReturnType<typeof runEvaluation>>): string {
+export function markdown(report: Awaited<ReturnType<typeof runEvaluation>> & { embedUsage?: RealEmbedUsage }): string {
   const percent = (n: number | null) => (n === null ? 'N/A' : `${(100 * n).toFixed(2)}%`);
   const rows = Object.entries({ ...report.byType, overall: report.overall });
-  return [
-    `# 检索评测（${report.matcher} / ${report.embed}）`,
-    '',
-    `产品 ${report.catalogSize} 条，手写查询 ${report.handwritten} 条；假嵌入数字不能外推真实语义质量。`,
-    '',
-    '截断 recall@5 = 前5条相关数 / min(5, 相关条目数)；precision@5 = 前5条相关数 / 返回条数（返回0条记0）；逐查询计算后宏平均。broad 只计 precision，不计截断 recall/MRR；无相关条目不计截断 recall/MRR，但计 precision（0）和空结果率。误给型号率仅以走回退的纯型号查询为分母。延迟不含 embedding 和预热建索引。',
-    '',
+  const table = (entries: typeof rows) => [
     '| 类型 | n | 相关数中位数 | 相关数最大值 | 截断 recall@5 | precision@5 | MRR@5 | 空结果率 | 误给型号率 | p50 ms | p95 ms |',
     '|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|',
-    ...rows.map(
+    ...entries.map(
       ([type, m]) =>
         `| ${type} | ${m.count} | ${m.relevantCountMedian} | ${m.relevantCountMax} | ${percent(m.truncatedRecall5)} | ${percent(m.precision5)} | ${percent(m.mrr5)} | ${percent(m.emptyRate)} | ${percent(m.wrongModelRate)} | ${m.p50Ms.toFixed(3)} | ${m.p95Ms.toFixed(3)} |`,
     ),
+  ];
+  return [
+    `# 检索评测（${report.matcher} / ${report.embed}）`,
+    '',
+    `产品 ${report.catalogSize} 条，手写查询 ${report.handwritten} 条；${
+      report.embed === 'fake'
+        ? '假嵌入数字不能外推真实语义质量。'
+        : `真实嵌入（模型 ${report.embedUsage?.model ?? '由 EmbeddingProvider 提供'}），延迟不含查询嵌入的网络往返。`
+    }`,
+    '',
+    '截断 recall@5 = 前5条相关数 / min(5, 相关条目数)；precision@5 = 前5条相关数 / 返回条数（返回0条记0）；逐查询计算后宏平均。broad 只计 precision，不计截断 recall/MRR；无相关条目不计截断 recall/MRR，但计 precision（0）和空结果率。误给型号率仅以走回退的纯型号查询为分母。延迟不含 embedding 和预热建索引。',
+    '',
+    ...table(rows),
+    '',
+    '## 手写查询子集',
+    '',
+    ...table(Object.entries({ ...report.handwrittenByType, 合计: report.bySource.handwritten })),
     '',
     `完整索引堆增量 ${report.indexHeapDeltaBytes} bytes（向量 ${report.vectorIndexHeapDeltaBytes}，快照派生索引 ${report.snapshotIndexHeapDeltaBytes}）；向量有效载荷 ${report.vectorBytes} bytes（${report.dimensions} 维 number[]，不含对象开销）。`,
     `内存口径：${report.memoryMethod}。`,
     '',
   ].join('\n');
 }
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const args = process.argv.slice(2);
-  const allowed = new Set(['--matcher', '--embed', '--catalog', '--queries', '--out']);
+export function parseCliArgs(args: readonly string[]) {
+  const realOnly = ['--env-file', '--max-yuan', '--cache-dir'];
+  const allowed = new Set(['--matcher', '--embed', '--catalog', '--queries', '--out', ...realOnly]);
   const values = new Map<string, string>();
   for (let i = 0; i < args.length; i += 2) {
-    if (!allowed.has(args[i]!) || !args[i + 1] || values.has(args[i]!)) throw new Error('无效或重复 CLI 参数');
+    if (!allowed.has(args[i]!) || !args[i + 1] || args[i + 1]!.startsWith('--') || values.has(args[i]!))
+      throw new Error('无效或重复 CLI 参数');
     values.set(args[i]!, args[i + 1]!);
   }
   const matcher = values.get('--matcher') ?? 'hybrid';
   const embed = values.get('--embed') ?? 'fake';
   if (matcher !== 'current' && matcher !== 'hybrid') throw new Error('--matcher 必须是 current|hybrid');
   if (embed !== 'fake' && embed !== 'real') throw new Error('--embed 必须是 fake|real');
-  if (embed === 'real') throw new Error('real 仅预留 EmbeddingProvider 接口；需协调者另行装配并授权');
-  const parts = (JSON.parse(fs.readFileSync(values.get('--catalog') ?? 'var/retrieval/catalog.json', 'utf8')) as unknown[]).map((part) =>
-    PartSchema.parse(part),
-  );
-  const queries = JSON.parse(fs.readFileSync(values.get('--queries') ?? 'var/retrieval/queries.json', 'utf8')) as Query[];
-  const report = await runEvaluation({ matcher, embed, parts, queries });
-  const out = values.get('--out') ?? `var/retrieval/${matcher}.json`;
+  if (embed === 'fake' && realOnly.some((arg) => values.has(arg)))
+    throw new Error('--env-file、--max-yuan、--cache-dir 仅允许用于 --embed real');
+  const maxYuan = Number(values.get('--max-yuan') ?? '1');
+  if (!Number.isFinite(maxYuan) || maxYuan < 0 || values.get('--max-yuan')?.trim() === '') throw new Error('--max-yuan 必须是非负有限数');
+  return {
+    matcher,
+    embed,
+    envFile: values.get('--env-file'),
+    maxYuan,
+    cacheDir: values.get('--cache-dir') ?? 'var/retrieval/embed-cache',
+    catalog: values.get('--catalog') ?? 'var/retrieval/catalog.json',
+    queries: values.get('--queries') ?? 'var/retrieval/queries.json',
+    out: values.get('--out') ?? `var/retrieval/${matcher}.json`,
+  } as const;
+}
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  const options = parseCliArgs(process.argv.slice(2));
+  if (options.envFile) console.log('读入嵌入环境变量：', loadEmbedEnv(options.envFile));
+  const provider = options.embed === 'real' ? createRealProvider(options) : undefined;
+  const parts = (JSON.parse(fs.readFileSync(options.catalog, 'utf8')) as unknown[]).map((part) => PartSchema.parse(part));
+  const queries = JSON.parse(fs.readFileSync(options.queries, 'utf8')) as Query[];
+  const report = {
+    ...(await runEvaluation({ ...options, parts, queries }, provider)),
+    ...(provider ? { embedUsage: provider.usage() } : {}),
+  };
+  if (report.embedUsage) console.log('嵌入用量：', report.embedUsage);
+  const out = options.out;
   fs.mkdirSync(path.dirname(out), { recursive: true });
   fs.writeFileSync(out, JSON.stringify(report, null, 2) + '\n');
   fs.writeFileSync(out.replace(/\.json$/, '') + '.md', markdown(report));
