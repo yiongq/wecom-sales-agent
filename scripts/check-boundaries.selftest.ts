@@ -80,6 +80,21 @@ const FACADE_FILES = [
 ];
 
 try {
+  for (const file of ['eval/sim/audit.ts', 'eval/sim/triage.ts', 'eval/sim/promote.ts']) {
+    for (const target of ['../../src/packs/industrial/catalog.js', '../../src/core/guards/money-provenance.js']) {
+      for (const source of [
+        `import '${target}';`,
+        `import type { Probe } from '${target}';`,
+        `export * from '${target}';`,
+        `const m = import('${target}');`,
+        `const m = require('${target}');`,
+      ])
+        check(file, source, '不 import src/packs、src/core/guards', target);
+    }
+  }
+  check('eval/sim/triage.ts', "import '../../src/tools.js';", '运行时依赖限于');
+  check('eval/sim/triage.ts', "import { oraclePrice } from './audit.js';", null);
+  check('eval/sim/triage.ts', "import { readJournal } from './journal.js';", null);
   // 11 R2 / 验收 10：四种违例均由真实 CLI 报文件与行号；目标目录/文件不存在也照样检查。
   check('src/connectors/probe.ts', "fetch('https://erp.example.test');", '11 R2：连接器不调 fetch');
   check('src/probe.ts', "import './connectors/odoo-mock.js';", 'odoo-mock.ts 只许 *.selftest.ts import');
