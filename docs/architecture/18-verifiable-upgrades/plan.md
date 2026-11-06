@@ -5,15 +5,15 @@
 第 1–2 步（`eval/sim/`）、第 3 步（核心护栏与工业包）、第 4 步（检索）、第 7 步（数据库、配置、部署）改的文件互不重叠，可以分开并行；第 5–6 步要等第 1、3、4 步合入。第 9 步只要 owner 有空就能做。第 6.1 冻结之后到 6.2 跑完之前，不合入任何改 `src/` 的 PR（含第 7 步），否则留出集拒绝运行。
 
 - [ ] 0. 开工核对
-  - [ ] 0.1 把第 1、2、4、5 次 main、第 3 次中止的 journal 与两次换客户模型的 journal 复制到本 worktree 的 `var/eval-sim-archive/`（不提交），记下文件名与 sha256
-  - [ ] 0.2 读 01 的启动重新渲染流程：交叉评审已核实会发布新版本，再写清要不要过发布闸、闸基线会不会失效（spec 开放问题 5）
-  - [ ] 0.3 列出 R3 三类写入（入站认领、`markSending`、会话落库）和全部发请求的路径（含恢复补发、同段重试）
-  - [ ] 0.4 复核 16 审计的 `reply_amount` 能识别不带「元」的小计（交叉评审称能）
-  - [ ] 0.5 核实嵌入单价，回写 spec R6 的费用表
-  - [ ] 0.6 实测等锁进程的内存占用
+  - [x] 0.1 第 1、2、4、5 次 main、第 3 次中止、两次换客户模型、两次开发集的 journal 已复制到本 worktree 的 `var/eval-sim-archive/`（不提交），sha256 记在同目录 `SHA256SUMS`；`main-3.jsonl` 只有 763 字节（中止）
+  - [x] 0.2 启动重渲染（01「启动重渲染」第 8 步，`src/config/source.ts`）发现【硬性要求】或工具哈希变了，会直接发布一个 `source='rerender'` 的新版本并记 `sop.rerender` 审计，不经过发布闸。所以 R1 的提示词改动靠第 6 次 main 与 v2 用例验证（AGENTS.md 要求的真实模型评测就是第 6 次 main）
+  - [x] 0.3 入站认领：`src/channels/inbox.ts` 的 `insertInboxRows` 与 cursor 同一事务（`src/cli/channel-transfer.ts` 也写，但要求先停应用）。发送标记：`src/store/pg-backend.ts` 的 `markOutboundSending` → `src/db/repo/outbound.ts`。发请求：`src/adapters/wecom.ts` 的 `sendText`、`sendLinkCard`、`sendMenu`（`kf/send_msg`）与欢迎语 `kf/send_msg_on_event`；分段发送循环里 `alreadySending` 跳过标记、同段重试最多 3 次。会话落库在 `pg-backend.ts`，第 7.2 步再细到函数
+  - [x] 0.4 已复核：`eval/sim/audit.ts` 的金额正则含「(单价|合计|总价|小计) 数字」且不要求「元」，独立审计能识别「小计 360.00」；只有产品护栏的 `parseMoney` 漏
+  - [x] 0.5 按仓库价目表 `src/usage.ts`，`embedding-3` 每百万 token ¥0.5；5000 条加约 1000 条查询估 30 多万 token，约 ¥0.2（官方现价未另核，账本按同一张表记）
+  - [ ] 0.6 等锁进程的内存占用：要等第 7.1 步做出等锁启动后才量得到，挪到 7.6 一起测
   - [ ] 0.7 请 owner 提供服务器 Caddy 的上游写法（或授权只读查看），定 spec 开放问题 2
-  - [ ] 0.8 核对 `var/` 里除 spill 以外的每类文件都符合「只有持锁进程读写」，不符合的列进第 7 步
-  - [ ] 0.9 第 3 步动手前，对照 `guards.ts` 列全「整段换成固定话术」的分支（写 `blocksSuppressed` 的地方）
+  - [x] 0.8 `var/` 里的文件与写方：`usage.json`（`src/usage.ts`）、`budget.json`（`src/budget.ts`）、语义索引缓存（`src/core/retrieval.ts`）、发布闸临时目录 `var/gate/`（`src/config/gate.ts`）、会话 spill（`src/store/pg-backend.ts`）、渠道标记与恢复哨兵（`src/channels/markers.ts`）、`sessions-in-db` 标记（`src/store.ts`）、旧的 `wecom-cursor.json`（`src/adapters/wecom-state.ts`，文件状态时才用）。都由活动进程读写，符合 spec 的规则。第 7.1 步要核：等锁进程收到 SIGTERM 时直接退出、不跑停机钩子，否则 `usage.json`、`budget.json` 的定时落盘可能用空状态盖掉主进程的文件
+  - [x] 0.9 工业包整段换成固定话术的分支（写 `blocksSuppressed`）：`guardedText` 待审带金额时整段换 `FIXED.pending`；`quote_claim` 自动建单后整段换成「报价单：链接 + 合计」；`money_provenance` 删空后用兜底句（动作 `replace`）；`turn_failure` 转人工。`quote_claim` 的 `correctClaim`（`ACCEPT_ASK`、`NOT_SUBMITTED`）只换那一句，属局部纠正，不写旗标。`rfq_trim` 的 `TRIM_FALLBACK` 在块计入预算后应很少出现，第 3 步定是否写旗标
 - [ ] 1. 检测器：`eval/sim/triage.ts` 与自测（每个检测器至少一正一反，用合成 journal 片段）；回溯第 1、2、4、5 次，逐条核对验收 7 的已知问题
 - [ ] 2. 生成用例
   - [ ] 2.1 16 的 journal 每轮写 `sessionBefore`（`eval/sim/runtime.ts`），旧字段不变
@@ -59,3 +59,5 @@
 2026-11-07：Codex 只读交叉评审 spec（3 blocker、8 major、1 minor）。其中 7 条我对照代码复核属实（局部纠正也返回 `replace`、12 行 600 字上限、恢复补发跳过 `markSending` 且标记失败会照发、journal 只存订单和阶段、10 验收 9 禁止 v2 审批种子、已知问题场景都在留出集、`watch.sh` 盯固定端口），其余是推理类问题，认同。12 条全部按评审改进 spec（见 spec 顶部第一条 `Revisions:`），plan 步骤随之重排。还在等：Tier 是否按 heavy、是否改 `ready`。
 
 2026-11-07：owner「改 ready，heavy」，spec 改为 `ready`、Tier heavy；01、03、10、16 顶部补反向标记，总参考登记。下一步：第 0 步（0.7 要 owner 提供 Caddy 配置），之后按开头的分路并行，同时最多两路。
+
+2026-11-07：开工。第 0 步除 0.6（挪到 7.6）、0.7（等 owner 给 Caddy 配置）外已完成，结论写在各子步骤上。派了两路 Codex：第 1 步检测器（worktree `codex-18-triage`，分支 `feat/18-triage`）、第 4.1 与 4.3 步检索（worktree `codex-18-retrieval`，分支 `feat/18-retrieval`），都从 `docs/18-draft` 拉。检索那路开工就发现 `PartSchema` 只有 4 个类目，spec R5 改为「4 个类目下至少 8 种子类型」后续跑。两路都会改 `package.json` 的 test 行，收尾时后开的 PR 先合入前一个再开，免得冲突后 CI 不跑。
