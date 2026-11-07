@@ -5,6 +5,7 @@ import { stripAdvisorPrefix } from '../../shared/conversation.js';
 import { FAILURE_WINDOW, failureThresholdReached, pushWindow, turnFailed, type TurnSignals } from '../../handoff/trigger-rules.js';
 import { IDENTITY_QUESTION, stripMarkdown, trimDangling } from './text.js';
 import { replyStep } from './reply-step.js';
+import { finalizeReplyBlocks } from './reply-blocks.js';
 import { shapeCheckStep } from './shape.js';
 
 function dropAdvisorPrefix(ctx: ReplyGuardContext): void {
@@ -112,6 +113,7 @@ export function coreReplySteps<Context extends ReplyGuardContext>(): GuardStep<C
           ...(departNote ? { departNote } : {}),
         });
         delete session.turnSignals;
+        if (ctx.replyBlocks) ctx.turn.flags.blocksSuppressed = true;
         const before = ctx.text;
         ctx.text = ctx.answerIdentity(text, ctx.handoffReply(session, text, 'request'));
         ctx.recordGuard('turn_failure', before, ctx.text, 'handoff');
@@ -122,6 +124,7 @@ export function coreReplySteps<Context extends ReplyGuardContext>(): GuardStep<C
       dropAdvisorPrefix(ctx);
       ctx.text = cleanText(ctx.text);
       ctx.appendMessage({ role: 'agent', content: ctx.text, at: Date.now() });
+      finalizeReplyBlocks(ctx);
     }),
   ];
 }

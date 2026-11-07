@@ -96,18 +96,24 @@ try {
   const order = JSON.stringify(made.order).replaceAll(made.order.id, 'ord_fixture');
   const texts = ['HS1000有现货。', 'HS1000现货7件，其余约12天。', 'HS1000明天发。', 'HS1000可以替代HS1001。'];
   const guards = await Promise.all(texts.map(async (text) => [await guard(session, text), await guard(session, text, true)]));
+  // 18 只新增块提示；旧夹具继续逐字节核对原来的业务字段与完整订单。
+  const withoutBlock = (raw: string, expected: string): string => {
+    const { block, ...legacy } = JSON.parse(raw);
+    assert.equal(block, expected);
+    return JSON.stringify(legacy);
+  };
   const snapshot = JSON.stringify({
-    exact,
-    alias,
+    exact: withoutBlock(exact, '{{档位价}}'),
+    alias: withoutBlock(alias, '{{档位价}}'),
     candidates,
-    estimate,
+    estimate: withoutBlock(estimate, '{{试算明细}}'),
     result: made.result.replaceAll(made.order.id, 'ord_fixture'),
     order,
     guards,
   });
   // BASELINE_ASSERT
   assert.equal(snapshot, JSON.stringify(JSON.parse(fs.readFileSync(new URL('./fixtures/industrial-pre11.json', import.meta.url), 'utf8'))));
-  console.log('ERP BASELINE PASS: df85a025 工具、完整订单（仅替换随机id）、主回复与跟进逐字节一致');
+  console.log('ERP BASELINE PASS: df85a025 原工具业务字段、完整订单（仅替换随机id）、主回复与跟进逐字节一致；18 新增 block 单独核对');
 
   // active 为假时，任何其他 ERP 能力被访问都直接失败。
   sources = {
@@ -477,7 +483,10 @@ try {
         assert.equal(facade.mapped('part', 'part-31'), false);
         assert.equal(facade.mapped('route', 'part-0'), false);
       }
-      assert.equal((await handleMessage('trace-first', 'HS1000 10件', 'web')).text, modelText);
+      assert.equal(
+        (await handleMessage('trace-first', 'HS1000 10件', 'web')).text,
+        `${modelText}\n试算：\nHS1000 × 10：单价8.00元，小计80.00元；现货 7 件，其余约 12 天，以顾问确认为准\n合计80.00元`,
+      );
       modelText = '已查询型号。';
       assert.ok(warnings.some((text) => text.includes('ERP 17ms cache=miss deadline=false')));
       warnings.length = 0;

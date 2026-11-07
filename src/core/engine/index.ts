@@ -76,6 +76,7 @@ import {
   noteGuard,
   noteGuardVerdict,
   noteReplyShape,
+  noteReplyBlocks,
   notePrefix,
   noteSignals,
   noteToolError,
@@ -1091,6 +1092,7 @@ async function finishTurn(
       if (state.opts.stillCurrent && !state.opts.stillCurrent()) return;
       const settled =
         message.role === 'agent' && !effectsApplied ? settleAcceptance(session, runtime, state.prefetchEffects, message.content) : null;
+      if (settled && settled.text !== message.content && ctx.replyBlocks) ctx.turn.flags.blocksSuppressed = true;
       if (settled) ctx.text = message.content = settled.text;
       recordQuoteStates(message, session);
       session.messages.push(message);
@@ -1141,6 +1143,7 @@ async function finishTurn(
       logSlowTurn(session.id, Date.now() - turnStart, { prefetchMs: modelStart - turnStart, prefetchTimes, modelMs, tag: turn.tag });
       if (configMode() === 'db') console.log(`[engine] 本轮完成（会话 ${convLabel(session.id)}）· ${turn.tag()}`);
       if (ctx.turn.flags.replyShape) noteReplyShape(ctx.turn.flags.replyShape);
+      if (ctx.replyBlocks) noteReplyBlocks(ctx.replyBlocks.trace);
       const reply: AgentReply = { text: ctx.text, stage: session.stage };
       if (session.handedOver) reply.handoff = true;
       if (session.orderIds.length > ordersBefore) reply.orderId = session.orderIds[session.orderIds.length - 1];

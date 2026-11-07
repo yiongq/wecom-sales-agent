@@ -1,6 +1,8 @@
 // R8 / R9：只读会话与已发布配置；跟进版本只删，不调用业务工具。
 import {
   orderDisplay,
+  expandedReply,
+  willPlaceReplyBlock,
   getAnyOrder,
   partsOf,
   sentenceUnits,
@@ -165,7 +167,11 @@ function quoteBehaviorText(ctx: FollowupGuardContext, sources: PackSources, foll
   if (quote?.kind === 'quote' && quote.state === 'pending') {
     const unsafe = (unit: string) => moneyText.test(unit) && (!/试算/.test(unit) || /正式报价单[^。！？\n]*\d+(?:\.\d+)?\s*元/.test(unit));
     const units = sentenceUnits(text).map(({ start, end }) => text.slice(start, end));
-    if (units.some(unsafe)) text = followup ? units.filter((unit) => !unsafe(unit)).join('') : FIXED.pending;
+    if (!followup && text.trim() === FIXED.pending && ctx.turn) ctx.turn.flags.blocksSuppressed = true;
+    if (units.some(unsafe)) {
+      if (!followup && ctx.turn) ctx.turn.flags.blocksSuppressed = true;
+      text = followup ? units.filter((unit) => !unsafe(unit)).join('') : FIXED.pending;
+    }
   }
   if (followup && !quote)
     text = unitsOf(text)
@@ -185,8 +191,10 @@ function quoteBehaviorText(ctx: FollowupGuardContext, sources: PackSources, foll
       const call = ctx.toolSources.findLast((call) => call.name === 'quote_items' && call.result);
       if (call?.result) {
         const result = JSON.parse(call.result) as { total?: number; unmatched?: number };
-        if (result.unmatched === 0 && result.total !== undefined)
+        if (result.unmatched === 0 && result.total !== undefined) {
+          if (ctx.turn) ctx.turn.flags.blocksSuppressed = true;
           text = `原报价单已过期，已按当前价重新试算，合计${result.total}元。请确认本次试算，确认后再起草新的报价单。`;
+        }
       }
     }
   }
@@ -240,11 +248,13 @@ function quoteBehaviorText(ctx: FollowupGuardContext, sources: PackSources, foll
       !models.every((model) => hasModel(text, model)) ||
       !/哪种|哪个|哪一款|选择|确认.{0,6}型号|型号.{0,6}确认/.test(text) ||
       /已为您选|替您选/.test(text)
-    )
+    ) {
+      if (ctx.turn) ctx.turn.flags.blocksSuppressed = true;
       text =
         models.length === 1
           ? `查到的是 ${models[0]}，请确认是不是这个型号。`
           : `查到多个候选，请选择需要的型号：\n${models.map((model) => `· ${model}`).join('\n')}`;
+    }
   }
   return text;
 }
@@ -449,7 +459,13 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
 }
 
 /** 保留原始行 id，重建补句时统计最终完全删空的询价行；保护链接超限必须终止。 */
-export function trimRfq(text: string, models: readonly string[], followup = false): string {
+export function trimRfq(
+  text: string,
+  models: readonly string[],
+  followup = false,
+  expanded: (body: string) => string = (body) => body,
+  showTrimNote: (body: string) => boolean = () => true,
+): string {
   const original = text.replace(/\r\n?/g, '\n').split('\n');
   const inquiry = original.map((line) => models.some((model) => hasModel(line, model)));
   const lines = original.map((line) => line);
@@ -461,16 +477,22 @@ export function trimRfq(text: string, models: readonly string[], followup = fals
       .join('\n')
       .trim();
     const n = inquiry.filter((yes, i) => yes && !lines[i]?.trim()).length;
-    return !followup && n ? [kept, trimNote(n)].filter(Boolean).join('\n') : kept;
+    return !followup && n && showTrimNote(kept) ? [kept, trimNote(n)].filter(Boolean).join('\n') : kept;
   };
-  const fits = (value: string): boolean => value.split('\n').length <= 12 && [...value.replace(/\s/gu, '')].length <= 600;
+  const fits = (body: string): boolean => {
+    const value = expanded(body);
+    return (
+      (followup ? value.split('\n').length : value.split('\n').filter((line) => line.trim()).length) <= 12 &&
+      [...value.replace(/\s/gu, '')].length <= 600
+    );
+  };
   while (!fits(render())) {
     let removed = false;
     for (let i = lines.length - 1; i >= 0 && !removed; i--) {
       const line = lines[i]!;
       for (const { start, end } of sentenceUnits(line).toReversed()) {
         const unit = line.slice(start, end);
-        if (!unit.trim() || /https?:\/\//i.test(unit) || partsOf(unit).length) continue;
+        if (!unit.trim() || /https?:\/\//i.test(unit) || partsOf(unit).length || /\{\{/.test(unit)) continue;
         lines[i] = line.slice(0, start) + line.slice(end);
         removed = true;
         break;
@@ -485,6 +507,7 @@ export function trimRfq(text: string, models: readonly string[], followup = fals
 export function quoteClaimStep(): GuardStep<ReplyGuardContext> {
   return {
     id: 'quote_claim',
+    writes: ['blocksSuppressed'],
     after: ['takeover_check:pre'],
     async run(ctx) {
       if (ctx.session.handedOver) return { action: 'pass' };
@@ -513,6 +536,7 @@ export function quoteClaimStep(): GuardStep<ReplyGuardContext> {
           return { action: 'pass' };
         }
         if (result.state === 'approved') {
+          ctx.turn.flags.blocksSuppressed = true;
           const text = `报价单：${result.quoteUrl}\n合计${result.totalText}`;
           ctx.recordGuard('quote_claim', ctx.text, text, 'replace');
           return { action: 'replace', text };
@@ -527,6 +551,7 @@ export function quoteClaimStep(): GuardStep<ReplyGuardContext> {
 export function industrialReplyGuard(sources: PackSources): GuardStep<ReplyGuardContext> {
   return {
     id: 'industrial_claims',
+    writes: ['blocksSuppressed'],
     after: ['stage_advance'],
     run(ctx) {
       const text = guardedText(ctx, sources, false, ctx.policy ?? sources.currentPolicy().policy);
@@ -551,13 +576,18 @@ export function industrialFollowupGuard(sources: PackSources): GuardStep<Followu
 export function rfqTrimStep(sources: PackSources): GuardStep<ReplyGuardContext> {
   return {
     id: 'rfq_trim',
+    writes: ['blocksSuppressed'],
     after: ['money_provenance'],
     run(ctx) {
       const text =
         trimRfq(
           ctx.text,
           draftParts(ctx.session, sources).map((part) => part.partNo),
+          false,
+          (body) => expandedReply(ctx, body),
+          (body) => !willPlaceReplyBlock(ctx, '试算明细', body),
         ) || '请告诉我型号和数量。';
+      if (text === TRIM_FALLBACK) ctx.turn.flags.blocksSuppressed = true;
       if (text === ctx.text) return { action: 'pass' };
       ctx.recordGuard('rfq_trim', ctx.text, text, 'replace');
       return { action: 'replace', text };

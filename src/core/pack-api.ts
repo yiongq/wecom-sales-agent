@@ -487,6 +487,7 @@ export interface GuardTurnFlags extends Record<string, unknown> {
   guardHit?: 'injection' | 'price' | null;
   preDropSnapshot?: string;
   saidAll?: string[];
+  blocksSuppressed?: true;
 }
 
 /** 与现有本轮工具记录同形，补工具时继续追加，result 是原始 JSON 字符串。 */
@@ -598,8 +599,33 @@ export interface ShapePolicy {
   ): string | null;
 }
 
+/** 包声明占位符；核心负责同步渲染、预算预览与放置。 */
+export interface ReplyBlocks {
+  names: readonly string[];
+  autoAppend: readonly string[];
+  render(ctx: ReplyGuardContext): Readonly<Record<string, string | null>>;
+}
+
+export interface TurnBlocks {
+  rendered: { name: string; placed: 'inline' | 'appended'; rows: number; trimmedRows: number }[];
+  suppressed: boolean;
+  droppedTokens: number;
+  bareItemAmounts: number;
+  finalShape: { lines: number; chars: number };
+}
+
+/** 本轮同步渲染的块；正文护栏只读预算，不改块。 */
+export interface ReplyBlockState {
+  texts: Readonly<Record<string, string | null>>;
+  originalTokens: readonly string[];
+  autoAppend: readonly string[];
+  trimmedRows: Record<string, number>;
+  trace: TurnBlocks;
+}
+
 /** 通用主回复步骤所需的本轮能力；记录、消息追加由引擎绑定。 */
 export interface ReplyGuardContext extends GuardContext<GuardContextTypes & { flags: ReplyGuardFlags }> {
+  replyBlocks?: ReplyBlockState;
   raw: string;
   inputText: string;
   /** 本轮正在接受、发送时才落账的报价单；不用于跟进。 */
@@ -638,6 +664,7 @@ export interface ReplyGuardContext extends GuardContext<GuardContextTypes & { fl
 }
 
 export { replyStep } from './guards/reply-step.js';
+export { expandedReply, replyBlockBudget, willPlaceReplyBlock } from './guards/reply-blocks.js';
 export { moneyProvenanceStep, moneyProvenanceFollowupStep } from './money-provenance.js';
 
 /** 06 R21：一致性检查的登记类型；通用的检查函数在 core/consistency.ts，包只登记文字和规则 */
@@ -833,6 +860,7 @@ export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   prefetch?(ctx: T['TurnContext']): Promise<T['PrefetchResult'] | null>;
   contextNote(ctx: T['TurnContext']): string[];
   preModel?(ctx: T['TurnContext']): T['DeterministicReply'] | null;
+  replyBlocks?: ReplyBlocks;
   replySteps: GuardStep<T['GuardContext']>[];
   /** 行业步骤的结束位置，用于把后续核心步骤接回原顺序。 */
   replyAnchors?: Readonly<Record<string, string>>;

@@ -725,6 +725,436 @@ try {
     assert.ok(parsed > first, '新数组重新校验并更新匹配');
   }
   console.log('工业金额绑定：工具记账、主回复/跟进错配删除、同价/合计/无型号/别名/旧账本放行、批准订单及档位单价通过');
+
+  // 18 验收 1、不变量 1–6：通过真实工具结果和整条主回复管线验证。
+  const { expandedReply } = await import('./core/guards/reply-blocks.js');
+  const { replyLineCount, replyCharCount } = await import('./core/guards/shape.js');
+  let blockSeq = 0;
+  async function blockTurn(raw: string, items: { query: string; qty: number }[] = [{ query: 'HS1000', qty: 3 }]) {
+    const session = store.getOrCreateSession(`web:blocks-${++blockSeq}`, 'web');
+    const result = await registry.execute('quote_items', { items }, { ...toolContext, session });
+    const ctx = {
+      session,
+      raw,
+      text: raw,
+      inputText: '',
+      policy: defaultIndustrialPolicy,
+      turn: { flags: {} },
+      toolSources: [{ name: 'quote_items', args: { items }, result }],
+      orderSources: [],
+      thresholds: runtime.thresholds,
+      brand: runtime.defaultBrand,
+      stageAtStart: session.stage,
+      ordersBefore: 0,
+      handoffDeclined: false,
+      turnMoney: () => session.moneyLedger ?? [],
+      takenOver: () => false,
+      isTerminalStage: () => false,
+      advanceStage: () => session.stage,
+      extractProfile: () => session.profile,
+      modelRequestedHandoff: () => false,
+      retrievalEmpty: () => false,
+      repeatedQuestion: () => false,
+      fallbackReply: () => '请告诉我型号和数量',
+      answerIdentity: (_input: string, reply: string) => reply,
+      handoffReply: () => '顾问会继续确认',
+      departNoteForHandoff: () => undefined,
+      recordGuard: () => {},
+      recordSignals: () => {},
+      handoffThisTurn: () => false,
+      enterHandoff: () => {
+        session.handedOver = true;
+      },
+      appendMessage: (message: import('./types.js').ChatMessage) => session.messages.push(message),
+      callTool: async () => {
+        throw new Error('本测试不应补调工具');
+      },
+    } as unknown as ReplyGuardContext;
+    return ctx;
+  }
+  const complete = await blockTurn('请核对型号。\n{{试算明细}}');
+  const completeRun = await pipes.reply.run(complete);
+  assert.match(
+    complete.text,
+    /试算：\nHS1000 × 3：单价10\.00元，小计30\.00元；现货，以顾问确认为准；满10件8\.00元\n合计30\.00元/,
+    '18 全可报价：金额、下一档、交期逐字段一致',
+  );
+  assert.equal(JSON.parse(complete.toolSources[0]!.result!).block, '{{试算明细}}', '18 工具提示占位符');
+  assert.deepEqual(complete.replyBlocks!.trace.rendered, [{ name: '试算明细', placed: 'inline', rows: 3, trimmedRows: 0 }]);
+  const ids = completeRun.verdicts.map((v) => v.id);
+  assert.ok(
+    ids.indexOf('stage_advance') < ids.indexOf('reply_blocks:render') && ids.indexOf('reply_blocks:render') < ids.indexOf('shape_check'),
+  );
+  assert.deepEqual(
+    ids.slice(ids.indexOf('reply_blocks:place') + 1),
+    ['takeover_check:post', 'turn_failure', 'final_clean'],
+    '18 放置后不再删句',
+  );
+
+  const partialBlock = await blockTurn('{{试算明细}}', [
+    { query: 'HS1000', qty: 3 },
+    { query: 'UNKNOWN', qty: 1 },
+    { query: 'HS1001', qty: 1000001 },
+  ]);
+  await pipes.reply.run(partialBlock);
+  assert.match(partialBlock.text, /小计30\.00元/);
+  assert.match(partialBlock.text, /另有 2 行需确认：UNKNOWN（未找到）/);
+  assert.match(partialBlock.text, /HS1001（超过单次上限）/);
+  assert.doesNotMatch(partialBlock.text, /合计/, '18 部分可报价不写合计');
+  const noneBlock = await blockTurn('{{试算明细}}', [{ query: 'UNKNOWN', qty: 1 }]);
+  await pipes.reply.run(noneBlock);
+  assert.equal(noneBlock.text, '暂时报不了价：UNKNOWN（未找到）');
+  assert.doesNotMatch(noneBlock.text, /试算：|另有|已算好/);
+  assert.doesNotMatch(noneBlock.text, /元/, '18 全不可报价没有金额');
+  const moqBlock = await blockTurn('{{试算明细}}');
+  moqBlock.toolSources[0]!.result = JSON.stringify({ lines: [{ partNo: 'HS1000', qty: 1, note: 'below_moq', moq: 5 }] });
+  await pipes.reply.run(moqBlock);
+  assert.equal(moqBlock.text, '暂时报不了价：HS1000（起订量5件）');
+  assert.doesNotMatch(moqBlock.text, /元|合计/);
+
+  const noneReasons = await blockTurn('{{试算明细}}');
+  noneReasons.toolSources[0]!.result = JSON.stringify({
+    lines: [
+      { query: 'A', note: 'none' },
+      { query: 'B', note: 'below_moq', moq: 2 },
+    ],
+  });
+  await pipes.reply.run(noneReasons);
+  assert.equal(noneReasons.text, '暂时报不了价：A（未找到）、B（起订量2件）', '18 全不可报价多原因仍只占一行');
+  const missingDelivery = await blockTurn('{{试算明细}}');
+  missingDelivery.toolSources[0]!.result = JSON.stringify({ lines: [{ partNo: 'HS1000', qty: 3, unitPrice: 10, amount: 30 }], total: 30 });
+  await pipes.reply.run(missingDelivery);
+  assert.equal(missingDelivery.text, '试算：\nHS1000 × 3：单价10.00元，小计30.00元\n合计30.00元', '18 无交期省掉整段交期与免责声明');
+  assert.doesNotMatch(missingDelivery.text, /；，|确认为准/);
+  const mixedBudget = await blockTurn('请核对型号。\n请核对数量。\n{{试算明细}}');
+  mixedBudget.toolSources[0]!.result = JSON.stringify({
+    lines: [
+      ...Array.from({ length: 10 }, () => ({ partNo: 'HS1000', qty: 3, unitPrice: 10, amount: 30 })),
+      { query: 'A', note: 'none' },
+      { partNo: 'B', note: 'below_moq', moq: 2 },
+      { partNo: 'C', note: 'over_max' },
+    ],
+  });
+  await pipes.reply.run(mixedBudget);
+  assert.equal(mixedBudget.text.split('\n').filter((line) => line.startsWith('另有')).length, 1);
+  assert.match(mixedBudget.text, /另有 3 行需确认：A（未找到）、B（起订量2件）、C（超过单次上限）/);
+  const visiblePriced = (mixedBudget.text.match(/HS1000 × 3：/g) ?? []).length;
+  assert.ok(visiblePriced > 0 && visiblePriced < 10, '18 混合预算确实裁掉可报价行');
+  assert.match(mixedBudget.text, new RegExp(`另外 ${10 - visiblePriced} 行已算好`), '18 已算好只计被裁掉的可报价行');
+  assert.equal(mixedBudget.replyBlocks!.trace.rendered[0]!.trimmedRows, 10 - visiblePriced);
+  assert.ok(replyLineCount(mixedBudget.text) <= 12 && replyCharCount(mixedBudget.text) <= 600);
+  const summaryOverflow = await blockTurn('请核对型号。\n{{试算明细}}');
+  summaryOverflow.toolSources[0]!.result = JSON.stringify({
+    lines: [
+      { partNo: 'HS1000', qty: 3, unitPrice: 10, amount: 30 },
+      ...Array.from({ length: 29 }, (_, i) => ({ query: `UNKNOWN${i}${'X'.repeat(35)}`, note: 'none' })),
+    ],
+  });
+  await pipes.reply.run(summaryOverflow);
+  const summaryLine = summaryOverflow.text.split('\n').find((line) => line.startsWith('另有'))!;
+  assert.match(summaryLine, /^另有 29 行需确认：.*等$/, '18 需确认摘要省略尾部型号后以等结尾');
+  assert.doesNotMatch(summaryOverflow.text, /已算好/);
+  assert.ok(replyLineCount(summaryOverflow.text) <= 12 && replyCharCount(summaryOverflow.text) <= 600);
+  const noneOverflow = await blockTurn('{{试算明细}}');
+  noneOverflow.toolSources[0]!.result = JSON.stringify({
+    lines: Array.from({ length: 30 }, (_, i) => ({ query: `UNKNOWN${i}${'X'.repeat(35)}`, note: 'none' })),
+  });
+  await pipes.reply.run(noneOverflow);
+  assert.match(noneOverflow.text, /^暂时报不了价：.*等$/, '18 全不可报价压成一行且以等结尾');
+  assert.equal(replyLineCount(noneOverflow.text), 1);
+  assert.ok(replyCharCount(noneOverflow.text) <= 600);
+  assert.doesNotMatch(noneOverflow.text, /元|试算：|另有|已算好/);
+  assert.equal(
+    pipes.reply.steps.find((step) => step.id === 'pre_clean')!.writes!.includes('blocksSuppressed'),
+    false,
+    '18 pre_clean 不声明未执行的旗标写入',
+  );
+
+  const appended = await blockTurn('请核对型号。');
+  await pipes.reply.run(appended);
+  assert.match(appended.text, /^请核对型号。\n试算：/, '18 没写占位符自动附后');
+  assert.equal(appended.replyBlocks!.trace.rendered[0]!.placed, 'appended');
+  const amountBody = Array.from({ length: 12 }, () => 'HS1000 金额30元').join('\n');
+  const amountItems = Array.from({ length: 12 }, () => ({ query: 'HS1000', qty: 3 }));
+  const trimmedBody = await blockTurn(amountBody, amountItems);
+  await pipes.reply.run(trimmedBody);
+  assert.match(trimmedBody.text, /^HS1000 金额30元[\s\S]*\n试算：/, '18 多行正确金额正文裁剪后仍附块');
+  assert.doesNotMatch(trimmedBody.text.split('\n试算：')[0]!, /行已算好/, '18 块会附上时正文只删行，不补裁剪说明');
+  assert.equal((trimmedBody.text.match(/行已算好/g) ?? []).length, 1, '18 整条回复只保留块的裁剪说明');
+  assert.match(trimmedBody.text, /合计360\.00元$/);
+  assert.ok(replyLineCount(trimmedBody.text) <= 12 && replyCharCount(trimmedBody.text) <= 600);
+  const suppressedBody = await blockTurn(amountBody, amountItems);
+  suppressedBody.turn.flags.blocksSuppressed = true;
+  await pipes.reply.run(suppressedBody);
+  assert.match(suppressedBody.text, /另外 2 行已算好/, '18 块被抑制时正文仍补裁剪说明');
+  assert.doesNotMatch(suppressedBody.text, /试算：/);
+  const deletedTrimmedToken = await blockTurn(`HS1000单价999元{{试算明细}}。\n${amountBody}`, amountItems);
+  await pipes.reply.run(deletedTrimmedToken);
+  assert.match(deletedTrimmedToken.text, /另外 2 行已算好/, '18 占位符随错价整句删除时正文仍补裁剪说明');
+  assert.doesNotMatch(deletedTrimmedToken.text, /试算：|999/);
+  const unquotedBody = await blockTurn(amountBody, amountItems);
+  unquotedBody.toolSources = [];
+  await pipes.reply.run(unquotedBody);
+  assert.match(unquotedBody.text, /另外 2 行已算好/, '18 本轮无试算块时正文仍补裁剪说明');
+  assert.doesNotMatch(unquotedBody.text, /试算：/);
+  const unknownBlock = await blockTurn('保留此句。未知{{错误名字}}整句删除。\n{{档位价}}没有数据。');
+  await pipes.reply.run(unknownBlock);
+  assert.doesNotMatch(unknownBlock.text, /未知|整句删除|没有数据|\{\{|\}\}/, '18 未知或无数据占位符整句删除');
+  assert.equal(unknownBlock.replyBlocks!.trace.droppedTokens, 2);
+  for (const name of ['toString', 'constructor', '__proto__']) {
+    const unknownProperty = await blockTurn(`保留此句。未知{{${name}}}整句删除。`);
+    await pipes.reply.run(unknownProperty);
+    assert.doesNotMatch(unknownProperty.text, /未知|整句删除|\{\{|\}\}/, '18 原型属性也属于未知占位符');
+    assert.equal(unknownProperty.replyBlocks!.trace.droppedTokens, 1);
+  }
+  const duplicate = await blockTurn('{{试算明细}}\n{{试算明细}}');
+  await pipes.reply.run(duplicate);
+  assert.equal((duplicate.text.match(/试算：/g) ?? []).length, 1, '18 同一个块只放一次');
+  const suppressed = await blockTurn('{{试算明细}}');
+  suppressed.turn.flags.blocksSuppressed = true;
+  await pipes.reply.run(suppressed);
+  assert.doesNotMatch(suppressed.text, /元|试算|\{\{|\}\}/, '18 抑制旗标不放块也不漏占位符');
+  assert.deepEqual(suppressed.replyBlocks!.trace.rendered, []);
+  assert.equal(suppressed.replyBlocks!.trace.suppressed, true);
+  const corrected = await blockTurn('报价单已提交。请核对型号。');
+  const correctedRun = await pipes.reply.run(corrected);
+  assert.equal(correctedRun.verdicts.find((v) => v.id === 'quote_claim')!.action, 'replace');
+  assert.match(corrected.text, /还没有提交[\s\S]*试算：[\s\S]*合计30\.00元/, '18 局部 replace 仍自动附块');
+  assert.equal(corrected.turn.flags.blocksSuppressed, undefined);
+  const moneyDropped = await blockTurn('HS1000单价999元。请核对型号。');
+  await pipes.reply.run(moneyDropped);
+  assert.doesNotMatch(moneyDropped.text, /999/);
+  assert.match(moneyDropped.text, /合计30\.00元/, '18 错价删句之后仍有价格块');
+  const emptied = await blockTurn('HS1000单价999元。');
+  await pipes.reply.run(emptied);
+  assert.equal(emptied.turn.flags.blocksSuppressed, true, '18 金额删空固定兜底抑制块');
+  assert.doesNotMatch(emptied.text, /试算：|30\.00元/);
+  const deletedToken = await blockTurn('HS1000单价999元{{试算明细}}。请核对型号。');
+  await pipes.reply.run(deletedToken);
+  assert.doesNotMatch(deletedToken.text, /试算：|30\.00元/, '18 被护栏随句删掉的占位符不补回');
+
+  const many = await blockTurn(
+    '请核对型号。\n请核对数量。\n{{试算明细}}',
+    Array.from({ length: 30 }, () => ({ query: 'HS1000', qty: 3 })),
+  );
+  await pipes.reply.run(many);
+  assert.ok(replyLineCount(many.text) <= 12 && replyCharCount(many.text) <= 600, '18 三十行展开不超过12行600字');
+  assert.match(many.text, /请核对型号。\n请核对数量。/, '18 正文两行保留');
+  assert.match(many.text, /另外 \d+ 行已算好/);
+  assert.match(many.text, /合计900\.00元$/, '18 裁块保留工具合计');
+  assert.ok(many.replyBlocks!.trace.rendered[0]!.trimmedRows > 0);
+  assert.deepEqual(many.replyBlocks!.trace.finalShape, { lines: replyLineCount(many.text), chars: replyCharCount(many.text) });
+  assert.equal(many.turn.flags.replyShape!.lines, replyLineCount(many.text), '18 shape trace 记录展开后形状');
+  const longBody = await blockTurn('额外说明。\n'.repeat(100) + '{{试算明细}}');
+  await pipes.reply.run(longBody);
+  assert.ok(replyLineCount(longBody.text) <= 12 && replyCharCount(longBody.text) <= 600, '18 正文按块的剩余预算裁剪');
+  assert.match(longBody.text, /合计30\.00元/);
+  const fallbackBlock = await blockTurn('https://shop.example.test/' + 'a'.repeat(700));
+  // 直接跑预算相关步骤；链接白名单在完整管线会先删掉这个合成地址。
+  for (const id of ['reply_blocks:render', 'rfq_trim', 'reply_blocks:place']) {
+    const result = await pipes.reply.steps.find((step) => step.id === id)!.run(fallbackBlock);
+    if (result.action !== 'pass' && result.action !== 'abort') fallbackBlock.text = result.text;
+  }
+  assert.equal(fallbackBlock.text, TRIM_FALLBACK);
+  assert.equal(fallbackBlock.turn.flags.blocksSuppressed, true, '18 保护链接超限整段兜底抑制块');
+
+  const tierBlock = await blockTurn('{{档位价}}');
+  tierBlock.toolSources = [
+    {
+      name: 'find_parts',
+      args: {},
+      result: await registry.execute('find_parts', { query: 'HS1000' }, { ...toolContext, session: tierBlock.session }),
+    },
+  ];
+  await pipes.reply.run(tierBlock);
+  assert.match(tierBlock.text, /HS1000：1–9件10\.00元；10件起8\.00元；起订量1件/, '18 档位边界由工具提供');
+  const payable = await blockTurn('{{应付金额}}');
+  payable.toolSources = [];
+  payable.acceptingOrderId = approved.id;
+  payable.orderSources = [
+    { ...approved, sessionId: payable.session.id, totalFen: 12345 },
+    { ...approved, id: 'ord_other', sessionId: payable.session.id, totalFen: 99999 },
+  ];
+  await pipes.reply.run(payable);
+  assert.equal(payable.text, '您接受的这份报价合计123.45元', '18 应付只读本轮接受订单');
+  const noData = await blockTurn('旧数据不可借用{{试算明细}}。');
+  noData.toolSources.push({ name: 'quote_items', args: {}, result: '{invalid' });
+  await pipes.reply.run(noData);
+  assert.doesNotMatch(noData.text, /元|\{\{|\}\}/, '18 最后一次工具无有效结果不借上次数据');
+  assert.equal(expandedReply(noData), noData.text);
+  for (const ctx of [complete, partialBlock, noneBlock, appended, unknownBlock, duplicate, suppressed, corrected, many, tierBlock, payable])
+    assert.doesNotMatch(ctx.text, /\{\{|\}\}|\*\*|^#{1,6} |\|---/m, '18 对客无占位符与 markdown');
+  assert.equal(
+    pipes.followup.steps.some((s) => s.id.startsWith('reply_blocks:')),
+    false,
+    '18 跟进表不装块步骤',
+  );
+
+  const literalFields = await blockTurn('{{试算明细}}');
+  literalFields.toolSources[0]!.result = JSON.stringify({
+    lines: [{ partNo: 'HS1000', qty: 7, unitPrice: 1.23, amount: 9.87, delivery: '约 7 天' }],
+    total: 42.42,
+  });
+  await pipes.reply.run(literalFields);
+  assert.match(literalFields.text, /单价1\.23元，小计9\.87元[\s\S]*合计42\.42元/, '18 渲染只格式化工具字段，不重乘或重算合计');
+  const syncBlocks = await blockTurn('{{试算明细}}');
+  for (const id of ['reply_blocks:render', 'reply_blocks:place']) {
+    const result = pipes.reply.steps.find((step) => step.id === id)!.run(syncBlocks);
+    assert.equal('then' in result, false, `18 ${id} 同步执行`);
+  }
+  const manyUnpriced = await blockTurn('{{试算明细}}', [
+    { query: 'HS1000', qty: 3 },
+    ...Array.from({ length: 29 }, (_, i) => ({ query: `UNKNOWN${i}`, qty: 1 })),
+  ]);
+  await pipes.reply.run(manyUnpriced);
+  assert.match(manyUnpriced.text, /另有 29 行需确认/, '18 长清单裁剪仍保留未报价警示');
+  assert.doesNotMatch(manyUnpriced.text, /合计/);
+  assert.ok(replyLineCount(manyUnpriced.text) <= 12 && replyCharCount(manyUnpriced.text) <= 600);
+  const multiTier = await blockTurn('{{档位价}}');
+  multiTier.toolSources = [
+    tierBlock.toolSources[0]!,
+    {
+      name: 'find_parts',
+      args: {},
+      result: await registry.execute('find_parts', { query: 'HS1001' }, { ...toolContext, session: multiTier.session }),
+    },
+  ];
+  await pipes.reply.run(multiTier);
+  assert.match(multiTier.text, /HS1000：[\s\S]*HS1001：/, '18 档位包含本轮各次精确查询');
+  const pendingBlock = await blockTurn('正式报价单合计30元。{{试算明细}}');
+  const pendingOrder = {
+    ...approved,
+    id: 'ord_blocks_pending',
+    sessionId: pendingBlock.session.id,
+    approval: { ...approved.approval!, state: 'pending' as const },
+  };
+  orderStore.set(pendingOrder.id, pendingOrder);
+  pendingBlock.session.orderIds = [pendingOrder.id];
+  await pipes.reply.run(pendingBlock);
+  assert.equal(pendingBlock.text, FIXED.pending, '18 待审整段固定话术抑制块');
+  assert.equal(pendingBlock.turn.flags.blocksSuppressed, true);
+  // 09 R11：正式单待审、正文没违规时块照常附上，但块里每一行金额都自己标「试算」（块不经过护栏逐句检查）。
+  const pendingSafe = await blockTurn('已提交，等待顾问审核。{{试算明细}}{{档位价}}');
+  pendingSafe.toolSources.push(tierBlock.toolSources[0]!);
+  orderStore.set(pendingOrder.id, { ...pendingOrder, sessionId: pendingSafe.session.id });
+  pendingSafe.session.orderIds = [pendingOrder.id];
+  await pipes.reply.run(pendingSafe);
+  assert.ok(!pendingSafe.turn.flags.blocksSuppressed, '18 待审但正文安全时不抑制块');
+  assert.match(pendingSafe.text, /试算单价[\s\S]*试算合计[\s\S]*HS1000 试算档位：/, '18 待审时块内金额逐行标试算');
+  for (const line of pendingSafe.text.split('\n'))
+    if (/\d+(?:\.\d+)?\s*元/.test(line)) assert.match(line, /试算/, `18 待审时带金额的行都标试算：${line}`);
+  const notPending = await blockTurn('{{试算明细}}');
+  await pipes.reply.run(notPending);
+  assert.doesNotMatch(notPending.text, /试算单价|试算合计/, '18 没有待审正式单时保持原写法');
+  orderStore.delete(pendingOrder.id);
+  const repaired = await blockTurn('报价单已提交。');
+  repaired.inputText = '请出正式报价单';
+  repaired.callTool = async () => JSON.stringify({ state: 'approved', quoteUrl: '/quote/ord_blocks_auto', totalText: '30.00元' });
+  const repairedResult = await pipes.reply.steps.find((step) => step.id === 'quote_claim')!.run(repaired);
+  assert.equal(repairedResult.action, 'replace');
+  assert.equal(repaired.turn.flags.blocksSuppressed, true, '18 自动补建批准单整段固定话术抑制块');
+  const failureBlock = await blockTurn('{{试算明细}}');
+  failureBlock.session.turnSignals = [1];
+  failureBlock.repeatedQuestion = () => true;
+  await pipes.reply.run(failureBlock);
+  assert.equal(failureBlock.turn.flags.blocksSuppressed, true, '18 交互失败转人工抑制块');
+  assert.equal(failureBlock.text, '顾问会继续确认');
+  assert.deepEqual(failureBlock.replyBlocks!.trace.rendered, []);
+  const shippingFixed = await blockTurn('运费另计。');
+  await pipes.reply.run(shippingFixed);
+  assert.match(shippingFixed.text, /运费0元[\s\S]*试算：/, '18 运费局部纠正仍保留块');
+  assert.equal(shippingFixed.turn.flags.blocksSuppressed, undefined);
+  const noAppendTier = await blockTurn('请核对数量。');
+  noAppendTier.toolSources = tierBlock.toolSources;
+  await pipes.reply.run(noAppendTier);
+  assert.doesNotMatch(noAppendTier.text, /元/, '18 档位价未写占位符不附加');
+  const appendPayable = await blockTurn('已记下您的确认。');
+  appendPayable.toolSources = [];
+  appendPayable.acceptingOrderId = approved.id;
+  appendPayable.orderSources = [{ ...approved, sessionId: appendPayable.session.id }];
+  await pipes.reply.run(appendPayable);
+  assert.match(appendPayable.text, /您接受的这份报价合计90\.00元$/, '18 应付金额未写占位符自动附后');
+  const bodyAmounts = await blockTurn('HS1000单价10元。');
+  await pipes.reply.run(bodyAmounts);
+  assert.equal(bodyAmounts.replyBlocks!.trace.bareItemAmounts, 1, '18 trace 统计正文裸商品金额，块内金额不计');
+  assert.deepEqual(
+    pipes.followup.steps.map((step) => step.id),
+    ['link_whitelist', 'industrial_claims', 'money_provenance', 'rfq_trim'],
+    '18 工业跟进表逐项不变',
+  );
+  const { createTravelRuntime } = await import('./packs/travel/runtime.js');
+  const travel = packPipelines(createTravelRuntime(sources).runtime);
+  assert.deepEqual(
+    travel.reply.steps.map((step) => step.id),
+    [
+      'pre_clean',
+      'takeover_check:pre',
+      'stage_advance',
+      'other_order',
+      'order_net',
+      'link_whitelist',
+      'markdown',
+      'repair_links:mark',
+      'dejargon',
+      'custom_promise-a',
+      'repair_links:fill',
+      'handoff_claims',
+      'injection',
+      'encyclopedia',
+      'unbacked_claims',
+      'claim_words',
+      'policy_claims',
+      'price',
+      'stranded',
+      'adults',
+      'dangling',
+      'advisor_prefix',
+      'identity',
+      'custom_promise-b',
+      'post_handoff',
+      'proposal_suffix',
+      'closing',
+      'shape_check',
+      'takeover_check:post',
+      'turn_failure',
+      'final_clean',
+      'system_note',
+      'note_reply',
+    ],
+    '18 旅游主回复33步骤逐项不变',
+  );
+  assert.deepEqual(
+    travel.followup.steps.map((step) => step.id),
+    [
+      'pre_clean',
+      'link_whitelist',
+      'markdown',
+      'repair_links',
+      'dejargon',
+      'custom_promise',
+      'handoff_claims',
+      'unbacked_claims',
+      'price',
+      'stranded',
+      'final_clean',
+    ],
+    '18 旅游跟进11步骤逐项不变',
+  );
+  // 真实引擎与 trace recorder 接线；纯 mock 模式不访问外部服务。
+  const { handleMessage } = await import('./core/engine/index.js');
+  const { onTurnEnd } = await import('./trace/recorder.js');
+  let blockTrace: import('./trace/recorder.js').FinishedTurn | undefined;
+  const offTrace = onTurnEnd((turn) => {
+    blockTrace = turn;
+  });
+  try {
+    const reply = await handleMessage('web:blocks-trace', 'HS1000 3件', 'web');
+    assert.equal(blockTrace!.turn.blocks!.rendered[0]!.name, '试算明细', '18 trace.turn.blocks 接线');
+    assert.deepEqual(blockTrace!.turn.blocks!.finalShape, { lines: replyLineCount(reply.text), chars: replyCharCount(reply.text) });
+  } finally {
+    offTrace();
+  }
+  console.log('18 价格块：三模板、自动附后、无效/重复/被删占位符、整段抑制/局部保留、30行预算、档位、接受订单与最终形状通过');
 } finally {
   Date.now = realNow;
   config.__configTest.reset();

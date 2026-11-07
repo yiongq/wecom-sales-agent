@@ -1,0 +1,263 @@
+[
+  {
+    "version": 2,
+    "pack": "industrial",
+    "id": "q18-blocks-placeholder",
+    "desc": "价格块：placeholder",
+    "tags": ["q18", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "6205-2RS 3件",
+        "script": [
+          {
+            "content": "请核对。\n{{试算明细}}"
+          }
+        ],
+        "expect": {
+          "tools": ["quote_items"],
+          "replyMatches": ["试算：", "单价10\\.00元", "小计30\\.00元", "合计30\\.00元"],
+          "replyExcludes": ["\\{\\{", "\\}\\}"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "pack": "industrial",
+    "id": "q18-blocks-append-after-guard",
+    "desc": "价格块：append-after-guard",
+    "tags": ["q18", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "6205-2RS 3件",
+        "script": [
+          {
+            "content": "6205-2RS单价999元。请核对型号。"
+          }
+        ],
+        "expect": {
+          "tools": ["quote_items"],
+          "replyMatches": ["请核对型号。\\n试算：", "单价10\\.00元", "合计30\\.00元"],
+          "replyExcludes": ["999", "\\{\\{", "\\}\\}"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "pack": "industrial",
+    "id": "q18-blocks-partial",
+    "desc": "价格块：partial",
+    "tags": ["q18", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "请核对这批询价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "quote_items",
+                "args": {
+                  "items": [
+                    {
+                      "query": "6205-2RS",
+                      "qty": 3
+                    },
+                    {
+                      "query": "SYNTHUNKNOWN",
+                      "qty": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "content": "{{试算明细}}"
+          }
+        ],
+        "expect": {
+          "tools": ["quote_items"],
+          "replyMatches": ["小计30\\.00元", "SYNTHUNKNOWN（未找到）"],
+          "replyExcludes": ["合计", "\\{\\{", "\\}\\}"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "pack": "industrial",
+    "id": "q18-blocks-none",
+    "desc": "价格块：none",
+    "tags": ["q18", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "请核对这批询价",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "quote_items",
+                "args": {
+                  "items": [
+                    {
+                      "query": "SYNTHUNKNOWN",
+                      "qty": 1
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "content": "{{试算明细}}"
+          }
+        ],
+        "expect": {
+          "tools": ["quote_items"],
+          "replyMatches": ["^暂时报不了价：SYNTHUNKNOWN（未找到）$"],
+          "replyExcludes": ["元", "\\{\\{", "\\}\\}", "试算：", "另有", "已算好"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "pack": "industrial",
+    "id": "q18-blocks-unknown",
+    "desc": "价格块：unknown",
+    "tags": ["q18", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "6205-2RS 3件",
+        "script": [
+          {
+            "content": "请核对。未知{{错误名字}}整句删除。"
+          }
+        ],
+        "expect": {
+          "tools": ["quote_items"],
+          "replyMatches": ["请核对。", "合计30\\.00元"],
+          "replyExcludes": ["未知", "整句删除", "\\{\\{", "\\}\\}"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  },
+  {
+    "version": 2,
+    "pack": "industrial",
+    "id": "q18-blocks-twelve-placeholder",
+    "desc": "12 行试算使用占位符，展开后按总预算裁剪",
+    "tags": ["q18", "industrial"],
+    "fixtures": {
+      "now": "2026-10-10T12:00:00+08:00"
+    },
+    "turns": [
+      {
+        "say": "6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件\n6205-2RS 2件",
+        "script": [
+          {
+            "toolCalls": [
+              {
+                "name": "quote_items",
+                "args": {
+                  "items": [
+                    {
+                      "query": "6205-2RS",
+                      "qty": 2
+                    },
+                    {
+                      "query": "6205-2RS",
+                      "qty": 2
+                    },
+                    {
+                      "query": "6205-2RS",
+                      "qty": 2
+                    },
+                    {
+                      "query": "6205-2RS",
+                      "qty": 2
+                    },
+                    {
+                      "query": "6205-2RS",
+                      "qty": 2
+                    },
+                    {
+                      "query": "6205-2RS",
+                      "qty": 2
+                    },
+                    {
+                      "query": "6205-2RS",
+                      "qty": 2
+                    },
+                    {
+                      "query": "6205-2RS",
+                      "qty": 2
+                    },
+                    {
+                      "query": "6205-2RS",
+                      "qty": 2
+                    },
+                    {
+                      "query": "6205-2RS",
+                      "qty": 2
+                    },
+                    {
+                      "query": "6205-2RS",
+                      "qty": 2
+                    },
+                    {
+                      "query": "6205-2RS",
+                      "qty": 2
+                    }
+                  ]
+                }
+              }
+            ]
+          },
+          {
+            "content": "请核对型号。\n请核对数量。\n{{试算明细}}"
+          }
+        ],
+        "expect": {
+          "tools": ["quote_items"],
+          "replyMatches": ["请核对型号。", "请核对数量。", "试算：", "另外 5 行已算好", "合计240\\.00元"],
+          "replyExcludes": ["\\{\\{", "\\}\\}"],
+          "orders": {
+            "count": 0
+          }
+        }
+      }
+    ]
+  }
+]
