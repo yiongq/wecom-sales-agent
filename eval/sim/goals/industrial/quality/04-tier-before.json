@@ -35,7 +35,7 @@
     },
     {
       "kind": "reply_matches",
-      "pattern": "(?<![\\d.])19\\s*件",
+      "pattern": "(?:(?<![\\d.])19\\s*件|×\\s*19\\s*[:：])",
       "scope": "last"
     },
     {

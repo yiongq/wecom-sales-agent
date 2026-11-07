@@ -126,7 +126,7 @@ try {
   // 默认工业离线策略经真实引擎与工具运行，金额只能来自工具。
   process.env.LLM_MOCK = '1';
   const quoted = await handleMessage('web:imock', '6205-2RS 2件', 'web');
-  assert.match(quoted.text, /金额20.00元/);
+  assert.match(quoted.text, /小计20\.00元/);
   assert.match(quoted.text, /合计20.00元/);
   now += 1000;
   const formal = await handleMessage('web:imock', '要正式报价单', 'web');
@@ -547,8 +547,8 @@ try {
     };
     for (let i = 0; i < 2; i++) {
       const reply = await handleMessage(multi.id, '请试算6205-2RS 2件', 'wecom');
-      // 18：正文只删行，保留9行正文加三行试算块，不再另补正文裁剪说明。
-      assert.equal((reply.text.match(/6205-2RS/g) ?? []).length, 10);
+      // 18：正文商品金额删除，只保留代码试算块，不再另补正文裁剪说明。
+      assert.equal((reply.text.match(/6205-2RS/g) ?? []).length, 1);
       assert.doesNotMatch(reply.text, /行已算好/);
       assert.match(reply.text, /试算：[\s\S]*小计20\.00元[\s\S]*合计20\.00元/);
       assert.ok(reply.text.split('\n').length <= 12);

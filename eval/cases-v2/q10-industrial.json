@@ -250,7 +250,7 @@
         "expect": {
           "tools": ["quote_items"],
           "stage": "quote",
-          "replyMatches": ["单价10元", "金额20元", "现货"],
+          "replyMatches": ["单价10\\.00元", "小计20\\.00元", "现货"],
           "orders": {
             "count": 0
           }
@@ -278,7 +278,7 @@
         "expect": {
           "tools": ["quote_items"],
           "stage": "quote",
-          "replyMatches": ["单价10元", "金额190元", "现货"],
+          "replyMatches": ["单价10\\.00元", "小计190\\.00元", "现货"],
           "orders": {
             "count": 0
           }
@@ -306,7 +306,7 @@
         "expect": {
           "tools": ["quote_items"],
           "stage": "quote",
-          "replyMatches": ["单价9元", "金额180元", "现货"],
+          "replyMatches": ["单价9\\.00元", "小计180\\.00元", "现货"],
           "orders": {
             "count": 0
           }
@@ -334,7 +334,7 @@
         "expect": {
           "tools": ["quote_items"],
           "stage": "quote",
-          "replyMatches": ["单价9元", "金额891元", "其余约 7 天"],
+          "replyMatches": ["单价9\\.00元", "小计891\\.00元", "其余约 7 天"],
           "orders": {
             "count": 0
           }
@@ -362,7 +362,7 @@
         "expect": {
           "tools": ["quote_items"],
           "stage": "quote",
-          "replyMatches": ["单价8元", "金额800元", "其余约 7 天"],
+          "replyMatches": ["单价8\\.00元", "小计800\\.00元", "其余约 7 天"],
           "orders": {
             "count": 0
           }
@@ -390,7 +390,7 @@
         "expect": {
           "tools": ["quote_items"],
           "stage": "quote",
-          "replyMatches": ["单价8元", "金额1592元", "其余约 7 天"],
+          "replyMatches": ["单价8\\.00元", "小计1592\\.00元", "其余约 7 天"],
           "orders": {
             "count": 0
           }
@@ -418,7 +418,7 @@
         "expect": {
           "tools": ["quote_items"],
           "stage": "quote",
-          "replyMatches": ["单价7元", "金额1400元", "其余约 7 天"],
+          "replyMatches": ["单价7\\.00元", "小计1400\\.00元", "其余约 7 天"],
           "orders": {
             "count": 0
           }
@@ -445,7 +445,7 @@
         "say": "6205-ZZ 2件",
         "expect": {
           "tools": ["quote_items"],
-          "replyMatches": ["单价12元", "约 7 天"],
+          "replyMatches": ["单价12\\.00元", "约 7 天"],
           "replyExcludes": ["现货"]
         },
         "script": [
@@ -619,7 +619,7 @@
         "expect": {
           "tools": ["quote_items"],
           "replyMatches": [
-            "6205-2RS 金额20元",
+            "6205-2RS × 2：单价10\\.00元，小计20\\.00元",
             "另外 5 行已算好",
             "试算：",
             "合计240\\.00元",

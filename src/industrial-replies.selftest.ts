@@ -878,8 +878,9 @@ try {
   const amountItems = Array.from({ length: 12 }, () => ({ query: 'HS1000', qty: 3 }));
   const trimmedBody = await blockTurn(amountBody, amountItems);
   await pipes.reply.run(trimmedBody);
-  assert.match(trimmedBody.text, /^HS1000 金额30元[\s\S]*\n试算：/, '18 多行正确金额正文裁剪后仍附块');
-  assert.doesNotMatch(trimmedBody.text.split('\n试算：')[0]!, /行已算好/, '18 块会附上时正文只删行，不补裁剪说明');
+  assert.match(trimmedBody.text, /^试算：/, '18 多行正确金额正文删除后仍附块');
+  assert.doesNotMatch(trimmedBody.text, /HS1000 金额30元/, '18 金额只由块呈现');
+  assert.doesNotMatch(trimmedBody.text.split(/(?:^|\n)试算：/)[0]!, /行已算好/, '18 块会附上时正文只删行，不补裁剪说明');
   assert.equal((trimmedBody.text.match(/行已算好/g) ?? []).length, 1, '18 整条回复只保留块的裁剪说明');
   assert.match(trimmedBody.text, /合计360\.00元$/);
   assert.ok(replyLineCount(trimmedBody.text) <= 12 && replyCharCount(trimmedBody.text) <= 600);
@@ -1077,6 +1078,70 @@ try {
   const bodyAmounts = await blockTurn('HS1000单价10元。');
   await pipes.reply.run(bodyAmounts);
   assert.equal(bodyAmounts.replyBlocks!.trace.bareItemAmounts, 1, '18 trace 统计正文裸商品金额，块内金额不计');
+
+  const exclusive = await blockTurn('HS1000单价10元，小计30元，合计30元。\n运费0元。\n{{试算明细}}');
+  await pipes.reply.run(exclusive);
+  assert.match(exclusive.text, /^运费0元。\n试算：/);
+  assert.equal((exclusive.text.match(/单价/g) ?? []).length, 1, '18 放块后商品金额只出现一份');
+  assert.equal(exclusive.replyBlocks!.trace.bareItemAmounts, 3, '18 裸商品金额按清理前统计');
+
+  const copied = await blockTurn('试算：\nHS1000 × 3：单价10.00元，小计30.00元；现货，以顾问确认为准\n合计30.00元\n请核对型号。');
+  await pipes.reply.run(copied);
+  assert.match(copied.text, /^请核对型号。\n试算：/);
+  assert.equal((copied.text.match(/试算：/g) ?? []).length, 1, '18 不保留抄写的块头');
+  assert.equal((copied.text.match(/现货，以顾问确认为准/g) ?? []).length, 1, '18 不保留抄写的明细行');
+
+  const inlineSentence = await blockTurn('请核对{{试算明细}}型号和数量。');
+  await pipes.reply.run(inlineSentence);
+  assert.match(inlineSentence.text, /^请核对型号和数量。\n试算：/, '18 块放在完整一行之后');
+  const inlineAmounts = await blockTurn('HS1000单价10元，小计 {{试算明细}}，现货可发。');
+  await pipes.reply.run(inlineAmounts);
+  assert.match(inlineAmounts.text, /^试算：/);
+  assert.doesNotMatch(inlineAmounts.text, /，现货可发|小计\s*\n/, '18 行内标记不留下价格残句');
+  const inlineTier = await blockTurn('单价为 {{档位价}}（按数量档位）');
+  inlineTier.toolSources = tierBlock.toolSources;
+  await pipes.reply.run(inlineTier);
+  assert.match(inlineTier.text, /^试算档位价：/);
+  assert.doesNotMatch(inlineTier.text, /单价为|按数量档位/, '18 档位引子不与块拆开');
+
+  for (const invalid of ['档位价', '错误名字']) {
+    const rescued = await blockTurn(`· 单价 {{${invalid}}}／件，合计 {{试算明细}}。请核对数量。`);
+    await pipes.reply.run(rescued);
+    assert.match(rescued.text, /合计30\.00元/, '18 本步骤删无效标记时保留同句的有效块');
+    assert.match(rescued.text, /请核对数量。/);
+    assert.equal(rescued.replyBlocks!.trace.droppedTokens, 1);
+    assert.doesNotMatch(rescued.text, /单价\s*／件|错误名字|\{\{|\}\}/);
+  }
+
+  // 只跑放置的正反边界：不借其他金额护栏改写来掩盖误删。
+  const renderBlocks = pipes.reply.steps.find((step) => step.id === 'reply_blocks:render')!;
+  const placeBlocks = pipes.reply.steps.find((step) => step.id === 'reply_blocks:place')!;
+  for (const mode of ['suppressed', 'no-data', 'tier-only'] as const) {
+    const original = '试算：\nHS1000 × 3：单价10元，小计30元\n合计30元\n运费金额0元。包邮门槛金额200元。';
+    const untouched = await blockTurn(original);
+    if (mode === 'suppressed') untouched.turn.flags.blocksSuppressed = true;
+    if (mode === 'no-data') untouched.toolSources = [];
+    if (mode === 'tier-only') {
+      untouched.text += '\n{{档位价}}';
+      untouched.raw = untouched.text;
+      untouched.toolSources = tierBlock.toolSources;
+    }
+    renderBlocks.run(untouched);
+    const result = placeBlocks.run(untouched) as { text?: string };
+    assert.ok((result.text ?? untouched.text).startsWith(original), `18 ${mode} 无试算块不删正文金额或抄写块`);
+  }
+  const policyAmounts = await blockTurn('运费合计0元。包邮门槛金额200元。\n{{试算明细}}');
+  renderBlocks.run(policyAmounts);
+  const policyPlaced = placeBlocks.run(policyAmounts) as { text: string };
+  assert.match(policyPlaced.text, /^运费合计0元。包邮门槛金额200元。\n试算：/, '18 放置不误删带金额标签的政策常数');
+  for (const dangling of ['价格说明：', '单价为', '小计']) {
+    const fragment = await blockTurn(`请核对型号。${dangling}{{试算明细}}`);
+    await pipes.reply.run(fragment);
+    assert.match(fragment.text, /^请核对型号。\n试算：/, '18 删除残留的价格引子');
+  }
+  for (const ctx of [exclusive, copied, inlineSentence, inlineAmounts, inlineTier]) {
+    assert.doesNotMatch(ctx.text, /\{\{|\}\}|\*\*|^#+\s|`|\[[^\]]+\]\(/m, '18 对客文本没有占位符或 markdown');
+  }
   assert.deepEqual(
     pipes.followup.steps.map((step) => step.id),
     ['link_whitelist', 'industrial_claims', 'money_provenance', 'rfq_trim'],

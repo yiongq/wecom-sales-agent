@@ -983,7 +983,7 @@ try {
     const reply = await handleMessage(session.id, '接受这份报价，另外 6205-2RS 100 件多少钱？', 'wecom');
     assert.equal(
       reply.text,
-      '6205-2RS 共100件，合计900元。\n试算：\n6205-2RS × 100：单价9.00元，小计900.00元；现货，以顾问确认为准\n合计900.00元\n您接受的这份报价合计449.28元',
+      '试算：\n6205-2RS × 100：单价9.00元，小计900.00元；现货，以顾问确认为准\n合计900.00元\n您接受的这份报价合计449.28元',
     );
     assert.ok(current.approval!.acceptedAt !== undefined);
     const failed = await makePair();
