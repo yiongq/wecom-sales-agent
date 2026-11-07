@@ -142,9 +142,31 @@ try {
   const suppressed = turn('请等候。', undefined, [quote()]);
   Object.assign(suppressed.trace.turn, { flags: { blocksSuppressed: true } });
   expect('price_withheld', false, run(suppressed), '显式 blocksSuppressed');
+  for (const [flag, block, expected] of [
+    [undefined, true, false],
+    [false, true, false],
+    [true, false, false],
+    [true, true, false],
+    [false, false, true],
+    [undefined, undefined, true],
+  ] as const) {
+    const t = turn('请稍候。', undefined, [quote()]);
+    Object.assign(t.trace.turn, { flags: { blocksSuppressed: flag }, blocks: { suppressed: block } });
+    expect('price_withheld', expected, run(t), `抑制字段 OR：flags=${flag}，blocks=${block}`);
+  }
   const exact = call('find_parts', { query: 'TEST-A' }, { match: 'exact', parts: [{ partNo: 'TEST-A' }] });
   expect('price_withheld', true, run(turn('请稍候。', undefined, [exact])), '问价且本轮精确命中');
   expect('price_withheld', false, run(turn('请稍候。', 'TEST-A 要20件，交期几天？', [exact])), '只查交期未问价');
+  expect('price_withheld', false, run(turn('已提交顾问审核。', 'TEST-A 麻烦按20件出一份正式报价单。', [exact])), '报价单不是问价');
+  expect(
+    'price_withheld',
+    false,
+    run(turn('已提交顾问审核。', 'TEST-A 20件报价单和TEST-A 20件报价单都提交。', [exact])),
+    '去掉所有报价单字样',
+  );
+  for (const question of ['价格多少？', '请试算。', '多少钱？', '有什么档位？'])
+    expect('price_withheld', true, run(turn('请稍候。', `TEST-A 20件出报价单，${question}`, [exact])), '报价单外仍有问价意图');
+  expect('price_withheld', true, run(turn('请稍候。', 'TEST-A 20件出报价单。', [quote()])), 'quote_items 路径仍须给价');
   expect('price_withheld', false, run(turn('请稍候。', undefined, [])), '无本轮工具不扩大定义');
   const trimCatalog = [
     'TRIM-A',
@@ -256,6 +278,37 @@ try {
   expect('duplicate_text', true, run(turn('库存交期以顾问确认为准。\n库存交期以顾问确认为准！')), '兜底句标点不同也去重');
   expect('duplicate_text', false, run(turn('库存交期以顾问确认为准。请告诉我数量。')), '不同兜底句不误报');
   expect('duplicate_text', false, run(turn('TEST-A单价8元。TEST-A单价8元。')), '只查兜底而非所有重复');
+  const blockLineA = 'TEST-A × 20：单价8.00元，小计160.00元；现货，以顾问确认为准；满100件7.00元';
+  const blockLineB = 'TEST-B × 20：单价15.00元，小计300.00元；现货，以顾问确认为准；满100件14.00元';
+  const priceBlock = `试算：\n${blockLineA}\n${blockLineB}\n合计460.00元`;
+  expect('duplicate_text', false, run(turn(priceBlock)), '不同行共用库存确认话术不重复');
+  expect('duplicate_text', true, run(turn(`${priceBlock}\n${priceBlock}`)), '同一个价格块出现两次');
+  expect('duplicate_text', true, run(turn(`${blockLineA}\n${blockLineA}`)), '没有块头的相同行仍重复');
+  expect('duplicate_text', false, run(turn(`${blockLineA}\n${blockLineA.replace('8.00', '8.01')}`)), '同型号不同价格行不重复');
+  expect('duplicate_text', false, run(turn(`${blockLineA}\n${blockLineA.replaceAll('；', '。')}`)), '块行按整行文本比较');
+  expect(
+    'duplicate_text',
+    true,
+    run(turn(`试算：\nTEST-A × 20：单价8.00元，小计160.00元\nTEST-A × 20：单价8.00元，小计160.00元`)),
+    '重复价格行无需兜底关键词',
+  );
+  expect(
+    'duplicate_text',
+    true,
+    run(turn(`试算：\n${blockLineA}\n合计160.00元\n试算：\n${blockLineA.replace('TEST-A', 'TEST-B')}\n合计160.00元`)),
+    '紧跟明细的相同合计行重复',
+  );
+  expect(
+    'duplicate_text',
+    false,
+    run(turn(`试算：\n${blockLineA}\n合计160.00元\n试算：\n${blockLineB}\n合计300.00元`)),
+    '不同块只共用标题不重复',
+  );
+  const fallback = '库存交期以顾问确认为准。';
+  expect('duplicate_text', false, run(turn(`${priceBlock}\n${fallback}`)), '块内与块外确认话术分开比较');
+  expect('duplicate_text', true, run(turn(`${fallback}\n${priceBlock}\n${fallback}`)), '块外重复兜底句仍命中');
+  expect('duplicate_text', true, run(turn(`${priceBlock}\n${fallback}${fallback}`)), '紧跟块的同一行内重复句仍命中');
+  expect('duplicate_text', true, run(turn(`${priceBlock}\n合计160元。合计160元。${fallback}${fallback}`)), '非相邻合计行不吞块外重复句');
   const silent = turn('询价摘要：{}');
   silent.silent = true;
   assert.deepEqual(triageRun(run(silent), catalog), []);

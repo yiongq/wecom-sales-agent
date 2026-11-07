@@ -213,6 +213,7 @@ export function triageRun(run: RunResult, catalog: TriagePart[], runId = run.run
     };
     const reply = turn.reply;
     const flags = object(object(turn.trace.turn).flags);
+    const blocks = object(turn.trace.turn.blocks);
     const handoff =
       turn.trace.outcome === 'handoff' ||
       (!wasHandedOver && turn.state.handedOver) ||
@@ -221,7 +222,12 @@ export function triageRun(run: RunResult, catalog: TriagePart[], runId = run.run
     const expected = quote
       ? quoteLines(quote, catalog)
       : calls
-          .filter((c) => c.name === 'find_parts' && result(c).match === 'exact' && /价|试算|多少钱|档位/u.test(turn.customer.say))
+          .filter(
+            (c) =>
+              c.name === 'find_parts' &&
+              result(c).match === 'exact' &&
+              /价|试算|多少钱|档位/u.test(turn.customer.say.replaceAll('报价单', '')),
+          )
           .flatMap((c) =>
             rows(result(c).parts).flatMap((row) => {
               const part = partOf(row.code ?? row.partNo, catalog);
@@ -232,6 +238,7 @@ export function triageRun(run: RunResult, catalog: TriagePart[], runId = run.run
     if (
       !handoff &&
       !flags.blocksSuppressed &&
+      !blocks.suppressed &&
       expected.length &&
       expected.some((l) => customerModels.has(l.part.id) && customerQty.has(l.part.id))
     ) {
@@ -353,11 +360,25 @@ export function triageRun(run: RunResult, catalog: TriagePart[], runId = run.run
     )
       hit('dangling', reply);
     const seen = new Set<string>();
-    for (const sentence of sentences(reply)) {
-      const key = sentence.replace(/[\s\p{P}\p{S}]/gu, '');
-      if (key.length < 6 || !/顾问|确认|审核|核实|稍等|稍候|联系|转交|转给|无法|不能|不支持|请提供|请问|需要/u.test(key)) continue;
-      if (seen.has(key)) hit('duplicate_text', sentence);
-      seen.add(key);
+    const seenBlockLines = new Set<string>();
+    let afterPriceLine = false;
+    for (const line of reply.split('\n').map((s) => s.trim())) {
+      // 价格块不按分号切句：不同型号共用的库存/交期说明不是重复兜底。
+      // 不依赖 trace 或块头，模型抄回历史块时也按相同文本规则识别。
+      const priceLine = /^.+\s*×\s*\d+\s*[：:].*单价/u.test(line);
+      const blockLine = priceLine || (afterPriceLine && /^(?:试算)?合计[^。！？!?；;]*元\s*$/u.test(line));
+      afterPriceLine = priceLine;
+      if (blockLine) {
+        if (seenBlockLines.has(line)) hit('duplicate_text', line);
+        seenBlockLines.add(line);
+        continue;
+      }
+      for (const sentence of sentences(line)) {
+        const key = sentence.replace(/[\s\p{P}\p{S}]/gu, '');
+        if (key.length < 6 || !/顾问|确认|审核|核实|稍等|稍候|联系|转交|转给|无法|不能|不支持|请提供|请问|需要/u.test(key)) continue;
+        if (seen.has(key)) hit('duplicate_text', sentence);
+        seen.add(key);
+      }
     }
     for (const detector of DETECTORS)
       if (hits.has(detector))

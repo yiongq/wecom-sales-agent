@@ -1,4 +1,5 @@
 import type { GuardStep, ReplyBlocks, ReplyGuardContext, TurnBlocks, ShapePolicy } from '../pack-api.js';
+import { trimDangling } from './text.js';
 import { sentenceUnits } from '../parse/sentences.js';
 import { replyCharCount, replyLineCount } from './shape.js';
 
@@ -13,7 +14,11 @@ function dropTokens(text: string, valid: (name: string) => boolean): { text: str
     const names = tokens(unit);
     if (names.some((name) => !valid(name)) || /\{\{|\}\}/.test(unit.replace(/\{\{[^{}]+\}\}/g, ''))) {
       dropped++;
-      return '';
+      // 只恢复本步骤连带删掉的有效标记；护栏随后删掉的标记仍不会补回。
+      return names
+        .filter(valid)
+        .map((name) => `\n{{${name}}}\n`)
+        .join('');
     }
     return unit;
   });
@@ -39,19 +44,62 @@ export function willPlaceReplyBlock(ctx: ReplyGuardContext, name: string, body =
   return placements(ctx, body).blocks.has(name);
 }
 
+/** 只裁正文；运费和包邮门槛等政策金额仍由原有护栏核对。 */
+function withoutItemAmounts(body: string): string {
+  return sentenceUnits(body)
+    .map(({ start, end }) => body.slice(start, end))
+    .filter((unit) => {
+      if (/^\s*试算[:：]\s*$/.test(unit)) return false;
+      const items = unit.replace(/(?:运费|包邮门槛)\s*(?:合计|总价|金额)?\s*(?:为|是)?\s*[:：]?\s*[¥￥]?\s*\d+(?:\.\d+)?\s*元?/g, '');
+      return !/(?:单价|小计|合计|总价|金额)\s*(?:为|是)?\s*[:：]?\s*[¥￥]?\s*\d+(?:\.\d+)?/.test(items);
+    })
+    .join('');
+}
+
 function place(ctx: ReplyGuardContext, body: string, trace?: TurnBlocks): string {
   const state = ctx.replyBlocks;
   if (!state) return body;
   const selected = placements(ctx, body);
   const seen = new Set<string>();
-  let text = selected.body.replace(/\{\{([^{}]+)\}\}/g, (_token, name: string) => {
-    if (selected.blocks.get(name) !== 'inline' || seen.has(name)) return '';
-    seen.add(name);
-    const value = state.texts[name]!;
-    trace?.rendered.push({ name, placed: 'inline', rows: replyLineCount(value), trimmedRows: state.trimmedRows[name] ?? 0 });
-    // 与正文分行，避免占位符同一句内外的文字挤占预算。
-    return `\n${value}\n`;
-  });
+  const ownsAmounts = selected.blocks.has('试算明细');
+  let text = selected.body
+    .split('\n')
+    .map((line) => {
+      const inline: string[] = [];
+      // 先取出这一行的标记，再处理正文，块始终放在整行之后。
+      let prose = line.replace(/\{\{([^{}]+)\}\}/g, (_token, name: string) => {
+        if (selected.blocks.get(name) === 'inline' && !seen.has(name)) {
+          seen.add(name);
+          inline.push(name);
+        }
+        return '';
+      });
+      if (ownsAmounts) prose = withoutItemAmounts(prose);
+      if (inline.length) {
+        // 去掉标记后留下的价格引子没有可读内容；正常说明句照常保留。
+        prose = sentenceUnits(prose)
+          .map(({ start, end }) => prose.slice(start, end))
+          .filter((unit) => !/(?:单价|小计|合计|总价|金额)\s*(?:为|是|[:：])?\s*(?:[，,、；;。／/（(]|$)/.test(unit))
+          .join('');
+      }
+      if (ownsAmounts || inline.length) {
+        const trimmed = trimDangling(prose);
+        prose = /(?:[:：，,、]|为|单价|小计|合计|总价|金额)\s*$/.test(trimmed) ? '' : trimmed;
+      }
+      return [
+        prose.trim(),
+        ...inline.map((name) => {
+          const value = state.texts[name]!;
+          trace?.rendered.push({ name, placed: 'inline', rows: replyLineCount(value), trimmedRows: state.trimmedRows[name] ?? 0 });
+          return value;
+        }),
+      ]
+        .filter(Boolean)
+        .join('\n');
+    })
+    .join('\n');
+  // 正文开头的金额句被删后，剩下的第一句不能以连接词开头（开发集定向复跑查出「另外满100件…」）。
+  if (ownsAmounts) text = text.replace(/^\s*(?:另外|不过|此外|同时)[，,、\s]*/u, '');
   for (const [name, placed] of selected.blocks) {
     if (placed !== 'appended') continue;
     const value = state.texts[name]!;
@@ -111,7 +159,7 @@ export function replyBlockSteps(blocks: ReplyBlocks): GuardStep<ReplyGuardContex
         trace.bareItemAmounts = [
           ...ctx.text.matchAll(/(?:单价|小计|合计|应付(?:金额)?|总价|金额)\s*[:：]?\s*[¥￥]?\s*\d+(?:\.\d+)?\s*(?:元)?/g),
         ].length;
-        const text = place(ctx, cleaned.text, trace);
+        const text = place(ctx, ctx.text, trace);
         trace.finalShape = shape(text);
         return text === ctx.text ? { action: 'pass' } : { action: 'replace', text };
       },

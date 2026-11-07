@@ -36,7 +36,7 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
     {
       def: def(
         'find_parts',
-        '收到型号即可查询，无需数量。query 是客户型号或名称，不是内部 code；仅多个候选时让客户选择。精确命中可用 {{档位价}}，由系统填写档位金额，正文不写商品金额',
+        '收到型号即可查询，无需数量。query 是客户型号或名称，不是内部 code；仅多个候选时让客户选择。精确命中可用 {{档位价}}，占位符单独占一行，正文不写单价、小计、合计。不要照抄之前回复里的试算明细，系统每轮会重新附上',
         { query: { type: 'string' }, category: { type: 'string' } },
         ['query'],
       ),
@@ -93,7 +93,7 @@ export function createIndustrialTools(sources: PackSources): ToolSpec<TurnToolCo
     {
       def: def(
         'quote_items',
-        '型号与数量齐全必须试算，一次最多30行。query 是客户型号或名称，不是内部 code；可直接匹配，单价与合计由代码计算。回复写 {{试算明细}}，由系统填写金额与交期，正文不写商品金额',
+        '型号与数量齐全必须试算，一次最多30行。query 是客户型号或名称，不是内部 code；可直接匹配，单价与合计由代码计算。回复写 {{试算明细}}，占位符单独占一行，正文不写单价、小计、合计。不要照抄之前回复里的试算明细，系统每轮会重新附上',
         {
           items: {
             type: 'array',

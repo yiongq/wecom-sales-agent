@@ -1,0 +1,95 @@
+{
+  "version": 2,
+  "id": "q18-placeholder-dropped",
+  "desc": "仿真回归：price_withheld（候选 3d6ee0295b18）",
+  "tags": ["q18", "industrial", "price_withheld"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:15:11.319Z",
+    "session": {
+      "stage": "recommend",
+      "messages": [
+        {
+          "role": "customer",
+          "content": "HS-PV27 先核规格，我这边能拍板。",
+          "at": 1791605705722
+        },
+        {
+          "role": "agent",
+          "content": "HS-PV27 气动阀，规格如下：\n· 接口 G1/4\n· 防护等级 IP65\n· 公称通径 6mm\n· 单位：件，起订量1件\n· 现货，参考交期约6天\n· 阶梯价：1–9件一档、10件起降档、50件起再降、100件起最低档\n数量告诉我，我马上给您试算合计与交期。",
+          "at": 1791605710076
+        }
+      ],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 1791605705722,
+      "updatedAt": 1791605710076,
+      "profile": {},
+      "packState": {
+        "partsInPlay": [
+          {
+            "partNo": "HS-PV25",
+            "specs": []
+          },
+          {
+            "partNo": "HS-PV27",
+            "specs": ["接口G1/4", "防护IP65", "公称通径6mm"]
+          }
+        ]
+      },
+      "moneyLedger": [
+        {
+          "fen": 4200,
+          "label": "档位单价",
+          "subject": "HSPV27"
+        },
+        {
+          "fen": 3780,
+          "label": "档位单价",
+          "subject": "HSPV27"
+        },
+        {
+          "fen": 3360,
+          "label": "档位单价",
+          "subject": "HSPV27"
+        },
+        {
+          "fen": 2940,
+          "label": "档位单价",
+          "subject": "HSPV27"
+        }
+      ]
+    },
+    "orders": []
+  },
+  "turns": [
+    {
+      "say": "先按8件算一下。",
+      "script": [
+        {
+          "toolCalls": [
+            {
+              "name": "quote_items",
+              "args": {
+                "items": [
+                  {
+                    "query": "HS-PV27",
+                    "qty": 8
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "content": "HS-PV27，8件，试算如下：\n· 单价 {{档位价}}／件，合计 {{试算明细}}\n· 现货，报价含13%税，运费0元\n提示：10件起单价可降到37.8元，如果加到10件更划算，需要的话我重新算。确认数量后，要正式报价单随时说。"
+        }
+      ],
+      "expect": {
+        "replyMatches": [
+          "(?:HS-PV27[^\\n]*(?:单价\\s*[:：]?\\s*(?<![\\d.])42(?:\\.0{1,2})?(?![\\d.])|(?<![\\d.])42(?:\\.0{1,2})?(?![\\d.])\\s*元)|(?:单价\\s*[:：]?\\s*(?<![\\d.])42(?:\\.0{1,2})?(?![\\d.])|(?<![\\d.])42(?:\\.0{1,2})?(?![\\d.])\\s*元)[^\\n]*HS-PV27)"
+        ]
+      }
+    }
+  ]
+}

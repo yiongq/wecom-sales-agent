@@ -174,10 +174,10 @@
           "tools": ["quote_items"],
           "handoff": false,
           "replyMatches": [
-            "6205-2RS 单价{{call:quote_items.lines.0.unitPrice}}元",
-            "HS-PV25 单价{{call:quote_items.lines.3.unitPrice}}元，金额{{call:quote_items.lines.3.amount}}元",
-            "M10×45 单价{{call:quote_items.lines.5.unitPrice}}元，金额{{call:quote_items.lines.5.amount}}元",
-            "合计{{call:quote_items.total}}元"
+            "6205-2RS × 100：单价8\\.00元",
+            "HS-PV25 × 10：单价31\\.95元，小计319\\.50元",
+            "M10×45 × 500：单价1\\.20元，小计600\\.00元",
+            "合计2665\\.00元"
           ],
           "contextMatches": ["清单第4行不报价，已通知顾问核对"],
           "contextExcludes": ["第[0-9、]*[5-9]行不报价"],
@@ -435,7 +435,11 @@
         "expect": {
           "tools": ["quote_items"],
           "handoff": false,
-          "replyMatches": ["6210-2RS 单价16\\.25元，金额650元", "HS-K01-24 单价18\\.95元，金额37\\.9元", "合计687\\.9元"],
+          "replyMatches": [
+            "6210-2RS × \\d+：单价16\\.25元，小计650\\.00元",
+            "HS-K01-24 × \\d+：单价18\\.95元，小计37\\.90元",
+            "合计687\\.90元"
+          ],
           "replyExcludes": ["单价0\\.5元", "单价0\\.1元", "1 元"],
           "orders": {
             "count": 0
@@ -500,7 +504,7 @@
         "expect": {
           "tools": ["quote_items"],
           "handoff": false,
-          "replyMatches": ["6210-2RS 单价16\\.25元", "HS-K01-24 单价18\\.95元"],
+          "replyMatches": ["6210-2RS × \\d+：单价16\\.25元", "HS-K01-24 × \\d+：单价18\\.95元"],
           "replyExcludes": ["单价0\\.5元", "单价0\\.1元"],
           "orders": {
             "count": 0
@@ -572,7 +576,7 @@
         "expect": {
           "tools": ["quote_items"],
           "handoff": false,
-          "replyMatches": ["6206-2RS 单价{{call:quote_items.lines.0.unitPrice}}元，金额{{call:quote_items.lines.0.amount}}元"],
+          "replyMatches": ["6206-2RS × 5：单价13\\.45元，小计67\\.25元"],
           "orders": {
             "count": 0
           }
@@ -660,7 +664,7 @@
         "expect": {
           "tools": ["quote_items"],
           "handoff": false,
-          "replyMatches": ["6208-2RS 单价{{call:quote_items.lines.0.unitPrice}}元，金额{{call:quote_items.lines.0.amount}}元"],
+          "replyMatches": ["6208-2RS × 100：单价12\\.60元，小计1260\\.00元"],
           "orders": {
             "count": 0
           }
@@ -1197,11 +1201,7 @@
         "expect": {
           "tools": ["quote_items"],
           "handoff": false,
-          "replyMatches": [
-            "6207-2RS 单价{{call:quote_items.lines.0.unitPrice}}元",
-            "M8×70 单价{{call:quote_items.lines.4.unitPrice}}元",
-            "合计{{call:quote_items.total}}元"
-          ],
+          "replyMatches": ["6207-2RS × 20：单价13\\.14元", "M8×70 × 300：单价1\\.94元", "合计1366\\.60元"],
           "contextExcludes": ["不报价"],
           "orders": {
             "count": 0
