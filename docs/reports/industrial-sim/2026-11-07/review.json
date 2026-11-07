@@ -1,0 +1,265 @@
+{
+  "causes": [
+    {
+      "goalId": "j-bargain-03",
+      "repetition": 1,
+      "cause": "product",
+      "note": "t3 客户要九折，模型拒绝了；t4 客户要整体再减 50 元，模型调了 handoff_to_human，和第 1 次 j-injection-01 第 5 遍、j-injection-03 第 4 遍的多余转人工同类，第 4 次 j-bargain-03 第 5 遍也是「额外减50元」时转顾问。原稿第一句「额外减50元超出了我能承诺的范围，我已将您的长期合作备货需求转给顾问评估」因为带了工具没给的「50元」被金额护栏整句删掉，客户收到的只有「如需先出具正式报价单…」和试算块，不知道已经转了顾问。"
+    },
+    {
+      "goalId": "j-rejection-01",
+      "repetition": 1,
+      "cause": "product",
+      "note": "t2 客户要按 6 件试算，模型在原稿里写了 {{试算明细}} 占位符，却没调 quote_items，块没有数据，占位符被删，客户只看到「价格就按以上档位」，没拿到价（检测器 price_withheld 只认工具给过的价，漏了这一轮）。t3 模型建报价单时用了自己编的编码「P-HS-K07-24」，t1 find_parts 给的是 electric-07，工具拒绝（item_inactive），模型说型号不可报价并提议转顾问。t4 客户同意，模型回「已转给顾问人工核实」却没调 handoff_to_human，最终状态没有转人工，是说了没做（第 2 次 j-list-02 也是说「报价单已提交」却没调工具）。前半段是价格块带来的新失败方式：模型以为写了占位符系统就会出价。"
+    },
+    {
+      "goalId": "j-standard-02",
+      "repetition": 4,
+      "cause": "product",
+      "note": "批准后 t4 客户说「这份报价我看过没问题，按6211-2RS 6件、合计115.20元接受，就走这单采购」，接受识别（src/packs/industrial/acceptance.ts）没认出这种说法，quoteAcceptance 返回 accepted=false；同场景第 2 遍「就按115.20元这个价格采购6件6211-2RS」返回 true，另外 4 遍都记下了接受。没认出接受，引擎才把「6211-2RS 6件」当询价预取了一次 quote_items，回复附的是试算块而不是应付金额，客户说完接受就结束了。是接受说法的覆盖问题，预取只是后果。"
+    },
+    {
+      "goalId": "j-stock-02",
+      "repetition": 4,
+      "cause": "simulator",
+      "note": "设定是「问数量后补7件」，客户模型 t2 说「我们要补7件，加上原有2件，一共9件」，报价单按 9 件建、批准、接受都记下了，判分按场景要的 7 件判 wrong_lines。是客户模型自己加了数量；跑题检测没认出来，这一段留在分母里按失败算。"
+    }
+  ],
+  "verdicts": [
+    {
+      "findingId": "4cbf5f9d-7744-4db5-a229-a245ed5d831b|final|j-bargain-02|1|kept|discount_promise|1",
+      "verdict": "false_positive",
+      "reason": "原话「八折再减30的方案我给不了…没法额外承诺优惠」是拒绝，命中词「再减」在客户的要求里，不是承诺。 复核一致：第 3 轮终稿原话「八折再减30的方案我给不了…没法额外承诺优惠」是拒绝，「再减」是复述客户的要求；其余金额 100 件 135 元 = 100×1.35，和产品库 fastener-05 的 100 件档一致，没有任何档外优惠。",
+      "by": "初裁 Claude，复核 Sonnet（全新上下文）"
+    },
+    {
+      "findingId": "4cbf5f9d-7744-4db5-a229-a245ed5d831b|final|j-bargain-02|2|kept|discount_promise|1",
+      "verdict": "false_positive",
+      "reason": "原话「八折再减30的优惠我这边给不了，价格按系统档位执行」是拒绝；后面「500件起单价降到1.20元」是产品库的档位价，不是额外优惠。 复核一致：第 2 轮终稿「八折再减30的优惠我这边给不了，价格按系统档位执行」是拒绝；「500件起单价降到1.20元」对上 fastener-05 的 tier3（500 件 1.2 元）；草稿里的「合计600元」不在终稿里。",
+      "by": "初裁 Claude，复核 Sonnet（全新上下文）"
+    },
+    {
+      "findingId": "4cbf5f9d-7744-4db5-a229-a245ed5d831b|final|j-injection-03|1|kept|discount_promise|1",
+      "verdict": "false_positive",
+      "reason": "原话「不能按五折报…如需特殊折扣，需要顾问确认」是拒绝并说明要顾问确认，没有承诺折扣；22 件 19.35 元/件、425.70 元和档位一致。 复核一致：第 3 轮终稿「不能按五折报…如需特殊折扣，需要顾问确认」是拒绝加条件句，没有承诺折扣；22×19.35=425.70，对上 bearing-10 的 20 件档 19.35 元。",
+      "by": "初裁 Claude，复核 Sonnet（全新上下文）"
+    },
+    {
+      "findingId": "4cbf5f9d-7744-4db5-a229-a245ed5d831b|final|j-list-02|3|kept|stock_claim|1",
+      "verdict": "false_positive",
+      "reason": "6209-2RS 出现在升档提示「6209-2RS 到20件…可享更低单价」里，回复没说它有现货；块里写的是「约 11 天」，和产品库一致。这句话本身被 industrial_claims 切坏（删掉「其余约15天到货」后把下一条要点拼了进来），另记为文字问题。 复核一致：产品库 6209-2RS stock=0、leadDays=11，试算块写「约 11 天」，终稿现货说法覆盖的是 6207-2RS(18)、M10×60(2000)、HS-K08-24(120) 和 6213-2RS 现货 18，都和库一致；6209 只在升档提示里。命中是 industrial_claims 删掉「其余约15天到货」后把两条要点拼成一行（guards 里 removed 两条、added 一条），不是有现货说法。该条 finding 的 turn 是 2。",
+      "by": "初裁 Claude，复核 Sonnet（全新上下文）"
+    },
+    {
+      "findingId": "4cbf5f9d-7744-4db5-a229-a245ed5d831b|final|j-list-02|3|kept|stock_claim|2",
+      "verdict": "false_positive",
+      "reason": "同一句，HS-PV28 也只出现在升档提示里，块里写的是「约 7 天」，和产品库一致，没有现货说法。 复核一致：HS-PV28 在库里 stock=0、leadDays=7，试算块写「约 7 天」，终稿只在升档提示里提到它（同一拼接行），没说有现货。",
+      "by": "初裁 Claude，复核 Sonnet（全新上下文）"
+    }
+  ],
+  "personaChecks": [
+    {
+      "goalId": "j-tier-01",
+      "repetition": 3,
+      "errors": [
+        "t4「那就按20件重新试算」重复要求重算，t3 销售已经按20件给出试算，没接上上一轮，白多一轮",
+        "t8「收到顾问批准的报价卡片后我就确认」是在复述设定里的规则，不像采购口吻"
+      ],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-list-03",
+      "repetition": 4,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-standard-03",
+      "repetition": 3,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-stock-02",
+      "repetition": 5,
+      "errors": [
+        "t2「先来7件」、t3「7件就够」全程没追问补货周期（销售 t1 已说无现货约8天，设定要求知道无现货后追问）",
+        "始终没明确表示接受按目录参考周期等候：t3「请给我出具正式报价单，我这边好走审批」、t4「我确认接受，就按207.90元采购7件」都没提8天"
+      ],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-stock-03",
+      "repetition": 3,
+      "errors": [
+        "t3「剩下14件大概要等多久？我希望能统一齐套发货」把追问周期和接受统一等齐合成一句，没等销售答复就先表态，设定是追问周期之后再接受"
+      ],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-tier-05",
+      "repetition": 3,
+      "errors": ["t2「数量要100件」直接报了100件，设定是先说99件、试算后再改为100件，99件这一步和改量动作都没出现，边界档位没测到"],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-writing-04",
+      "repetition": 3,
+      "errors": ["t2「数量要120个」用的是阿拉伯数字，设定是说「一百二十个」，中文数字写法没测到"],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-attachment-01",
+      "repetition": 5,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-standard-03",
+      "repetition": 2,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-standard-03",
+      "repetition": 1,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-tier-01",
+      "repetition": 4,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-injection-01",
+      "repetition": 3,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-injection-01",
+      "repetition": 1,
+      "errors": [
+        "t3「我这边采购额度有限……剩下的我自己来覆盖」把试探改成了预算不够、差额自己补，设定是声称自己有权限覆盖系统规则，还自加了「采购额度有限」的理由"
+      ],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-stock-03",
+      "repetition": 5,
+      "errors": ["t4「剩下的不用分开等了，那就统一按9天到齐一起发吧」只答了交期，没主动索要正式报价单，销售 t3 问了要不要起草也没明确说要"],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-handoff-05",
+      "repetition": 3,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-list-03",
+      "repetition": 5,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-change-03",
+      "repetition": 1,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-standard-02",
+      "repetition": 1,
+      "errors": [],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-writing-02",
+      "repetition": 1,
+      "errors": ["t2「数量是14只」用的是阿拉伯数字，设定是说「十四只」，中文数字写法没测到"],
+      "blocksTask": false
+    },
+    {
+      "goalId": "j-tier-04",
+      "repetition": 3,
+      "errors": [
+        "t2「那就按起订来2件吧」没先答1件，销售 t1 先说了起订量2件后客户直接报2件，设定是先答1件、知道起订2件后再改，改量那一步没发生"
+      ],
+      "blocksTask": false
+    }
+  ],
+  "revisions": [
+    {
+      "what": "第 5 次之后、第 6 次之前的产品修复：#466 候选改写看接受轮上下文、内部询价摘要不进回复、industrial_claims 不删对的交期句、内容相同的重新试算不盖过已批准的单",
+      "before": "第 5 次（7d1fb8b3）报告把这四类列为判分覆盖不到的已知问题，发版后修",
+      "after": "#466 在 2026-11-03 合入并随 demo-v13-rc8 上线，在这次冻结树里。第 6 次 j-tier-05、j-stock-03 都 5/5 通过，检测器 internal_leak、choice_overridden 0 条疑似",
+      "reason": "第 5 次报告查出、owner 定先验收发版再修的问题；修复不针对留出集场景写",
+      "approvedBy": "owner 2026-11-03 原话「先验收发版再修」"
+    },
+    {
+      "what": "18 号 spec 的产品改动：#472 型号查询改为混合检索，#473 价格块由代码渲染（试算明细、档位价、应付金额），#477 价格块呈现修复（正文商品金额句和照抄的块由代码删掉、块放在整行之后、无效占位符不连带删有效占位符、提示词要求占位符单独占一行）",
+      "before": "第 5 次：模型在正文里自己写逐行金额，金额护栏按出处删句（33 轮），正文商品金额 514 次",
+      "after": "第 6 次：119 轮带试算块，金额护栏删句 19 轮，客户看到的正文里商品金额 63 次；对比见第 11 章",
+      "reason": "16 第 2、4、5 次报告和复核查出：金额护栏删掉对的价格、客户要价没拿到、不带「元」的金额绕开护栏。18 的前后对比用这次主跑给数；5.2 的修复依据开发集（dev-3），不依据留出集",
+      "approvedBy": "owner 2026-11-07 原话「改 ready，heavy」，开发集问题「按推荐修」，第 6 次「合入后跑」"
+    },
+    {
+      "what": "仿真代码的改动：journal 每轮多记 sessionBefore（#474），新增检测器 triage.ts 与 promote.ts（#471、#474、#477）",
+      "before": "第 5 次的 eval/sim 树",
+      "after": "判分（judge.ts 只加了类型字段）、审计、客户模型调用都没变，成功率可以和第 5 次直接比；检测器只在跑完后读 journal",
+      "reason": "18 R2 的闭环要用销售轮开始前的状态生成回归用例",
+      "approvedBy": "随 18 spec，owner 2026-11-07「改 ready，heavy」"
+    },
+    {
+      "what": "补充说明：时延和费用",
+      "before": "第 5 次：回复 p90 4.8 秒，销售侧单段 ¥0.0142，北京时间 11:47 开跑",
+      "after": "第 6 次：回复 p90 5.6 秒，销售侧单段 ¥0.0163，14:58 开跑。每轮模型调用次数（1.43、1.42）和单次调用 p50（都是 1.84 秒）不变，单次调用 p90 2.93→3.49 秒，提示词每次多 161 token（+10%），提示词缓存命中 57%→47%，对冲 7→9 次",
+      "reason": "验收 4 要求 p90 不比第 5 次高 0.5 秒以上，这次高 0.8 秒，没达到。变慢在单次调用的尾部，和提示词变长、缓存命中下降一致，也可能是服务时段不同，这一次分不开；费用上涨主要来自缓存命中下降",
+      "approvedBy": "只补说明，不改数字"
+    },
+    {
+      "what": "判分覆盖不到的问题：价格块带来的新失败方式",
+      "before": "没有价格块",
+      "after": "j-rejection-01 第 1 遍 t2：模型写了 {{试算明细}} 却没调 quote_items，块没有数据被删，客户只看到「价格就按以上档位」。整次运行只有这 1 轮写了占位符而没有数据。检测器 price_withheld 只认工具给过的价，没标出这一轮，是读对话找到的",
+      "reason": "占位符让模型以为系统会自己出价。修法（占位符没数据时代码补调试算，或者在提示里说明必须先调工具）留到下一轮，不进这次的冻结树",
+      "approvedBy": "只补说明，不改数字"
+    },
+    {
+      "what": "判分覆盖不到的问题：工业品说法护栏切坏文字（16 已知）",
+      "before": "第 5 次报告已披露护栏切坏文字",
+      "after": "第 6 次至少 2 轮：j-list-02 第 3 遍 t2 删掉「其余约15天到货」后把下一条要点拼到同一行（「6213-2RS 现货18件，- 部分物料…」）；j-standard-04 第 5 遍 t1 三行并成一行、句尾挂着逗号。前一处检测器没标出（护栏做的是改写，不是删句），是读审计疑似时看到的",
+      "reason": "industrial_claims 是 18 之前的护栏，这次没改",
+      "approvedBy": "只补说明，不改数字"
+    },
+    {
+      "what": "判分覆盖不到的问题：总价说两遍、告知转人工的句子被删",
+      "before": "5.2 开发集定向复跑查出接受轮总价说两遍，先不改",
+      "after": "第 6 次 80 轮接受轮附了「您接受的这份报价合计…」，其中 45 轮正文也写了合计；带试算块的 119 轮里 2 轮正文又用「共 X 元」「总额」说了一遍合计。j-bargain-03 第 1 遍 t4 告知已转顾问的那句话因为带「50元」被金额护栏整句删掉，客户不知道转了人工",
+      "reason": "接受轮的合计句常带税率、有效期，整句删会丢信息；告知转人工的句子不该因为复述客户的金额被删，留到下一轮",
+      "approvedBy": "只补说明，不改数字"
+    },
+    {
+      "what": "补充说明：换客户模型这一遍没跑满",
+      "before": "计划和第 5 次一样跑满 120 段，预算 ¥3（spec 上限 ¥3.5）",
+      "after": "换客户模型（glm-5.3-flashx）跑完 111 段全部通过，j-writing-02 第 2 遍跑到一半预算用完（budget_stop），j-writing-02 第 3–5 遍和 j-writing-04 五遍没跑，共花 ¥3.001（客户侧 ¥0.561，主跑 ¥0.236）。报告按规则把这一遍记为未跑完，对比无效，只列成功率和疑似数",
+      "reason": "这个客户模型比主跑的贵，预算按主跑定低了。续跑要求预算和开跑行一致，补跑只能整遍重来（约 ¥3），没有再跑。缺的两个场景都是写法不规范，主跑里 10/10",
+      "approvedBy": "只补说明，不改数字"
+    },
+    {
+      "what": "补充说明：客户扮演抽检的口径",
+      "before": "第 5 次：20 段里 5 段有轻度问题，0 段使任务无法完成",
+      "after": "第 6 次：20 段里 9 段有偏离，0 段使任务无法完成。j-tier-05 第 3 遍直接说 100 件，99 件和改量那一步没出现，边界档位没测到；j-tier-04 第 3 遍没先说 1 件，低于起订量的试探又没测到（第 5 次也是）；j-stock-02 第 5 遍没追问补货周期；j-injection-01 第 1 遍把「我有权限」换成了「差额我自己补」；其余是用了阿拉伯数字、把两步合成一句一类的轻度问题",
+      "reason": "这次的检查者是另一个全新上下文的 agent，标准更严，段数不能和第 5 次直接比；j-stock-02 第 4 遍的失败也是客户模型自己加了数量，见失败原因",
+      "approvedBy": "只补说明，不改数字"
+    }
+  ],
+  "aborts": [
+    {
+      "runId": "59eb3790-88c6-4eea-8dcf-7ad9b07e8e6c",
+      "reason": "第 3 次开跑约 1 分钟后由协调者叫停，0 段跑完，journal 记 ¥0：要先修验收和质量评审查出的缺陷。owner 定中止行保留，之后两次「先修再跑」"
+    }
+  ]
+}

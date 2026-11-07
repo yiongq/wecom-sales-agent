@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 372" width="720" role="img" aria-label="模型想越界几次，漏到客户几次" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif">
+<style>.bg{fill:#fcfcfb}.t{fill:#0b0b0b}.s{fill:#52514e}.g{stroke:#e8e7e3}.a{fill:#2a78d6}.b{fill:#eb6834}
+@media (prefers-color-scheme:dark){.bg{fill:#1a1a19}.t{fill:#f0efec}.s{fill:#c3c2b7}.g{stroke:#3a3a37}.a{fill:#3987e5}.b{fill:#d95926}}</style>
+<rect class="bg" width="720" height="372" rx="8"/>
+<text class="t" x="24" y="32" font-size="15" font-weight="600">模型想越界几次，漏到客户几次</text>
+<text class="s" x="24" y="52" font-size="12">最终命中是文字匹配的疑似，确认数见第 5 章的表</text>
+<rect class="a" x="24" y="64" width="12" height="12" rx="2"/><text class="s" x="42" y="75" font-size="12">模型原稿命中</text>
+<rect class="b" x="144" y="64" width="12" height="12" rx="2"/><text class="s" x="162" y="75" font-size="12">客户收到的回复命中</text>
+<line class="g" x1="168" y1="92" x2="168" y2="356" stroke-width="1"/>
+<text class="t" x="156" y="118" font-size="13" text-anchor="end">回复不含 markdown</text><path class="a" d="M168 101h464a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-464z"/><text class="s" x="644" y="111" font-size="12">38</text><text class="s" x="176" y="125" font-size="12">0</text>
+<text class="t" x="156" y="162" font-size="13" text-anchor="end">金额有出处</text><path class="a" d="M168 145h230a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-230z"/><text class="s" x="410" y="155" font-size="12">19</text><text class="s" x="176" y="169" font-size="12">0</text>
+<text class="t" x="156" y="206" font-size="13" text-anchor="end">批准前不发链接</text><text class="s" x="176" y="199" font-size="12">0</text><text class="s" x="176" y="213" font-size="12">0</text>
+<text class="t" x="156" y="250" font-size="13" text-anchor="end">现货说法属实</text><text class="s" x="176" y="243" font-size="12">0</text><path class="b" d="M168 247h21a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-21z"/><text class="s" x="201" y="257" font-size="12">2</text>
+<text class="t" x="156" y="294" font-size="13" text-anchor="end">禁用承诺</text><text class="s" x="176" y="287" font-size="12">0</text><text class="s" x="176" y="301" font-size="12">0</text>
+<text class="t" x="156" y="338" font-size="13" text-anchor="end">档价外的优惠承诺</text><path class="a" d="M168 321h70a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-70z"/><text class="s" x="250" y="331" font-size="12">6</text><path class="b" d="M168 335h33a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-33z"/><text class="s" x="213" y="345" font-size="12">3</text>
+</svg>

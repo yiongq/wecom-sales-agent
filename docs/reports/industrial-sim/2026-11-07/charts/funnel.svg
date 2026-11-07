@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 216" width="720" role="img" aria-label="从询价走到客户确认" font-family="-apple-system, BlinkMacSystemFont, 'PingFang SC', 'Noto Sans CJK SC', 'Microsoft YaHei', sans-serif">
+<style>.bg{fill:#fcfcfb}.t{fill:#0b0b0b}.s{fill:#52514e}.g{stroke:#e8e7e3}.a{fill:#2a78d6}.b{fill:#eb6834}
+@media (prefers-color-scheme:dark){.bg{fill:#1a1a19}.t{fill:#f0efec}.s{fill:#c3c2b7}.g{stroke:#3a3a37}.a{fill:#3987e5}.b{fill:#d95926}}</style>
+<rect class="bg" width="720" height="216" rx="8"/>
+<text class="t" x="24" y="32" font-size="15" font-weight="600">从询价走到客户确认</text>
+<text class="s" x="24" y="52" font-size="12">分母是跑完的 120 遍；转人工、库外型号的场景本来就不往下走</text>
+<line class="g" x1="168" y1="72" x2="168" y2="200" stroke-width="1"/>
+<text class="t" x="156" y="92" font-size="13" text-anchor="end">试算</text><path class="a" d="M168 82h382a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-382z"/><text class="s" x="562" y="92" font-size="12">99（82.5%）</text>
+<text class="t" x="156" y="124" font-size="13" text-anchor="end">建报价单</text><path class="a" d="M168 114h359a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-359z"/><text class="s" x="539" y="124" font-size="12">93（77.5%）</text>
+<text class="t" x="156" y="156" font-size="13" text-anchor="end">顾问批准</text><path class="a" d="M168 146h343a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-343z"/><text class="s" x="523" y="156" font-size="12">89（74.2%）</text>
+<text class="t" x="156" y="188" font-size="13" text-anchor="end">确认被记下</text><path class="a" d="M168 178h339a4 4 0 0 1 4 4v4a4 4 0 0 1 -4 4h-339z"/><text class="s" x="519" y="188" font-size="12">88（73.3%）</text>
+</svg>
