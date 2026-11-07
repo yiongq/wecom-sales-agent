@@ -409,6 +409,54 @@ try {
       assert.equal(runtime.metadata.pricesCheckedAt, '2026-11-01');
       assert.equal(runtime.metadata.hedgeModel, null);
     });
+    const seeded = await runtime.deps.start({
+      profile: { attrs: { company: '合成公司' }, notes: ['合成画像'] },
+      orders: [
+        {
+          lines: [{ kind: 'part', code: 'bearing-02', qty: 20 }],
+          status: 'pending_payment',
+          approval: { state: 'approved', requestedAt: Date.parse(FIXTURE_CLOCK) - 2000, decidedAt: Date.parse(FIXTURE_CLOCK) - 1000 },
+        },
+      ],
+    });
+    const store = await import('../../src/store.js');
+    const live = store.getSession(seeded.id)!;
+    Object.assign(live, {
+      packState: { lastQuoteId: seeded.initial.orders[0]!.id },
+      moneyLedger: [{ fen: 900, label: '轮前' }],
+      turnSignals: [0, 1],
+      negativeHits: [1],
+    });
+    const expectedBefore = structuredClone({ session: live, orders: seeded.initial.orders });
+    service.script.push({ content: '您好，请问需要什么？' });
+    const recorded = await runtime.deps.sales(seeded.id, { say: '你好', done: false });
+    check('18 R2：真实 runtime 每轮写完整轮前会话、订单与审批时刻，深拷贝不受本轮修改影响', () => {
+      assert.deepEqual(recorded.sessionBefore, expectedBefore);
+      assert.notEqual(recorded.sessionBefore!.session.messages.length, live.messages.length);
+      live.moneyLedger![0]!.fen = 1;
+      assert.equal(recorded.sessionBefore!.session.moneyLedger![0]!.fen, 900);
+    });
+    service.script.push({ content: '您好，请问需要什么？' });
+    const second = await runtime.deps.sales(seeded.id, { say: '你好', done: false });
+    check('下一轮也有独立的 sessionBefore', () => assert.ok(second.sessionBefore));
+    const newRun = { ...result(), turns: [recorded] };
+    const encode = (r: RunResult) =>
+      Buffer.from(JSON.stringify({ type: 'head', meta }) + '\n' + JSON.stringify({ type: 'run', run: r }) + '\n');
+    const oldRun = structuredClone(newRun);
+    delete oldRun.turns[0]!.sessionBefore;
+    const newParsed = readJournal(encode(newRun));
+    const oldParsed = readJournal(encode(oldRun));
+    check('新旧 journal 都能读取；剥离新增字段后所有旧字段序列化逐字节相等', () => {
+      assert.deepEqual(newParsed.runs[0]!.turns[0]!.sessionBefore, expectedBefore);
+      assert.equal(oldParsed.runs[0]!.turns[0]!.sessionBefore, undefined);
+      delete newParsed.runs[0]!.turns[0]!.sessionBefore;
+      assert.equal(JSON.stringify(newParsed.runs), JSON.stringify(oldParsed.runs));
+      assert.throws(
+        () => readJournal(encode({ ...newRun, turns: [{ ...recorded, sessionBefore: { session: null, orders: [] } as never }] })),
+        /journal_session_before_invalid/,
+      );
+    });
+    await runtime.deps.end(seeded.id);
     await rejects(
       '非模型 origin 直接拒绝且不泄漏地址',
       fetch('http://127.0.0.1:1/private?token=not-a-secret'),

@@ -17,10 +17,10 @@
 - [x] 1. 检测器：`eval/sim/triage.ts` 与自测（每个检测器至少一正一反，用合成 journal 片段）；回溯第 1、2、4、5 次，逐条核对验收 7 的已知问题
   - #471：8 个检测器、73 项自测，`scripts/check-boundaries.ts` 强制不 import `src/packs`、`src/core/guards`。验收 7 列的已知问题全部命中，其中 j-change-03#2 在第 5 次换客户模型那一遍（spec 已改）
   - 回溯疑似数（第 1、2、4、5 次 main）：`price_withheld` 16、13、16、8；`correct_deleted` 70、70、69、58；`ask_after_accept` 1、1、34、1。rfq_trim 用裁剪说明盖住的第 10 行以后不算缺价，已排除这类误报
-- [ ] 2. 生成用例
-  - [ ] 2.1 16 的 journal 每轮写 `sessionBefore`（`eval/sim/runtime.ts`），旧字段不变
-  - [ ] 2.2 v2 工业夹具加 `moneyLedger` 与审批种子（`eval/v2/schema.ts`、worker）
-  - [ ] 2.3 `eval/sim/promote.ts` 与自测：订单 id 换序号、预取不进脚本、旧 journal 报「只能手写用例」
+- [x] 2. 生成用例
+  - [x] 2.1 16 的 journal 每轮写 `sessionBefore`（`eval/sim/runtime.ts`），旧字段不变
+  - [x] 2.2 v2 工业夹具加 `moneyLedger` 与审批种子（`eval/v2/schema.ts`、worker）
+  - [x] 2.3 `eval/sim/promote.ts` 与自测：订单 id 换序号、预取不进脚本、旧 journal 报「只能手写用例」
 - [x] 3. 价格块
   - [x] 3.1 `pack-api` 的 `ReplyBlocks`、核心 `reply_blocks:render` / `reply_blocks:place` 两步，`blocksSuppressed` 旗标的读写声明与步骤表校验
   - [x] 3.2 工业包三种试算模板、档位价、应付金额；`quote_items` 结果加 `block` 与下一档；`find_parts` 加 `block`
@@ -105,3 +105,11 @@
 | 4 抑制即无块                 | `suppressed`、`pendingBlock`、`repaired`、`emptied`、`failureBlock`、`fallbackBlock`；`industrial-quotes.selftest.ts` 最终接受核验失效时 trace.suppressed 与固定替换一致                                                                     |
 | 5 非声明包及跟进表不变       | 旅游主回复 33 步、旅游跟进 11 步、工业跟进 4 步逐项断言；857 条旅游 v2 保持原快照，全部锁定文件无 diff                                                                                                                                       |
 | 6 对客无占位符               | `unknownBlock` / 原型属性占位符 / `noData` / `duplicate` / `suppressed` 及对客文本无花括号和 markdown 的汇总断言；新增 q18 v2 也断言不含花括号                                                                                               |
+
+2026-11-07：第 2 步完成。Codex 实现，Claude 审查后一次通过。
+
+- `eval/sim/runtime.ts` 在销售这一轮开始前深拷贝完整会话和订单，写进 journal 的 `sessionBefore`；旧字段不变，旧 journal 照常能读。
+- v2 工业夹具新增可选的 `session.moneyLedger` 与 `orders[].approval`（`pending` / `approved`，可带 `decidedAt`）；没用新字段的用例行为不变。
+- `eval/sim/promote.ts`：只接受唯一且带理由的 `confirmed` 裁定；订单 id（含 `acceptingOrderId`）换成序号引用，预取不进脚本，8 个检测器各有断言规则，生成后先在原回复上验证断言会失败，再过 `validateCase`；旧 journal 报「只能手写用例」。
+- 验收 8 的合成路径：`promote.selftest.ts` 用合成 journal 生成用例，经 v2 runner 真跑。重复句用例在重复原稿上失败、去重后通过；缺价用例在第 2 步单独的提交上会失败，叠上第 3 步的价格块后通过（块补上了单价），自测现在断言它通过。第 5 步仍要用开发集的真实 journal 走一遍。
+- 复跑：promote、journal、sim、triage、v2 runner、边界自测通过；v2 927/927，快照 0 差异；锁定套件与三项门禁通过。

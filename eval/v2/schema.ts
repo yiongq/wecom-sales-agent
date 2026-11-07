@@ -92,7 +92,11 @@ const packSession = sessionBase
     recommendedRoutes: true,
     profile: true,
   })
-  .extend({ profile: z.strictObject({ attrs: z.record(z.string(), z.string()).optional(), notes: strings.optional() }), packState: record })
+  .extend({
+    profile: z.strictObject({ attrs: z.record(z.string(), z.string()).optional(), notes: strings.optional() }),
+    packState: record,
+    moneyLedger: z.array(z.strictObject({ fen: z.number().int().safe().nonnegative(), label: z.string(), subject: z.string().optional() })),
+  })
   .partial();
 
 const nonNegativeInt = z.number().int().nonnegative();
@@ -172,6 +176,15 @@ export const caseSchema = z.strictObject({
 const lineStatus = z.enum(['pending_payment', 'paid', 'cancelled', 'superseded']);
 // 夹具里的订单行只给条目和数量：单价、行金额、合计一概不收，由包的 priceLine 算（不变量 7）
 const lineFixture = z.strictObject({ kind: z.string().min(1), code: z.string().min(1), qty: z.number().int().positive() });
+const approvalFixture = z
+  .strictObject({
+    state: z.enum(['pending', 'approved']),
+    decidedAt: z.iso.datetime({ offset: true }).optional(),
+  })
+  .superRefine((a, ctx) => {
+    if (a.state === 'pending' && a.decidedAt !== undefined)
+      ctx.addIssue({ code: 'custom', path: ['decidedAt'], message: 'pending 不能带 decidedAt' });
+  });
 // orders.last 里的一行：只比对写出来的键（kind / code / qty / unitPriceFen / amountFen，以及 title / unit），其余不比
 const lineExpect = z.strictObject({
   kind: z.string().min(1).optional(),
@@ -205,11 +218,22 @@ export const packCaseSchema = z.strictObject({
       now: z.iso.datetime({ offset: true }).optional(),
       session: packSession.optional(),
       orders: z
-        .array(z.strictObject({ status: lineStatus, lines: z.array(lineFixture).min(1) }))
-        // 同一会话最多一张待付的通用单（R3）：夹具按顺序建单，后建的单会把先建的待付单作废，所以 pending_payment 只能是最后一张
+        .array(
+          z
+            .strictObject({ status: lineStatus, lines: z.array(lineFixture).min(1), approval: approvalFixture.optional() })
+            .superRefine((o, ctx) => {
+              if (o.approval?.state === 'pending' && o.status !== 'pending_payment')
+                ctx.addIssue({ code: 'custom', path: ['approval'], message: 'pending 审批只搭配 pending_payment' });
+            }),
+        )
+        // 08 R3 的无审批单仍只有末尾一张待付单；09 R6 允许已批报价与后来的待审报价并存。
         .refine(
-          (orders) => orders.every((o, i) => o.status !== 'pending_payment' || i === orders.length - 1),
+          (orders) => orders.every((o, i) => o.status !== 'pending_payment' || o.approval?.state === 'approved' || i === orders.length - 1),
           'pending_payment 的订单只能排在最后，且最多一张',
+        )
+        .refine(
+          (orders) => orders.filter((o) => o.status === 'pending_payment' && o.approval?.state === 'approved').length <= 1,
+          '有效的已批待付报价最多一张',
         )
         .optional(),
     })
