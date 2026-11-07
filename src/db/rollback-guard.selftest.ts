@@ -24,8 +24,9 @@ const rolledBack = path.join(tmp, 'rolled-back');
 const purged = path.join(tmp, 'purged');
 const guardSource = fs.readFileSync(path.join(root, 'deploy/rollback-guard.sh'), 'utf8');
 const recovery = '再重跑回滚检查，确认品牌风险已消除';
-// 假查询挂 60 秒：只证明被限时掐断。部署门禁在负载高的本机跑，定得太紧会误报。
-const BOUNDED_MS = 10_000;
+// 假查询挂住：只证明被限时掐断。看日志里每次挂住都在假 timeout 之下、按超时结束，不比墙钟，机器再慢也不误报；
+// 没套 timeout 的挂住会睡 60 秒，由 run 的外层时限报错。
+const bounded = (r: { log: string }): boolean => r.log.split('fake-hang start').length === r.log.split('fake-hang killed').length;
 let checks = 0;
 const check = (name: string, ok: boolean, detail = ''): void => {
   assert.ok(ok, `${name}: ${detail}`);
@@ -49,7 +50,8 @@ const run = (command: string, args: string[], env: Record<string, string> = {}, 
   fs.rmSync(rolledBack, { force: true });
   fs.rmSync(purged, { force: true });
   const started = performance.now();
-  const r = spawnSync(command, args, { cwd: repo, env: { ...baseEnv, ...env }, input, encoding: 'utf8', timeout: 15_000 });
+  // 外层时限要短于假挂住的 60 秒，没套 timeout 的挂住才会在这里报错，而不是睡完当成空结果。
+  const r = spawnSync(command, args, { cwd: repo, env: { ...baseEnv, ...env }, input, encoding: 'utf8', timeout: 45_000 });
   assert.ifError(r.error);
   return { code: r.status, out: r.stdout + r.stderr, log: fs.readFileSync(log, 'utf8'), elapsed: performance.now() - started };
 };
@@ -71,7 +73,9 @@ try {
     'AGENT_DB=brand_fixture\nPOSTGRES_PASSWORD=x\nAGENT_OWNER_PASSWORD=x\nAGENT_APP_PASSWORD=x\nAGENT_PLATFORM_PASSWORD=x\n',
   );
   fs.writeFileSync(path.join(srv, '.env.migrate'), '');
-  // 本机没有 coreutils timeout：监督真实假 docker 子进程，超时杀掉并回 124；测试缩短等待，生产参数照样核对。
+  // 本机没有 coreutils timeout：监督真实假 docker 子进程，照生产时限超时杀掉并回 124；生产参数照样核对。
+  // 测试缩短的 FAKE_TIMEOUT_MS 只给挂住的替身用（见 docker 的 hang），其余调用照生产时限等：
+  // 以前所有调用都按它掐，CI 负载高时没被测的探测先超时，从严拒绝的文案、退出码对不上。
   fs.writeFileSync(
     path.join(bin, 'timeout'),
     `#!/usr/bin/env node
@@ -81,7 +85,7 @@ const [kill, limit, command, ...args] = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_LOG, 'timeout ' + process.argv.slice(2).join(' ') + '\\n');
 if (kill !== '--kill-after=2s' || !['8s', '120s'].includes(limit)) process.exit(99);
 const r = spawnSync(command, args, { encoding: 'utf8', stdio: ['inherit', 'pipe', 'pipe'],
-  timeout: Number(process.env.FAKE_TIMEOUT_MS || 8000), killSignal: 'SIGKILL' });
+  env: { ...process.env, FAKE_UNDER_TIMEOUT: '1' }, timeout: Number.parseInt(limit, 10) * 1000, killSignal: 'SIGKILL' });
 process.stdout.write(r.stdout || '');
 process.stderr.write(r.stderr || '');
 process.exit(r.error?.code === 'ETIMEDOUT' ? 124 : (r.status ?? 1));
@@ -93,6 +97,15 @@ process.exit(r.error?.code === 'ETIMEDOUT' ? 124 : (r.status ?? 1));
     `
 cat >/dev/null
 echo "docker $*" >> "$FAKE_LOG"
+# 挂住：在假 timeout 下（只有它设 FAKE_UNDER_TIMEOUT）挂 FAKE_TIMEOUT_MS 后按被掐断退 124；
+# 不在 timeout 下就一直挂，由 run 的外层时限报错，证明生产脚本给这次调用套了 timeout。
+hang() {
+  echo "fake-hang start" >> "$FAKE_LOG"
+  [ -n "\${FAKE_UNDER_TIMEOUT:-}" ] || exec perl -e 'sleep 60'
+  perl -e 'select undef, undef, undef, ($ENV{FAKE_TIMEOUT_MS} || 8000) / 1000'
+  echo "fake-hang killed" >> "$FAKE_LOG"
+  exit 124
+}
 case "$*" in
   *psql*)
     case "$*" in
@@ -101,7 +114,7 @@ case "$*" in
     esac
     case "\${FAKE_HANG:-}:$*" in
       pending-probe:*information_schema.columns*tenants*|published-probe:*information_schema.columns*sop_versions*|pending:*"select exists(select 1 from public.tenants t"*|published:*"from public.sop_versions"*|catalog-probe:*to_regclass*catalog_item_versions*|catalog:*"from catalog_item_versions"*|channel-probe:*to_regclass*channel_accounts*|channel:*"from channel_accounts where"*)
-        exec perl -e 'sleep 60' ;;
+        hang ;;
     esac ;;
 esac
 case "$*" in
@@ -114,7 +127,7 @@ case "$*" in
     case "$*" in *src/packs/industrial/runtime.ts*) phase="\${FAKE_INDUSTRIAL_TARGET:-$phase}" ;; esac
     case "$*" in *site-links.ts*) phase="\${FAKE_QUOTE_TARGET:-$phase}" ;; esac
     case "$*" in *attachments.ts*) phase="\${FAKE_ATTACHMENT_TARGET:-$phase}" ;; esac
-    [ "$phase" = hang ] && exec perl -e 'sleep 60'
+    [ "$phase" = hang ] && hang
     [ "$phase" = error ] && exit 125
     case "$*" in *attachments.ts*) need=12 ;; *pg-backend.ts*) need=2 ;; *registry.ts*) need=3 ;; *pack-api.ts*) need=4 ;; *src/packs/industrial/runtime.ts*) need=10 ;; *runtime.ts*) need=5 ;; *order-view.ts*) need=8 ;; *site-links.ts*) need=9 ;; *) need=7 ;; esac
     [ "$phase" -ge "$need" ] ;;
@@ -126,11 +139,11 @@ case "$*" in
     esac
     case "$*" in *to_regclass*) key="$key-probe"; value="\${FAKE_ATTACHMENT_SCHEMA-t}" ;; esac
     printf '%s' "\${!#}" > "$FAKE_QUERY.attachment-$key"
-    case "$value" in down) exit 1 ;; lock-timeout) echo f; exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "$value" ;; esac ;;
+    case "$value" in down) exit 1 ;; lock-timeout) echo f; exit 1 ;; hang) hang ;; *) echo "$value" ;; esac ;;
   *"select to_regclass('public.tenants') is not null"|*"select to_regclass('public.catalog_items') is not null")
     case "$*" in *public.tenants*) key=tenants ;; *) key=catalog ;; esac
     printf '%s' "\${!#}" > "$FAKE_QUERY.industrial-$key-probe"
-    case "\${FAKE_INDUSTRIAL_SCHEMA-t}" in down) exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "\${FAKE_INDUSTRIAL_SCHEMA-t}" ;; esac ;;
+    case "\${FAKE_INDUSTRIAL_SCHEMA-t}" in down) exit 1 ;; hang) hang ;; *) echo "\${FAKE_INDUSTRIAL_SCHEMA-t}" ;; esac ;;
   *"pack_id = 'industrial'"*|*"kind = 'part'"*|*"data->'lines'"*)
     case "$*" in
       *"pack_id = 'industrial'"*) key=tenants; value="\${FAKE_INDUSTRIAL_TENANTS-f}" ;;
@@ -138,7 +151,7 @@ case "$*" in
       *) key=orders; value="\${FAKE_INDUSTRIAL_ORDERS-f}" ;;
     esac
     printf '%s' "\${!#}" > "$FAKE_QUERY.industrial-$key"
-    case "$value" in down) exit 1 ;; lock-timeout) echo f; exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "$value" ;; esac ;;
+    case "$value" in down) exit 1 ;; lock-timeout) echo f; exit 1 ;; hang) hang ;; *) echo "$value" ;; esac ;;
   *to_regclass*public.kb_chunks*)
     case "\${FAKE_KB_SCHEMA-t}" in down) exit 1 ;; *) echo "\${FAKE_KB_SCHEMA-t}" ;; esac ;;
   *"pack_id <> 'travel'"*|*"data->>'v' = '2'"*|*"kind not in ('route','hotel')"*|*"source <> 'route'"*)
@@ -155,7 +168,7 @@ case "$*" in
         echo "\${FAKE_NONTRAVEL_COUNT-1}" ;;
       *)
         printf '%s' "\${!#}" > "$FAKE_QUERY.nontravel-$key"
-        case "$value" in down) exit 1 ;; lock-timeout) echo f; exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "$value" ;; esac ;;
+        case "$value" in down) exit 1 ;; lock-timeout) echo f; exit 1 ;; hang) hang ;; *) echo "$value" ;; esac ;;
     esac ;;
   *information_schema.columns*"column_name = 'kind'"*)
     case "\${FAKE_TENANCY_SCHEMA:-f}" in down) exit 1 ;; *) echo "\${FAKE_TENANCY_SCHEMA:-f}" ;; esac ;;
@@ -179,13 +192,13 @@ case "$*" in
     echo "\${FAKE_PUBLISHED_BRAND-\${FAKE_BRAND-f}}" ;;
   *"data->'approval' IS NOT NULL"*)
     printf '%s' "\${!#}" > "$FAKE_QUERY.quote"
-    case "\${FAKE_QUOTE:-f}" in down) exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "\${FAKE_QUOTE:-f}" ;; esac ;;
+    case "\${FAKE_QUOTE:-f}" in down) exit 1 ;; hang) hang ;; *) echo "\${FAKE_QUOTE:-f}" ;; esac ;;
   *to_regclass*public.orders*)
     printf '%s' "\${!#}" > "$FAKE_QUERY.industrial-orders-probe"
-    case "\${FAKE_REFUND_SCHEMA-f}" in down) exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "\${FAKE_REFUND_SCHEMA-f}" ;; esac ;;
+    case "\${FAKE_REFUND_SCHEMA-f}" in down) exit 1 ;; hang) hang ;; *) echo "\${FAKE_REFUND_SCHEMA-f}" ;; esac ;;
   *"from public.orders where status in"*)
     printf '%s' "\${!#}" > "$FAKE_QUERY.refund"
-    case "\${FAKE_REFUND:-f}" in down) exit 1 ;; hang) exec perl -e 'sleep 60' ;; *) echo "\${FAKE_REFUND:-f}" ;; esac ;;
+    case "\${FAKE_REFUND:-f}" in down) exit 1 ;; hang) hang ;; *) echo "\${FAKE_REFUND:-f}" ;; esac ;;
   *to_regclass*channel_accounts*) echo t ;;
   *"from channel_accounts where"*) echo "\${FAKE_CHANNEL:-f}" ;;
   *to_regclass*catalog_item_versions*) echo t ;;
@@ -358,7 +371,7 @@ exit 0`,
   );
   const sqlTimeouts = r.log.match(/PGOPTIONS=-c statement_timeout=(\d+) -c lock_timeout=(\d+)/)!;
   r = guard('pre-04', { FAKE_BRAND: 'lock-timeout' });
-  check('SQL 锁超时即使输出 f 也从严拒绝，不当作无风险', r.code === 6 && r.out.includes('问不到库') && r.elapsed < BOUNDED_MS, r.out);
+  check('SQL 锁超时即使输出 f 也从严拒绝，不当作无风险', r.code === 6 && r.out.includes('问不到库') && bounded(r), r.out);
   r = guard('pre-04', { FAKE_PROBE: 'down' });
   check('元数据探测连接失败仍从严拒绝', r.code === 6 && r.out.includes('问不到库'), r.out);
   for (const point of ['published-probe', 'published']) {
@@ -369,7 +382,7 @@ exit 0`,
         r.code === 6 &&
           r.out.includes('tenants.brand 不为空') &&
           r.out.includes('问不到库') &&
-          r.elapsed < BOUNDED_MS &&
+          bounded(r) &&
           r.out.includes('RECOVERY_IMAGE=') &&
           r.out.includes(restore) &&
           !r.out.includes('restart app') &&
@@ -389,7 +402,7 @@ exit 0`,
         const expected = running === '1' ? 0 : phase === '02' ? 4 : phase === '03' ? 5 : 6;
         check(
           `${phase} ${point} 进程超时：运行 ${running} 返回 ${expected}，3 秒内结束`,
-          r.code === expected && r.elapsed < BOUNDED_MS && (expected === 0 || r.out.includes('问不到库')),
+          r.code === expected && r.log.includes('fake-hang killed') && bounded(r) && (expected === 0 || r.out.includes('问不到库')),
           `${r.elapsed.toFixed(0)}ms ${r.out}`,
         );
       }
@@ -470,7 +483,7 @@ exit 0`,
   r = deploy('v04', { FAKE_HANG: 'published', FAKE_TIMEOUT_MS: '180', FAKE_HEALTH_FAIL: '1' });
   check(
     '健康失败后品牌锁等待被限时终止，拒绝自动回滚并透出恢复步骤',
-    r.code === 1 && r.elapsed < BOUNDED_MS && r.out.includes(recovery) && !r.log.includes('up -d --no-deps app'),
+    r.code === 1 && bounded(r) && r.out.includes(recovery) && !r.log.includes('up -d --no-deps app'),
     `${r.elapsed.toFixed(0)}ms ${r.out}`,
   );
   r = deploy('v04', { FAKE_BRAND: 't', FAKE_TARGET: '4', FAKE_HEALTH_FAIL: '1' });
@@ -571,7 +584,7 @@ exit 0`,
     r.out,
   );
   r = guard('pre-07', { FAKE_REFUND_SCHEMA: 't', FAKE_REFUND: 'hang', FAKE_RUNNING: '7', FAKE_TIMEOUT_MS: '100' });
-  check('07：退款查询挂住有时限，退出 8', r.code === 8 && r.elapsed < BOUNDED_MS, r.out);
+  check('07：退款查询挂住有时限，退出 8', r.code === 8 && bounded(r), r.out);
 
   // 08 R13：真实脚本的四项风险独立触发；旧版本拒绝码与副作用顺序不变。
   const nontravelRisks = [
@@ -761,7 +774,7 @@ exit 0`,
     r.out,
   );
   r = guard('pre-07', { FAKE_RUNNING: '8', FAKE_NONTRAVEL_TENANTS: 'hang', FAKE_TIMEOUT_MS: '100' });
-  check('08：查询挂住有时限，从严退出 9', r.code === 9 && r.elapsed < BOUNDED_MS, r.out);
+  check('08：查询挂住有时限，从严退出 9', r.code === 9 && bounded(r), r.out);
   r = guard('side1:prev', { FAKE_TARGET: 'error', FAKE_RUNNING: '8', FAKE_NONTRAVEL_ORDERS: 't' });
   check('08：目标镜像探测失败按旧版拒绝', r.code === 9, r.out);
   for (const [expected, target, extra] of [
@@ -796,7 +809,7 @@ exit 0`,
     check('09：目标有site-links标记不查09报价风险', r.code === 0 && !r.log.includes("where data->'approval' IS NOT NULL)"), r.out);
     for (const state of ['down', 'unexpected', 'hang']) {
       r = guard('pre-09', { ...quoteEnv, FAKE_QUOTE: state, FAKE_TIMEOUT_MS: '100' });
-      check('09：查询故障从严拒绝且有时限', r.code === 9 && r.elapsed < BOUNDED_MS, r.out);
+      check('09：查询故障从严拒绝且有时限', r.code === 9 && bounded(r), r.out);
     }
     {
       const pg = new PGlite();
@@ -898,18 +911,18 @@ exit 0`,
         r = guard('pre-10', { ...industrialEnv, [variable]: state, FAKE_RUNNING: '8', FAKE_TIMEOUT_MS: '100' });
         check(
           `10：${key} 查询 ${state || '空结果'} 从严限时拒绝，旧运行镜像不豁免`,
-          r.code === 9 && r.out.includes(message) && r.elapsed < BOUNDED_MS,
+          r.code === 9 && r.out.includes(message) && bounded(r),
           r.out,
         );
       }
     }
     for (const schema of ['down', 'unexpected', '', 'hang']) {
       r = guard('pre-10', { ...industrialEnv, FAKE_INDUSTRIAL_SCHEMA: schema, FAKE_TIMEOUT_MS: '100' });
-      check('10：表探测失败或挂住从严限时拒绝', r.code === 9 && r.out.includes(message) && r.elapsed < BOUNDED_MS, r.out);
+      check('10：表探测失败或挂住从严限时拒绝', r.code === 9 && r.out.includes(message) && bounded(r), r.out);
     }
     for (const schema of ['down', 'unexpected', '', 'hang']) {
       r = guard('pre-10', { ...industrialEnv, FAKE_REFUND_SCHEMA: schema, FAKE_TIMEOUT_MS: '100' });
-      check('10：订单表探测未知从严拒绝', r.code === 9 && r.out.includes(message) && r.elapsed < BOUNDED_MS, r.out);
+      check('10：订单表探测未知从严拒绝', r.code === 9 && r.out.includes(message) && bounded(r), r.out);
     }
     for (const state of ['down', 'hang']) {
       const env = { ...industrialEnv, FAKE_INDUSTRIAL_ORDERS: state, FAKE_TARGET: '9', FAKE_TIMEOUT_MS: '100' };
@@ -944,7 +957,7 @@ exit 0`,
     check('10：工业标记不跳过其他独立能力检查', r.code === 9 && r.out.includes('另一个含 09 的 tag'), r.out);
     for (const state of ['error', 'hang']) {
       r = guard('side1:prev', { ...industrialEnv, FAKE_TARGET: '9', FAKE_INDUSTRIAL_TARGET: state, FAKE_TIMEOUT_MS: '100' });
-      check('10：目标文件探测失败或挂住，即使三项为零仍拒绝9', r.code === 9 && r.out.includes(message) && r.elapsed < BOUNDED_MS, r.out);
+      check('10：目标文件探测失败或挂住，即使三项为零仍拒绝9', r.code === 9 && r.out.includes(message) && bounded(r), r.out);
       r = deploy('v10', {
         ...industrialEnv,
         FAKE_TARGET: '9',
@@ -1058,7 +1071,7 @@ exit 0`,
         r = guard('pre-12', { [variable]: state, FAKE_RUNNING: '9', FAKE_TIMEOUT_MS: '100' });
         check(
           `12：${label}查询${state || '空结果'}从严拒绝，不豁免旧运行镜像`,
-          r.code === 9 && r.out.includes(message) && r.elapsed < BOUNDED_MS,
+          r.code === 9 && r.out.includes(message) && bounded(r),
           r.out,
         );
       }
@@ -1077,12 +1090,12 @@ exit 0`,
     );
     for (const schema of ['f', 't', 'down', 'unexpected', '', 'hang']) {
       r = guard('pre-12', { FAKE_ATTACHMENT_SCHEMA: schema, FAKE_TIMEOUT_MS: '100' });
-      check(`12：表探测${schema || '空结果'}`, r.code === (['t', 'f'].includes(schema) ? 0 : 9) && r.elapsed < BOUNDED_MS, r.out);
+      check(`12：表探测${schema || '空结果'}`, r.code === (['t', 'f'].includes(schema) ? 0 : 9) && bounded(r), r.out);
       if (schema === 'f') check('12：缺表只跳过对应查询', !r.log.includes('select exists('), r.log);
     }
     for (const state of ['error', 'hang']) {
       r = guard('side1:prev', { FAKE_TARGET: '12', FAKE_ATTACHMENT_TARGET: state, FAKE_TIMEOUT_MS: '100' });
-      check(`12：目标能力${state}即使数据为空仍拒绝9`, r.code === 9 && r.out.includes(message) && r.elapsed < BOUNDED_MS, r.out);
+      check(`12：目标能力${state}即使数据为空仍拒绝9`, r.code === 9 && r.out.includes(message) && bounded(r), r.out);
     }
     for (const target of ['pre-09', 'side1:prev']) {
       const env = { FAKE_TARGET: '8', FAKE_REFUND_SCHEMA: 't', FAKE_INDUSTRIAL_TENANTS: 't', FAKE_QUOTE: 't' };
