@@ -1505,6 +1505,7 @@ export function packSources(): PackSources {
     handoffReasons: HANDOFF_REASON,
     indexReady: (...args) => liveSources().indexReady(...args),
     semanticRecall: (...args) => liveSources().semanticRecall(...args),
+    semanticScores: (...args) => liveSources().semanticScores(...args),
     createOrder: (...args) => liveSources().createOrder(...args),
     getOrder: (...args) => liveSources().getOrder(...args),
     queueJobs: (...args) => liveSources().queueJobs(...args),

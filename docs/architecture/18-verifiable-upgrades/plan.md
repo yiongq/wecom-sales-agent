@@ -14,7 +14,9 @@
   - [ ] 0.7 请 owner 提供服务器 Caddy 的上游写法（或授权只读查看），定 spec 开放问题 2
   - [x] 0.8 `var/` 里的文件与写方：`usage.json`（`src/usage.ts`）、`budget.json`（`src/budget.ts`）、语义索引缓存（`src/core/retrieval.ts`）、发布闸临时目录 `var/gate/`（`src/config/gate.ts`）、会话 spill（`src/store/pg-backend.ts`）、渠道标记与恢复哨兵（`src/channels/markers.ts`）、`sessions-in-db` 标记（`src/store.ts`）、旧的 `wecom-cursor.json`（`src/adapters/wecom-state.ts`，文件状态时才用）。都由活动进程读写，符合 spec 的规则。第 7.1 步要核：等锁进程收到 SIGTERM 时直接退出、不跑停机钩子，否则 `usage.json`、`budget.json` 的定时落盘可能用空状态盖掉主进程的文件
   - [x] 0.9 工业包整段换成固定话术的分支（写 `blocksSuppressed`）：`guardedText` 待审带金额时整段换 `FIXED.pending`；`quote_claim` 自动建单后整段换成「报价单：链接 + 合计」；`money_provenance` 删空后用兜底句（动作 `replace`）；`turn_failure` 转人工。`quote_claim` 的 `correctClaim`（`ACCEPT_ASK`、`NOT_SUBMITTED`）只换那一句，属局部纠正，不写旗标。`rfq_trim` 的 `TRIM_FALLBACK` 在块计入预算后应很少出现，第 3 步定是否写旗标
-- [ ] 1. 检测器：`eval/sim/triage.ts` 与自测（每个检测器至少一正一反，用合成 journal 片段）；回溯第 1、2、4、5 次，逐条核对验收 7 的已知问题
+- [x] 1. 检测器：`eval/sim/triage.ts` 与自测（每个检测器至少一正一反，用合成 journal 片段）；回溯第 1、2、4、5 次，逐条核对验收 7 的已知问题
+  - #471：8 个检测器、73 项自测，`scripts/check-boundaries.ts` 强制不 import `src/packs`、`src/core/guards`。验收 7 列的已知问题全部命中，其中 j-change-03#2 在第 5 次换客户模型那一遍（spec 已改）
+  - 回溯疑似数（第 1、2、4、5 次 main）：`price_withheld` 16、13、16、8；`correct_deleted` 70、70、69、58；`ask_after_accept` 1、1、34、1。rfq_trim 用裁剪说明盖住的第 10 行以后不算缺价，已排除这类误报
 - [ ] 2. 生成用例
   - [ ] 2.1 16 的 journal 每轮写 `sessionBefore`（`eval/sim/runtime.ts`），旧字段不变
   - [ ] 2.2 v2 工业夹具加 `moneyLedger` 与审批种子（`eval/v2/schema.ts`、worker）
@@ -26,11 +28,14 @@
   - [ ] 3.4 按 0.9 的清单在固定话术分支写旗标
   - [ ] 3.5 【硬性要求】与工具说明；trace `turn.blocks`
   - [ ] 3.6 自测与 v2 用例（验收 1、6）；锁定套件、旅游 v2 快照 0 差异
-- [ ] 4. 混合检索
-  - [ ] 4.1 `eval/retrieval/` 生成器、手写查询、`run.ts`，假嵌入自测
-  - [ ] 4.2 真实嵌入跑 `current` 基线（owner 当次授权，上限 ¥1）
-  - [ ] 4.3 `src/core/retrieval-hybrid.ts`、`src/packs/industrial/attributes.ts`、`semanticScores`、`match.ts` 接线，状态登记
-  - [ ] 4.4 跑 `hybrid`，写检索报告（验收 16–18）
+- [x] 4. 混合检索
+  - [x] 4.1 `eval/retrieval/` 生成器、手写查询、`run.ts`，假嵌入自测。5000 条产品（种子 1805，用种子重新生成逐字节一致），704 条查询，8 类各 88 条，其中手写 64 条。指标改为截断 recall@5 加 precision@5，定向三类查询的相关条目限 1–5 个，宽泛查询单列（spec 已改）
+  - [x] 4.2 真实嵌入跑 `current` 基线：owner 11-07 授权。和 4.4 同一次付费运行，90 次请求、312,968 tokens、¥0.156；向量缓存后复跑 0 次请求，指标逐项一致。`run.ts --embed real` 与离线自测另由 Codex 落进检索分支
+  - [x] 4.3 `src/core/retrieval-hybrid.ts`、`src/packs/industrial/attributes.ts`、`semanticScores`、`match.ts` 接线，状态登记，和检索报告同一个 PR。v2 回归 927/927，快照 0 差异
+  - [x] 4.4 跑 `hybrid`，写检索报告（验收 16–18），见 [docs/reports/retrieval/2026-11-07](../../reports/retrieval/2026-11-07/report.md)
+    - 截断 recall@5 91.0% → 98.5%，MRR@5 68.3% → 98.4%，误给型号 0/45，p95 32.3 → 15.8 ms，派生索引多 9.7 MB
+    - 手写 64 条：recall 78.2% → 91.0%；口语/错别字只到 62.5%，是剩下最弱的一类
+    - 验收 16–18 满足
 - [ ] 5. 开发集（owner 当次授权）：跑完用检测器扫一遍；修在代码的用第 2 步生成用例（验收 8），修在提示词的按 spec R2 找开发集场景定向复跑
 - [ ] 6. 第 6 次 main
   - [ ] 6.1 重新冻结，`--prepare` 写开跑行并提交
@@ -61,3 +66,10 @@
 2026-11-07：owner「改 ready，heavy」，spec 改为 `ready`、Tier heavy；01、03、10、16 顶部补反向标记，总参考登记。下一步：第 0 步（0.7 要 owner 提供 Caddy 配置），之后按开头的分路并行，同时最多两路。
 
 2026-11-07：开工。第 0 步除 0.6（挪到 7.6）、0.7（等 owner 给 Caddy 配置）外已完成，结论写在各子步骤上。派了两路 Codex：第 1 步检测器（worktree `codex-18-triage`，分支 `feat/18-triage`）、第 4.1 与 4.3 步检索（worktree `codex-18-retrieval`，分支 `feat/18-retrieval`），都从 `docs/18-draft` 拉。检索那路开工就发现 `PartSchema` 只有 4 个类目，spec R5 改为「4 个类目下至少 8 种子类型」后续跑。两路都会改 `package.json` 的 test 行，收尾时后开的 PR 先合入前一个再开，免得冲突后 CI 不跑。
+
+2026-11-07：第 1 步与第 4 步完成。
+
+- 检测器（#471）：CI 第 4 分片挂在 `src/db/rollback-guard.selftest.ts` 一条 180 ms 时限的超时用例上。这条用例和本 PR 无关，同一基线上 #470 的同一分片是绿的，所以只重跑了失败的 job，重跑通过后合入。
+- 检索：评测口径中途改成截断 recall，假嵌入下先跑通。owner 授权后用真实嵌入跑了一次，费用 ¥0.156，报告在 `docs/reports/retrieval/2026-11-07/`。
+- 真实嵌入的评测入口（`eval/retrieval/real-embed.ts`、`run.ts --embed real`）由 Codex 补进检索分支。#471 合入后，检索的两个提交和报告提交 cherry-pick 到从 `dev` 新建的分支，合成一个 PR；`package.json` 的 test 行两边各加的自测都保留。
+- 下一步：第 2 步（`sessionBefore`、v2 字段、`promote.ts`）与第 3 步（价格块）可以并行。
