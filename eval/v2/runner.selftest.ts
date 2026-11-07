@@ -811,6 +811,129 @@ await test('通用单断言：totalFen、lines 的 unitPriceFen / 条数 / 状�
   assert.equal(unknownPack.pass, false);
   assert.match(unknownPack.failures.join('\n'), /没有「no-such-pack」的参考配置/);
 });
+await test('18 R2：金额账本和审批夹具严格校验，旅游仍拒绝新字段', () => {
+  const c = {
+    version: 2,
+    pack: 'industrial',
+    id: 'q18-schema',
+    desc: '合成夹具',
+    tags: [],
+    fixtures: {
+      session: { moneyLedger: [{ fen: 12345, label: '合成', subject: '合成费用' }] },
+      orders: [
+        {
+          status: 'pending_payment',
+          lines: [{ kind: 'part', code: 'bearing-02', qty: 20 }],
+          approval: { state: 'approved', decidedAt: '2026-10-10T11:00:00+08:00' },
+        },
+      ],
+    },
+    turns: [{ say: '你好', script: [{ content: '您好' }], expect: {} }],
+  };
+  assert.doesNotThrow(() => validateCase(c));
+  for (const fen of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {
+    const bad = structuredClone(c);
+    bad.fixtures.session.moneyLedger[0]!.fen = fen;
+    assert.throws(() => validateCase(bad), /moneyLedger.0.fen/);
+  }
+  for (const approval of [
+    { state: 'rejected' },
+    { state: 'approved', decidedAt: 'bad-date' },
+    { state: 'pending', decidedAt: '2026-10-10T11:00:00+08:00' },
+  ]) {
+    const bad = structuredClone(c);
+    Object.assign(bad.fixtures.orders[0]!, { approval });
+    assert.throws(() => validateCase(bad), /approval/);
+  }
+  const bad = structuredClone(c);
+  bad.fixtures.orders[0]!.status = 'paid';
+  bad.fixtures.orders[0]!.approval = { state: 'pending' } as never;
+  assert.throws(() => validateCase(bad), /pending 审批只搭配/);
+  assert.throws(() => validateCase({ ...base, fixtures: { session: c.fixtures.session } }), /moneyLedger: 未知字段/);
+});
+await test('18 R2：worker 装入账本、审批时刻与会话序号引用，未给账本仍拦无来源金额', async () => {
+  const c = validateCase({
+    version: 2,
+    pack: 'industrial',
+    id: 'q18-runner-fixtures',
+    desc: '合成夹具装载',
+    tags: [],
+    fixtures: {
+      now: '2026-10-10T12:00:00+08:00',
+      session: {
+        moneyLedger: [{ fen: 12345, label: '合成费用' }],
+        orderIds: ['{{order:0.id}}'],
+        packState: { lastQuoteId: '{{order:0.id}}' },
+      },
+      orders: [
+        {
+          status: 'pending_payment',
+          lines: [{ kind: 'part', code: 'bearing-02', qty: 20 }],
+          approval: { state: 'approved', decidedAt: '2026-10-10T11:00:00+08:00' },
+        },
+      ],
+    },
+    turns: [
+      {
+        say: '你好',
+        script: [{ content: '这笔费用为123.45元。' }],
+        expect: { replyMatches: ['123\\.45'], contextMatches: ['最新的是已批准且有效的报价单'] },
+      },
+    ],
+  });
+  const r = await runCaseV2(c);
+  assert.equal(r.pass, true, r.failures.join('\n'));
+  const order = (r.turns![0] as { orders: { id: string; approval: { state: string; requestedAt: number; decidedAt?: number } }[] })
+    .orders[0]!;
+  assert.equal(order.approval.state, 'approved');
+  assert.equal(order.approval.decidedAt, Date.parse('2026-10-10T11:00:00+08:00'));
+  assert.ok(order.approval.requestedAt <= order.approval.decidedAt!);
+  const noLedger = structuredClone(c) as PackCase;
+  delete noLedger.fixtures!.session!.moneyLedger;
+  const removed = await runCaseV2(noLedger);
+  assert.equal(removed.pass, false);
+  assert.match(removed.failures.join('\n'), /replyMatches/);
+  const pending = structuredClone(c) as PackCase;
+  pending.fixtures!.orders![0]!.approval = { state: 'pending' };
+  pending.turns[0]!.script = [{ content: '您好，请问需要什么？' }];
+  pending.turns[0]!.expect = {};
+  const p = await runCaseV2(pending);
+  assert.equal(p.pass, true, p.failures.join('\n'));
+  assert.equal((p.turns![0] as { orders: { approval: { state: string; decidedAt?: number } }[] }).orders[0]!.approval.state, 'pending');
+  assert.equal((p.turns![0] as { orders: { approval: { decidedAt?: number } }[] }).orders[0]!.approval.decidedAt, undefined);
+  const coexist = structuredClone(c) as PackCase;
+  coexist.fixtures!.orders!.push({
+    status: 'pending_payment',
+    lines: [{ kind: 'part', code: 'bearing-01', qty: 20 }],
+    approval: { state: 'pending' },
+  });
+  coexist.turns[0]!.script = [{ content: '您好，请问需要什么？' }];
+  coexist.turns[0]!.expect = {};
+  assert.doesNotThrow(() => validateCase(coexist));
+  const both = await runCaseV2(coexist);
+  assert.equal(both.pass, true, both.failures.join('\n'));
+  const approvals = (both.turns![0] as { orders: { approval: { state: string } }[] }).orders.map((o) => o.approval.state);
+  assert.deepEqual(approvals, ['approved', 'pending']);
+  const appended = structuredClone(c) as PackCase;
+  appended.turns[0] = {
+    say: '6205-ZZ要20件，请出正式报价单',
+    script: [
+      { toolCalls: [{ name: 'create_quote_sheet', args: { items: [{ code: 'bearing-01', qty: 20 }] } }] },
+      { content: '之前{{order:0.id}}，新单{{order:1.id}}' },
+    ],
+    expect: { orders: { count: 2 } },
+  };
+  const added = await runCaseV2(appended);
+  assert.equal(added.pass, true, added.failures.join('\n'));
+  const after = added.turns![0] as { orders: { id: string; approval: { state: string } }[]; trace: { turn: { draft: string } } };
+  assert.equal(
+    after.trace.turn.draft,
+    `之前${after.orders.find((o) => o.approval.state === 'approved')!.id}，新单${after.orders.find((o) => o.approval.state === 'pending')!.id}`,
+  );
+  const future = structuredClone(c) as PackCase;
+  future.fixtures!.orders![0]!.approval!.decidedAt = '2026-10-11T12:00:00+08:00';
+  assert.match((await runCaseV2(future)).failures.join('\n'), /decidedAt 不能晚于/);
+});
 console.log(`v2 runner 自测：${passed}/${passed} 通过`);
 
 if (previousTmp === undefined) delete process.env.TMPDIR;

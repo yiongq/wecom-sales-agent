@@ -14,6 +14,8 @@ export interface Snapshot {
   stage: Session['stage'];
 }
 export interface SimTurn {
+  /** 18 R2：销售轮开始前的完整状态；旧 journal 缺省。 */
+  sessionBefore?: { session: Session; orders: AnyOrder[] };
   customer: { say: string; done: boolean };
   reply: string;
   silent: boolean;

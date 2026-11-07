@@ -33,6 +33,15 @@ export function readJournal(bytes: Buffer): Journal & { length: number } {
   if (!head || head.type !== 'head' || !head.meta?.runId || !head.meta.startedAt) throw new Error('journal_head_invalid');
   if (rest.some((r) => r.type !== 'run' || !r.run?.goalId || !Number.isSafeInteger(r.run.repetition) || !Array.isArray(r.run.charges)))
     throw new Error('journal_run_invalid');
+  function checkSnapshots(run: RunResult): void {
+    for (const turn of run.turns ?? []) {
+      const before = turn.sessionBefore;
+      if (before !== undefined && (!before || !before.session || typeof before.session !== 'object' || !Array.isArray(before.orders)))
+        throw new Error('journal_session_before_invalid');
+    }
+    if (run.replaced) checkSnapshots(run.replaced);
+  }
+  for (const r of rest) checkSnapshots(r.run!);
   return { meta: head.meta, runs: rest.map((r) => r.run!), length };
 }
 const resumeFields = [

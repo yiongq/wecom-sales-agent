@@ -504,6 +504,11 @@ export async function engineRuntime(
         return { id, initial: snapshot(id) };
       },
       async sales(id, customer) {
+        const session = store.getSession(id)!;
+        const sessionBefore = structuredClone({
+          session,
+          orders: session.orderIds.map((orderId) => store.getAnyOrder(orderId)!),
+        });
         let trace: FinishedTurn | undefined;
         const off = onTurnEnd((t) => {
           if (t.turn.conversationId === id) trace = structuredClone(t);
@@ -521,6 +526,7 @@ export async function engineRuntime(
             silent: !!reply.silent,
             trace,
             state: snapshot(id),
+            sessionBefore,
           };
         } catch (e) {
           throw new SalesTurnError(e, trace);

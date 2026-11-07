@@ -48,7 +48,8 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
   }
   const calls = new Map<string, unknown>();
   let orders = (): AnyOrder[] => [];
-  const values = { calls, orders: () => orders() };
+  let referenceOrders = (): AnyOrder[] => orders();
+  const values = { calls, orders: () => referenceOrders() };
   const fake = await startFakeModel(c.id, values);
   const failures: string[] = [];
   let checks = 0;
@@ -109,7 +110,7 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
     const { createQuote } = await import('../../src/tools.js');
     const sid = `eval:v2-${c.id}`;
     const session = store.getOrCreateSession(sid, 'simulator');
-    Object.assign(session, c.fixtures?.session, { id: sid, channel: 'simulator' });
+    Object.assign(session, structuredClone(c.fixtures?.session), { id: sid, channel: 'simulator' });
     // 夹具订单共用同一个 createdAt：listOrders 按 createdAt 倒序，跨毫秒创建时「最后一张」会随机变，快照不稳
     const fixtureCreatedAt = Date.now();
     if (isPackCase(c)) {
@@ -121,6 +122,20 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
         const order = result.order;
         order.status = fixture.status;
         order.createdAt = fixtureCreatedAt;
+        if (fixture.approval) {
+          const decidedAt =
+            fixture.approval.state === 'approved'
+              ? fixture.approval.decidedAt === undefined
+                ? fixtureCreatedAt
+                : Date.parse(fixture.approval.decidedAt)
+              : undefined;
+          if (decidedAt !== undefined && decidedAt > fixtureCreatedAt) throw new Error('夹具审批 decidedAt 不能晚于当前时间');
+          order.approval = {
+            state: fixture.approval.state,
+            requestedAt: Math.min(fixtureCreatedAt, decidedAt ?? fixtureCreatedAt),
+            ...(decidedAt === undefined ? {} : { decidedAt }),
+          };
+        }
         if (order.status === 'paid') order.paidAt = Date.now();
         store.saveOrder(order);
       }
@@ -142,8 +157,21 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
         session.orderIds.push(order.id);
       }
     }
-    store.saveSession(session);
     orders = () => (isPackCase(c) ? store.listAnyOrders() : store.listOrders()).filter((o) => o.sessionId === sid);
+    if (isPackCase(c) && (c.fixtures?.session?.moneyLedger !== undefined || c.fixtures?.orders?.some((o) => o.approval))) {
+      // 18 R2：新夹具的序号按重建顺序绑定；本轮新单追加，不能把旧序号挤走。
+      // 未使用新字段的用例仍保持原来按当前订单列表解析的语义。
+      const bound = [...orders()];
+      referenceOrders = () => {
+        for (const order of orders().toSorted((a, b) => a.createdAt - b.createdAt))
+          if (!bound.some((o) => o.id === order.id)) bound.push(order);
+        return bound.map((o) => store.getAnyOrder(o.id) ?? o);
+      };
+    }
+    // 18 R2：轮前会话中的订单引用要等夹具订单重建后解析（含 packState.acceptingOrderId）。
+    // 未写夹具会话时不重新赋值，保留建单的既有行为。
+    if (c.fixtures?.session) Object.assign(session, resolveValues(c.fixtures.session, values), { id: sid, channel: 'simulator' });
+    store.saveSession(session);
     offTool = onToolCall((name, _args, sessionId) => {
       if (sessionId === sid) calls.delete(name);
     });
