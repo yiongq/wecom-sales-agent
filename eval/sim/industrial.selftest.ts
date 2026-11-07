@@ -206,6 +206,20 @@ function audit(goal: SimGoal, run: Evidence): void {
     for (const turn of run.turns) {
       assert.ok(turn.reply.split('\n').length <= 12);
       assert.ok([...turn.reply.replace(/\s/gu, '')].length <= 600);
+      assert.ok((turn.reply.match(/行已算好/g) ?? []).length <= 1, '一条回复里最多一句「已算好」');
+      const blockAt = turn.reply.indexOf('试算：');
+      if (blockAt >= 0) {
+        // 18 R1：试算块给出逐行明细和「已算好」说明，正文裁剪不另补；N 是块里没列出的可报价行数。
+        const quote = JSON.parse(calls.findLast((c) => c.name === 'quote_items')!.resultHead!) as { lines: { unitPrice?: number }[] };
+        const priced = quote.lines.filter((line) => line.unitPrice !== undefined).length;
+        const shown = turn.reply
+          .slice(blockAt)
+          .split('\n')
+          .filter((line) => / × \d+：单价/.test(line)).length;
+        if (priced > shown) assert.match(turn.reply, new RegExp(`另外 ${priced - shown} 行已算好`));
+        else assert.doesNotMatch(turn.reply, /行已算好/);
+        continue;
+      }
       // 只在实际裁剪询价行时核对补句和 N，未裁剪不能强求“另外2行”。
       const draftLines = turn.trace.turn.draft!.split('\n').filter((line) => items.some((x) => line.includes(x.query)));
       const removed = draftLines.filter((line) => !turn.reply.includes(line)).length;
@@ -401,7 +415,7 @@ try {
     { content: '已提交，等待顾问审核。' },
   );
   const pendingReport = await simulate([pendingGoal], 1, meter, deps);
-  assert.equal(pendingReport.runs[0]!.status, 'passed');
+  assert.equal(pendingReport.runs[0]!.status, 'passed', pendingReport.runs[0]!.reasons.join('|'));
   audit(pendingGoal, pendingReport.runs[0]!);
   assert.equal(pendingReport.runs[0]!.turns[1]!.trace.turn.calls.length, 0);
   assert.equal(service.script.length, 0);

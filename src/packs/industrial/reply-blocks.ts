@@ -1,5 +1,6 @@
 import { replyBlockBudget, stripMarkdown, type ReplyBlocks, type ReplyGuardContext } from '../../core/pack-api.js';
 import { trimNote } from './guards.js';
+import { latestQuoteCandidate } from './quote-candidate.js';
 
 type Tier = { minQty: number; maxQty?: number; unitPrice: number };
 type QuoteLine = {
@@ -39,7 +40,16 @@ function lastResult<T>(ctx: ReplyGuardContext, name: string): T | null {
   }
 }
 
-function quoteBlock(ctx: ReplyGuardContext): Block | null {
+/**
+ * 09 R11：正式报价单待审时，每一句带金额的话都要标「试算」（护栏 `quoteBehaviorText` 逐句检查）。
+ * 块不经过护栏，所以待审时块内每一行金额自己带上「试算」，不只靠块头。
+ */
+function pendingQuote(ctx: ReplyGuardContext): boolean {
+  const quote = latestQuoteCandidate({ ...ctx.session, packState: {} }, Date.now());
+  return quote?.kind === 'quote' && quote.state === 'pending';
+}
+
+function quoteBlock(ctx: ReplyGuardContext, pending: boolean): Block | null {
   const result = lastResult<{ lines?: QuoteLine[]; total?: number }>(ctx, 'quote_items');
   if (!result?.lines?.length) return null;
   const priced = result.lines.filter((line) => line.unitPrice !== undefined && line.amount !== undefined);
@@ -47,7 +57,7 @@ function quoteBlock(ctx: ReplyGuardContext): Block | null {
   const details = priced.map((line) => {
     const delivery = plain(line.delivery ?? '');
     return (
-      `${plain(line.partNo ?? line.query)} × ${line.qty}：单价${money(line.unitPrice!)}，小计${money(line.amount!)}` +
+      `${plain(line.partNo ?? line.query)} × ${line.qty}：${pending ? '试算单价' : '单价'}${money(line.unitPrice!)}，小计${money(line.amount!)}` +
       (delivery ? `；${delivery}，以顾问确认为准` : '') +
       (line.nextTier ? `；满${line.nextTier.minQty}件${money(line.nextTier.unitPrice)}` : '')
     );
@@ -66,7 +76,7 @@ function quoteBlock(ctx: ReplyGuardContext): Block | null {
     name: '试算明细',
     head: priced.length ? ['试算：'] : [],
     details,
-    tail: priced.length && result.total !== undefined ? [`合计${money(result.total)}`] : [],
+    tail: priced.length && result.total !== undefined ? [`${pending ? '试算合计' : '合计'}${money(result.total)}`] : [],
     trimmed: 0,
     confirmation,
   };
@@ -77,7 +87,8 @@ export const industrialReplyBlocks: ReplyBlocks = {
   autoAppend: ['试算明细', '应付金额'],
   render(ctx) {
     const blocks: Block[] = [];
-    const quote = quoteBlock(ctx);
+    const pending = pendingQuote(ctx);
+    const quote = quoteBlock(ctx, pending);
     if (quote) blocks.push(quote);
     // 只读本轮接受目标，不从会话里的旧单或新试算推导应付金额。
     const order = ctx.orderSources.find((order) => order.id === ctx.acceptingOrderId && order.sessionId === ctx.session.id);
@@ -98,7 +109,7 @@ export const industrialReplyBlocks: ReplyBlocks = {
     // 档位始终可渲染，但未请求时不附加、不占试算预算。
     const details = [...exact.values()].map(
       (part) =>
-        `${plain(part.partNo)}：` +
+        `${plain(part.partNo)}${pending ? ' 试算档位' : ''}：` +
         part.tiers
           .map((tier) => `${tier.minQty}${tier.maxQty === undefined ? '件起' : `–${tier.maxQty}件`}${money(tier.unitPrice)}`)
           .join('；') +

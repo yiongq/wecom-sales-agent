@@ -1033,6 +1033,19 @@ try {
   await pipes.reply.run(pendingBlock);
   assert.equal(pendingBlock.text, FIXED.pending, '18 待审整段固定话术抑制块');
   assert.equal(pendingBlock.turn.flags.blocksSuppressed, true);
+  // 09 R11：正式单待审、正文没违规时块照常附上，但块里每一行金额都自己标「试算」（块不经过护栏逐句检查）。
+  const pendingSafe = await blockTurn('已提交，等待顾问审核。{{试算明细}}{{档位价}}');
+  pendingSafe.toolSources.push(tierBlock.toolSources[0]!);
+  orderStore.set(pendingOrder.id, { ...pendingOrder, sessionId: pendingSafe.session.id });
+  pendingSafe.session.orderIds = [pendingOrder.id];
+  await pipes.reply.run(pendingSafe);
+  assert.ok(!pendingSafe.turn.flags.blocksSuppressed, '18 待审但正文安全时不抑制块');
+  assert.match(pendingSafe.text, /试算单价[\s\S]*试算合计[\s\S]*HS1000 试算档位：/, '18 待审时块内金额逐行标试算');
+  for (const line of pendingSafe.text.split('\n'))
+    if (/\d+(?:\.\d+)?\s*元/.test(line)) assert.match(line, /试算/, `18 待审时带金额的行都标试算：${line}`);
+  const notPending = await blockTurn('{{试算明细}}');
+  await pipes.reply.run(notPending);
+  assert.doesNotMatch(notPending.text, /试算单价|试算合计/, '18 没有待审正式单时保持原写法');
   orderStore.delete(pendingOrder.id);
   const repaired = await blockTurn('报价单已提交。');
   repaired.inputText = '请出正式报价单';
