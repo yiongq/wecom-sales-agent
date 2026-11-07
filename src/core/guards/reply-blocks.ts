@@ -98,6 +98,8 @@ function place(ctx: ReplyGuardContext, body: string, trace?: TurnBlocks): string
         .join('\n');
     })
     .join('\n');
+  // 正文开头的金额句被删后，剩下的第一句不能以连接词开头（开发集定向复跑查出「另外满100件…」）。
+  if (ownsAmounts) text = text.replace(/^\s*(?:另外|不过|此外|同时)[，,、\s]*/u, '');
   for (const [name, placed] of selected.blocks) {
     if (placed !== 'appended') continue;
     const value = state.texts[name]!;

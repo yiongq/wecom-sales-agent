@@ -1090,6 +1090,14 @@ try {
   assert.match(copied.text, /^请核对型号。\n试算：/);
   assert.equal((copied.text.match(/试算：/g) ?? []).length, 1, '18 不保留抄写的块头');
   assert.equal((copied.text.match(/现货，以顾问确认为准/g) ?? []).length, 1, '18 不保留抄写的明细行');
+  // 开发集定向复跑：开头的金额句删掉后，剩下的第一句不能以连接词开头。
+  const connective = await blockTurn('HS1000单价10元，小计30元。另外满10件还有更优档位价。需要正式报价单吗？');
+  await pipes.reply.run(connective);
+  assert.match(connective.text, /^满10件还有更优档位价。需要正式报价单吗？\n试算：/, '18 删金额句后不留下开头的连接词');
+  const keepsConnective = await blockTurn('另外，运费0元。');
+  keepsConnective.toolSources = [];
+  await pipes.reply.run(keepsConnective);
+  assert.match(keepsConnective.text, /^另外/, '18 没有试算块时不动正文开头');
 
   const inlineSentence = await blockTurn('请核对{{试算明细}}型号和数量。');
   await pipes.reply.run(inlineSentence);
