@@ -2,6 +2,7 @@
 import type { RuleId } from './audit.js';
 import type { Interval, JourneyReport } from './report-types.js';
 import { LIMITS, type Sample } from './report.js';
+import { renderCompare18, renderTriage } from './report-18.js';
 import type { RunResult } from './runner.js';
 
 export interface RenderOptions {
@@ -283,7 +284,7 @@ function success(report: JourneyReport): string {
     ? '这份结果没有换客户模型的那一遍。'
     : swap.valid
       ? `换客户模型（${swap.customerModel}）跑同一批场景：成功率 ${pct(swap.rate)}，差值 ${((swap.rate - report.success.rate) * 100).toFixed(1)} 个百分点；两次按场景的区间是 ${range(report.success.byScenes)} 和 ${range(swap.byScenes)}，重叠时差值可能只是噪声。这一遍只报不算，疑似 ${swap.suspects} 条，不裁定。${swap.customerModel === report.meta.salesModel ? '这个客户模型和销售是同一个模型，换用户模型的对比弱一些。' : ''}`
-      : `换客户模型（${swap.customerModel}）那一遍触发了仿真不稳，对比无效。`;
+      : `换客户模型（${swap.customerModel}）那一遍没跑满或触发了仿真不稳，对比无效，原因见第 8 章。`;
   return [
     table(
       ['指标', '数值'],
@@ -562,6 +563,12 @@ export function renderReport(report: JourneyReport, options: RenderOptions = {})
     ['7. 这些数字不能证明什么', limits(report)],
     ['8. 复现与账本', ledger(report)],
     ['9. 抽样对话', samples(options)],
+    ...(report.appendix18
+      ? ([
+          ['10. 疑似坏轮附表', renderTriage(report.appendix18)],
+          ['11. 18 前后对比', renderCompare18(report.appendix18)],
+        ] as [string, string][])
+      : []),
   ];
   return [
     '# 工业询价仿真报告',

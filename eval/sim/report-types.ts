@@ -1,5 +1,6 @@
 // 16 的数据格式，字段定义见 docs/architecture/16-industrial-sim/contracts.md。
 import type { Finding, RuleId } from './audit.js';
+import type { Appendix18 } from './report-18.js';
 
 export interface Trees {
   evalSim: string;
@@ -95,4 +96,6 @@ export interface JourneyReport {
   aborts: ReviewFile['aborts'];
   ledger: LedgerLine[];
   revisions: ReviewFile['revisions'];
+  /** 18 R2、R6：疑似坏轮附表与前后对比；给了 --triage、--baseline、--baseline-summary 才有 */
+  appendix18?: Appendix18;
 }
