@@ -10,6 +10,7 @@ import { loadGoals, type SimGoal } from './goals.js';
 import type { Freeze, Interval, JourneyReport, LedgerLine, ReviewFile, RunMeta } from './report-types.js';
 import type { RunResult } from './runner.js';
 import { renderCharts, renderReport, renderSample } from './report-render.js';
+import { buildAppendix18, type TriageTally } from './report-18.js';
 
 export const LIMITS = [
   '客户是模型演的。公开研究显示模型扮用户比真人更配合、更早说全信息，成功率和真人结果有系统偏差，多数情况偏高。它不等于线上转化率或解决率。',
@@ -379,7 +380,22 @@ function ledgerInHead(file: string, ledger: LedgerLine[]): boolean {
  */
 export async function main(args = process.argv.slice(2)): Promise<void> {
   const values = new Map<string, string>();
-  const allowed = ['--main', '--swap', '--dev', '--ledger', '--freeze', '--review', '--date', '--out', '--draft', '--goals'];
+  const allowed = [
+    '--main',
+    '--swap',
+    '--dev',
+    '--ledger',
+    '--freeze',
+    '--review',
+    '--date',
+    '--out',
+    '--draft',
+    '--goals',
+    // 18 R2、R6：三个一起给才生成附表与前后对比
+    '--triage',
+    '--baseline',
+    '--baseline-summary',
+  ];
   for (let i = 0; i < args.length; i += 2) {
     const option = args[i];
     if (!allowed.includes(option) || !args[i + 1] || args[i + 1].startsWith('--') || values.has(option)) throw new Error('报告参数错误');
@@ -431,6 +447,18 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
       throw new Error('冻结值不符');
   }
   const report = buildReport(input);
+  const appendixOptions = ['--triage', '--baseline', '--baseline-summary'].filter((o) => values.has(o));
+  if (appendixOptions.length === 3) {
+    const baseline = await journalOf('--baseline');
+    if (baseline!.meta.kind !== 'main') throw new Error('--baseline 不是 main journal');
+    const baselineSummary = await json<JourneyReport>('--baseline-summary', undefined as never);
+    if (baselineSummary.meta.runId !== baseline!.meta.runId) throw new Error('--baseline 与 --baseline-summary 不是同一次运行');
+    report.appendix18 = buildAppendix18({
+      tally: await json<TriageTally>('--triage', undefined as never),
+      before: { summary: baselineSummary, runs: baseline!.runs },
+      after: { summary: report, runs: input.runs },
+    });
+  } else if (appendixOptions.length) throw new Error('--triage、--baseline、--baseline-summary 要一起给');
   const selected = selectSamples(input);
   const sampleFile = (i: number): string => `samples/${String(i + 1).padStart(3, '0')}.md`;
   const artifacts = new Map<string, string>([
