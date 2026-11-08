@@ -1,5 +1,5 @@
 // 03 第 15 步：以 agent_app 身份管理渠道账号，应用须已停，改完重启生效。
-// docker compose stop app
+// docker compose stop app app-standby
 // docker compose run --rm app node --import tsx src/cli/channel-account.ts list --tenant demo
 // 凭据只从 0600 文件或无回显终端读取，不接受凭据参数。退出码：0 成功/无操作，1 用法/读写错误，2 数据不一致，3 租户锁被占。
 // 03 第 12 步：restore-cutoff --tenant <slug> --until <带时区的 ISO 时刻|now> [--var <var 目录>]，从备份恢复之后、起应用之前跑
@@ -392,7 +392,7 @@ async function restoreCutoffTx(tx: Tx, until: Date, varDir: string, checkLock: (
 /** 提交之后才删哨兵（不变量 14：企微状态在库里时只有这里删）；删不掉以 1 退出，库已提交 */
 async function restoreCutoff(db: Db, tenantId: string, until: Date, varDir: string, lost: () => boolean): Promise<number> {
   const checkLock = () => {
-    if (lost()) fail('lock_held：租户锁已断开，重新停机后运行；什么都没动', 3);
+    if (lost()) fail('lock_held：租户锁已断开，重新停止 app 和 app-standby 后运行；什么都没动', 3);
   };
   const result = await withTenant(
     db,
@@ -446,7 +446,7 @@ export async function runChannelAccount(argv: string[], deps: ChannelAccountDeps
       const tenant = await findTenantBySlug(conn.db, a.tenant);
       if (!tenant) fail('tenant_not_found：租户不存在');
       const lock = await conn.lock(tenant.id);
-      if (!lock) fail('lock_held：先 docker compose stop app，再运行本命令', 3);
+      if (!lock) fail('lock_held：先 docker compose stop app app-standby，再运行本命令', 3);
       try {
         let lost = false;
         lock.onLost(() => {
@@ -477,7 +477,7 @@ export async function runChannelAccount(argv: string[], deps: ChannelAccountDeps
                 });
               });
             const audit = async (entry: Pick<AuditEntry, 'action'>, keys: string[], fields: string[]) => {
-              if (lost) fail('lock_held：租户锁已断开，重新停机后运行；什么都没动', 3);
+              if (lost) fail('lock_held：租户锁已断开，重新停止 app 和 app-standby 后运行；什么都没动', 3);
               await writeAudit(tx, { ...entry, targetType: 'channel_account', diff: { keys, fields } });
             };
             if (a.command === 'add-wecom' || a.command === 'add-web') {

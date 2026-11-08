@@ -559,7 +559,7 @@ export async function importSessions(o: ImportSessionsOptions): Promise<Sessions
     if (!lock) {
       throw new Stop(
         EXIT.locked,
-        `lock_held：租户「${o.tenantSlug}」的锁在别的进程手里（应用还在跑？先 docker compose stop app），什么都没动`,
+        `lock_held：租户「${o.tenantSlug}」的锁在别的进程手里（应用还在跑？先 docker compose stop app app-standby），什么都没动`,
       );
     }
     let keepTo: KeepTo | null = null;
@@ -754,7 +754,7 @@ export async function exportSessions(o: TransferOptions): Promise<SessionsResult
     if (!lock) {
       throw new Stop(
         EXIT.locked,
-        `lock_held：租户「${o.tenantSlug}」的锁在别的进程手里（应用还在跑？先 docker compose stop app），什么都没动`,
+        `lock_held：租户「${o.tenantSlug}」的锁在别的进程手里（应用还在跑？先 docker compose stop app app-standby），什么都没动`,
       );
     }
     let keepTo: KeepTo | null = null;

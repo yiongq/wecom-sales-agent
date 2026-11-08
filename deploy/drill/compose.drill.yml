@@ -1,0 +1,96 @@
+# 独立演练栈，不继承部署 .env、宿主 var/、固定容器名或生产端口。
+# 只由 scripts/failover-drill.ts 用随机 project 和临时 env 启动。
+x-app: &app
+  image: ${DRILL_OLD_IMAGE:?}
+  restart: unless-stopped
+  environment:
+    PORT: '3200'
+    LOG_FORMAT: json
+    TENANT_LOCK_WAIT: forever
+    LLM_MOCK: '1'
+    DEPLOY_PROFILE: demo
+    CONFIG_SOURCE: db
+    SESSION_STORE: db
+    DATABASE_URL: postgres://agent_app:${DRILL_PASSWORD:?}@db:5432/agent
+    DEFAULT_TENANT_SLUG: drill
+    APP_ROLE: host
+    CHAT_RATE_PER_MIN: '600'
+    DAILY_VISITOR_LLM_CALLS: '0'
+    ADMIN_PASS: ${DRILL_PASSWORD:?}
+  volumes:
+    - app-var:/app/var
+  stop_grace_period: 10s
+  logging:
+    driver: json-file
+    options:
+      max-size: 20m
+      max-file: '5'
+  depends_on:
+    db:
+      condition: service_healthy
+
+services:
+  db:
+    image: pgvector/pgvector:pg17
+    environment:
+      POSTGRES_PASSWORD: ${DRILL_PASSWORD:?}
+      AGENT_OWNER_PASSWORD: ${DRILL_PASSWORD:?}
+      AGENT_APP_PASSWORD: ${DRILL_PASSWORD:?}
+      AGENT_PLATFORM_PASSWORD: ${DRILL_PASSWORD:?}
+    tmpfs:
+      - /var/lib/postgresql/data
+    volumes:
+      - ../db-init:/db-init:ro
+      - ../db-init/roles.sh:/docker-entrypoint-initdb.d/10-roles.sh:ro
+    healthcheck:
+      test: ['CMD', 'pg_isready', '-q', '-h', '127.0.0.1', '-U', 'postgres', '-d', 'postgres']
+      interval: 1s
+      timeout: 3s
+      retries: 60
+  migrate:
+    image: ${DRILL_NEW_IMAGE:?}
+    environment:
+      DATABASE_OWNER_URL: postgres://agent_owner:${DRILL_PASSWORD:?}@db:5432/agent
+    command: ['node', '--import', 'tsx', 'src/db/migrate.ts']
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+  platform:
+    image: ${DRILL_NEW_IMAGE:?}
+    environment:
+      DEPLOY_PROFILE: demo
+      DATABASE_PLATFORM_URL: postgres://agent_platform:${DRILL_PASSWORD:?}@db:5432/agent
+    healthcheck:
+      disable: true
+  app:
+    <<: *app
+    image: ${DRILL_APP_IMAGE:?}
+    ports: ['127.0.0.1:${DRILL_APP_PORT:?}:3200']
+  app-standby:
+    <<: *app
+    image: ${DRILL_STANDBY_IMAGE:?}
+    ports: ['127.0.0.1:${DRILL_STANDBY_PORT:?}:3200']
+  caddy:
+    image: caddy:2.11.2-alpine
+    # Colima 下 host 是虚拟机；不能搭配 ports，HTTP 请求由同一网络中的 probe 发出。
+    network_mode: host
+    environment:
+      DRILL_APP_PORT: ${DRILL_APP_PORT:?}
+      DRILL_STANDBY_PORT: ${DRILL_STANDBY_PORT:?}
+      DRILL_CADDY_PORT: ${DRILL_CADDY_PORT:?}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ../caddy-app-upstreams.snippet:/etc/caddy/app.snippet:ro
+  probe:
+    image: ${DRILL_NEW_IMAGE:?}
+    network_mode: host
+    volumes:
+      - ../../scripts/failover-probe.mjs:/drill/probe.mjs:ro
+    command: ['node', '/drill/probe.mjs', 'idle']
+    healthcheck:
+      disable: true
+
+volumes:
+  app-var:

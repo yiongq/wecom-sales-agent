@@ -41,7 +41,7 @@ command(
   `
 for arg in "$@"; do
   url="$arg"
-  case "$arg" in */healthz) printf '{"ok":true}'; exit 0 ;; esac
+  case "$arg" in *:3212/healthz) exit 7 ;; */healthz) printf '{"ok":true}'; exit 0 ;; esac
 done
 printf '%s\\n' "$@" >> "$PROBE_TEST_ARGV"
 mode="$(cat "$PROBE_TEST_MODE")"

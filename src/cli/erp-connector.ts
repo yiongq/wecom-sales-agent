@@ -202,7 +202,7 @@ export async function runErpConnector(argv: string[], deps: ErpConnectorCliDeps)
       if (!tenant) fail('tenant_not_found');
       if (!(await standardTenants(conn.db)).some((row) => row.id === tenant.id)) fail('standard_tenant_required');
       const lock = await conn.lock(tenant.id);
-      if (!lock) fail('lock_held：先 docker compose stop app', 3);
+      if (!lock) fail('lock_held：先 docker compose stop app app-standby', 3);
       try {
         let lost = false;
         lock.onLost(() => {

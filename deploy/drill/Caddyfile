@@ -1,0 +1,8 @@
+{
+    admin off
+    auto_https off
+}
+http://127.0.0.1:{$DRILL_CADDY_PORT} {
+    bind 127.0.0.1
+    import /etc/caddy/app.snippet 127.0.0.1:{$DRILL_APP_PORT} 127.0.0.1:{$DRILL_STANDBY_PORT}
+}

@@ -17,7 +17,7 @@
 #   install -d -o 1000 -g 1000 /root/export-<日期>
 #   docker compose -f deploy/compose.yml run --rm -v /root/export-<日期>:/export app \
 #     node --import tsx src/cli/export-config.ts --tenant <slug> --out /export [--image-sop /export/target-sop.md]
-# 会话在文件与库之间切换（02 spec「导入、导出与切换」）先 stop app；--keep 同样是挂进来的宿主目录，而且不能在 var/ 之内：
+# 会话在文件与库之间切换（02 spec「导入、导出与切换」）先 stop app app-standby；--keep 同样是挂进来的宿主目录，而且不能在 var/ 之内：
 #   install -d -o 1000 -g 1000 /root/sessions-keep-<日期>
 #   docker compose -f deploy/compose.yml run --rm -v /root/sessions-keep-<日期>:/keep app \
 #     node --import tsx src/cli/import-sessions.ts --tenant <slug> --keep /keep [--dry-run] [--resync]     # export-sessions 再加 --var /app/var
@@ -25,7 +25,7 @@
 #   docker compose -f deploy/compose.yml run --rm -v /root/privacy-notice.md:/notice:ro platform \
 #     node --import tsx src/cli/privacy-publish.ts --tenant <slug> --file /notice
 #   docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/tenant-retention.ts --tenant <slug> [--lead <天>] [--customer <天>] [--trace <天>]
-#   docker compose stop app   # 行权删除要取租户锁，先停应用
+#   docker compose stop app app-standby   # 行权删除要取租户锁，先停应用
 #   docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/erase-conversation.ts --tenant <slug> --id <会话 id> --reason <文字>
 #
 # 每个服务只拿自己的凭据。env 文件放在服务器的仓库根目录、不进仓库：.gitignore 的 .env.*、lint 的路径黑名单、
@@ -102,9 +102,44 @@ services:
       PORT: '3200'
       # pino 输出 JSON 行（每行带 time、level、msg，请求里带 req，轮次里带 tenant、conv、turn；02 spec R24）。本机开发不设，照旧纯文本
       LOG_FORMAT: json
+      TENANT_LOCK_WAIT: forever
     # 只绑 127.0.0.1：只让本机的 Caddy 反代进来，别让 docker-proxy 绕过防火墙把明文 HTTP 暴露到公网
     ports:
       - '127.0.0.1:${HOST_PORT:-3210}:3200'
+    # var/ 是会话、订单、企微 cursor 的唯一数据源，必须挂卷；必须归容器内 node(1000) 所有（deploy.sh 会 chown）
+    volumes:
+      - ../var:/app/var
+    # 大于停机钩子等在途企微回复的 8 秒：SIGTERM 之后先发完、落盘再退
+    stop_grace_period: 10s
+    # LOG_FORMAT=json 之后每天的日志量可观；轮转封顶（02 spec「保留期清理」），不靠宿主机另装 logrotate
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: '5'
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  app-standby:
+    image: ${APP_IMAGE:-${APP_CONTAINER:-wecom-sales-agent}:current}
+    # 等锁期间不监听；镜像 HEALTHCHECK 显示 unhealthy 属正常，不应据此重启备用。
+    container_name: ${STANDBY_CONTAINER:-${APP_CONTAINER:-wecom-sales-agent}-standby}
+    restart: unless-stopped
+    env_file:
+      - path: ../.env
+        format: raw
+    environment:
+      # 端口映射与 HEALTHCHECK 都写死 3200：.env 里误改 PORT 会让容器活着但外部不可达
+      PORT: '3200'
+      # pino 输出 JSON 行（每行带 time、level、msg，请求里带 req，轮次里带 tenant、conv、turn；02 spec R24）。本机开发不设，照旧纯文本
+      LOG_FORMAT: json
+      TENANT_LOCK_WAIT: forever
+    # 只绑 127.0.0.1：只让本机的 Caddy 反代进来，别让 docker-proxy 绕过防火墙把明文 HTTP 暴露到公网
+    ports:
+      - '127.0.0.1:${STANDBY_HOST_PORT:-3212}:3200'
     # var/ 是会话、订单、企微 cursor 的唯一数据源，必须挂卷；必须归容器内 node(1000) 所有（deploy.sh 会 chown）
     volumes:
       - ../var:/app/var

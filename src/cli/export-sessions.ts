@@ -1,6 +1,6 @@
 // 把库里的真实会话导回 var/ 的 JSON（02 spec「导入、导出与切换 · export-sessions」），切回文件存储之前跑。以 app 身份运行，
 // 要求应用已停（要取租户锁）：
-//   docker compose stop app
+//   docker compose stop app app-standby
 //   install -d -o 1000 -g 1000 /root/sessions-keep-<日期>
 //   docker compose run --rm -v /root/sessions-keep-<日期>:/keep app \
 //     node --import tsx src/cli/export-sessions.ts --tenant <slug> --keep /keep --var /app/var

@@ -39,7 +39,7 @@ This offline smoke configuration uses the repository's default reference pack. O
 
 The platform supports isolated tenants and industry packs. The industrial pack implements part matching, quantity rules and approval-based RFQs. Travel remains a second industry pack and regression baseline in the developer repository; it is not a second product offering. Demo-profile reset, anonymous read-only console, seed refresh and visitor pruning remain supported in source. Product hosting uses prod and ordinary sign-in; preparing this source does not mean it has been deployed.
 
-Tenant tables use FORCE row-level security, with the login-table exception described in [ADR-001](docs/adr/adr-001-postgres-drizzle.md). Conversation messages are append-only. The current runtime requires a single application instance. Industry logic stays in packs; prompt prefixes remain stable within an SOP version, while per-turn state is separate.
+Tenant tables use FORCE row-level security, with the login-table exception described in [ADR-001](docs/adr/adr-001-postgres-drizzle.md). Conversation messages are append-only. Only one application instance is active at a time; an optional standby waits for the tenant locks (see the [deployment guide](docs/guides/deployment.md)). Industry logic stays in packs; prompt prefixes remain stable within an SOP version, while per-turn state is separate.
 
 ```text
 src/core/        engine, tools, guards and model client

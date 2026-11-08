@@ -546,7 +546,7 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
     else
       echo "clear 只改待生效值：用 04 之后的镜像重启一次，按原因 brand 重渲染，当前发布快照的 brand 也须为空。"
       if [ "$brand_auto" = 1 ]; then
-        echo "  ${dc} stop app"
+        echo "  ${dc} stop app app-standby"
         echo "  APP_IMAGE=\${RECOVERY_IMAGE} ${dc} up -d --no-deps app"
       else
         echo "  ${dc} restart app"
@@ -595,7 +595,7 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
     if [ "$target" != pre-02 ] && [ "$target" != pre-03 ]; then
       echo "这是健康检查失败后的自动回滚：${project}:current 已是这次没过健康检查的新镜像，导出用它。"
     fi
-    echo "  1. ${dc} stop app"
+    echo "  1. ${dc} stop app app-standby"
     echo "  2. install -d -o 1000 -g 1000 /root/channels-keep-<日期>"
     echo "     ${dc} run --rm -v /root/channels-keep-<日期>:/keep app \\"
     echo "       node --import tsx src/cli/channel-export.ts --tenant ${slug} --var /app/var --keep /keep"
@@ -617,7 +617,7 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
         echo "     APP_IMAGE=${target} ${dc} up -d --no-deps app && docker tag ${target} ${project}:current"
         echo "     curl -fsS http://127.0.0.1:${port}/healthz 确认 revision 是 ${rev:-（取不到 ${target} 的 APP_REVISION）}（${target} 的 APP_REVISION）"
       fi
-      echo "再切回 03：stop app → channel-import --resync --keep <var 之外的目录> → up -d app。"
+      echo "再切回 03：stop app app-standby → channel-import --resync --keep <var 之外的目录> → up -d app。"
       exit 5
     fi
   fi
@@ -626,7 +626,7 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
   else
     echo "这是健康检查失败后的自动回滚：${project}:current 已是这次没过健康检查的新镜像。先用它导出、回到文件存储，再直接起 ${target}（在 ${dir} 下）："
   fi
-  echo "  1. ${dc} stop app"
+  echo "  1. ${dc} stop app app-standby"
   echo "  2. install -d -o 1000 -g 1000 /root/sessions-keep-<日期>"
   echo "     ${dc} run --rm -v /root/sessions-keep-<日期>:/keep app \\"
   echo "       node --import tsx src/cli/export-sessions.ts --tenant ${slug} --keep /keep --var /app/var"
