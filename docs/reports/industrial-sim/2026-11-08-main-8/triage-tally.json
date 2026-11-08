@@ -1,0 +1,283 @@
+{
+  "runs": [
+    {
+      "attempt": 1,
+      "runId": "5dff7a6e-d3ca-460e-a3b4-1e3e290ec161",
+      "turns": 483,
+      "detectors": {
+        "price_withheld": {
+          "suspects": 16,
+          "confirmed": 3
+        },
+        "correct_deleted": {
+          "suspects": 70,
+          "confirmed": 31
+        },
+        "ask_after_accept": {
+          "suspects": 1,
+          "confirmed": 0
+        },
+        "amount_not_order": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "internal_leak": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "choice_overridden": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "dangling": {
+          "suspects": 1,
+          "confirmed": 1
+        },
+        "duplicate_text": {
+          "suspects": 0,
+          "confirmed": 0
+        }
+      }
+    },
+    {
+      "attempt": 2,
+      "runId": "18deaff0-afe2-4b41-ab72-82a4c5669adc",
+      "turns": 492,
+      "detectors": {
+        "price_withheld": {
+          "suspects": 13,
+          "confirmed": 2
+        },
+        "correct_deleted": {
+          "suspects": 70,
+          "confirmed": 32
+        },
+        "ask_after_accept": {
+          "suspects": 1,
+          "confirmed": 1
+        },
+        "amount_not_order": {
+          "suspects": 2,
+          "confirmed": 0
+        },
+        "internal_leak": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "choice_overridden": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "dangling": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "duplicate_text": {
+          "suspects": 1,
+          "confirmed": 1
+        }
+      }
+    },
+    {
+      "attempt": 4,
+      "runId": "27588417-19ee-4cdc-9ff5-9b1a98f64df5",
+      "turns": 481,
+      "detectors": {
+        "price_withheld": {
+          "suspects": 15,
+          "confirmed": 5
+        },
+        "correct_deleted": {
+          "suspects": 69,
+          "confirmed": 42
+        },
+        "ask_after_accept": {
+          "suspects": 34,
+          "confirmed": 33
+        },
+        "amount_not_order": {
+          "suspects": 1,
+          "confirmed": 1
+        },
+        "internal_leak": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "choice_overridden": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "dangling": {
+          "suspects": 1,
+          "confirmed": 1
+        },
+        "duplicate_text": {
+          "suspects": 0,
+          "confirmed": 0
+        }
+      }
+    },
+    {
+      "attempt": 5,
+      "runId": "7d1fb8b3-59e8-40a9-b9aa-50b5a0fc9e65",
+      "turns": 488,
+      "detectors": {
+        "price_withheld": {
+          "suspects": 8,
+          "confirmed": 0
+        },
+        "correct_deleted": {
+          "suspects": 58,
+          "confirmed": 20
+        },
+        "ask_after_accept": {
+          "suspects": 1,
+          "confirmed": 0
+        },
+        "amount_not_order": {
+          "suspects": 1,
+          "confirmed": 0
+        },
+        "internal_leak": {
+          "suspects": 1,
+          "confirmed": 1
+        },
+        "choice_overridden": {
+          "suspects": 1,
+          "confirmed": 1
+        },
+        "dangling": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "duplicate_text": {
+          "suspects": 0,
+          "confirmed": 0
+        }
+      }
+    },
+    {
+      "attempt": 6,
+      "runId": "4cbf5f9d-7744-4db5-a229-a245ed5d831b",
+      "turns": 483,
+      "detectors": {
+        "price_withheld": {
+          "suspects": 1,
+          "confirmed": 1
+        },
+        "correct_deleted": {
+          "suspects": 31,
+          "confirmed": 10
+        },
+        "ask_after_accept": {
+          "suspects": 2,
+          "confirmed": 2
+        },
+        "amount_not_order": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "internal_leak": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "choice_overridden": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "dangling": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "duplicate_text": {
+          "suspects": 0,
+          "confirmed": 0
+        }
+      }
+    },
+    {
+      "attempt": 7,
+      "runId": "e9e8114f-58cc-4c9e-92ef-8d00dd20eebe",
+      "turns": 482,
+      "detectors": {
+        "price_withheld": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "correct_deleted": {
+          "suspects": 37,
+          "confirmed": 15
+        },
+        "ask_after_accept": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "amount_not_order": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "internal_leak": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "choice_overridden": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "dangling": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "duplicate_text": {
+          "suspects": 0,
+          "confirmed": 0
+        }
+      }
+    },
+    {
+      "attempt": 8,
+      "runId": "d041b0e9-13cb-490f-92be-a573573b0831",
+      "turns": 477,
+      "detectors": {
+        "price_withheld": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "correct_deleted": {
+          "suspects": 24,
+          "confirmed": 6
+        },
+        "ask_after_accept": {
+          "suspects": 3,
+          "confirmed": 3
+        },
+        "amount_not_order": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "internal_leak": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "choice_overridden": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "dangling": {
+          "suspects": 0,
+          "confirmed": 0
+        },
+        "duplicate_text": {
+          "suspects": 0,
+          "confirmed": 0
+        }
+      }
+    }
+  ],
+  "aborted": [
+    {
+      "attempt": 3,
+      "runId": "59eb3790-88c6-4eea-8dcf-7ad9b07e8e6c"
+    }
+  ]
+}
