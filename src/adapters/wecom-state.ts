@@ -1,3 +1,4 @@
+import { processLeaseHeld } from '../tenancy/process-lease.js';
 import { currentRuntime, tenantCallback, withoutTenantScope } from '../tenancy/runtime.js';
 // 企微 env 账号的拉取状态（docs/architecture/03-channels-v2/spec.md R1、R10、不变量 13）：cursor、已认领的 msgid（handled）、在途表、
 // 冷启动截止，都在 var/wecom-cursor.json（FileWecomState）。env 账号是文件存储、企微状态「未导入」「已导出」时的那一个账号：
@@ -175,6 +176,7 @@ export class FileWecomState implements WecomStateBackend {
   /** 落盘排成一条链：拉取、处理完成、停机三处都会写，并发写同一个 .tmp 会互相踩（rename 报 ENOENT） */
   save(): Promise<void> {
     this.saveChain = this.saveChain.then(async () => {
+      if (!processLeaseHeld()) return;
       try {
         await mkdir(VAR_DIR, { recursive: true });
         const tmp = STATE_FILE + '.tmp';
@@ -206,6 +208,7 @@ export class FileWecomState implements WecomStateBackend {
    *  停机钩子等待超时被强制 process.exit 时，异步的 save 来不及跑；
    *  'exit' 阶段只能跑同步代码，所以这里用 writeFileSync。 */
   flushSync(): void {
+    if (!processLeaseHeld()) return;
     if (!this.stateSaveTimer) return;
     clearTimeout(this.stateSaveTimer);
     this.stateSaveTimer = null;

@@ -1,3 +1,4 @@
+import { processLeaseHeld } from './tenancy/process-lease.js';
 import { TenantObservers } from './tenancy/observers.js';
 import { currentRuntime, withTenantScope, withoutTenantScope, type TenantRuntime } from './tenancy/runtime.js';
 import { registerTenantState } from './tenancy/state.js';
@@ -96,7 +97,7 @@ interface HostUsage {
 const hosts = new Map<TenantRuntime, HostUsage>();
 function hostUsage(): HostUsage | null {
   const rt = currentRuntime();
-  if (!rt.isHost || rt.kind !== 'standard') return null;
+  if (!processLeaseHeld() || !rt.isHost || rt.kind !== 'standard') return null;
   let entry = hosts.get(rt);
   if (!entry) {
     entry = { state: blank(), timer: null };
@@ -120,7 +121,7 @@ function persist(entry: HostUsage): void {
       () =>
         withTenantScope(rt, () => {
           entry.timer = null;
-          if (hosts.get(rt) !== entry || rt.state !== 'serving') return;
+          if (!processLeaseHeld() || hosts.get(rt) !== entry || rt.state !== 'serving') return;
           try {
             fs.mkdirSync(VAR_DIR, { recursive: true });
             const tmp = FILE + '.tmp';

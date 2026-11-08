@@ -1,4 +1,5 @@
 import { currentRuntime, tenantCallback, withoutTenantScope } from '../tenancy/runtime.js';
+import { isProcessLeaseError } from '../tenancy/process-lease.js';
 
 import { publicBase } from '../tenancy/hosts.js';
 import { scopedState } from '../tenancy/scoped-state.js';
@@ -103,13 +104,18 @@ function noticeFor(
 const done = (lastError: string | null = null): JobOutcome => ({ status: 'done', lastError });
 
 /** 发出去；失败抛 NotifySendError（认领者按 max_attempts 重试，last_error 是错误码，不含地址） */
-async function deliver(n: HandoffNotice): Promise<JobOutcome> {
-  await notifier().send(n);
+async function deliver(n: HandoffNotice, onLeaseUnavailable?: () => Promise<void>): Promise<JobOutcome> {
+  await notifier().send(n, onLeaseUnavailable);
   return done();
 }
 
 /** handoff_notify 的执行体（runner 的 handlers 调）。没什么可发的记 done，last_error 写为什么没发 */
-export async function runHandoffNotifyJob(job: JobRow, now: number): Promise<JobOutcome> {
+export async function runHandoffNotifyJob(
+  job: JobRow,
+  now: number,
+  ctx?: { onLeaseUnavailable?: () => Promise<void> },
+): Promise<JobOutcome> {
+  const sendNotice = (notice: HandoffNotice) => deliver(notice, ctx?.onLeaseUnavailable);
   const own = state();
   const p = payloadOf(job.payload);
   if (!p) return done('bad_payload');
@@ -130,7 +136,7 @@ export async function runHandoffNotifyJob(job: JobRow, now: number): Promise<Job
     const notice = noticeFor(s.id, s.channel, p.reason, job.runAt.getTime(), false);
     notice.lines = p.lines;
     notice.link = `${publicBase()}/console`;
-    return deliver(notice);
+    return sendNotice(notice);
   }
   if (p.reason === 'quote_pending' || p.reason === 'quote_accepted') {
     const o = p.orderId ? getAnyOrder(p.orderId) : undefined;
@@ -149,7 +155,7 @@ export async function runHandoffNotifyJob(job: JobRow, now: number): Promise<Job
     );
     // 报价单可能仍由 AI 接待，提醒打开含报价待办的总览。
     notice.link = `${publicBase()}/console`;
-    return deliver(notice);
+    return sendNotice(notice);
   }
   if (p.reason === 'order_unconfirmed') {
     const o = p.orderId ? getAnyOrder(p.orderId) : undefined;
@@ -157,7 +163,7 @@ export async function runHandoffNotifyJob(job: JobRow, now: number): Promise<Job
     if (!o || (isLineOrder(o) && o.approval) || o.sessionId !== p.sessionId || o.status !== 'pending_payment' || o.confirmedAt != null)
       return done('order_settled');
     if (!s) return done('no_session');
-    return deliver(noticeFor(s.id, s.channel, 'order_unconfirmed', o.createdAt, isTerminalStage(s.stage)));
+    return sendNotice(noticeFor(s.id, s.channel, 'order_unconfirmed', o.createdAt, isTerminalStage(s.stage)));
   }
   if (p.reason === 'started') {
     // 库写不进去时 unsaved 通知已经发过（或正在发）：提交之后不再补发
@@ -177,11 +183,11 @@ export async function runHandoffNotifyJob(job: JobRow, now: number): Promise<Job
   if (p.reason === 'started') {
     // 有人接手了（后台接手本身就是 agent 类的转人工）就不发「等人接手」；升级的紧急情况照发
     if (s.assignee && !p.escalated) return done('assigned');
-    return deliver(noticeFor(s.id, s.channel, p.kind ?? s.handoff?.kind ?? 'request', at, paid));
+    return sendNotice(noticeFor(s.id, s.channel, p.kind ?? s.handoff?.kind ?? 'request', at, paid));
   }
   if (p.reason === 'unclaimed') {
     if (s.assignee) return done('assigned');
-    return deliver(noticeFor(s.id, s.channel, 'still_waiting', at, paid));
+    return sendNotice(noticeFor(s.id, s.channel, 'still_waiting', at, paid));
   }
   // window：到点重判（窗口随客户每句话后移）
   const w = sendWindow(s.id, now);
@@ -193,7 +199,7 @@ export async function runHandoffNotifyJob(job: JobRow, now: number): Promise<Job
   }
   // 条数用完了也照发（审查之后改的第 1 条）：spec 是无条件的「剩不到 4 小时、仍在转人工中时提醒一次」，额度用完恰恰是
   // 顾问最需要知道「这个通道已经没法主动发消息」的时候；正文多一句，不额外顺延
-  return deliver(noticeFor(s.id, s.channel, 'window_closing', w.closesAt, paid, false, w.remaining <= 0));
+  return sendNotice(noticeFor(s.id, s.channel, 'window_closing', w.closesAt, paid, false, w.remaining <= 0));
 }
 
 // ---------------- 库写不进去时的 unsaved 通知 ----------------
@@ -277,6 +283,11 @@ async function fireUnsaved(ev: HandoffStartedEvent, key: string): Promise<void> 
       await notifier().send(n);
       break;
     } catch (e) {
+      if (isProcessLeaseError(e)) {
+        // 没有外发，不标 unsavedSent、不耗尽业务重试；持久化的 handoff_notify 仍可由新主恢复。
+        own.unsaved.delete(key);
+        return;
+      }
       const delay = unsavedTiming.retryMs[i];
       if (delay === undefined) {
         own.unsaved.delete(key);

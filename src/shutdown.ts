@@ -1,5 +1,6 @@
 import { scopedRuntime, withTenantScope, withoutTenantScope, backgroundEntry, type TenantRuntime } from './tenancy/runtime.js';
 import { registerTenantState } from './tenancy/state.js';
+import { processLeaseWaiting, stopProcessLeaseWaits } from './tenancy/process-lease.js';
 // 优雅停机（docs/architecture/02-conversations-workbench/spec.md「两种会话存储与启动」）：信号接线与三段停机钩子。
 // 从 store.ts 搬来，store.ts 原样再导出 onShutdown、runShutdownHooks、gracefulExit；两种会话存储下都在导入期注册。
 //
@@ -60,6 +61,7 @@ async function runPhase(phase: ShutdownPhase, deadline: number): Promise<boolean
  * 返回 false 表示有一段超时（仍有钩子没结束）
  */
 export async function runShutdownHooks(timeoutMs = SHUTDOWN_TIMEOUT_MS): Promise<boolean> {
+  stopProcessLeaseWaits();
   const start = Date.now();
   let ok = true;
   for (const phase of PHASES) {
@@ -89,7 +91,12 @@ export function gracefulExit(code: number, why = `退出码 ${code}`): void {
 }
 
 for (const sig of ['SIGINT', 'SIGTERM'] as const) {
-  withoutTenantScope(() => process.on(sig, () => gracefulExit(sig === 'SIGINT' ? 130 : 143, `收到 ${sig}`)));
+  withoutTenantScope(() =>
+    process.on(sig, () => {
+      if (processLeaseWaiting()) process.exit(sig === 'SIGTERM' ? 0 : 130);
+      gracefulExit(sig === 'SIGINT' ? 130 : 143, `收到 ${sig}`);
+    }),
+  );
 }
 
 /** R12 删除租户时同时撤掉捕获它的停机闭包；实例钩子保留。 */

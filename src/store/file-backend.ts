@@ -1,3 +1,4 @@
+import { processLeaseHeld } from '../tenancy/process-lease.js';
 import { currentRuntime, withoutTenantScope, tenantCallback, type TenantRuntime } from '../tenancy/runtime.js';
 // 文件后端：var/sessions.json、var/orders.json 的整文件重写，写入去抖 200ms + 原子写（tmp+rename），进程退出时同步写出。
 // 从 src/store.ts 抽出来，落盘的内容与时机和开工时相同（docs/architecture/02-conversations-workbench/spec.md R3）。
@@ -155,6 +156,7 @@ export function createFileBackend(d: FileBackendDeps): FileBackend {
 
   /** 同步写出两个文件。成功之后清脏、交出排着的事件、放行在等的 flushSession；失败时这些都留到下一次成功 */
   function persistNow(): boolean {
+    if (!processLeaseHeld()) return false;
     if (!rt.isHost) throw new Error('只有宿主运行时能写文件存储');
     try {
       fs.mkdirSync(d.varDir, { recursive: true });
