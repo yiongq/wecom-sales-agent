@@ -229,6 +229,7 @@ if (!process.env.PG_TEST_URL) {
     await until(() => standby.events.some((e) => e.event === 'starting'));
     await delay(700);
     assert.equal(await acceptsConnection(standby.port), false);
+    assert.doesNotMatch(standby.output(), /拿到.*租户锁/);
     assert.equal(
       standby.events.some((e) => ['var-before-lock', 'pull', 'booted'].includes(String(e.event))),
       false,
@@ -250,6 +251,7 @@ if (!process.env.PG_TEST_URL) {
     const legacy = await start('legacy', 'boot', false);
     assert.equal(await legacy.done, 1, legacy.output());
     assert.match(legacy.output(), /lock_held/);
+    assert.doesNotMatch(legacy.output(), /拿到.*租户锁/);
     const successor = await start('successor');
     await until(() => successor.events.some((e) => e.event === 'starting'));
     await delay(300);
@@ -289,6 +291,7 @@ if (!process.env.PG_TEST_URL) {
     await bumpProcessEpoch(fx.tenantId, randomUUID(), appDb.db);
     await replacement.release();
     assert.equal(await successor.done, 1, successor.output());
+    assert.equal(successor.output().match(/^\[config\] 已拿到全部租户锁（等待 \d+ ms）$/gm)?.length, 1, successor.output());
     assert.ok(successor.events.some((e) => e.event === 'shutdown-hook'));
     assert.equal(
       fs.readdirSync(successor.dir).some((name) => name.startsWith('store-spill-')),

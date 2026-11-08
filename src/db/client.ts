@@ -543,6 +543,7 @@ export async function holdTenantLocks(
       }
       await new Promise<void>((resolve) => withoutTenantScope(() => setTimeout(resolve, Math.max(0, 250 - (Date.now() - attemptAt)))));
     }
+    console.log(`[config] 已拿到全部租户锁（等待 ${Date.now() - started} ms）`);
   } else client = await connect();
   const lostCallbacks: (() => void)[] = [];
   let released = false;
