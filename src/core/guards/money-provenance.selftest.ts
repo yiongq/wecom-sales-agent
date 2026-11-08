@@ -4,6 +4,7 @@ import type { GuardStep, MoneyEntry, ReplyGuardContext, StepVerdict } from '../p
 import type { LineOrder } from '../order-view.js';
 import { loadGuardPipeline } from './execute.js';
 import { moneyProvenanceStep, moneyProvenanceFollowupStep, type MoneyProvenanceSources } from './money-provenance.js';
+import { sentenceDiff } from '../../trace/recorder.js';
 
 const policy = { freightFen: 1000 };
 const options = { staticAmounts: (p: unknown) => [(p as typeof policy).freightFen], fallback: '金额尚未核验，请先查询。' };
@@ -79,7 +80,6 @@ async function check(text: string, expected: string, action: StepVerdict['action
 await check('单价 3.65 元。', '单价 3.65 元。', 'pass');
 await check('请确认规格。单价 3.80 元。', '请确认规格。', 'drop_sentence');
 await check('单价 3.80 元。', options.fallback, 'replace');
-await check('单价 3.65 元，但合计 7.30 元。继续核验。', '继续核验。', 'drop_sentence');
 await check('相差 0.15 元。合计 7.30 元。乘起来 730 元。继续核验。', '继续核验。', 'drop_sentence');
 await check('静态运费 10 元。', '静态运费 10 元。', 'pass');
 await check('单价3块6毛5。', '单价3块6毛5。', 'pass');
@@ -167,6 +167,54 @@ count++;
 
 // 跟进全部删除时必须留空，不能兜底、转人工或写 guardHit；事件仍只一行。
 const followup = loadGuardPipeline([moneyProvenanceFollowupStep(options, () => sources)]);
+// 18：只删完整片段，残句或没有可保留的金额时仍整句删；政策金额集合不变。
+for (const mode of ['reply', 'followup'] as const) {
+  const fragmentCases: { text: string; expected?: string; removed?: string[] }[] = [
+    { text: '单价 3.65 元，但合计 7.30 元。继续核验。', expected: '单价 3.65 元。继续核验。', removed: ['，但合计 7.30 元'] },
+    { text: '满100件，单价3.65元，100件总额365元。', expected: '满100件，单价3.65元。', removed: ['，100件总额365元'] },
+    { text: '单价3.65元，总价7.30元，现货。', expected: '单价3.65元，现货。', removed: ['，总价7.30元'] },
+    { text: '总价7.30元，单价3.65元。', expected: '单价3.65元。', removed: ['总价7.30元，'] },
+    { text: '单价3.65元、合计7.30元；运费10元。', expected: '单价3.65元；运费10元。', removed: ['、合计7.30元'] },
+    { text: '单价3.65元,合计7.30元;运费10元。', expected: '单价3.65元;运费10元。', removed: [',合计7.30元'] },
+    { text: '单价3.65元且合计7.30元，运费10元。', expected: '运费10元。', removed: ['单价3.65元且合计7.30元，'] },
+    { text: '单价3.65元，总价1,720元。', expected: '单价3.65元。', removed: ['，总价1,720元'] },
+    { text: '单价3.65元，总价１，７２０元。', expected: '单价3.65元。', removed: ['，总价１，７２０元'] },
+    { text: '单价3.65元，总价7.30元（含税）。', expected: '单价3.65元。', removed: ['，总价7.30元（含税）'] },
+    { text: '单价3.65元，参考"总价7.30元，含税"。', expected: '单价3.65元。', removed: ['，参考"总价7.30元，含税"'] },
+    { text: "单价3.65元，参考'总价7.30元，含税'。", expected: '单价3.65元。', removed: ["，参考'总价7.30元，含税'"] },
+    { text: '运费10元，包邮门槛100元。', expected: '运费10元。', removed: ['，包邮门槛100元'] },
+    {
+      text: '单价3.65元，合计7.30元，运费10元，加急费20元。',
+      expected: '单价3.65元，运费10元。',
+      removed: ['，合计7.30元', '，加急费20元'],
+    },
+    { text: '单价3.65元，合计7.30元，小计7.30元。', expected: '单价3.65元。', removed: ['，合计7.30元，小计7.30元'] },
+    { text: '单价3.65元且合计7.30元。' },
+    { text: '单价3.80元，合计7.30元，现货。' },
+    { text: '运费20元，包邮门槛100元。' },
+    { text: '单价3.65元，合计为，7.30元。' },
+    { text: '单价3.65元，合计：，7.30元。' },
+    { text: '单价3.65元，另外，合计7.30元。' },
+    { text: '单价3.65元，如果满100件，合计7.30元。' },
+    { text: '单价3.65元，，合计7.30元。' },
+    { text: '单价3.65元，合计7.30元，' },
+    { text: '合计7.30元，因此单价3.65元。' },
+  ];
+  for (const { text, expected = mode === 'reply' ? options.fallback : '', removed } of fragmentCases) {
+    events.length = 0;
+    const ctx = context(text);
+    const result = await (mode === 'reply' ? pipeline : followup).run(ctx);
+    assert.equal(result.text, expected, `${mode}: ${text}`);
+    assert.equal(ctx.turn.flags.guardHit, mode === 'reply' ? 'price' : null);
+    assert.equal(ctx.turn.flags.blocksSuppressed, mode === 'reply' && expected === options.fallback ? true : undefined);
+    assert.equal(events.length, 1);
+    assert.deepEqual(sentenceDiff(events[0]!.before, events[0]!.after), {
+      removed: removed ?? [text],
+      added: removed || mode === 'followup' ? [] : [options.fallback],
+    });
+    count++;
+  }
+}
 for (const [text, expected] of [
   ['单价3.80元。', ''],
   ['单价3.80元。请确认规格。', '请确认规格。'],
@@ -192,7 +240,7 @@ followOrder.session.orderIds = [order.id];
 assert.equal((await followup.run(followOrder)).text, '合计1330元。');
 count++;
 
-// 型号绑定：同一套用例同时约束主回复与跟进，仍按原来的句子单位删句。
+// 型号绑定：同一套用例同时约束主回复与跟进，裁片段时仍按原句的型号归属核验。
 const subjectMentions = (text: string) =>
   [...text.matchAll(/A100|B200|C300|ALIAS-A/g)].map((match) => ({
     subject: match[0] === 'ALIAS-A' ? 'A100' : match[0],
@@ -224,7 +272,7 @@ for (const mode of ['reply', 'followup'] as const) {
     { text: 'A100单价3.65元。B200单价12元。' },
     { text: 'A100单价3.80元。', expected: empty },
     { text: 'A100单价12元，B200单价12元。', ledger: [...boundLedger, { fen: 1200, label: '同价', subject: 'A100' }] },
-    { text: 'A100单价3.65元，B200单价3.65元。继续核验。', expected: '继续核验。' },
+    { text: 'A100单价3.65元，B200单价3.65元。继续核验。', expected: 'A100单价3.65元。继续核验。' },
     { text: 'A100单价3.65元，B200单价12元。' },
     { text: 'A100单价12元，B200单价3.65元。继续核验。', expected: '继续核验。' },
     { text: 'A100合计1330元。' },
@@ -255,7 +303,16 @@ for (const mode of ['reply', 'followup'] as const) {
         { fen: 300, label: '单价', subject: 'C300' },
       ],
     },
-    { text: 'A100和B200一共15.65元，A100单价12元。', ledger: [...boundLedger, { fen: 1565, label: '合计' }], expected: empty },
+    {
+      text: 'A100和B200一共15.65元，A100单价12元。',
+      ledger: [...boundLedger, { fen: 1565, label: '合计' }],
+      expected: 'A100和B200一共15.65元。',
+    },
+    // 删去带型号的片段不能把后续错配金额洗成无型号金额。
+    { text: 'A100单价12元，总价12元，运费10元。', expected: '运费10元。' },
+    { text: 'A100单价3.65元，B200单价3.65元，总价3.65元。', expected: 'A100单价3.65元。' },
+    // 原句里正确的 B200 金额删后会被归到 A100；复核不过就整句删。
+    { text: 'A100单价3.65元，B200合计7.30元，单价12元。', expected: empty },
     // 同一型号及其别名不构成多个不同对象；列表也不能放行没有出处的数。
     { text: 'A100和ALIAS-A单价12元。', expected: empty },
     { text: 'A100和B200单价3.80元。', expected: empty },

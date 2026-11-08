@@ -576,7 +576,7 @@ try {
     };
     await checkMoney('HS1000单价20元。HS1001单价10元。', empty);
     await checkMoney('HS1000单价10元。HS1001单价20元。');
-    await checkMoney('HS1000单价10元，HS1001单价10元。请核对。', '请核对。');
+    await checkMoney('HS1000单价10元，HS1001单价10元。请核对。', 'HS1000单价10元。请核对。');
     await checkMoney('HS1000单价10元，HS1001单价20元。');
     await checkMoney('HS1000和HS1001的单价分别为10元、20元。');
     // 列表里的互换也无法确定归属，按已定规则维持放行。
@@ -586,7 +586,7 @@ try {
       { fen: 200, label: '单价', subject: 'HS1001' },
       { fen: 300, label: '单价', subject: 'HS1002' },
     ]);
-    await checkMoney('HS1000和HS1001一共90元，HS1000单价20元。', empty);
+    await checkMoney('HS1000和HS1001一共90元，HS1000单价20元。', 'HS1000和HS1001一共90元。');
     await checkMoney('HS1000单价20元，HS1001单价10元。', empty);
     await checkMoney('HS1000合计90元。');
     await checkMoney('单价20元。单价10元。');
@@ -1302,8 +1302,8 @@ try {
   const droppedTotal = await acceptingBlock('合计1149.35元，另收999元。请等顾问确认付款。');
   const droppedRun = await pipes.reply.run(droppedTotal);
   assert.equal(droppedRun.verdicts.find((v) => v.id === 'money_provenance')!.action, 'drop_sentence');
-  assert.equal(droppedTotal.text, '请等顾问确认付款。\n您接受的这份报价合计1149.35元', '18 原稿合计随错价句删掉后仍附块');
-  assert.deepEqual(droppedTotal.replyBlocks!.trace.rendered, [{ name: '应付金额', placed: 'appended', rows: 1, trimmedRows: 0 }]);
+  assert.equal(droppedTotal.text, '合计1149.35元。请等顾问确认付款。', '18 只删无出处附加费，保留接受合计');
+  assert.deepEqual(droppedTotal.replyBlocks!.trace.rendered, [], '18 保留的接受合计不重复附块');
   for (const body of [
     '合计1149.34元。',
     '运费0元。',
