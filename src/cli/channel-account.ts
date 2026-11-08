@@ -1,6 +1,6 @@
 // 03 第 15 步：以 agent_app 身份管理渠道账号，应用须已停，改完重启生效。
 // docker compose stop app app-standby
-// docker compose run --rm app node --import tsx src/cli/channel-account.ts list --tenant demo
+// docker compose run --rm app-cli node --import tsx src/cli/channel-account.ts list --tenant demo
 // 凭据只从 0600 文件或无回显终端读取，不接受凭据参数。退出码：0 成功/无操作，1 用法/读写错误，2 数据不一致，3 租户锁被占。
 // 03 第 12 步：restore-cutoff --tenant <slug> --until <带时区的 ISO 时刻|now> [--var <var 目录>]，从备份恢复之后、起应用之前跑
 // （R7、spec「重启、崩溃与恢复 · 恢复截止点」、不变量 9、14）：一个事务里写全部企微账号的 record_only_until、截止点之前建的出站
@@ -158,7 +158,7 @@ function parse(argv: string[]) {
 /** raw 模式下终端不回显；支持退格、Ctrl-U、Ctrl-C，退出/异常/信号都恢复原模式。 */
 async function terminalSecrets(fields: readonly string[]): Promise<Record<string, string>> {
   const input = process.stdin;
-  if (!input.isTTY || !input.setRawMode) fail('需要交互终端（docker compose run --rm -it app），或用 --secrets-file');
+  if (!input.isTTY || !input.setRawMode) fail('需要交互终端（docker compose run --rm -it app-cli），或用 --secrets-file');
   const wasRaw = input.isRaw;
   const wasPaused = input.isPaused();
   const decoder = new StringDecoder('utf8');

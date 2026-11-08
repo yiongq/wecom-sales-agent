@@ -2,7 +2,7 @@
 // 要求应用已停（要取租户锁）：
 //   docker compose stop app app-standby
 //   install -d -o 1000 -g 1000 /root/sessions-keep-<日期>
-//   docker compose run --rm -v /root/sessions-keep-<日期>:/keep app \
+//   docker compose run --rm -v /root/sessions-keep-<日期>:/keep app-cli \
 //     node --import tsx src/cli/export-sessions.ts --tenant <slug> --keep /keep --var /app/var
 // 之后 .env 去掉 SESSION_STORE=db 再起应用。再切回 db 存储：停应用，import-sessions --resync。
 // 没有标记文件（已经导出过）而 JSON 里的真实会话与库里不一致时以 2 拒绝、什么都不动：JSON 比库新，要切回 db 存储用 import-sessions --resync。

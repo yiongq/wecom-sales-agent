@@ -3,20 +3,13 @@
 x-app: &app
   image: ${DRILL_OLD_IMAGE:?}
   restart: unless-stopped
+  env_file:
+    - path: ${DRILL_APP_ENV_FILE:?}
+      format: raw
   environment:
     PORT: '3200'
     LOG_FORMAT: json
     TENANT_LOCK_WAIT: forever
-    LLM_MOCK: '1'
-    DEPLOY_PROFILE: demo
-    CONFIG_SOURCE: db
-    SESSION_STORE: db
-    DATABASE_URL: postgres://agent_app:${DRILL_PASSWORD:?}@db:5432/agent
-    DEFAULT_TENANT_SLUG: drill
-    APP_ROLE: host
-    CHAT_RATE_PER_MIN: '600'
-    DAILY_VISITOR_LLM_CALLS: '0'
-    ADMIN_PASS: ${DRILL_PASSWORD:?}
   volumes:
     - app-var:/app/var
   stop_grace_period: 10s
@@ -62,6 +55,19 @@ services:
     environment:
       DEPLOY_PROFILE: demo
       DATABASE_PLATFORM_URL: postgres://agent_platform:${DRILL_PASSWORD:?}@db:5432/agent
+    healthcheck:
+      disable: true
+  app-cli:
+    <<: *app
+    image: ${DRILL_APP_IMAGE:?}
+    # CLI 不走等锁启动、没有进程 epoch；数据库/mock 配置仍来自共享 env_file。
+    environment:
+      PORT: '3200'
+      LOG_FORMAT: json
+    profiles: [cli]
+    restart: 'no'
+    networks:
+      default: {}
     healthcheck:
       disable: true
   app:

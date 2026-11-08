@@ -125,6 +125,51 @@ if ! (cd "$BUILD_DIR" && pnpm install --frozen-lockfile >/dev/null && pnpm forma
   exit 1
 fi
 
+# 固定网络退版检查：必须早于 rollback-guard（可能 purge）及 rsync 等任何远端写操作。
+# 用已经归档、过门禁的目标 compose 判定；查不到目标或服务器状态一律拒绝。
+if [ ! -f "$BUILD_DIR/deploy/compose.yml" ] || [ ! -r "$BUILD_DIR/deploy/compose.yml" ]; then
+  echo '错误：无法读取目标 compose，拒绝部署（服务器上什么都没动）。' >&2
+  exit 1
+fi
+TARGET_FIXED_UPSTREAM=0
+if grep -q 'ipv4_address:' "$BUILD_DIR/deploy/compose.yml"; then
+  TARGET_FIXED_UPSTREAM=1
+else
+  case $? in
+    1) ;; # 明确没有固定地址；grep 读文件失败不能当作旧 compose。
+    *) echo '错误：无法检查目标 compose，拒绝部署（服务器上什么都没动）。' >&2; exit 1 ;;
+  esac
+fi
+if [ "$TARGET_FIXED_UPSTREAM" = 0 ]; then
+  if ! perl -e 'alarm 30; exec @ARGV' ssh "${SERVER}" bash -s -- "$NAME" <<'UPSTREAM_ROLLBACK'
+set -euo pipefail
+project="$1"
+for service in app app-standby; do
+  # 包括停止的容器：稍后重建仍会丢失其固定地址。只查本 project，不触碰旁路实例。
+  ids=$(timeout --kill-after=2s 8s docker container ls -aq \
+    --filter "label=com.docker.compose.project=$project" \
+    --filter "label=com.docker.compose.service=$service" </dev/null) || exit 1
+  for id in $ids; do
+    [[ "$id" =~ ^[a-f0-9]{12,64}$ ]] || exit 1
+    state=$(timeout --kill-after=2s 8s docker inspect --format \
+      "{{if .NetworkSettings.Networks}}{{if index .NetworkSettings.Networks \"${project}_app-upstream\"}}attached{{else}}clear{{end}}{{else}}unknown{{end}}" "$id" </dev/null) || exit 1
+    case "$state" in
+      clear) ;;
+      attached)
+        echo "拒绝部署：本 project 的 $service 仍接着 app-upstream，目标 tag 没有固定 IP；替换 compose 会使 Caddy 断开。" >&2
+        exit 1 ;;
+      *) exit 1 ;;
+    esac
+  done
+done
+UPSTREAM_ROLLBACK
+  then
+    echo '错误：目标 tag 无固定 IP，当前上游网络仍在使用或状态无法确认，拒绝部署（服务器上什么都没动）。' >&2
+    echo '先在维护窗口停两边、保留当前 compose 和固定 IP，用已验证旧镜像手动回滚；不要直接同步旧 compose。步骤见 docs/guides/deployment.md#rollback-before-fixed-ip。' >&2
+    exit 1
+  fi
+fi
+
 # 3) 先查服务器 .env 再同步（只读）。运行时不设 profile 会按 demo 跑，生产实例忘了配就成了 demo
 # （匿名可付款、「重置」连已付订单一起删），所以防线放在这里。按 docker --env-file 的读法取值（compose 以 format: raw
 # 读 env 文件，同一个解析器）：行首空白去掉、按第一个 = 分开、值原样（只去行尾 CR）、同名以最后一行为准——值带引号或空格，容器会拒绝启动

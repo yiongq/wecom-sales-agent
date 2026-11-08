@@ -70,6 +70,7 @@ async function drill(scenario: string): Promise<void> {
   const project = `failover-drill-${randomBytes(6).toString('hex')}`;
   const tmp = await mkdtemp(path.join(os.tmpdir(), 'failover-drill-'));
   const envFile = path.join(tmp, 'compose.env');
+  const appEnvFile = path.join(tmp, 'app.env');
   const oldImage = `${project}:old`;
   const newImage = `${project}:new`;
   const password = randomBytes(24).toString('hex');
@@ -125,6 +126,7 @@ async function drill(scenario: string): Promise<void> {
       envFile,
       [
         `DRILL_PASSWORD=${password}`,
+        `DRILL_APP_ENV_FILE=${appEnvFile}`,
         `DRILL_OLD_IMAGE=${oldImage}`,
         `DRILL_NEW_IMAGE=${newImage}`,
         `DRILL_APP_IMAGE=${images.app}`,
@@ -234,6 +236,24 @@ async function drill(scenario: string): Promise<void> {
   const deadline = setTimeout(onSignal, 20 * 60_000);
   try {
     if (process.env.DRILL_DUMP_LOGS !== undefined) dumpLogs = await prepareDrillLogPath(root, process.env.DRILL_DUMP_LOGS);
+    // 应用与 CLI 共用合成配置；等锁只属于两个常驻服务，不写入共享 env_file。
+    await writeFile(
+      appEnvFile,
+      [
+        'LLM_MOCK=1',
+        'DEPLOY_PROFILE=demo',
+        'CONFIG_SOURCE=db',
+        'SESSION_STORE=db',
+        `DATABASE_URL=postgres://agent_app:${password}@db:5432/agent`,
+        'DEFAULT_TENANT_SLUG=drill',
+        'APP_ROLE=host',
+        'CHAT_RATE_PER_MIN=600',
+        'DAILY_VISITOR_LLM_CALLS=0',
+        `ADMIN_PASS=${password}`,
+        '',
+      ].join('\n'),
+      { mode: 0o600 },
+    );
     // 演练 Caddy 已配置双上游；显式开启，并经过与 deploy.sh 相同的只读门槛。
     // 不读取服务器或本机仓库的 .env.ops；未确认时禁止进入后面的主备演练与回滚。
     await writeFile(path.join(tmp, '.env.ops'), 'CADDY_DUAL_UPSTREAM=1\n', { mode: 0o600 });
@@ -304,7 +324,7 @@ async function drill(scenario: string): Promise<void> {
       '--pack',
       'travel',
     ]);
-    await compose(['run', '--rm', '--no-deps', 'app', 'node', '--import', 'tsx', 'src/cli/import-config.ts', '--tenant', 'drill']);
+    await compose(['run', '--rm', '--no-deps', 'app-cli', 'node', '--import', 'tsx', 'src/cli/import-config.ts', '--tenant', 'drill']);
     await compose(['up', '-d', '--no-deps', 'app']);
     await healthy('app', 'drill-old');
     await compose(['up', '-d', '--no-deps', 'app-standby', 'caddy']);

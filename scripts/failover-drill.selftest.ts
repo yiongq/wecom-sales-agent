@@ -103,7 +103,19 @@ else if (args[0] === 'network') {
   if (args[1] === 'inspect') console.log(JSON.stringify([{ IPAM: { Config: [{ Subnet: mode === 'exhausted' ? '172.16.0.0/12' : '172.30.0.0/28' }] } }]));
   if (args[1] === 'create') console.log('own-network');
 } else if (args[0] === 'compose') {
-  if (args.includes('reserve')) process.exit(1);
+  if (args.includes('reserve')) {
+    const env = fs.readFileSync(args[args.indexOf('--env-file') + 1], 'utf8');
+    const password = env.match(/^DRILL_PASSWORD=(.+)$/m)[1];
+    const appEnvPath = env.match(/^DRILL_APP_ENV_FILE=(.+)$/m)[1];
+    const appEnv = fs.readFileSync(appEnvPath, 'utf8');
+    fs.writeFileSync(base + '/app-env-check', JSON.stringify({
+      path: appEnvPath,
+      mode: fs.statSync(appEnvPath).mode & 0o777,
+      // 只留脱敏配置供外层断言；真实临时文件应在清理时删除。
+      content: appEnv.split(password).join('[REDACTED]'),
+    }));
+    process.exit(1);
+  }
   if (args.includes('logs')) {
     const env = fs.readFileSync(args[args.indexOf('--env-file') + 1], 'utf8');
     const password = env.match(/^DRILL_PASSWORD=(.+)$/m)[1];
@@ -137,6 +149,31 @@ else if (args[0] === 'network') {
     };
   };
   let r = run('normal');
+  const appEnvCheck = JSON.parse(fs.readFileSync(path.join(lifecycleTmp, 'app-env-check'), 'utf8'));
+  const appEnv = Object.fromEntries(
+    (appEnvCheck.content as string)
+      .trim()
+      .split('\n')
+      .map((line) => line.split('=')),
+  );
+  assert.deepEqual(
+    appEnv,
+    {
+      LLM_MOCK: '1',
+      DEPLOY_PROFILE: 'demo',
+      CONFIG_SOURCE: 'db',
+      SESSION_STORE: 'db',
+      DATABASE_URL: 'postgres://agent_app:[REDACTED]@db:5432/agent',
+      DEFAULT_TENANT_SLUG: 'drill',
+      APP_ROLE: 'host',
+      CHAT_RATE_PER_MIN: '600',
+      DAILY_VISITOR_LLM_CALLS: '0',
+      ADMIN_PASS: '[REDACTED]',
+    },
+    'CLI 共享的演练 env_file 保留数据库/mock 配置，不含等锁变量',
+  );
+  assert.equal(appEnvCheck.mode, 0o600);
+  assert.ok(!fs.existsSync(appEnvCheck.path), '演练退出后删除临时应用 env_file');
   assert.equal(r.report.logDump.requested, false);
   assert.ok(!r.calls.some((args) => args.includes('logs')) && r.report.cleanupComplete);
   r = run('normal', path.join(artifactDir, 'dump.log'));
@@ -218,6 +255,73 @@ for (const [service, variable, ip] of [
 }
 assert.ok(deploymentCompose.includes(`subnet: \${APP_UPSTREAM_SUBNET:-${DEFAULT_UPSTREAM.subnet}}`));
 assert.doesNotMatch(deploymentCompose.split('\n  sandbox:\n')[1]!.split('\n  platform:')[0]!, /app-upstream/);
+
+// 仅按本仓库 compose 的两空格缩进切块，不引入 YAML 解析器；共享配置只允许已声明的单一 anchor。
+// 将字段值保留为文本，比较 app/CLI 的有效配置，避免只检查服务块而漏掉继承的固定地址或端口。
+function composeFields(block: string): Record<string, string> {
+  const lines = block.split('\n').filter((line) => line.trim() && !line.trimStart().startsWith('#'));
+  const fields: Record<string, string> = {};
+  for (let i = 0; i < lines.length;) {
+    const header = /^([\w-]+|<<): *(.*)$/.exec(lines[i]!);
+    assert.ok(header, `无法识别的 compose 字段：${lines[i]}`);
+    assert.ok(!Object.hasOwn(fields, header[1]!), `重复的 compose 字段：${header[1]}`);
+    let end = i + 1;
+    while (end < lines.length && lines[end]!.startsWith('  ')) end++;
+    fields[header[1]!] = [header[2]!, ...lines.slice(i + 1, end).map((line) => line.slice(2))].filter(Boolean).join('\n');
+    i = end;
+  }
+  return fields;
+}
+for (const [file, source] of [
+  ['deploy/compose.yml', deploymentCompose],
+  ['deploy/drill/compose.drill.yml', drillCompose],
+]) {
+  const root = composeFields(source!);
+  const anchors = new Map<string, Record<string, string>>();
+  for (const [key, value] of Object.entries(root)) {
+    if (!key.startsWith('x-')) continue;
+    const [anchor, ...body] = value.split('\n');
+    assert.match(anchor!, /^&[\w-]+$/);
+    anchors.set(anchor!.slice(1), composeFields(body.join('\n')));
+  }
+  const services = Object.fromEntries(
+    Object.entries(composeFields(root.services!)).map(([name, block]) => {
+      const fields = composeFields(block);
+      const merge = fields['<<'];
+      if (!merge) return [name, fields];
+      assert.match(merge, /^\*[\w-]+$/);
+      const shared = anchors.get(merge.slice(1));
+      assert.ok(shared && !shared['<<'], `${file}: ${name} 只能引用一层已声明的共享配置`);
+      return [name, { ...shared, ...fields }];
+    }),
+  );
+  const app = services.app!;
+  const cli = services['app-cli']!;
+  assert.ok(app && cli, `${file}: 必须同时有 app 与 app-cli`);
+  assert.deepEqual(composeFields(cli.networks!), { default: '{}' }, `${file}: CLI 只接默认网络`);
+  for (const key of ['ports', 'container_name', 'network_mode']) assert.ok(!Object.hasOwn(cli, key), `${file}: CLI 不得设置 ${key}`);
+  assert.equal(cli.profiles, '[cli]');
+  assert.equal(cli.restart, "'no'");
+  assert.deepEqual(composeFields(cli.healthcheck!), { disable: 'true' });
+  assert.deepEqual(composeFields(cli.depends_on!), { db: 'condition: service_healthy' }, `${file}: CLI 不启动应用或迁移`);
+  for (const key of ['image', 'env_file', 'volumes']) assert.equal(cli[key], app[key], `${file}: CLI 与 app 共享 ${key}`);
+  assert.ok(cli.image && cli.env_file && cli.environment && cli.volumes);
+  const cliEnvironment = composeFields(cli.environment);
+  assert.ok(!Object.hasOwn(cliEnvironment, 'TENANT_LOCK_WAIT'), `${file}: CLI 没有进程 epoch，不启用等锁`);
+  assert.deepEqual(cliEnvironment, { PORT: "'3200'", LOG_FORMAT: 'json' }, `${file}: CLI 整块替换共享 environment`);
+  for (const [name, service] of Object.entries(services)) {
+    const networks = composeFields(service.networks ?? '');
+    if (name === 'app' || name === 'app-standby') {
+      assert.equal(composeFields(service.environment!).TENANT_LOCK_WAIT, 'forever', `${file}: ${name} 保留等锁模式`);
+      assert.deepEqual(Object.keys(networks).sort(), ['app-upstream', 'default']);
+      assert.match(networks['app-upstream']!, /ipv4_address:/);
+    } else {
+      assert.ok(!Object.hasOwn(networks, 'app-upstream'), `${file}: ${name} 不接上游网络`);
+      assert.doesNotMatch(service.networks ?? '', /ipv4_address:/, `${file}: ${name} 不占固定地址`);
+    }
+  }
+}
+console.log('Compose 结构：共享镜像/env_file/挂载、CLI 无等锁/固定地址/端口、仅依赖 db、主备均等锁、沙箱不接上游网络，通过');
 
 // 执行容器内实际使用的测量程序；这里用本机 HTTP 服务器验证，无需 Docker。
 const probeScript = path.resolve('scripts/failover-probe.mjs');
@@ -386,26 +490,173 @@ try {
 
   const guard = fs.readFileSync('deploy/rollback-guard.sh', 'utf8');
   const purge = guard.slice(guard.indexOf('    purge_sandboxes() {'), guard.indexOf('    purge_sandboxes || sandbox_refuse'));
-  assert.ok(purge.includes('docker run --rm --network'));
-  fs.writeFileSync(path.join(paramTmp, 'deploy/compose.yml'), 'ipv4_address: synthetic\n');
-  const trace = execFileSync(
-    'bash',
-    [
-      '-c',
-      `set -eu\ndir="$1" project=side-drill env_file="$1/.env" running=synthetic:image\ntimeout() { shift 2; "$@"; }\ndocker() { printf '%s\\n' "$*"; }\n${purge}\npurge_sandboxes`,
-      '--',
-      paramTmp,
-    ],
-    { encoding: 'utf8', timeout: 5000 },
-  );
-  assert.ok(
-    trace.includes('run --rm --network side-drill_default --env-file') &&
-      trace.includes('synthetic:image node --import tsx src/cli/sandbox.ts purge --all'),
-  );
-  assert.doesNotMatch(trace, /docker compose|--ip|app-upstream/);
+  assert.doesNotMatch(purge, /docker run --rm --network/);
+  for (const [config, expectedService] of [
+    ['  app-cli:\n    networks: {default: {}}\n  app:\n    ipv4_address: synthetic\n', 'app-cli'],
+    ['  app:\n', 'app'], // 同步前仍是没有固定 IP 的旧部署。
+    ['  app:\n    ipv4_address: synthetic\n', null],
+  ] as const) {
+    fs.writeFileSync(path.join(paramTmp, 'deploy/compose.yml'), config);
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        `set -eu
+dir="$1" project=side-drill port=4000 running=synthetic:image
+timeout() { shift 2; "$@"; }
+docker() { printf 'IMAGE=%s ARGS=%s\\n' "$APP_IMAGE" "$*"; }
+${purge}
+purge_sandboxes`,
+        '--',
+        paramTmp,
+      ],
+      { encoding: 'utf8', timeout: 5000 },
+    );
+    assert.ifError(result.error);
+    if (expectedService) {
+      assert.equal(result.status, 0, result.stderr);
+      assert.ok(
+        result.stdout.includes(
+          `IMAGE=synthetic:image ARGS=compose -p side-drill -f deploy/compose.yml run --rm --no-deps ${expectedService} node --import tsx src/cli/sandbox.ts purge --all`,
+        ),
+      );
+      assert.doesNotMatch(result.stdout, /--ip|app-upstream|--network/);
+    } else {
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /缺 app-cli/);
+      assert.equal(result.stdout, '', '固定网络但缺 CLI 服务时不得调用 Docker');
+    }
+  }
 } finally {
   fs.rmSync(paramTmp, { recursive: true, force: true });
 }
+// 旧 tag 网络预检：假 SSH 执行真实 heredoc，假 Docker 只允许 container ls/inspect。
+const upstreamStart = deploy.indexOf('# 固定网络退版检查');
+const upstreamEnd = deploy.indexOf('# 3)');
+assert.ok(upstreamStart > 0 && upstreamEnd > upstreamStart);
+assert.ok(upstreamEnd < deploy.indexOf('guard_rollback "$rollback_target"') && upstreamEnd < deploy.indexOf('rsync -az'));
+const upstreamCheck = deploy.slice(upstreamStart, upstreamEnd);
+assert.match(upstreamCheck, /alarm 30/);
+const upstreamTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-old-network-'));
+try {
+  const bin = path.join(upstreamTmp, 'bin');
+  const build = path.join(upstreamTmp, 'build');
+  fs.mkdirSync(bin);
+  fs.mkdirSync(path.join(build, 'deploy'), { recursive: true });
+  fs.writeFileSync(
+    path.join(bin, 'grep'),
+    `#!/usr/bin/env bash
+[ "$MODE" != grep-error ] || exit 2
+exec /usr/bin/grep "$@"
+`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(bin, 'ssh'),
+    `#!/usr/bin/env bash
+printf 'ssh %s\\n' "$*" >> "$TRACE"
+[ "$MODE" != ssh-error ] || exit 255
+[ "$MODE" != ssh-timeout ] || exit 124
+shift
+exec "$@"
+`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(bin, 'timeout'),
+    `#!/usr/bin/env bash
+[ "$1 $2" = '--kill-after=2s 8s' ] || exit 99
+shift 2
+[ "$MODE" != docker-timeout ] || exit 124
+exec "$@"
+`,
+    { mode: 0o755 },
+  );
+  fs.writeFileSync(
+    path.join(bin, 'docker'),
+    `#!/usr/bin/env bash
+printf 'docker %s\\n' "$*" >> "$TRACE"
+cat >/dev/null # 验证不能吃掉 SSH heredoc 中后续的检查。
+case "$1" in
+  container)
+    [ "$2" = ls ] || exit 99
+    shift
+    [ "$MODE" != list-error ] || exit 1
+    [ "$2 $3 $4 $5" = '-aq --filter label=com.docker.compose.project=side-drill --filter' ] || exit 99
+    case "$6" in
+      label=com.docker.compose.service=app) id=aaaaaaaaaaaa ;;
+      label=com.docker.compose.service=app-standby) id=bbbbbbbbbbbb ;;
+      *) exit 99 ;;
+    esac
+    case "$MODE" in empty) ;; bad-id) echo garbage ;; *) echo "$id" ;; esac ;;
+  inspect)
+    [ "$2" = --format ] || exit 99
+    case "$3" in *side-drill_app-upstream*) ;; *) exit 99 ;; esac
+    case "$MODE:$4" in
+      attached:aaaaaaaaaaaa|stopped:aaaaaaaaaaaa|standby:bbbbbbbbbbbb) echo attached ;;
+      inspect-error:*) exit 1 ;;
+      unknown:*) echo unknown ;;
+      empty-inspect:*) ;;
+      *) echo clear ;;
+    esac ;;
+  *) echo 'unexpected mutation' >&2; exit 99 ;;
+esac
+`,
+    { mode: 0o755 },
+  );
+  const tracePath = path.join(upstreamTmp, 'trace');
+  for (const mode of [
+    'attached',
+    'stopped',
+    'standby',
+    'ssh-error',
+    'ssh-timeout',
+    'list-error',
+    'bad-id',
+    'inspect-error',
+    'unknown',
+    'empty-inspect',
+    'docker-timeout',
+    'empty',
+    'clear',
+    'fixed-target',
+    'missing-target',
+    'grep-error',
+  ]) {
+    fs.writeFileSync(tracePath, '');
+    const target = path.join(build, 'deploy/compose.yml');
+    fs.writeFileSync(target, mode === 'fixed-target' ? 'ipv4_address: synthetic\n' : 'services: {}\n');
+    if (mode === 'missing-target') fs.unlinkSync(target);
+    const result = spawnSync(
+      'bash',
+      [
+        '-c',
+        `set -euo pipefail
+SERVER=synthetic NAME=side-drill BUILD_DIR="$1"
+${upstreamCheck}
+echo REACHED_REMOTE_WRITES
+`,
+        '--',
+        build,
+      ],
+      { encoding: 'utf8', timeout: 5000, env: { PATH: `${bin}:${process.env.PATH}`, MODE: mode, TRACE: tracePath } },
+    );
+    assert.ifError(result.error);
+    const pass = ['empty', 'clear', 'fixed-target'].includes(mode);
+    assert.equal(result.status, pass ? 0 : 1, `${mode}: ${result.stderr}`);
+    assert.equal(result.stdout.includes('REACHED_REMOTE_WRITES'), pass, mode);
+    if (!pass && mode !== 'missing-target' && mode !== 'grep-error')
+      assert.match(result.stderr, /deployment\.md#rollback-before-fixed-ip/, mode);
+    const trace = fs.readFileSync(tracePath, 'utf8');
+    assert.doesNotMatch(trace, /docker (?:run|stop|rm|network|compose)|rsync|purge/);
+    if (mode === 'fixed-target' || mode === 'missing-target' || mode === 'grep-error')
+      assert.equal(trace, '', '目标仍含网络或不可读时不查询服务器');
+    if (mode === 'standby' || mode === 'clear') assert.ok(trace.includes('com.docker.compose.service=app-standby'));
+  }
+} finally {
+  fs.rmSync(upstreamTmp, { recursive: true, force: true });
+}
+console.log('旧 tag 网络检查：主/备/停止容器接入即拒绝，查询失败/超时从严，拒绝早于所有远端写操作，通过');
 const swap = deploy.slice(deploy.indexOf('swap_app() {'), deploy.indexOf('\n\necho "[7/7]'));
 assert.ok(swap.startsWith('swap_app() {') && swap.endsWith('}'));
 const selectMode = deploy.slice(deploy.indexOf('# 7)'), deploy.indexOf('# 每次探测与整轮都有时限'));

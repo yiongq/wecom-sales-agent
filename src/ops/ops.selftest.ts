@@ -4138,7 +4138,7 @@ function sandboxDeploySelftest(): void {
   for (const folder of [bin, repo, remote, flags, path.join(repo, 'deploy'), path.join(repo, 'src/db')])
     fs.mkdirSync(folder, { recursive: true });
   const sourceRoot = path.join(import.meta.dirname, '../..');
-  for (const file of ['deploy.sh', 'deploy/rollback-guard.sh', 'deploy/caddy-dual-upstream.sh'])
+  for (const file of ['deploy.sh', 'deploy/rollback-guard.sh', 'deploy/caddy-dual-upstream.sh', 'deploy/upstream-network.mjs'])
     fs.copyFileSync(path.join(sourceRoot, file), path.join(repo, file));
   for (const file of ['package.json', 'Dockerfile', 'deploy/compose.yml', 'src/db/migrate.ts'])
     fs.writeFileSync(path.join(repo, file), '{}');
@@ -4164,6 +4164,7 @@ function sandboxDeploySelftest(): void {
     show-ref) exit 0 ;;
     cat-file) case "$3" in *runtime.ts) [ "\${NEW_PHASE:-5}" = 5 ] ;; *) exit 0 ;; esac ;;
     ls-tree) case "$*" in *src/core/attachments.ts*) echo src/core/attachments.ts ;; *src/packs/industrial/runtime.ts*) echo src/packs/industrial/runtime.ts ;; *) echo src/core/site-links.ts ;; esac ;;
+    show) case "$2" in *:deploy/compose.yml) cat deploy/compose.yml ;; *) exit 98 ;; esac ;;
     archive) tar -cf - package.json Dockerfile deploy src ;;
     *) exit 98 ;;
   esac`,
@@ -4227,6 +4228,15 @@ if (text.includes('src/tenancy/runtime.ts') && !text.includes('resolveRole')) {
   process.exit(process.env.PREV_PHASE === 'error' ? 125 : Number(process.env.PREV_PHASE || 5) >= 5 ? 0 : 1);
 }
 if (text.includes('psql')) { console.log(text.includes("column_name = 'kind'") ? 't' : text.includes("kind = 'standard'") ? 'f|f' : 'f'); process.exit(0); }
+// 旧单容器夹具：app 只接默认网络，没有 app-standby；沙箱状态由后面的分支单独处理。
+if (text === 'container ls -aq --filter label=com.docker.compose.project=side05 --filter label=com.docker.compose.service=app') {
+  console.log('aaaaaaaaaaaa'); process.exit(0);
+}
+if (text === 'container ls -aq --filter label=com.docker.compose.project=side05 --filter label=com.docker.compose.service=app-standby' ||
+    text === 'ps -q --filter label=com.docker.compose.project=side05 --filter label=com.docker.compose.service=app-standby') process.exit(0);
+if (a[0] === 'inspect' && a[1] === '--format' && a[2].includes('side05_app-upstream') && a[3] === 'aaaaaaaaaaaa') {
+  console.log('clear'); process.exit(0);
+}
 if (text.includes('container ls')) { if (marked('sandbox')) console.log('placeholder'); process.exit(0); }
 if (text.includes('container inspect') && text.includes('-sandbox')) process.exit(marked('sandbox') ? 0 : 1);
 if (text.includes('inspect')) {
@@ -4471,13 +4481,22 @@ console.log(JSON.stringify(result));
     check('05 R16 五项体验客服占位变量齐全通过环境试读', r.code === 0, r.out);
     for (const line of ['DEFAULT_TENANT_SLUG', '=SECRET_VALUE', '1BAD=SECRET_VALUE', 'BAD NAME=SECRET_VALUE']) {
       r = run({}, true, `${line}\n`);
+      // 允许同步前按 project 查询主备网络；其他 Docker 调用仍全部禁止。
+      const onlyNetworkReads = r.log
+        .split('\n')
+        .filter((entry) => entry.includes('docker '))
+        .every((entry) =>
+          /^(?:timeout --kill-after=2s 8s )?docker (?:container ls -aq --filter label=com\.docker\.compose\.project=side05 --filter label=com\.docker\.compose\.service=app(?:-standby)?|inspect --format \{\{if \.NetworkSettings\.Networks\}\}.*side05_app-upstream.*\{\{end\}\} a{12})(?: image=)?$/.test(
+            entry,
+          ),
+        );
       check(
         `05 评审1/2 非赋值或非法名字 ${line.split('=')[0] || '空名字'}：只报行号、退出 1、容器未动`,
         r.code === 1 &&
           r.out.includes('sandbox_env_format line=6') &&
           !r.out.includes('SECRET_VALUE') &&
           !r.out.includes(line) &&
-          !r.log.includes('docker ') &&
+          onlyNetworkReads &&
           !fs.existsSync(path.join(flags, 'host')) &&
           fs.readFileSync(path.join(flags, 'sandbox'), 'utf8') === 'old',
         r.out + r.log,

@@ -1,7 +1,7 @@
 // 把 var/ 里的真实会话导进库（02 spec「导入、导出与切换 · import-sessions」）。以 app 身份运行，要求应用已停（要取租户锁）：
 //   docker compose stop app app-standby
 //   install -d -o 1000 -g 1000 /root/sessions-keep-<日期>
-//   docker compose run --rm -v /root/sessions-keep-<日期>:/keep app \
+//   docker compose run --rm -v /root/sessions-keep-<日期>:/keep app-cli \
 //     node --import tsx src/cli/import-sessions.ts --tenant <slug> --keep /keep [--dry-run] [--resync]
 // --keep 必须在 var/ 之外（原件不进每晚 var/ 的备份），并且是挂进来的宿主目录：写在容器里的会随 --rm 删掉。
 // --var 缺省与应用相同（VAR_DIR，没设就是 ./var）。--resync：回退到文件存储跑过一段之后再切回。

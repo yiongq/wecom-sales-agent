@@ -496,16 +496,20 @@ if [ "$is_pre05" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
     [ -n "$running" ] && pre05_image "$running" >/dev/null 2>&1 || sandbox_refuse '当前镜像不能执行 sandbox purge --all'
     # 显式用当前容器的镜像；:latest 或 :prev 可能已指向旧镜像。CLI 使用宿主的 app 环境、不需要 .env.sandbox。
     purge_sandboxes() {
-      if grep -q 'ipv4_address:' "$dir/deploy/compose.yml" 2>/dev/null; then
-        # 固定 IP 不能同时给活动 app 与一次性容器。该 CLI 只读 app env、连 DB，不读写 var/。
-        # 默认网络仍由当前 compose project 管理；不创建网络、不申请 Caddy 的上游 IP。
-        timeout --kill-after=2s 120s docker run --rm --network "${project}_default" --env-file "$env_file" \
-          "$running" node --import tsx src/cli/sandbox.ts purge --all </dev/null
-      else
-        (cd "$dir" && APP_IMAGE="$running" APP_CONTAINER="$project" HOST_PORT="$port" \
-          timeout --kill-after=2s 120s docker compose -p "$project" -f deploy/compose.yml run --rm --no-deps app \
-          node --import tsx src/cli/sandbox.ts purge --all </dev/null)
+      # 同步前服务器可能仍是旧 compose。只在它尚无固定 IP 时兼容旧服务；
+      # 已有固定 IP 却没有 app-cli 时拒绝，不能退回会抢地址的一次性 app。
+      local cli_service=app-cli
+      [ -r "$dir/deploy/compose.yml" ] || return 1
+      if ! grep -q '^  app-cli:' "$dir/deploy/compose.yml"; then
+        if grep -q 'ipv4_address:' "$dir/deploy/compose.yml"; then
+          echo '当前 compose 缺 app-cli：先按 deployment.md 更新命令行运行配置，再执行 purge。' >&2
+          return 1
+        fi
+        cli_service=app
       fi
+      (cd "$dir" && APP_IMAGE="$running" APP_CONTAINER="$project" HOST_PORT="$port" \
+        timeout --kill-after=2s 120s docker compose -p "$project" -f deploy/compose.yml run --rm --no-deps "$cli_service" \
+        node --import tsx src/cli/sandbox.ts purge --all </dev/null)
     }
     purge_sandboxes || sandbox_refuse 'sandbox purge --all 失败'
     tenancy=$(tenancy_state) || tenancy=unknown
@@ -607,7 +611,7 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
     fi
     echo "  1. ${dc} stop app app-standby"
     echo "  2. install -d -o 1000 -g 1000 /root/channels-keep-<日期>"
-    echo "     ${dc} run --rm -v /root/channels-keep-<日期>:/keep app \\"
+    echo "     ${dc} run --rm -v /root/channels-keep-<日期>:/keep app-cli \\"
     echo "       node --import tsx src/cli/channel-export.ts --tenant ${slug} --var /app/var --keep /keep"
     echo "     （不带 APP_IMAGE，用当前 ${project}:current 镜像里的 channel-export；被拒时照提示处理。"
     echo "      有默认企微账号以外的任何账号，不论状态，只能回到 03 之后的镜像；部分送达或未发的人工回复、通知需以 03 起一次、恢复发完、正常停机再导出。）"
@@ -638,7 +642,7 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
   fi
   echo "  1. ${dc} stop app app-standby"
   echo "  2. install -d -o 1000 -g 1000 /root/sessions-keep-<日期>"
-  echo "     ${dc} run --rm -v /root/sessions-keep-<日期>:/keep app \\"
+  echo "     ${dc} run --rm -v /root/sessions-keep-<日期>:/keep app-cli \\"
   echo "       node --import tsx src/cli/export-sessions.ts --tenant ${slug} --keep /keep --var /app/var"
   if [ "$target" != pre-02 ]; then
     echo "     （不带 APP_IMAGE，用的是 ${project}:current，也就是这次的新镜像里的 export-sessions）"

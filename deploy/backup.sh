@@ -48,7 +48,7 @@
 #      都要在 CHANNEL_SECRETS_KEY 里（<id>:<密钥>，逗号隔开）；已轮换掉的从离线保管处取回。库里没有渠道账号就跳过这一步
 #   7) 以 app 身份设恢复截止点（03 R7）：截止点之前的客户消息只补记进会话、不调模型、不回复，之前建的没发完的回复与到点的跟进取消，
 #      涉及的会话加一条说明，最后删掉恢复哨兵：
-#        docker compose -f deploy/compose.yml run --rm app node --import tsx src/cli/channel-account.ts restore-cutoff --tenant <slug> --until <时刻>
+#        docker compose -f deploy/compose.yml run --rm app-cli node --import tsx src/cli/channel-account.ts restore-cutoff --tenant <slug> --until <时刻>
 #      <时刻> 带时区（如 2026-10-09T03:00:00+08:00）：取旧实例最后一次正常回复的时刻，有告警时从「健康检查失败」「app 反复重启」
 #      那一条往前推；拿不准就取恢复开始的时刻（写 now）。宁可漏回（顾问补）不重复回。不跑这一步，有启用的企微账号时应用以
 #      channel_restore_pending 拒绝启动；企微状态没导入或已导出时命令什么都不做，哨兵由应用启动时删掉

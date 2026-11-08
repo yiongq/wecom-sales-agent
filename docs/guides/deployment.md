@@ -23,7 +23,7 @@ bash deploy.sh demo-v1.2   # SERVER 由已忽略的 .deploy.env 或环境变量�
 以下部署流程默认在服务器部署目录操作，省略 `-f` 的流程描述由 `deploy.sh` 提供实际 Compose 参数。它只收本地已有的 tag，分支名和提交号都不收，所以线上跑的每一版都提交过、也过了四个门禁，工作区里没提交的改动上不了线。换成 compose 之前的 tag（里面没有 `deploy/compose.yml`）也不收，见下面「回到文件模式或更早的版本」。流程（见 [deploy.sh](../../deploy.sh)）：
 
 1. `git archive <tag>` 解到临时目录，在那里 `pnpm install` 并跑四个门禁，任何一个不过就中止，服务器上什么都不动（本机要有 pnpm）。
-2. 检查服务器 `.env`（只读），不过就中止。
+2. 先做[旧 tag 的固定网络退版检查](#rollback-before-fixed-ip)，再检查服务器 `.env`（均只读），不过就中止。
 3. rsync 到服务器：按内容比对，`.env*`、`var/`、日志既不发送也不删除。
 4. 把备份脚本装到部署目录之外（安装位置见 deploy.sh），给正在跑的容器所用镜像打 `:prev`，再 `docker build`（把 tag 写进镜像，后台前端 `console/` 也在这一步构建），并用新镜像试读一遍 `.env`。这几步失败就中止，旧容器照常跑。
 5. 跑迁移（`docker compose run --rm migrate`，顺带拉起数据库）。失败就中止，旧容器照常跑，库没有变化。
@@ -48,7 +48,7 @@ bash deploy.sh demo-v1.2   # SERVER 由已忽略的 .deploy.env 或环境变量�
 docker compose -f deploy/compose.yml stop app app-standby
 docker compose -f deploy/compose.yml run --rm migrate
 docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/tenant-create.ts --slug '<租户slug>' --name '演示旅行社' --pack travel
-docker compose -f deploy/compose.yml run --rm app node --import tsx src/cli/import-config.ts --tenant '<租户slug>'
+docker compose -f deploy/compose.yml run --rm app-cli node --import tsx src/cli/import-config.ts --tenant '<租户slug>'
 docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/user-create.ts --tenant '<租户slug>' --email '<成员邮箱>' --name '<成员姓名>' --role owner --password-stdin
 docker compose -f deploy/compose.yml up -d app
 ```
@@ -62,11 +62,11 @@ docker compose -f deploy/compose.yml up -d app
 
    ```bash
    docker compose -f deploy/compose.yml stop app app-standby
-   docker compose -f deploy/compose.yml run --rm -v '<宿主保留目录>:/keep' app node --import tsx src/cli/import-sessions.ts --tenant '<租户slug>' --keep /keep --var /app/var
+   docker compose -f deploy/compose.yml run --rm -v '<宿主保留目录>:/keep' app-cli node --import tsx src/cli/import-sessions.ts --tenant '<租户slug>' --keep /keep --var /app/var
    ```
 
 3. 导入成功后在服务器 `.env` 写 `SESSION_STORE=db`，`docker compose -f deploy/compose.yml up -d app`；确认 `/healthz` 的 `store.mode=db`、四个哈希不变、会话数与导入一致，成员工作台能打开导入的会话。种子、访客仍在 JSON。
-4. 若需回退，停 app、用 `src/cli/export-sessions.ts` 导出（参数与挂载同上），去掉 `SESSION_STORE=db` 再起，确认 `store.mode=file`。回退期间聊过的新消息再次切库时用 `import-sessions --resync` 合并。
+4. 若需回退，停 app 和 app-standby、用 `src/cli/export-sessions.ts` 导出（参数与挂载同上），去掉 `SESSION_STORE=db` 再起，确认 `store.mode=file`。回退期间聊过的新消息再次切库时用 `import-sessions --resync` 合并。
 5. 切换后第一份每晚备份完成恢复验证，才删除 `--keep` 原件。
 
 **回到文件模式或更早的版本**（配置源与会话存储是两件事）：
@@ -76,7 +76,7 @@ docker compose -f deploy/compose.yml up -d app
 - **先查条目版本**：后台修改已上架条目后（`/healthz` 的 `config.catalogVersioned=true`），`deploy.sh` 拒绝回到 02 之前的镜像。旧镜像不写条目版本，那期间发出的方案书回到 02 后会按版本 1 显示旧价；回到文件存储也去不掉风险，只能回滚到 02 之后的镜像。检查适用于手工部署与自动回滚，健康或数据库状态看不清时从严拒绝。
 - **文件配置的链接损失**：同一 02 镜像去掉 `CONFIG_SOURCE=db` 后，已发 `?v=2` 及以上的方案书全部 404，不带 `v` 的旧链接按导出时的新内容显示，不能保持历史报价；仅把 `SESSION_STORE` 改为 file、仍保留 DB 配置则不改变条目版本。当前没有对此类配置切换的专门启动告警，操作前须人工核对。
 - 会话在库里时（`.env` 为 `SESSION_STORE=db` 或 `var/` 有 `sessions-in-db.json`），先用 02 的镜像回到文件存储：`docker compose -f deploy/compose.yml stop app app-standby`，跑 `src/cli/export-sessions.ts`（用法见 [deploy/compose.yml](../../deploy/compose.yml) 开头），去掉 `SESSION_STORE=db` 再起。不做这一步，deploy.sh 拒绝部署 02 之前的 tag，也不会自动回滚到 02 之前的 `:prev`（[deploy/rollback-guard.sh](../../deploy/rollback-guard.sh)）。
-- 先导出后台改过的内容。导出要写进挂进容器的宿主目录，写在容器里的文件会随 `--rm` 删掉：`install -d -o 1000 -g 1000 <宿主导出目录>`，再 `docker compose -f deploy/compose.yml run --rm -v <宿主导出目录>:/export app node --import tsx src/cli/export-config.ts --tenant <slug> --out /export`。回到旧 tag 时把那一版的 `data/sop.md` 先放进这个目录（例如 `target-sop.md`），加 `--image-sop /export/target-sop.md`。
+- 先导出后台改过的内容。导出要写进挂进容器的宿主目录，写在容器里的文件会随 `--rm` 删掉：`install -d -o 1000 -g 1000 <宿主导出目录>`，再 `docker compose -f deploy/compose.yml run --rm -v <宿主导出目录>:/export app-cli node --import tsx src/cli/export-config.ts --tenant <slug> --out /export`。回到旧 tag 时把那一版的 `data/sop.md` 先放进这个目录（例如 `target-sop.md`），加 `--image-sop /export/target-sop.md`。
 - 把三个文件拷进要部署的那条线的 `data/`，两个 JSON 用 `pnpm exec oxfmt --write data/routes.json data/hotels.json` 格式化，提交、打 tag；`.env` 去掉 `CONFIG_SOURCE=db`，再部署这个 tag。
 - 那条线是换成 compose 之前的版本时，deploy.sh 不收它的 tag（否则会先把服务器上的 `deploy/` 同步删掉，到迁移那一步才失败）：在那个 tag 的 worktree 里跑它自己的 `deploy.sh`，它用 `docker run` 换掉 compose 起的同名容器。之后再部署新的 tag，换容器那一步会接管这个容器。
 - 旧 deploy.sh 的 rsync 也带 `--delete`，跑之前先看它保护哪些文件。demo-v1.1 及以后的线保护全部 `.env*`（`git show <tag>:deploy.sh | grep -F 'P /.env*'` 有输出）。demo-v1 和从它切出的线只保护名为 `.env` 的那一个，会删掉 `.env.db`、`.env.migrate`、`.env.platform`、`.env.backup`：之后每晚的备份停在「缺 BACKUP_AGE_RECIPIENTS」（只记在日志里），再部署新 tag 也会在检查服务器 `.env` 那一步中止。用这种线，先把这几个文件（有几个拷几个）拷到部署目录之外，跑完立刻拷回。
@@ -94,7 +94,7 @@ docker compose -f deploy/compose.yml up -d app
 
 ## 18 主备切换、滚动发布与回滚
 
-同一时刻只有一个活动实例，另一个进程等租户锁。两边要求 `CONFIG_SOURCE=db`、`SESSION_STORE=db`、`TENANT_LOCK_WAIT=forever`，共用数据库与 `var/`。等锁期间不监听、不跑任务、不读写 `var/`；备用的 Docker HEALTHCHECK 显示 unhealthy 属预期，不能按它重启容器。沙箱和平台命令行沿用原方式。
+同一时刻只有一个活动实例，另一个进程等租户锁。两边要求 `CONFIG_SOURCE=db`、`SESSION_STORE=db`、`TENANT_LOCK_WAIT=forever`，共用数据库与 `var/`。等锁期间不监听、不跑任务、不读写 `var/`；备用的 Docker HEALTHCHECK 显示 unhealthy 属预期，不能按它重启容器。沙箱和平台命令行沿用原方式。应用命令行统一用 `docker compose -f deploy/compose.yml run --rm app-cli node --import tsx src/cli/<name>.ts …`：`app-cli` 通过 YAML 共享配置取得与 app 相同的镜像、原样 `.env` 和 `var/` 挂载；它的 `environment` 只设 `PORT`、`LOG_FORMAT`，不设 `TENANT_LOCK_WAIT`（CLI 不走宿主等锁启动，没有进程 epoch）。等锁变量只在 app / app-standby 的服务配置中设置，不要写入共享 `.env`。`app-cli` 只接默认网络、没有固定 IP 或发布端口，`cli` profile 平时不启动。显式 `run app-cli` 不需要另加 `--profile cli`，只依赖 db，不触发迁移或启动应用。平台身份仍用 `platform`，不能拿平台凭据替代应用凭据。
 
 首次切换前由 owner 按顺序完成：
 
@@ -126,11 +126,28 @@ docker compose -f deploy/compose.yml up -d app
 
 滚动模式健康检查或换容器失败：先停两边，完整执行既有版本判断、`rollback-guard.sh` 和 revision 核对，再以 `:prev`、`--no-deps` 重建原主，不回退迁移；失败部署始终非零退出。回滚成功后备用保持停止，修复后再次部署恢复双容器。回滚检查拒绝时按错误说明处理，不跳过保护。模式在本次第七步开始时确定，自动回滚沿用同一模式；部署和回滚期间不要修改开关。
 
-回滚检查需要执行 `sandbox purge --all` 时，固定 IP 配置下改用当前镜像、应用 `.env` 和本 project 默认网络的一次性容器；它不占用 app 的固定 IP、不读写 `var/`。其他要求独占租户锁的 app 命令仍先停两边再运行。
+回滚检查需要执行 `sandbox purge --all` 时，统一用 `app-cli`、实际运行容器的镜像及 `--no-deps`，不再使用单独的 `docker run --network` 绕法。服务挂载与 app 一致，purge 命令本身不读写 `var/`。同步前若服务器还是既无 `app-cli` 又无固定 IP 的旧 compose，脚本兼容其原应用 CLI 服务；已有固定 IP 却缺 `app-cli` 时拒绝 purge，先按本文件补齐共享配置与 `app-cli` 服务并确认解析结果，不运行 `up` 或改动活动容器。其他要求独占租户锁的命令仍先停 `app app-standby` 再通过 `app-cli` 运行。
 
 手动回滚同样先停 `app app-standby`，用当前部署参数执行 `deploy/rollback-guard.sh` 核对目标镜像，通过后以 `APP_IMAGE=<已验证镜像>` 重建切换前的主服务并核对 revision。回到不认识等锁模式的旧 tag 前，必须停掉并删除备用容器，否则旧 compose 不再管理它；旧版本仍只起一份。
 
-关闭开关、退回单容器时，安排维护窗口并保持 Caddy 双上游：先用当前部署参数停止 `app app-standby`，再以已验证的当前镜像和 `up -d --no-deps app` 只启动 `app`，核对主端口的 `ok` / `role` / `revision` 及经 Caddy 的访问均正常，确认备用已停止。然后把服务器 `.env.ops` 改为 `CADDY_DUAL_UPSTREAM=0`，再部署单容器版本；需要把 Caddy 改回单上游时，最后改为 `reverse_proxy <APP_UPSTREAM_IP>:3200`（默认 `reverse_proxy 172.30.250.10:3200`），再 validate / reload、验证访问，不能改回宿主发布端口。不能先关闭开关再指望部署脚本替正在运行的备用迁回主端口；脚本会拒绝。关闭后的手动回滚也只恢复 `app`。若回退到尚无固定 IP 网络的旧 tag，须删除已停止的备用，并在维护窗口由 owner 用当前网络配置和旧镜像保留 app 的固定 IP、验证 Caddy 后再恢复服务；不要直接让旧 compose 删除 app 的网络接入。
+关闭开关、退回单容器时，安排维护窗口并保持 Caddy 双上游：先用当前部署参数停止 `app app-standby`，再以已验证的当前镜像和 `up -d --no-deps app` 只启动 `app`，核对主端口的 `ok` / `role` / `revision` 及经 Caddy 的访问均正常，确认备用已停止。然后把服务器 `.env.ops` 改为 `CADDY_DUAL_UPSTREAM=0`，再部署仍含固定网络的单容器版本；需要把 Caddy 改回单上游时，最后改为 `reverse_proxy <APP_UPSTREAM_IP>:3200`（默认 `reverse_proxy 172.30.250.10:3200`），再 validate / reload、验证访问，不能改回宿主发布端口。不能先关闭开关再指望部署脚本替正在运行的备用迁回主端口；脚本会拒绝。关闭后的手动回滚也只恢复 `app`。回退到尚无固定 IP 网络的旧版本须走下节手工流程；关闭开关、删除备用都不能使直接部署旧 tag 变安全。
+
+<a id="rollback-before-fixed-ip"></a>
+
+### 回退到不含固定 IP 网络的旧版本
+
+`deploy.sh` 在任何服务器写操作之前（包括回滚检查可能触发的 purge、rsync、构建和换容器），检查目标归档的 compose；目标没有 `ipv4_address` 时，只读查询本 project 的 `app` 和 `app-standby`（含已停止容器）是否仍接着专用上游网络。任一接入即拒绝；SSH/Docker 失败、超时或返回无法识别的状态也拒绝。整个 SSH 检查限时 30 秒，各 Docker 查询限时 8 秒（另给 2 秒强杀宽限）。未采用固定网络的旧部署仍可按原流程升级/退版。开关关闭也不豁免检查。
+
+owner 在维护窗口按以下步骤手动回滚，不用 `deploy.sh <旧 tag>` 同步旧 compose：
+
+1. 在部署目录之外保存当前 `deploy/compose.yml`、固定网络与宿主端口参数、Caddy 配置；准备并验证目标旧镜像（可在独立目录从旧 tag 构建），保留当前部署目录。备份应用状态，明确目标镜像的 revision。
+2. 用**当前 compose 与部署参数**停止 `app app-standby`。执行当前 `deploy/rollback-guard.sh <部署目录> <旧镜像> <NAME> <HOST_PORT>`，按其提示完成数据导出/其他前置处理；检查非零就停止回滚。
+3. 确认备用停止，在服务器 `.env.ops` 设 `CADDY_DUAL_UPSTREAM=0`。保留当前 compose 和 `app-upstream` 网络，以 `APP_IMAGE=<已验证旧镜像>` 加原部署参数执行 `docker compose -p <NAME> -f deploy/compose.yml up -d --no-deps app`；旧镜像只启动一份，不重复迁移，不用旧 tag 的 compose 重建。
+4. 逐一核对宿主主端口、`http://<APP_UPSTREAM_IP>:3200/healthz` 的 `ok` / `role`（目标版本支持时）/ `revision`，以及经 Caddy 的实际收发。全部通过后再把该镜像标记为 `<NAME>:current`。Caddy 可以保留双上游，或改为 `reverse_proxy <APP_UPSTREAM_IP>:3200`，validate / reload 后再次验证。不要改回宿主发布端口，不要断开固定网络。
+
+自动健康检查失败回滚到 `:prev` 不受这道“同步旧 compose”检查影响：它不执行 rsync，沿用本次已经部署的 compose、固定 IP 和部署参数，仅切换镜像，仍执行既有回滚保护和 revision 检查。以上手工方式同样保留网络；未来恢复自动部署时使用含固定网络的 tag。
+
+### 主备运维注意事项
 
 `STANDBY_CONTAINER` 默认 `<NAME>-standby`；脚本的 `STANDBY_HOST_PORT` 默认 `HOST_PORT + 2`，compose 自身默认固定为 3212。旁路实例必须避开线上和沙箱的端口与容器名；自定义值也传给手工 compose 与巡检。catalog-fix、会话/渠道导入导出、channel-account、erp-connector、行权删除等需要独占租户锁的命令，都先 `docker compose -f deploy/compose.yml stop app app-standby`，否则备用会接过锁；操作结束再恢复两边。
 
@@ -164,6 +181,7 @@ docker compose -f deploy/compose.yml up -d app
 两种演练分开取数。需要 Node 22、pnpm；容器演练还需要本机 Docker、Compose 2.30+。进程侧 7.1–7.4 合入后执行：
 
 ```bash
+# 含 Compose 文本结构/共享配置检查；不调用 Docker。
 pnpm exec tsx scripts/failover-drill.selftest.ts
 pnpm exec tsx scripts/failover-drill.ts kill > container-kill.json
 pnpm exec tsx scripts/failover-drill.ts rolling > container-rolling.json
@@ -178,7 +196,7 @@ pnpm exec tsx scripts/failover-drill.ts report container-kill.json container-rol
 
 结果文件放在仓库之外或 gitignored 的 `var/`。每次执行 stdout 只有一份 JSON，进度写 stderr；任何必要数字缺失为 null、任何检查失败或清理不完整都退出非零。每份结果含当前 `metrics`、`scopeComplete`、`cleanupComplete` 和四场景的 `acceptanceMetrics`（其他场景为 null）。离线 `report` 合并四份结果；只有四种结果各一份、数字齐全且达标、检查和清理均通过时，`acceptance10to12Complete` 才为 true。它是本节演练数字的汇总，旧进程三类写入的直接 epoch 栅栏回归仍由进程侧自测覆盖。
 
-**容器演练只量对外可用性。** 脚本构建 drill-old、drill-new 两个 revision，使用随机 project、随机本机端口、临时随机凭据和 tmpfs PG，初始化合成旅游租户；`LLM_MOCK=1`，不读取部署 env、不调用 deploy.sh。演练自己的临时 `.env.ops` 显式写入 `CADDY_DUAL_UPSTREAM=1`，经与 deploy.sh 共用的确认检查通过后才进入主备演练与回滚，JSON 的 `caddyDualUpstream` 记录确认结果。脚本通过 `docker network ls` / `inspect` 只读获取已有网段，从 `172.30/16`、`172.31/16` 的候选 /28 中选择无重叠子网；查不到或候选耗尽就明确报错、退出非零。先创建并标记本 project 的专用网络，再由 Compose 分配默认网络，避免自己的默认网络抢占所选网段。两个 app 都接默认网络连 PG、接专用网络取得固定 IP；Caddy 使用 host 网络并 import 同一片段，直连这两个 IP 的 3200 端口。JSON 的 `upstream` 记录 `subnet`、`appIP`、`standbyIP`。并发演练若在选网之后抢到同段，创建失败即退出，不删除其他网络。
+**容器演练只量对外可用性。** 脚本构建 drill-old、drill-new 两个 revision，使用随机 project、随机本机端口、临时随机凭据和 tmpfs PG，初始化合成旅游租户；`LLM_MOCK=1`，不读取部署 env、不调用 deploy.sh。数据库/mock 配置写入权限 0600 的临时应用 env 文件，两个常驻服务与 `app-cli` 共用，清理时删除；该文件不含等锁变量，只有常驻服务的 `environment` 设置 `TENANT_LOCK_WAIT=forever`。演练自己的临时 `.env.ops` 显式写入 `CADDY_DUAL_UPSTREAM=1`，经与 deploy.sh 共用的确认检查通过后才进入主备演练与回滚，JSON 的 `caddyDualUpstream` 记录确认结果。脚本通过 `docker network ls` / `inspect` 只读获取已有网段，从 `172.30/16`、`172.31/16` 的候选 /28 中选择无重叠子网；查不到或候选耗尽就明确报错、退出非零。先创建并标记本 project 的专用网络，再由 Compose 分配默认网络，避免自己的默认网络抢占所选网段。两个 app 都接默认网络连 PG、接专用网络取得固定 IP；Caddy 使用 host 网络并 import 同一片段，直连这两个 IP 的 3200 端口。JSON 的 `upstream` 记录 `subnet`、`appIP`、`standbyIP`。并发演练若在选网之后抢到同段，创建失败即退出，不删除其他网络。
 
 `DRILL_DUMP_LOGS` 默认不导出；设置后，在 down 之前把本 project 的 `docker compose logs --no-color --timestamps` 写入指定文件。路径必须位于本仓库 `var/` 下（支持相对路径或该目录内的绝对路径），拒绝越界、符号链接和覆盖已有文件；父目录按需创建，文件权限 0600。写出前将本次临时密码的全部出现替换为 `[REDACTED]`。成功与失败场景均尝试导出；收集的是当时仍存在的容器日志，被重建删除的旧容器日志不在其中。JSON 的 `logDump` 记录是否请求、是否写出及相对路径；导出失败会令演练失败，但仍继续清理。输出 JSON 若也放 `var/drill/`，先 `mkdir -p var/drill` 再执行命令，shell 重定向不会替你建目录。
 
