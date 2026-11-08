@@ -10,6 +10,7 @@ import { live } from './live.js';
 import { createIntake } from './intake.js';
 import { normalizePartNo } from './normalize.js';
 import { handoffVocab } from './handoff-vocab.js';
+import { industrialHandoffClaimsStep } from './handoff-claims.js';
 import {
   industrialReplyGuard,
   PROMISE_FALLBACK,
@@ -164,7 +165,12 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
     consistencyRules,
     knownFields: { names: industrial.entities[0]!.fields.map((field) => field.key), sourceFiles: ['src/packs/industrial/catalog.ts'] },
     // 补建要算进这一轮的阶段，所以阶段推进排在 quote_claim 之后。
-    replyAnchors: { stage_advance: 'quote_claim', markdown: 'industrial_claims', 'takeover_check:post': 'rfq_trim' },
+    replyAnchors: {
+      stage_advance: 'quote_claim',
+      markdown: 'industrial_claims',
+      'takeover_check:post': 'rfq_trim',
+      'reply_blocks:place': 'handoff_claims',
+    },
     replyBlocks: industrialReplyBlocks,
     replySteps: [
       quoteClaimStep(),
@@ -181,6 +187,7 @@ export function createIndustrialRuntime(sources: PackSources): PackRuntime {
         after: ['stage_advance', 'link_whitelist'],
       },
       rfqTrimStep(sources),
+      industrialHandoffClaimsStep(),
     ],
     followupSteps: [
       linkWhitelistFollowupStep(),

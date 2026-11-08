@@ -13,6 +13,7 @@ import { NEXT } from './packs/industrial/reply-blocks.js';
 import { ACCEPT_ASK } from './packs/industrial/guards.js';
 import { industrialFollowupGuard } from './packs/industrial/guards.js';
 import { createIndustrialRuntime } from './packs/industrial/runtime.js';
+import { claimsIndustrialHandoff, hasIndustrialHandoffNotice } from './packs/industrial/handoff-claims.js';
 import { defaultIndustrialPolicy, quoteNotes } from './packs/industrial/policy.js';
 import { writeState, readState, draftParts, StateSchema } from './packs/industrial/state.js';
 import { latestQuoteCandidate, expiredQuoteAwaitingConfirmation } from './packs/industrial/quote-candidate.js';
@@ -1016,6 +1017,207 @@ try {
     assert.ok(order.approval!.acceptedAt !== undefined);
     assert.equal(await acceptanceJobs(order.id), 1);
     console.log('MODEL HANDOFF PASS: 回复照发、接受记下、顾问通知排上');
+  }
+
+  // 18：工业包转人工告知与实际状态一致；只桩模型，走真实工具、出口、消息追加和持久化。
+  {
+    for (const text of [
+      '已转人工。',
+      '已为您转交顾问，稍后联系您。',
+      '我已将您的备货需求转给顾问评估。',
+      '已经转接给人工处理。',
+      '转给顾问了。',
+      '问题已提交给顾问处理。',
+      '顾问已经接手。',
+      '目录里没有这个型号，已转给顾问核实。',
+      '已转交采购顾问处理，请等候联系。',
+    ]) {
+      assert.equal(claimsIndustrialHandoff(text), true, text);
+      assert.equal(hasIndustrialHandoffNotice(text), true, text);
+    }
+    for (const text of [
+      '需要的话，我可以为您转接顾问。',
+      '如果您需要，我已转给顾问处理。',
+      '稍后我会转给顾问。',
+      '我准备转给顾问。',
+      '我已经记下需求，可以转给顾问。',
+      '我还没有转给顾问。',
+      '不是已经转给顾问。',
+      '是否已转给顾问？',
+      '您说已转给顾问。',
+      '报价单已提交给顾问审核。',
+      '顾问确认后再报价。',
+      '库存和交期以顾问确认为准。',
+    ])
+      assert.equal(claimsIndustrialHandoff(text), false, text);
+    for (const text of [
+      '顾问会继续确认',
+      '顾问会与您联系。',
+      '稍后顾问会与您联系。',
+      '我请顾问继续跟您核对。',
+      '目前没有库存，顾问会与您联系。',
+      '新报价单已提交，顾问会核对处理，请稍等联系。',
+      '您希望进一步议价的话，我已把需求转给顾问，会尽快与您联系核对。',
+      '正在为您转接顾问，请稍候。',
+      '我帮您转给顾问核实。',
+    ])
+      assert.equal(hasIndustrialHandoffNotice(text), true, text);
+    for (const text of [
+      '需要的话顾问会与您联系。',
+      '顾问会与您联系吗？',
+      '顾问不会联系您。',
+      '顾问未接手。',
+      '我不转给顾问。',
+      '库存和交期以顾问确认为准。',
+      '需要的话，我可以为您转接顾问。',
+    ])
+      assert.equal(hasIndustrialHandoffNotice(text), false, text);
+
+    const action = mockAction;
+    const traces: import('./trace/recorder.js').FinishedTurn[] = [];
+    const stop = onTurnEnd((turn) => traces.push(turn));
+    try {
+      const lost = fresh();
+      mockAction = async (opts) => {
+        await opts.executeTool('handoff_to_human', { reason: '额外优惠请顾问核实' });
+        return '额外减50元超出了我能承诺的范围，我已转给顾问评估。您可以补充需求。';
+      };
+      const restored = await handleMessage(lost.id, '还能优惠吗？', 'wecom');
+      assert.equal(restored.handoff, true);
+      assert.equal(restored.silent, undefined);
+      assert.match(restored.text, /顾问会继续确认/);
+      assert.doesNotMatch(restored.text, /50元/);
+      assert.ok(traces.at(-1)!.turn.guards.some((guard) => guard.guard === 'money_provenance'));
+      assert.ok(traces.at(-1)!.turn.guards.some((guard) => guard.guard === 'handoff_claims'));
+
+      const kept = fresh();
+      const notice = '已为您转交顾问，稍后与您对接。';
+      mockAction = async (opts) => {
+        await opts.executeTool('handoff_to_human', { reason: '需要顾问核实' });
+        return notice;
+      };
+      assert.equal((await handleMessage(kept.id, '请核实情况', 'wecom')).text, notice, '已有告知不重复补');
+      const handoff = structuredClone(kept.handoff);
+      mockAction = async () => {
+        throw new Error('已转人工的旧会话不应调模型');
+      };
+      const silent = await handleMessage(kept.id, '再核实一下', 'wecom');
+      assert.equal(silent.silent, true);
+      assert.equal(silent.text, '');
+      assert.deepEqual(kept.handoff, handoff);
+
+      for (const [history, input] of [
+        [[], '那就直接转给顾问核实吧'],
+        [[['agent', '需要我转给顾问核实吗？']], '好的，麻烦了'],
+        [
+          [
+            ['customer', '请转给顾问核实'],
+            ['agent', '我来处理。'],
+          ],
+          '我等结果',
+        ],
+        [
+          [
+            ['agent', '需要我转给顾问核实吗？'],
+            ['customer', '可以，麻烦了'],
+            ['agent', '我来处理。'],
+          ],
+          '我等结果',
+        ],
+      ] as const) {
+        const session = fresh();
+        for (const [role, content] of history) session.messages.push({ role, content, at: now });
+        mockAction = async () => '好的，已转给顾问核实。';
+        const reply = await handleMessage(session.id, input, 'wecom');
+        assert.equal(reply.handoff, true, input);
+        assert.equal(reply.silent, undefined, 'claimed 不被后置接管检查误当成人工抢占');
+        assert.equal(session.handoff?.kind, 'claimed');
+        assert.equal(reply.text, '好的，已转给顾问核实。');
+        assert.ok(session.messages.some((message) => message.role === 'system' && /AI 已转人工/.test(message.content)));
+        assert.ok(traces.at(-1)!.turn.guardVerdicts?.some((verdict) => verdict.id === 'handoff_claims' && verdict.action === 'handoff'));
+      }
+
+      for (const [history, input] of [
+        [[], '能开专票吗？'],
+        [[], '如果还没结果，请转给顾问'],
+        [
+          [
+            ['customer', '请转给顾问核实'],
+            ['agent', '我来处理。'],
+          ],
+          '不用了',
+        ],
+        [[['agent', '请确认采购数量。']], '可以，数量没问题'],
+        [
+          [
+            ['customer', '请转给顾问核实'],
+            ['agent', '我来处理。'],
+          ],
+          '先不用转给顾问，你继续帮我查',
+        ],
+        [
+          [
+            ['customer', '请转给顾问核实'],
+            ['agent', '我来处理。'],
+            ['customer', '不用了'],
+            ['agent', '好的。'],
+          ],
+          '能开专票吗？',
+        ],
+      ] as const) {
+        const session = fresh();
+        for (const [role, content] of history) session.messages.push({ role, content, at: now });
+        mockAction = async () => '已转给顾问核实。您可以补充型号。';
+        const reply = await handleMessage(session.id, input, 'wecom');
+        assert.equal(session.handedOver, false, input);
+        assert.doesNotMatch(reply.text, /已转给/);
+        assert.match(reply.text, /这个我记下了，会请顾问跟您确认/);
+        assert.match(reply.text, /您可以补充型号/);
+        assert.ok(session.messages.some((message) => message.role === 'system' && /待顾问跟进/.test(message.content)));
+      }
+      const offered = fresh();
+      mockAction = async () => '需要的话，我可以为您转接顾问。';
+      const proposal = await handleMessage(offered.id, '还能优惠吗？', 'wecom');
+      assert.equal(proposal.text, '需要的话，我可以为您转接顾问。');
+      assert.equal(offered.handedOver, false);
+      assert.equal(
+        offered.messages.some((message) => /待顾问跟进/.test(message.content)),
+        false,
+      );
+
+      // 金额合法但被放块步骤移走的整句，同样要恢复告知。
+      const block = fresh();
+      mockAction = async (opts) => {
+        const quote = JSON.parse(await opts.executeTool('quote_items', { items: [{ query: data.partNo, qty: 100 }] }));
+        await opts.executeTool('handoff_to_human', { reason: '顾问核对采购需求' });
+        return `合计${quote.total}元，已转给顾问核实。`;
+      };
+      const blocked = await handleMessage(block.id, '请核实情况', 'wecom');
+      assert.equal(blocked.handoff, true);
+      assert.match(blocked.text, /顾问会继续确认/);
+      assert.match(blocked.text, /试算：/);
+
+      const long = fresh();
+      mockAction = async (opts) => {
+        await opts.executeTool('handoff_to_human', { reason: '顾问核对需求' });
+        return Array.from({ length: 12 }, () => '您可以补充需求。').join('\n');
+      };
+      const bounded = await handleMessage(long.id, '请核实情况', 'wecom');
+      assert.match(bounded.text, /顾问会继续确认/);
+      assert.ok(bounded.text.split('\n').filter(Boolean).length <= 12);
+      assert.ok([...bounded.text.replace(/\s/gu, '')].length <= 600);
+      const { guardOutbound } = await import('./core/engine/index.js');
+      const followup = fresh();
+      await guardOutbound(followup, '已转给顾问核实。', { kind: 'followup' });
+      assert.equal(followup.handedOver, false);
+      assert.equal(followup.messages.length, 0);
+    } finally {
+      stop();
+      mockAction = action;
+    }
+    console.log(
+      'HANDOFF CLAIMS PASS: 工业词表正反例、金额删句/放块后补告知、不重复、本轮/上轮同意、未要求改待跟进、条件句、撤回与旧同意、已转静默、预算与跟进隔离',
+    );
   }
 
   // 判定有效之后还隔着模型调用和异步步骤：这期间报价失效，不记接受、不通知顾问、不写确认状态。

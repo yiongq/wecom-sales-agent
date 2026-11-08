@@ -1,0 +1,95 @@
+{
+  "version": 2,
+  "id": "q18-handoff-claimed",
+  "desc": "仿真回归：第 6 次 main j-rejection-01 第 1 遍第 4 轮，转人工状态与告知一致（手写断言）",
+  "tags": ["q18", "industrial", "handoff"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:26:31.579Z",
+    "session": {
+      "stage": "discovery",
+      "messages": [
+        {
+          "role": "customer",
+          "content": "HS-K07-24 有一批采购要走正式报价。",
+          "at": 1791606368091
+        },
+        {
+          "role": "agent",
+          "content": "查到了：HS-K07-24 控制继电器（线圈DC24V，额定电流9A，IP20），有现货。请告知采购数量，我按档位给您试算。",
+          "at": 1791606369883
+        },
+        {
+          "role": "customer",
+          "content": "先按6件来试算。这是合成测试设备的备料，后面需要走正式报价流程。",
+          "at": 1791606371881
+        },
+        {
+          "role": "agent",
+          "content": "好的，6件 HS-K07-24，先给您试算。\n价格就按以上档位，确认数量没问题的话我就起草正式报价单，提交后由顾问审核。",
+          "at": 1791606377514
+        },
+        {
+          "role": "customer",
+          "content": "数量就6件，没问题。请起草正式报价单提交审核，我们这边等结果。",
+          "at": 1791606383532
+        },
+        {
+          "role": "agent",
+          "content": "很抱歉，刚才提交时系统提示该条目当前不可报价，无法完成正式报价单起草。\n可能是型号状态有变动，需要顾问核实。您这边可以：\n1. 确认一下型号信息是否有更新或替代版本；\n2. 或者我直接把这单转给顾问人工核实处理。\n您希望怎么进行？",
+          "at": 1791606389747
+        }
+      ],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 1791606368091,
+      "updatedAt": 1791606389747,
+      "profile": {},
+      "packState": {
+        "partsInPlay": [
+          {
+            "partNo": "HS-K07-24",
+            "specs": ["线圈DC24V", "额定电流9A", "防护IP20"]
+          }
+        ]
+      },
+      "moneyLedger": [
+        {
+          "fen": 3185,
+          "label": "档位单价",
+          "subject": "HSK0724"
+        },
+        {
+          "fen": 2867,
+          "label": "档位单价",
+          "subject": "HSK0724"
+        },
+        {
+          "fen": 2548,
+          "label": "档位单价",
+          "subject": "HSK0724"
+        },
+        {
+          "fen": 2229,
+          "label": "档位单价",
+          "subject": "HSK0724"
+        }
+      ]
+    },
+    "orders": []
+  },
+  "turns": [
+    {
+      "say": "那就直接转给顾问人工核实吧，等顾问确认后再推进正式报价。",
+      "script": [
+        {
+          "content": "好的，已转给顾问人工核实，顾问会与您确认 HS-K07-24 的最新情况后再推进正式报价。稍安勿躁，有结果会第一时间联系您。"
+        }
+      ],
+      "expect": {
+        "replyMatches": ["已转给顾问人工核实"],
+        "handoff": true
+      }
+    }
+  ]
+}

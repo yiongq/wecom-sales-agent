@@ -685,6 +685,10 @@
               "action": "replace"
             },
             {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
               "id": "reply_blocks:place",
               "action": "replace"
             },
@@ -868,6 +872,10 @@
               "action": "pass"
             },
             {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
               "id": "reply_blocks:place",
               "action": "pass"
             },
@@ -966,6 +974,10 @@
             },
             {
               "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "handoff_claims",
               "action": "pass"
             },
             {
@@ -1070,6 +1082,10 @@
               "action": "pass"
             },
             {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
               "id": "reply_blocks:place",
               "action": "pass"
             },
@@ -1168,6 +1184,10 @@
             },
             {
               "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "handoff_claims",
               "action": "pass"
             },
             {
@@ -1272,6 +1292,10 @@
               "action": "pass"
             },
             {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
               "id": "reply_blocks:place",
               "action": "pass"
             },
@@ -1373,6 +1397,10 @@
               "action": "pass"
             },
             {
+              "id": "handoff_claims",
+              "action": "pass"
+            },
+            {
               "id": "reply_blocks:place",
               "action": "pass"
             },
@@ -1471,6 +1499,10 @@
             },
             {
               "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "handoff_claims",
               "action": "pass"
             },
             {
@@ -1773,6 +1805,10 @@
             },
             {
               "id": "rfq_trim",
+              "action": "pass"
+            },
+            {
+              "id": "handoff_claims",
               "action": "pass"
             },
             {
