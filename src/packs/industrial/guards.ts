@@ -32,7 +32,29 @@ export const ACCEPT_ASK = '这份报价还需要您明确确认：请回复「�
 export const QUOTE_WITHDRAWN = '这份报价单已撤回，顾问会跟您重新确认';
 export const QUOTE_EXPIRED = '这份报价已过期，您这次确认没有生效。回复「重新报价」，我按原来的型号和数量重新算价。';
 export const TRIM_FALLBACK = '询价明细较多，需要的话我出一份正式报价单。';
-export const trimNote = (n: number): string => `另外 ${n} 行已算好，需要的话我出一份正式报价单`;
+type TrimmedLine = { code?: string; qty: number; version?: number; unitPrice?: number; amount?: number };
+export function trimNote(n: number, session?: Session, lines: readonly TrimmedLine[] = []): string {
+  const quote = session && latestQuoteCandidate({ ...session, packState: {} }, Date.now());
+  if (quote?.kind !== 'quote' || quote.state !== 'pending') return `另外 ${n} 行已算好，需要的话我出一份正式报价单`;
+  // 只为实际被裁掉的行作证；同型号的不同数量、版本或金额不能借待审单冒充已入单。
+  const remaining = [...quote.order.lines];
+  const included =
+    lines.length === n &&
+    lines.every((line) => {
+      const i = remaining.findIndex(
+        (row) =>
+          row.code === line.code &&
+          row.qty === line.qty &&
+          (line.version === undefined || row.version === line.version) &&
+          (line.unitPrice === undefined || row.unitPriceFen === Math.round(line.unitPrice * 100)) &&
+          (line.amount === undefined || row.amountFen === Math.round(line.amount * 100)),
+      );
+      if (i < 0) return false;
+      remaining.splice(i, 1);
+      return true;
+    });
+  return included ? `另外 ${n} 行已在待审的正式报价单里` : `另外 ${n} 行已算好`;
+}
 const nonAssertion =
   /[?？]|如果|假如|若是|的话|是否|有没有|能不能|可以吗|以.{0,8}确认为准|不能|不可|不保证|不承诺|不是|没有|无现货|不够|不足/;
 const inventoryClaim = /现货|有货|库存(?:充足|有?\s*\d+)|今天.{0,3}发|明天.{0,3}发|\d+\s*天|保证交期|交期\s*(?:约|预计)?\s*\d+\s*天/;
@@ -212,6 +234,7 @@ const moneyText = /(?:[¥￥]\s*\d|\d+(?:\.\d+)?\s*元)/;
 const oldQuoteReplaced =
   /(?:原|旧|之前|此前|刚才|上一)[^。！？\n]*(?:作废|不再(?:使用|沿用|用|[^。！？\n]*生效)|不予理会|忽略|不用管)|以(?:这|本|新)[^。！？\n]{0,8}为准/;
 const OLD_QUOTE_VALID = '原报价单仍有效，待新报价单审核通过后才会作废。';
+const OLD_QUOTE_NEEDS_NEW = '原报价单仍有效，需要按新需求起草新的报价单，待新报价单审核通过后才会作废。';
 const pendingQuoteClaim =
   /审核中|(?:还|仍|尚|正在)(?:在|处于)?(?:顾问)?审核|(?:待|等待|等|需要?|需)(?:顾问)?审核|(?:审核|审批)通过(?:之)?后/;
 const pendingQuoteNonAssertion =
@@ -226,7 +249,33 @@ function quoteBehaviorText(ctx: FollowupGuardContext, sources: PackSources, foll
     const units = sentenceUnits(text).map(({ start, end }) => text.slice(start, end));
     if (!followup && text.trim() === FIXED.pending && ctx.turn) ctx.turn.flags.blocksSuppressed = true;
     if (units.some(unsafe)) {
-      text = units.filter((unit) => !unsafe(unit)).join('');
+      const kept = units.map((unit) => (unsafe(unit) ? '' : unit));
+      if (!followup) {
+        // 引子只管紧接的金额明细段；后面的库存、审核等独立说明不能替删空的明细撑住标题。
+        // 按原始行核对，同行仍有正文、后续仍有试算行或占位符时保留，交给放块步骤继续处理。
+        for (let i = 0; i < units.length; i++) {
+          if (!/[：:]\s*$/.test(kept[i]!)) continue;
+          let removed = false;
+          let content = false;
+          for (let j = i + 1; j < units.length;) {
+            let original = '';
+            let remaining = '';
+            do {
+              original += units[j]!;
+              remaining += kept[j]!;
+            } while (!units[j++]!.endsWith('\n') && j < units.length);
+            if (!original.trim()) {
+              if (removed || content) break;
+              continue;
+            }
+            if (!moneyText.test(original) && !/\{\{(?:试算明细|档位价|应付金额)\}\}/.test(original)) break;
+            removed ||= remaining !== original;
+            content ||= !!remaining.trim();
+          }
+          if (removed && !content) kept[i] = '';
+        }
+      }
+      text = kept.join('');
       // 18 第 0.9 步：局部删句保留正文和块，不写旗标；只有删空 / 仅剩标题、残句才整段兜底并抑制块。
       // 有效占位符留给 reply_blocks:place；照抄的块行也由该步骤清理，不在这里重复裁正文。
       const hasContent = unitsOf(text).some((unit) => {
@@ -268,11 +317,33 @@ function quoteBehaviorText(ctx: FollowupGuardContext, sources: PackSources, foll
           !!order && order.sessionId === ctx.session.id && 'v' in order && order.id !== approved.id && quoteState(order, now) === 'pending'
         );
       });
+      // 新批准单确实取代了旧单时保留作废说明；更新的试算则仍指向下一次重出。
+      const replacesOld = ctx.session.orderIds.some((id) => {
+        const old = getAnyOrder(id);
+        return !!old && old.sessionId === ctx.session.id && old.supersededBy === approved.id;
+      });
+      if (
+        quote?.kind === 'quote' &&
+        quote.state === 'approved' &&
+        !otherPending &&
+        (!replacesOld || latestQuoteCandidate(ctx.session, now)?.kind === 'draft')
+      )
+        text = correctClaim(
+          text,
+          (unit) =>
+            clausesOf(unit).some(
+              (clause) =>
+                oldQuoteReplaced.test(clause) &&
+                !/仍有效|未作废|没有作废|不会作废|不(?:会|能|可|要|用|必|需要)作废|无需作废|审核通过后|如果|假如|是否|[?？]/.test(clause),
+            ),
+          OLD_QUOTE_NEEDS_NEW,
+        );
       // 接受旧批准单时可能另有新单待审：只纠正当前这份报价的错话，不把新单说成已批准。
       text = correctClaim(
         text,
         (unit) =>
           !(otherPending && newQuoteSubject.test(unit)) &&
+          !/(?:待|等)新的?(?:报价单|单)审核通过后/.test(unit) &&
           !/(?:发票|合同|资质|图纸|资料|退款|账期|样品)[^，,。；;\n]{0,8}(?:审核|审批)/.test(unit) &&
           clausesOf(unit).some((clause) => pendingQuoteClaim.test(clause) && !pendingQuoteNonAssertion.test(clause)),
         `${FIXED.accepted.replace(/^好的，/, '这份报价已批准，')}。`,
@@ -613,6 +684,7 @@ export function trimRfq(
   followup = false,
   expanded: (body: string) => string = (body) => body,
   showTrimNote: (body: string) => boolean = () => true,
+  note: (n: number, removed: string[]) => string = (n) => trimNote(n),
 ): string {
   const original = text.replace(/\r\n?/g, '\n').split('\n');
   const inquiry = original.map((line) => models.some((model) => hasModel(line, model)));
@@ -625,7 +697,17 @@ export function trimRfq(
       .join('\n')
       .trim();
     const n = inquiry.filter((yes, i) => yes && !lines[i]?.trim()).length;
-    return !followup && n && showTrimNote(kept) ? [kept, trimNote(n)].filter(Boolean).join('\n') : kept;
+    return !followup && n && showTrimNote(kept)
+      ? [
+          kept,
+          note(
+            n,
+            original.filter((_, i) => inquiry[i] && !lines[i]?.trim()),
+          ),
+        ]
+          .filter(Boolean)
+          .join('\n')
+      : kept;
   };
   const fits = (body: string): boolean => {
     const value = expanded(body);
@@ -650,16 +732,45 @@ export function trimRfq(
   }
   return render();
 }
-/** 模型说报价单提交了却没建单：客户空等，顾问也看不到。客户这轮要了正式报价就补建，建出来照常人审；否则改回实话。
- *  说客户已确认报价却没记下接受：不替客户决定，改成请客户明确确认。 */
+const ACCEPT_RECORDED = '已记下您接受这份报价，顾问会联系您确认付款和发货。';
+function asksToAccept(unit: string): boolean {
+  return clausesOf(unit).some((clause) => {
+    if (/无需|不用|不必|不需要|已(?:经)?确认|已(?:经)?接受/.test(clause)) return false;
+    // 确认对象是其他业务信息时保留，包括「确认报价单的开票类型」。
+    if (/确认[^，,。；;\n]{0,16}(?:开票|发票|抬头|税号|收货|地址|联系人|电话|付款|支付|转账|发货|交期|库存|型号|数量)/.test(clause))
+      return false;
+    // 「开票信息请确认」的对象在动词前；「请与顾问对接确认」也不是要求再接受报价。
+    if (
+      /开票|发票|抬头|税号|收货|地址|联系人|电话|付款|款项|收款|账[户号]|支付|转账|发货|交期|库存|型号|数量/.test(clause) &&
+      !/确认(?:一下|下)?(?:这份|该)?(?:报价|订单|采购|下单)/.test(clause)
+    )
+      return false;
+    return /(?:请|麻烦|需要您|还需您|待您|您可以|您再)(?:您|你)?(?:再|再次|重新|尽快|尽早|直接|及时|务必){0,2}(?:在[^，,。；;\n]{1,12})?(?:回复[「“"]?接受|(?:回复|完成)?确认(?:一下|下)?(?:(?:这份|这张|该)?报价(?:单)?|订单|采购|下单|无误)?(?=[，,。；;！!？?\s]|$))|确认下单请回复/.test(
+      clause,
+    );
+  });
+}
+/** 模型说报价单提交了却没建单：客户这轮要了正式报价就补建，建出来照常人审；否则改回实话。
+ *  接受状态只认落账或本轮接受目标；未接受不替客户决定，已接受不再催确认这份报价。 */
 export function quoteClaimStep(): GuardStep<ReplyGuardContext> {
   return {
     id: 'quote_claim',
     writes: ['blocksSuppressed'],
     after: ['takeover_check:pre'],
     async run(ctx) {
-      if (ctx.session.handedOver) return { action: 'pass' };
       const quote = latestQuoteCandidate({ ...ctx.session, packState: {} }, Date.now());
+      if (ctx.acceptingOrderId || (quote?.kind === 'quote' && quote.order.approval?.acceptedAt !== undefined)) {
+        const text = correctClaim(
+          ctx.text,
+          (unit) => !(quote?.kind === 'quote' && quote.state === 'pending' && newQuoteSubject.test(unit)) && asksToAccept(unit),
+          ACCEPT_RECORDED,
+        );
+        if (text !== ctx.text) {
+          ctx.recordGuard('quote_claim', ctx.text, text, 'replace');
+          return { action: 'replace', text };
+        }
+      }
+      if (ctx.session.handedOver) return { action: 'pass' };
       if (acceptPending(quote) && quote?.kind === 'quote' && quote.order.id !== ctx.acceptingOrderId && acceptClaim.test(ctx.text)) {
         const text = correctClaim(ctx.text, acceptClaim, ACCEPT_ASK);
         ctx.recordGuard('quote_claim', ctx.text, text, 'replace');
@@ -727,13 +838,25 @@ export function rfqTrimStep(sources: PackSources): GuardStep<ReplyGuardContext> 
     writes: ['blocksSuppressed'],
     after: ['money_provenance'],
     run(ctx) {
+      const parts = draftParts(ctx.session, sources);
       const text =
         trimRfq(
           ctx.text,
-          draftParts(ctx.session, sources).map((part) => part.partNo),
+          parts.map((part) => part.partNo),
           false,
           (body) => expandedReply(ctx, body),
           (body) => !willPlaceReplyBlock(ctx, '试算明细', body),
+          (n, removed) =>
+            trimNote(
+              n,
+              ctx.session,
+              removed.flatMap((text) => {
+                const lines = (readState(ctx.session).rfqDraft?.lines ?? []).filter(
+                  (line) => line.match === 'exact' && parts.some((part) => part.id === line.code && hasModel(text, part.partNo)),
+                );
+                return lines.length === 1 ? lines : [];
+              }),
+            ),
         ) || '请告诉我型号和数量。';
       if (text === TRIM_FALLBACK) ctx.turn.flags.blocksSuppressed = true;
       if (text === ctx.text) return { action: 'pass' };

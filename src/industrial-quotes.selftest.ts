@@ -10,14 +10,14 @@ import { once } from 'node:events';
 import { industrial } from './packs/industrial/console-pack.js';
 import { FIXED } from './packs/industrial/turn.js';
 import { NEXT } from './packs/industrial/reply-blocks.js';
-import { ACCEPT_ASK } from './packs/industrial/guards.js';
-import { industrialFollowupGuard } from './packs/industrial/guards.js';
+import { ACCEPT_ASK, trimNote } from './packs/industrial/guards.js';
+import { industrialFollowupGuard, industrialReplyGuard } from './packs/industrial/guards.js';
 import { createIndustrialRuntime } from './packs/industrial/runtime.js';
 import { claimsIndustrialHandoff, hasIndustrialHandoffNotice } from './packs/industrial/handoff-claims.js';
 import { defaultIndustrialPolicy, quoteNotes } from './packs/industrial/policy.js';
 import { writeState, readState, draftParts, StateSchema } from './packs/industrial/state.js';
 import { latestQuoteCandidate, expiredQuoteAwaitingConfirmation } from './packs/industrial/quote-candidate.js';
-import type { LineOrder, Session, TurnToolContext, ChatOptions } from './core/pack-api.js';
+import type { LineOrder, Session, TurnToolContext, ChatOptions, ReplyGuardContext } from './core/pack-api.js';
 import type { PublicQuote, AnyOrder } from './core/order-view.js';
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'industrial-quotes-'));
 Object.assign(process.env, {
@@ -276,6 +276,199 @@ try {
       mockAction = action;
     }
     console.log('PENDING REPLY PASS: 重出保留正文、旧待审单被取代、逐行试算、删空抑制块、跟进不变');
+  }
+
+  // 18 离线回放：待审删空一段金额明细后连同它的引子删掉；在放块之前断言，避免被后续清理掩盖。
+  {
+    const action = mockAction;
+    const session = fresh();
+    const result = await estimate(session, 18);
+    const { order } = await make(session, 18);
+    const guard = industrialReplyGuard(config.packSources());
+    const prefix = '新报价单待顾问审核。\n';
+    const amounts = '6205-2RS × 18：单价8元，小计144元\n合计144元';
+    const guarded = async (text: string) => {
+      const ctx = {
+        session,
+        text,
+        inputText: '请核对这次报价。',
+        toolSources: [{ name: 'quote_items', args: {}, result: JSON.stringify(result) }],
+        turn: { flags: {} },
+        recordGuard: () => undefined,
+      } as unknown as ReplyGuardContext;
+      const verdict = await guard.run(ctx);
+      assert.equal(ctx.turn.flags.blocksSuppressed, undefined, '删掉孤立引子仍是局部改写');
+      return verdict && 'text' in verdict ? verdict.text : text;
+    };
+    try {
+      for (const heading of ['按新需求重新试算如下：', '新报价单明细：', '试算（新单）：', '按本次清单重新核对:']) {
+        assert.equal(await guarded(`${prefix}${heading}\n${amounts}`), prefix.trim(), heading);
+        assert.equal(
+          await guarded(`${prefix}${heading}\n${amounts}\n可以开专票。`),
+          `${prefix}可以开专票。`,
+          '后续独立说明不替删空的金额明细撑住引子',
+        );
+      }
+      const heading = '新报价单明细：';
+      for (const [body, kept] of [
+        [`${heading}\n\n${amounts}`, ''],
+        [`好的。${heading}\r\n${amounts.replaceAll('\n', '\r\n')}`, '好的。'],
+        [`${heading}\n${amounts}\n\n试算合计144元。`, '\n试算合计144元。'],
+        [`${heading}\n合计144元。请核对型号。`, `${heading}\n请核对型号。`],
+        [`${heading}\n合计144元。\n试算合计144元。`, `${heading}\n\n试算合计144元。`],
+        [`${heading}\n试算单价8元。\n合计144元。`, `${heading}\n试算单价8元。`],
+        [`${heading}\n合计144元。\n{{试算明细}}`, `${heading}\n\n{{试算明细}}`],
+        [`${heading}\n{{试算明细}}\n合计144元。`, `${heading}\n{{试算明细}}`],
+        [`${heading}\n型号和数量请核对。\n合计144元。`, `${heading}\n型号和数量请核对。`],
+        [`合计144元。\n${heading}\n可以开专票。`, `\n${heading}\n可以开专票。`],
+        [heading, heading],
+      ])
+        assert.equal(await guarded(prefix + body), (prefix + kept).trim(), body);
+      // 实际管线：原稿引子已清理或留给占位符，放块仍给同一份价格，自己的引子清理照旧。
+      const seen: import('./trace/recorder.js').FinishedTurn[] = [];
+      const stop = onTurnEnd((turn) => seen.push(turn));
+      try {
+        for (const token of ['', '\n{{试算明细}}']) {
+          now++;
+          mockAction = async (opts) => {
+            await opts.executeTool('quote_items', { items: [{ query: data.partNo, qty: 18 }] });
+            return `${prefix}${heading}\n${amounts}${token}`;
+          };
+          const reply = await handleMessage(session.id, '请核对这次报价。', 'wecom');
+          const removed = seen.at(-1)!.turn.guards.find((event) => event.guard === 'industrial_claims')!.removed;
+          assert.equal(
+            removed.some((unit) => unit.includes(heading)),
+            !token,
+          );
+          assert.equal(reply.text, `${prefix}试算：\n6205-2RS × 18：试算单价8.00元，小计144.00元；现货，以顾问确认为准\n试算合计144.00元`);
+          assert.equal(seen.at(-1)!.turn.blocks!.suppressed, false);
+        }
+      } finally {
+        stop();
+      }
+      await actions.approveQuote(order.id, actor);
+      const approvedText = `${heading}\n${amounts}`;
+      assert.equal(await guarded(approvedText), approvedText, '已批准分支不清理这些引子或金额');
+    } finally {
+      mockAction = action;
+    }
+    console.log('PENDING HEADING PASS: 删空引子、独立后文、空行/半角冒号/CRLF、部分保留/占位符、真实放块和已批准反例');
+  }
+
+  // 18 main-8：待审单的裁剪说明只为被裁行作证，正文裁剪和价格块使用同一口径。
+  {
+    const action = mockAction;
+    const parts = Array.from({ length: 12 }, (_, i) => ({ ...data, id: `trim-${i}`, partNo: `R9-${100 + i}` }));
+    for (const part of parts) {
+      const draft = await createCatalogItem(ctx, 'part', part);
+      await activateCatalogItem(ctx, 'part', draft.code, { rev: draft.rev });
+    }
+    try {
+      setPolicy({ autoApproveMaxFen: 0 });
+      for (const mode of ['all', 'tail', 'other-qty', 'none'] as const) {
+        const session = fresh();
+        const items = parts.map((part) => ({ query: part.partNo, qty: 2 }));
+        await registry.execute('quote_items', { items }, context(session));
+        if (mode !== 'none') {
+          now++;
+          const result = JSON.parse(
+            await registry.execute(
+              'create_quote_sheet',
+              { items: parts.slice(mode === 'tail' ? 1 : 0).map((part) => ({ code: part.id, qty: mode === 'other-qty' ? 3 : 2 })) },
+              context(session),
+            ),
+          );
+          assert.equal(result.state, 'pending');
+        }
+        for (const block of [true, false]) {
+          now++;
+          mockAction = async (opts) => {
+            if (block) {
+              await opts.executeTool('quote_items', { items });
+              return '型号数量已核对。\n可以开专票。';
+            }
+            return parts.map((part) => `${part.partNo} × 2`).join('\n');
+          };
+          const reply = await handleMessage(session.id, '请核对这批清单。', 'wecom');
+          const note = reply.text.split('\n').find((line) => /^另外 \d+ 行/.test(line));
+          assert.ok(note, `${mode}/${block}: ${reply.text}`);
+          if (mode === 'none') assert.match(note, /行已算好，需要的话我出一份正式报价单$/);
+          else {
+            assert.ok(!reply.text.includes('需要的话我出一份正式报价单'), reply.text);
+            assert.match(note, mode === 'other-qty' ? /行已算好$/ : /行已在待审的正式报价单里$/);
+          }
+          assert.ok(reply.text.split('\n').filter(Boolean).length <= 12, reply.text);
+          assert.ok([...reply.text.replace(/\s/g, '')].length <= 600, reply.text);
+          if (block) assert.match(reply.text, /合计192\.00元/);
+        }
+        if (mode === 'all') {
+          const order = store.getAnyOrder(session.orderIds.at(-1)!) as LineOrder;
+          const row = order.lines.at(-1)!;
+          for (const rows of [
+            [{ ...row, code: 'not-in-sheet' }],
+            [{ ...row, version: row.version! + 1 }],
+            [{ ...row, unitPrice: 99 }],
+            [row, row],
+            [],
+          ])
+            assert.equal(trimNote(rows.length || 1, session, rows), `另外 ${rows.length || 1} 行已算好`);
+        }
+      }
+    } finally {
+      mockAction = action;
+    }
+    console.log('PENDING TRIM PASS: 块/正文裁剪、全部/仅尾行入单、数量/型号/版本/金额/重复行反例、无待审保持原话、长度预算');
+  }
+
+  // 18 main-8：只有新试算、尚未建新单时，旧批准单仍有效；不借此改写真正作废的旧单。
+  {
+    const action = mockAction;
+    const truth = '原报价单仍有效，需要按新需求起草新的报价单，待新报价单审核通过后才会作废。';
+    const prefix = '可以开专票。';
+    const suffix = '确认无误的话我就按此重出正式报价单。';
+    try {
+      setPolicy({ autoApproveMaxFen: 0 });
+      for (const claim of ['好的，旧报价单作废，已按新需求试算。', '旧报价单不再使用。', '以新的报价单为准。']) {
+        const session = fresh();
+        await estimate(session, 10);
+        const { order } = await make(session, 10);
+        await actions.approveQuote(order.id, actor);
+        now++;
+        mockAction = async (opts) => {
+          await opts.executeTool('quote_items', { items: [{ query: data.partNo, qty: 18 }] });
+          return `${prefix}${claim}${suffix}`;
+        };
+        const reply = await handleMessage(session.id, '改成6205-2RS共18件，旧报价单请作废并重出。', 'wecom');
+        assert.ok(reply.text.startsWith(`${prefix}${truth}${suffix}`), reply.text);
+        assert.match(reply.text, /6205-2RS × 18：单价8\.00元，小计144\.00元/);
+        assert.equal(session.orderIds.length, 1);
+        assert.equal(quoteState(order, now), 'approved');
+      }
+      const session = fresh();
+      await estimate(session, 10);
+      const { order } = await make(session, 10);
+      await actions.approveQuote(order.id, actor);
+      for (const text of [
+        '旧报价单没有作废。',
+        '旧报价单仍有效，待新报价单审核通过后才会作废。',
+        '旧报价单作废了吗？',
+        '如果旧报价单作废，需要重新报价。',
+      ]) {
+        mockAction = async () => text;
+        now++;
+        assert.equal((await handleMessage(session.id, '请说明报价状态。', 'wecom')).text, text);
+      }
+      await estimate(session, 18);
+      const newer = await make(session, 18);
+      await actions.approveQuote(newer.order.id, actor);
+      assert.equal(quoteState(order, now), 'superseded');
+      now++;
+      mockAction = async () => '旧报价单作废，以新的报价单为准。';
+      assert.equal((await handleMessage(session.id, '请说明报价状态。', 'wecom')).text, '旧报价单作废，以新的报价单为准。');
+    } finally {
+      mockAction = action;
+    }
+    console.log('OLD QUOTE VALID PASS: 未建新单的三种错话、局部改写保留试算、否定/条件/问句、真作废不改');
   }
 
   // 18：已批准 / 本轮接受的报价不能再说待审，只换错的状态句，应付金额照常附上。
@@ -887,6 +1080,74 @@ try {
       ).rows[0]!.n;
     });
   };
+  // 18 main-8：本轮接受及后续轮都不再催确认报价；其他确认事项和未接受单照常。
+  {
+    const action = mockAction;
+    const truth = '已记下您接受这份报价，顾问会联系您确认付款和发货。';
+    const prefix = '可以开专票。';
+    const suffix = '请确认开票类型。请确认收货地址。';
+    try {
+      for (const mode of ['accepting', 'accepted', 'unaccepted'] as const) {
+        for (const ask of [
+          '请确认。',
+          '请尽快确认。',
+          '报价有效期7天，请尽快确认。',
+          '请在有效期内完成确认。',
+          '您可以回复确认，顾问会与您对接付款和发货。',
+          '这份报价还需要您确认。',
+          '请您再确认一下这份报价。',
+          '请您再次确认这张报价单。',
+          '请回复「接受这份报价」。',
+        ]) {
+          const session = fresh();
+          await estimate(session, 15);
+          const { order } = await make(session, 15);
+          if (mode === 'accepted') {
+            now++;
+            await handleMessage(session.id, '接受这份报价', 'wecom');
+            assert.ok(order.approval!.acceptedAt !== undefined);
+          }
+          mockAction = async () => `${prefix}${ask}${suffix}`;
+          now++;
+          const reply = await handleMessage(
+            session.id,
+            mode === 'accepting' ? '报价单没问题，我接受这份报价，能开专票吗？' : '请说明后续流程。',
+            'wecom',
+          );
+          const expected = `${prefix}${mode === 'unaccepted' ? ask : truth}${suffix}`;
+          assert.equal(reply.text, mode === 'accepting' ? `${expected}\n您接受的这份报价合计135.00元` : expected, `${mode}: ${ask}`);
+          assert.equal(await acceptanceJobs(order.id), mode === 'unaccepted' ? 0 : 1);
+        }
+      }
+      const session = fresh();
+      await estimate(session, 15);
+      await make(session, 15);
+      now++;
+      await handleMessage(session.id, '接受这份报价', 'wecom');
+      for (const text of [
+        '无需再次确认报价。',
+        '这份报价您已经确认。',
+        '请尽快确认开票类型。',
+        '请确认报价单的开票类型。',
+        '请在有效期内确认收货地址。',
+        '请回复确认收货地址。',
+        '顾问会联系您确认付款和发货。',
+        '请确认型号和数量。',
+        '开票信息请尽快确认。',
+        '付款安排和收款账户请与顾问对接确认，款项到账后即可安排发货。',
+        '付款和开票信息请与顾问对接确认，需要我转接顾问吗？',
+        '请与顾问确认。',
+        '款项由顾问收款对接，付款账户信息与开票资料请联系您的顾问确认。',
+      ]) {
+        mockAction = async () => text;
+        now++;
+        assert.equal((await handleMessage(session.id, '请说明后续流程。', 'wecom')).text, text);
+      }
+    } finally {
+      mockAction = action;
+    }
+    console.log('NO ASK AFTER ACCEPT PASS: 本轮/已接受/未接受、9种催确认、开票/地址/付款等反例、局部保留与接受通知不重复');
+  }
   for (const [group, corpus, expected] of [
     ['正例', positives, true],
     ['反例', negatives, false],
