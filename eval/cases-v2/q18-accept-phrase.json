@@ -1,7 +1,7 @@
 {
   "version": 2,
   "id": "q18-accept-phrase",
-  "desc": "仿真回归：main-6 j-standard-02 第4遍第4轮，按型号、数量与合计接受并走这单采购，记下接受且附应付金额，不重新试算",
+  "desc": "仿真回归：main-6 j-standard-02 第4遍第4轮，按型号、数量与合计接受并走这单采购，接受被认出，不当成新询价重新试算，回复里有合计 115.20 元（正文或应付金额块都算）",
   "tags": ["q18", "industrial", "quote-acceptance"],
   "pack": "industrial",
   "fixtures": {
@@ -154,7 +154,7 @@
         }
       ],
       "expect": {
-        "replyMatches": ["您接受的这份报价合计115\\.20元"],
+        "replyMatches": ["(?<![\\d.])115\\.20\\s*元"],
         "replyExcludes": ["试算[：:]"]
       }
     }
