@@ -79,12 +79,14 @@ if (!process.env.PG_TEST_URL) {
       callbackAesKey: randomBytes(32).toString('base64').slice(0, -1),
     },
   );
-  const start = async (name: string, kind = 'boot', wait = true) => {
+  const start = async (name: string, kind = 'boot', wait = true, sharedDir?: string) => {
     const p = await port();
-    const dir = path.join(root, name);
-    fs.mkdirSync(dir);
-    fs.writeFileSync(path.join(dir, 'usage.json'), '{"sentinel":true}');
-    fs.writeFileSync(path.join(dir, 'budget.json'), '{"sentinel":true}');
+    const dir = sharedDir ?? path.join(root, name);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(dir, 'usage.json'), '{"sentinel":true}');
+      fs.writeFileSync(path.join(dir, 'budget.json'), '{"sentinel":true}');
+    }
     const url = new URL(fx.urls.app);
     url.searchParams.set('application_name', name);
     const child = spawn(process.execPath, ['--import', 'tsx', path.join(import.meta.dirname, '../adapters/wecom-failover.selftest.ts')], {
@@ -291,6 +293,13 @@ if (!process.env.PG_TEST_URL) {
       assert.equal(await taken.done, 1, taken.output());
       assert.ok(taken.events.some((e) => e.event === 'shutdown-hook'));
       assert.match(taken.output(), /丢弃 1 个未落库会话/);
+      assert.deepEqual(
+        taken.events.filter((e) => e.event === 'discard'),
+        [{ event: 'discard', counts: [1, 1, 0] }],
+      );
+      const discardAlerts = taken.events.filter((e) => e.event === 'alert' && String(e.text).includes('process_epoch_stale'));
+      assert.equal(discardAlerts.length, 1);
+      assert.match(String(discardAlerts[0]!.text), /丢弃 1 个会话、1 条消息、0 条渠道写入/);
       assert.equal(
         fs.readdirSync(taken.dir).some((name) => name.startsWith('store-spill-')),
         false,
@@ -299,7 +308,53 @@ if (!process.env.PG_TEST_URL) {
       await otherHolder.release();
     }
     console.log('FAILOVER PASS held_by_other 优雅退出，不写 spill');
-    for (const kind of ['pause', 'claim', 'mark', 'store', 'welcome', 'recovery', 'retry', 'token-retry', 'r6', 'r6-lost']) {
+    const spillPrimary = await start('spill-primary', 'boot-spill');
+    await until(() => spillPrimary.events.some((e) => e.event === 'booted'));
+    spillPrimary.process.send({ action: 'dirty' });
+    await until(() => spillPrimary.events.some((e) => e.event === 'dirty'));
+    const spillStandby = await start('spill-standby', 'boot', true, spillPrimary.dir);
+    await until(() => spillStandby.events.some((e) => e.event === 'starting'));
+    await delay(300);
+    assert.equal(
+      spillStandby.events.some((e) => e.event === 'booted'),
+      false,
+    );
+    spillPrimary.process.kill('SIGTERM');
+    assert.equal(await spillPrimary.done, 143, spillPrimary.output());
+    await until(() => spillStandby.events.some((e) => e.event === 'booted'));
+    assert.deepEqual(
+      spillPrimary.events.filter((e) => e.event === 'spill'),
+      [{ event: 'spill', held: true }],
+      '仍持锁时只写一次最终 spill，exit 不重复写',
+    );
+    assert.equal(spillStandby.events.find((e) => e.event === 'booted')!.replayed, 1, spillStandby.output());
+    assert.equal(
+      (await fx.query("select seq from messages where conversation_id='wecom:wmStale' and content='待丢弃的合成消息'")).length,
+      1,
+    );
+    spillStandby.process.kill('SIGTERM');
+    assert.equal(await spillStandby.done, 143, spillStandby.output());
+    console.log('FAILOVER PASS 正常停机持锁完成 spill / 共用 VAR_DIR 的备用启动回放一次 / exit 不重复写');
+    for (const kind of [
+      'pause',
+      'claim',
+      'mark',
+      'store',
+      'welcome',
+      'recovery',
+      'retry',
+      'token-retry',
+      'r6',
+      'r6-lost',
+      'notify-pause',
+      'notify-stale',
+      'notify-retry',
+      'reply-pause',
+      'reply-stale',
+      'token-pause',
+      'token-initial-pause',
+      'discard-alert',
+    ]) {
       const child = await start(kind, kind);
       assert.equal(await child.done, 0, `${kind}\n${child.output()}`);
       console.log(

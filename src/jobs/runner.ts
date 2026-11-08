@@ -1,4 +1,4 @@
-import { processLeaseHeld } from '../tenancy/process-lease.js';
+import { processLeaseHeld, isProcessLeaseError } from '../tenancy/process-lease.js';
 import { ensureDigest, runDigest } from '../ops/digest.js';
 import { recoverReports } from '../db/repo/ops-reports.js';
 import { TenantObservers } from '../tenancy/observers.js';
@@ -271,6 +271,7 @@ async function runClaimed(job: JobRow, now: number): Promise<void> {
       },
     });
   } catch (e) {
+    if (isProcessLeaseError(e)) return; // 保留 running/mine，由正常停机归位或新主恢复，不消耗重试次数。
     console.error(`[jobs] ${job.kind} 执行出错（${errName(e)}），按 max_attempts 重试`);
     // 已进 sending 的不能重来（最多发一次）：状态由执行体经会话写队列改，这里不动
     out = (slot.phase as Phase) === 'sending' ? { status: 'handled' } : retryOutcome(job, now, e);

@@ -17,6 +17,8 @@ export const STATE_MANIFEST: Record<
   'src/tenancy/process-lease.ts:acquired': { kind: 'instance', why: '18 R3 宿主共享锁的进程身份、状态与停止/监听订阅，影响全部标准租户。' },
   'src/tenancy/process-lease.ts:held': { kind: 'instance', why: '18 R3 宿主共享锁的进程身份、状态与停止/监听订阅，影响全部标准租户。' },
   'src/tenancy/process-lease.ts:stale': { kind: 'instance', why: '18 R3 宿主共享锁的进程身份、状态与停止/监听订阅，影响全部标准租户。' },
+  'src/tenancy/process-lease.ts:stopping': { kind: 'instance', why: '18 R3 正常停机解除全部租户暂停中的发送等待。' },
+  'src/tenancy/process-lease.ts:finalized': { kind: 'instance', why: '18 R3 最终 spill 后封闭整个进程的写入与发送，退出时不重复 spill。' },
   'src/tenancy/process-lease.ts:exitStale': {
     kind: 'instance',
     why: '18 R3 宿主共享锁的进程身份、状态与停止/监听订阅，影响全部标准租户。',

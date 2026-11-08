@@ -345,6 +345,7 @@ export interface PgBackendDeps {
   orders: Map<string, AnyOrder>;
   /** 落库撞上另一写者：store.ts 接到 gracefulExit(1) */
   onConflict(detail: string): void;
+  onStaleDiscard?(counts: { sessions: number; messages: number; channelWrites: number }): void;
   /** 租户锁还在本进程手里。被别的进程拿走（held_by_other）时 drain 不写库，直接 spill */
   writable(): boolean;
   /** 每次提交之后调（store.ts 接旧 /api/admin/stream 的 change，只在提交之后发，不变量 10） */
@@ -359,6 +360,9 @@ export interface PgBackendDeps {
 }
 
 export interface PgStoreStats {
+  staleDiscardedSessions: number;
+  staleDiscardedMessages: number;
+  staleDiscardedChannelWrites: number;
   /** 发起的落库事务（含重试） */
   attempts: number;
   commits: number;
@@ -1025,6 +1029,9 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
   let closed = false;
   let lastError: string | null = null;
   const stats: PgStoreStats = {
+    staleDiscardedSessions: 0,
+    staleDiscardedMessages: 0,
+    staleDiscardedChannelWrites: 0,
     attempts: 0,
     commits: 0,
     recognized: 0,
@@ -1480,15 +1487,22 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     for (const e of entries.values()) {
       if (isDirty(e) || hasChannelRows(e.pc) || e.pcRun) count++;
       messages += e.pending.length;
-      channel += e.channel.length + e.inbox.length + e.pc.outbound.length + e.pc.inbox.length + e.pc.results.length;
-      if (e.inflight) channel += e.inflight.channel.length + e.inflight.inbox.length;
+      const size = (rows: ChannelRows): number => rows.outbound.length + rows.inbox.length + rows.results.length;
+      channel += size(liveChannelRows(e)) + size(e.pc);
+      if (e.inflight) channel += size(liveChannelRows(e.inflight));
+      if (e.pcRun) channel += size(e.pcRun.rows);
       if (e.timer) clearTimeout(e.timer);
       if (e.pcTimer) clearTimeout(e.pcTimer);
       rejectWaiters(e);
     }
     entries.clear();
-    if (count)
+    if (count || messages || channel) {
+      stats.staleDiscardedSessions += count;
+      stats.staleDiscardedMessages += messages;
+      stats.staleDiscardedChannelWrites += channel;
       console.error(`[store] process_epoch_stale：丢弃 ${count} 个未落库会话、${messages} 条消息、${channel} 条渠道写入，不写 spill`);
+      d.onStaleDiscard?.({ sessions: count, messages, channelWrites: channel });
+    }
     return count;
   }
 

@@ -1,4 +1,5 @@
 import { currentRuntime, tenantCallback, withoutTenantScope } from '../tenancy/runtime.js';
+import { isProcessLeaseError } from '../tenancy/process-lease.js';
 
 import { publicBase } from '../tenancy/hosts.js';
 import { scopedState } from '../tenancy/scoped-state.js';
@@ -277,6 +278,11 @@ async function fireUnsaved(ev: HandoffStartedEvent, key: string): Promise<void> 
       await notifier().send(n);
       break;
     } catch (e) {
+      if (isProcessLeaseError(e)) {
+        // 没有外发，不标 unsavedSent、不耗尽业务重试；持久化的 handoff_notify 仍可由新主恢复。
+        own.unsaved.delete(key);
+        return;
+      }
       const delay = unsavedTiming.retryMs[i];
       if (delay === undefined) {
         own.unsaved.delete(key);

@@ -11,6 +11,8 @@ import {
   processLeaseHeld,
   processLeaseStale,
   ProcessEpochStale,
+  ProcessLeaseUnavailable,
+  waitForProcessLease,
 } from '../tenancy/process-lease.js';
 import {
   currentRuntime,
@@ -381,6 +383,20 @@ export async function checkProcessEpochBeforeSend(): Promise<boolean> {
     // 03 R6：库不可用不等于过期，最终同步检查仍须确认锁视图。
   }
   return processLeaseHeld();
+}
+
+/** 业务通知等未走 markSending 的请求：暂失锁保留调用栈，过期/停机则留给持久化恢复。 */
+export async function waitForProcessEpochBeforeSend(): Promise<void> {
+  if (!processLeaseEnabled()) return;
+  for (;;) {
+    if (!(await waitForProcessLease(currentRuntime().id))) {
+      if (processLeaseStale()) throw new ProcessEpochStale();
+      throw new ProcessLeaseUnavailable();
+    }
+    if (await checkProcessEpochBeforeSend()) return;
+    if (processLeaseStale()) throw new ProcessEpochStale();
+    if (processLeaseHeld()) throw new ProcessLeaseUnavailable();
+  }
 }
 
 /** 当前缓存与镜像 data/ 的差异，给后台 /status：每次现算，发布和上架之后跟着变 */

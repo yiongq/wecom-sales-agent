@@ -5,6 +5,7 @@ import {
   assertProcessLeaseHeld,
   waitForProcessLease,
   ProcessLeaseUnavailable,
+  isProcessLeaseError,
 } from '../tenancy/process-lease.js';
 import { customerRate } from '../tenancy/customer-rate.js';
 import { limitHandoffReply } from '../tenancy/limit-handoff.js';
@@ -26,7 +27,7 @@ import {
   type TenantRuntime,
 } from '../tenancy/runtime.js';
 import { cardLinks, coreSiteLinks, registeredTextLinks } from '../core/site-links.js';
-import { checkProcessEpochBeforeSend, currentPack } from '../config/source.js';
+import { checkProcessEpochBeforeSend, waitForProcessEpochBeforeSend, currentPack } from '../config/source.js';
 import { earlyAttachment, prepareAttachment, type PreparedAttachment } from '../core/attachment-intake.js';
 import { INTAKE_FAILED } from '../core/engine/intake.js';
 import { listAttachmentMetadata, readAttachment } from '../store.js';
@@ -506,6 +507,7 @@ async function getAccessToken(rt: SendRuntime, cfg: WecomConfig, force = false):
       rt.tokenExpireAt = Date.now() + ((data.expires_in ?? 7200) - 300) * 1000;
       return data.access_token;
     } catch (e) {
+      if (isProcessLeaseError(e)) throw e;
       tokenFailed(rt, e);
       throw e;
     } finally {
@@ -527,10 +529,16 @@ class TokenError extends Error {
 }
 
 async function tokenOrThrow(rt: SendRuntime, cfg: WecomConfig, force = false): Promise<string> {
-  try {
-    return await getAccessToken(rt, cfg, force);
-  } catch (e) {
-    throw new TokenError(e);
+  for (;;) {
+    try {
+      return await getAccessToken(rt, cfg, force);
+    } catch (e) {
+      if (isProcessLeaseError(e)) {
+        if (await waitForProcessLease(currentRuntime().id)) continue;
+        throw e;
+      }
+      throw new TokenError(e);
+    }
   }
 }
 
@@ -545,7 +553,11 @@ async function callApi<T extends { errcode?: number; errmsg?: string }>(
   if (rt instanceof SandboxWecomRuntime) return rt.callApi<T>(endpoint, body as Record<string, unknown>);
   let token = await tokenOrThrow(rt, cfg);
   for (let attempt = 0; attempt < 2; attempt++) {
-    if (processLeaseEnabled() && !(await checkProcessEpochBeforeSend())) throw new ProcessLeaseUnavailable();
+    if (processLeaseEnabled()) {
+      do {
+        await waitForProcessEpochBeforeSend();
+      } while (!processLeaseHeld());
+    }
     assertProcessLeaseHeld();
     beforeSend?.();
     const res = await fetch(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
@@ -649,10 +661,14 @@ async function uploadThumb(rt: SendRuntime, cfg: WecomConfig, target?: string): 
     try {
       const file = path.resolve('assets/proposal-thumb.png');
       const buf = await readFile(file);
-      const token = await getAccessToken(rt, cfg);
+      const token = await tokenOrThrow(rt, cfg);
       const form = new FormData();
       form.append('media', new Blob([new Uint8Array(buf)], { type: 'image/png' }), 'proposal-thumb.png');
-      if (processLeaseEnabled() && !(await checkProcessEpochBeforeSend())) return null;
+      if (processLeaseEnabled()) {
+        do {
+          await waitForProcessEpochBeforeSend();
+        } while (!processLeaseHeld());
+      }
       assertProcessLeaseHeld();
       const res = await (rt instanceof SandboxWecomRuntime
         ? rt.upload(token, form, target)
@@ -671,6 +687,7 @@ async function uploadThumb(rt: SendRuntime, cfg: WecomConfig, target?: string): 
       console.log(`${rt.tag} 链接卡片缩略图已上传`);
       return d.media_id;
     } catch (e) {
+      if (isProcessLeaseError(e)) throw e;
       console.error(`${rt.tag} 缩略图上传异常:`, apiErrorCode(e));
       rt.thumbFailUntil = Date.now() + THUMB_FAIL_COOLDOWN;
       return null;
@@ -1124,13 +1141,14 @@ async function sendSegment(
   rest: readonly OutboundIntent[],
 ): Promise<'accepted' | 'failed' | 'skipped' | 'taken_over' | 'deferred'> {
   const { rt, cfg } = g;
-  if (!processLeaseHeld()) return 'deferred';
+  if (!processLeaseHeld() && !(await waitForProcessLease(currentRuntime().id))) return 'deferred';
   const isLink = intent.payload.msgtype === 'link';
   // 发之前要等的（access_token、卡片的缩略图）先等完：markSending 之后到发请求之间不再等别的
   let token: string;
   try {
     token = await tokenOrThrow(rt, cfg);
   } catch (e) {
+    if (isProcessLeaseError(e)) return 'deferred';
     // 请求根本没发出去：这一段明确没送达（rejected、不计条数；没发过请求，不进 wecom_send 的计数，token 另有告警）
     console.error(`${rt.tag} send_msg 没发出去（${apiErrorCode(e)}）`);
     settleIntent(intent, 'rejected', { attempts: 0 });
@@ -1138,7 +1156,11 @@ async function sendSegment(
   }
   let thumb: string | null = null;
   if (isLink) {
-    thumb = await uploadThumb(rt, cfg).catch(() => null);
+    try {
+      thumb = await uploadThumb(rt, cfg);
+    } catch (e) {
+      if (isProcessLeaseError(e)) return 'deferred';
+    }
     if (!thumb) {
       // 缩略图这时拿不到（先落库的几类在切分时只看了冷却期）：卡片发不了，按卡片发失败处理（调用方补「标题 + 链接」）
       console.error(`${rt.tag} 链接卡片的缩略图拿不到，退回纯文本`);
@@ -1149,7 +1171,7 @@ async function sendSegment(
   // 4 markSending（启动恢复补发的 sending 段已是 sending，直接发）
   const already = g.alreadySending?.has(intent.msgid) ?? false;
   const mark = already ? 'marked' : await markSending(intent);
-  if (mark === 'stale' || !processLeaseHeld()) return 'deferred';
+  if (mark === 'stale') return 'deferred';
   if (mark === 'not_pending') return 'skipped';
   if (mark === 'absent' && g.commit.get(intent.msgid) !== 'timeout') {
     // pending 提交过、行又没了：只会是被清除（保留期清理、行权删除）。不发
@@ -1182,13 +1204,22 @@ async function sendSegment(
       if (!stillCurrent(g) || sendsClosed(rt) || !maySendAgain(intent)) break;
       try {
         token = await tokenOrThrow(rt, cfg);
-      } catch {
+      } catch (e) {
+        if (isProcessLeaseError(e)) return 'deferred';
         break;
       }
       if (!stillCurrent(g) || sendsClosed(rt) || !maySendAgain(intent)) break;
     }
-    if (processLeaseEnabled() && (already || attempt > 0) && !(await checkProcessEpochBeforeSend())) return 'deferred';
-    if (!processLeaseHeld()) return 'deferred';
+    if (processLeaseEnabled()) {
+      try {
+        do {
+          await waitForProcessEpochBeforeSend();
+        } while (!processLeaseHeld());
+      } catch (e) {
+        if (isProcessLeaseError(e)) return 'deferred';
+        throw e;
+      }
+    }
     if (!stillCurrent(g) || sendsClosed(rt) || (attempt > 0 && !maySendAgain(intent))) break;
     noteAttempt(intent);
     attempts++;
@@ -1201,12 +1232,21 @@ async function sendSegment(
         if (outcome !== 'unknown') outcome = 'rejected';
         try {
           token = await tokenOrThrow(rt, cfg, true);
-        } catch {
+        } catch (e) {
+          if (isProcessLeaseError(e)) return 'deferred';
           break;
         }
         if (!stillCurrent(g) || sendsClosed(rt) || !maySendAgain(intent)) break;
-        if (processLeaseEnabled() && !(await checkProcessEpochBeforeSend())) return 'deferred';
-        if (!processLeaseHeld()) return 'deferred';
+        if (processLeaseEnabled()) {
+          try {
+            do {
+              await waitForProcessEpochBeforeSend();
+            } while (!processLeaseHeld());
+          } catch (e) {
+            if (isProcessLeaseError(e)) return 'deferred';
+            throw e;
+          }
+        }
         if (!stillCurrent(g) || sendsClosed(rt) || !maySendAgain(intent)) break;
         noteAttempt(intent);
         attempts++;

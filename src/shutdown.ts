@@ -1,6 +1,6 @@
 import { scopedRuntime, withTenantScope, withoutTenantScope, backgroundEntry, type TenantRuntime } from './tenancy/runtime.js';
 import { registerTenantState } from './tenancy/state.js';
-import { processLeaseWaiting } from './tenancy/process-lease.js';
+import { processLeaseWaiting, stopProcessLeaseWaits } from './tenancy/process-lease.js';
 // 优雅停机（docs/architecture/02-conversations-workbench/spec.md「两种会话存储与启动」）：信号接线与三段停机钩子。
 // 从 store.ts 搬来，store.ts 原样再导出 onShutdown、runShutdownHooks、gracefulExit；两种会话存储下都在导入期注册。
 //
@@ -61,6 +61,7 @@ async function runPhase(phase: ShutdownPhase, deadline: number): Promise<boolean
  * 返回 false 表示有一段超时（仍有钩子没结束）
  */
 export async function runShutdownHooks(timeoutMs = SHUTDOWN_TIMEOUT_MS): Promise<boolean> {
+  stopProcessLeaseWaits();
   const start = Date.now();
   let ok = true;
   for (const phase of PHASES) {

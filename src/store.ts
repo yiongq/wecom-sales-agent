@@ -1,4 +1,11 @@
-import { processLeaseWaiting, processLeaseStale } from './tenancy/process-lease.js';
+import {
+  processLeaseWaiting,
+  processLeaseHeld,
+  processLeaseStale,
+  staleProcessLease,
+  processLeaseFinalized,
+  finalizeProcessLease,
+} from './tenancy/process-lease.js';
 import { noteAiReply } from './tenancy/limits.js';
 import { LIMIT_QUOTA_REPLY, LIMIT_SUSPENDED_REPLY, LIMIT_RATE_REPLY } from './tenancy/limit-replies.js';
 import { assertSandboxNewConversation } from './tenancy/sandbox/limits.js';
@@ -135,7 +142,10 @@ export const storeEvents = new Proxy(new EventEmitter(), {
  * 写库的事故（02 spec「可观测性与告警」的 store 告警，startAlerts 订阅）：conflict 是落库撞上另一写者（随后优雅停机），
  * spill 是 drain 段结束时还有真实会话没落库、退出时要写进 spill 文件。只带会话短码与个数
  */
-export type StoreIncident = { kind: 'conflict'; detail: string } | { kind: 'spill'; sessions: number };
+export type StoreIncident =
+  | { kind: 'conflict'; detail: string }
+  | { kind: 'spill'; sessions: number }
+  | { kind: 'process_epoch_stale'; sessions: number; messages: number; channelWrites: number };
 export function onStoreIncident(cb: (i: StoreIncident) => void): () => void {
   const hooks = hookState().incidentHooks;
   hooks.add(cb);
@@ -319,6 +329,7 @@ async function loadSessionStore(deps: SessionStoreDeps | null): Promise<void> {
       incident({ kind: 'conflict', detail });
       gracefulExit(1, `store_conflict（${detail}）：落库撞上另一写者`);
     },
+    onStaleDiscard: (counts) => incident({ kind: 'process_epoch_stale', ...counts }),
     writable: () => !tenantLockTaken(),
     afterCommit: committedChange,
     ordersTaken: (ids) => {
@@ -796,7 +807,7 @@ export function flushStoreNow(): void {
 
 /** 每个已装载的后端独立收尾，坏租户不能跳过宿主；检查不触发 store 创建。 */
 export function spillStoresSync(): void {
-  if (processLeaseWaiting()) return;
+  if (processLeaseWaiting() || processLeaseFinalized()) return;
   const runtimes = tenantRuntimes().toSorted((a, b) => Number(b.isHost) - Number(a.isHost));
   for (const rt of runtimes) {
     const state = tenantStoreIfLoaded(rt);
@@ -810,6 +821,18 @@ export function spillStoresSync(): void {
       }
     }
   }
+}
+/** 等锁模式的最终交接：停止写队列、同步写完共享目录，再让配置源释放锁；exit 不再重复写。 */
+export function finalizeStoresSync(): void {
+  if (processLeaseFinalized() || processLeaseWaiting()) return;
+  if (!processLeaseHeld()) staleProcessLease();
+  for (const rt of tenantRuntimes()) {
+    const state = tenantStoreIfLoaded(rt);
+    state?.pgBackend?.close();
+    if (state?.maintenanceTimer) clearInterval(state.maintenanceTimer);
+  }
+  spillStoresSync();
+  finalizeProcessLease();
 }
 // exit 不创建异步资源；真正防线是执行时逐租户进作用域，而非监听注册时的 ALS。
 process.on('exit', spillStoresSync);

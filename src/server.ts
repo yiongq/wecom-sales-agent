@@ -62,6 +62,7 @@ import {
   sharedActor,
 } from './handoff/takeover.js';
 import {
+  finalizeStoresSync,
   flushSession,
   getAnyOrder,
   getSession,
@@ -1339,7 +1340,13 @@ if (!SELFTEST && !sandbox) {
   onShutdown(() => {
     for (const rt of tenantRuntimes()) withTenantScope(rt, markConfigShuttingDown);
   });
-  onShutdown(() => Promise.all(tenantRuntimes().map((rt) => withTenantScope(rt, closeConfig))), { phase: 'late' });
+  onShutdown(
+    () => {
+      if (processLeaseEnabled()) finalizeStoresSync();
+      return Promise.all(tenantRuntimes().map((rt) => withTenantScope(rt, closeConfig)));
+    },
+    { phase: 'late' },
+  );
   await boot({
     initConfig: () => initConfigFromEnv(process.env, (code) => gracefulExit(code, '租户锁被另一个进程拿走')),
     // SESSION_STORE 的取值已由 initConfigFromEnv 校验；db 存储要求 DB 配置模式，库与租户取自装好的配置源

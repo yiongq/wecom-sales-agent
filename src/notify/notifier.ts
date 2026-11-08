@@ -1,4 +1,7 @@
 import { publicBase } from '../tenancy/hosts.js';
+import { currentRuntime } from '../tenancy/runtime.js';
+import { waitForProcessEpochBeforeSend } from '../config/source.js';
+import { assertProcessLeaseHeld, isProcessLeaseError, processLeaseEnabled, waitForProcessLease } from '../tenancy/process-lease.js';
 // 转人工的外部提醒（docs/architecture/02-conversations-workbench/spec.md「通知」、R13、开放问题 3、不变量 32）：Notifier 接口与
 // 企微群机器人的实现。console 没开时顾问靠它知道有人要人工；与告警（src/ops/alert.ts，ALERT_WEBHOOK_URL）不是同一个群。
 // 消息体只有类型的中文、短码、时间与工作台链接（不带会话 id）：不含客户原话、external_userid、会话原 id。
@@ -98,16 +101,25 @@ export function webhookNotifier(url: string): Notifier {
     async send(n) {
       let res: Response;
       let raw: string;
-      try {
-        res = await fetch(url, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ msgtype: 'text', text: { content: noticeText(n) } }),
-          signal: AbortSignal.timeout(timing.timeoutMs),
-        });
-        raw = await res.text();
-      } catch (e) {
-        throw new NotifySendError(netCode(e));
+      for (;;) {
+        try {
+          if (processLeaseEnabled()) await waitForProcessEpochBeforeSend();
+          assertProcessLeaseHeld();
+          res = await fetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ msgtype: 'text', text: { content: noticeText(n) } }),
+            signal: AbortSignal.timeout(timing.timeoutMs),
+          });
+          raw = await res.text();
+          break;
+        } catch (e) {
+          if (isProcessLeaseError(e)) {
+            if (await waitForProcessLease(currentRuntime().id)) continue;
+            throw e;
+          }
+          throw new NotifySendError(netCode(e));
+        }
       }
       if (!res.ok) throw new NotifySendError(`http_${res.status}`);
       let errcode = 0;

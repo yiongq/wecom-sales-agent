@@ -10,7 +10,15 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import type { PgDatabase, PgQueryResultHKT, PgTransaction } from 'drizzle-orm/pg-core';
 import pg from 'pg';
 import * as schema from './schema.js';
-import { processEpoch, processLeaseEnabled, processLeaseStale, ProcessEpochStale, staleProcessLease } from '../tenancy/process-lease.js';
+import {
+  processEpoch,
+  processLeaseEnabled,
+  processLeaseStale,
+  processLeaseFinalized,
+  ProcessLeaseUnavailable,
+  ProcessEpochStale,
+  staleProcessLease,
+} from '../tenancy/process-lease.js';
 
 export type Schema = typeof schema;
 /** 两个驱动共同的基类：node-postgres 与 PGlite 都满足 */
@@ -250,6 +258,7 @@ export async function fenceProcessEpoch(tx: Tx, epoch: bigint): Promise<void> {
 export async function fenceCurrentProcessEpoch(tx: Tx): Promise<void> {
   if (!processLeaseEnabled()) return;
   if (processLeaseStale()) throw new ProcessEpochStale();
+  if (processLeaseFinalized()) throw new ProcessLeaseUnavailable();
   const epoch = processEpoch(currentTenantCtx().tenantId);
   if (epoch === undefined) {
     staleProcessLease();

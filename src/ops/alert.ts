@@ -507,6 +507,15 @@ let probe: { health: () => StoreHealth; counters: () => ReturnType<typeof storeC
 };
 
 function onIncident(i: StoreIncident): void {
+  if (i.kind === 'process_epoch_stale') {
+    alert('store', `process_epoch_stale：丢弃 ${i.sessions} 个会话、${i.messages} 条消息、${i.channelWrites} 条渠道写入，不写 spill`, {
+      severity: 'P1',
+      instance: true,
+      scope: 'process_epoch_stale',
+      escalate: true,
+    });
+    return;
+  }
   if (i.kind === 'conflict')
     alert(
       'store',
