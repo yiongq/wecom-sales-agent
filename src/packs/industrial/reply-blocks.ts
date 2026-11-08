@@ -81,7 +81,16 @@ function quoteBlock(ctx: ReplyGuardContext, pending: boolean): Block | null {
     ? {
         prefix: priced.length ? `另有 ${unpriced.length} 行需确认：` : '暂时报不了价：',
         items: unpriced.map((line) => {
-          const reason = line.note === 'below_moq' ? `起订量${line.moq}件` : line.note === 'over_max' ? '超过单次上限' : '未找到';
+          const reason =
+            line.note === 'below_moq'
+              ? `起订量${line.moq}件`
+              : line.note === 'over_max'
+                ? '超过单次上限'
+                : line.note === 'ambiguous'
+                  ? '有多个候选，请确认型号'
+                  : line.note === 'none'
+                    ? '未找到'
+                    : '请确认型号和数量';
           return `${plain(line.partNo ?? line.query)}（${reason}）`;
         }),
         omitted: false,

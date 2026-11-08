@@ -93,7 +93,7 @@
         ],
         "expect": {
           "tools": ["quote_items"],
-          "replyMatches": ["小计30\\.00元", "SYNTHUNKNOWN（未找到）"],
+          "replyMatches": ["小计30\\.00元", "SYNTHUNKNOWN（有多个候选，请确认型号）"],
           "replyExcludes": ["合计", "\\{\\{", "\\}\\}"],
           "orders": {
             "count": 0
@@ -136,7 +136,7 @@
         ],
         "expect": {
           "tools": ["quote_items"],
-          "replyMatches": ["^暂时报不了价：SYNTHUNKNOWN（未找到）$"],
+          "replyMatches": ["^暂时报不了价：SYNTHUNKNOWN（有多个候选，请确认型号）$"],
           "replyExcludes": ["元", "\\{\\{", "\\}\\}", "试算：", "另有", "已算好"],
           "orders": {
             "count": 0
