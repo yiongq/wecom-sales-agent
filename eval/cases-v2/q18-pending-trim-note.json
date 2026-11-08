@@ -1,0 +1,372 @@
+{
+  "version": 2,
+  "id": "q18-pending-trim-note",
+  "desc": "仿真回归：第8次main正式单已待审，裁剪行已入单，不再提议出正式单",
+  "tags": ["q18", "industrial"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:15:26.751Z",
+    "session": {
+      "stage": "quote",
+      "messages": [
+        {
+          "role": "customer",
+          "content": "这次检修有十行物料，可以一起核报价吗？",
+          "at": 1791605715380
+        },
+        {
+          "role": "agent",
+          "content": "可以，一次最多支持30行。请把型号和数量发我，我逐行查询后给您试算。",
+          "at": 1791605716950
+        },
+        {
+          "role": "customer",
+          "content": "好的，那我把这10行一起发给你：6206-2RS 24件、6207-2RS 4件、6209-2RS 6件、6213-2RS 20件、M6×35 120件、M10×60 40件、HS-PV28 3件、HS-PV31 10件、HS-K03-24 2件、HS-K08-24 12件。麻烦按这个数量帮我试算。",
+          "at": 1791605721728
+        },
+        {
+          "role": "agent",
+          "content": "试算：\n6206-2RS × 24：单价12.11元，小计290.64元；约 8 天，以顾问确认为准；满100件10.76元\n6207-2RS × 4：单价14.60元，小计58.40元；现货，以顾问确认为准；满20件13.14元\n6209-2RS × 6：单价16.90元，小计101.40元；约 11 天，以顾问确认为准；满20件15.21元\n6213-2RS × 20：单价19.35元，小计387.00元；现货 18 件，其余约 15 天，以顾问确认为准；满100件17.20元\nM6×35 × 120：单价1.12元，小计134.40元；约 6 天，以顾问确认为准；满500件0.99元\nM10×60 × 40：单价1.89元，小计75.60元；现货，以顾问确认为准；满100件1.70元\nHS-PV28 × 3：单价45.25元，小计135.75元；约 7 天，以顾问确认为准；满10件40.73元\n另外 3 行已算好，需要的话我出一份正式报价单\n合计2091.89元\n· 6207-2RS、M10×60、HS-K08-24 现货，可较快安排\n· 6206-2RS、6209-2RS、6213-2RS 有备货周期，交期以顾问确认为准",
+          "at": 1791605724007
+        }
+      ],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 1791605715379,
+      "updatedAt": 1791605724007,
+      "profile": {},
+      "packState": {
+        "rfqDraft": {
+          "at": 1791605721740,
+          "lines": [
+            {
+              "match": "exact",
+              "code": "bearing-03",
+              "version": 1,
+              "qty": 24
+            },
+            {
+              "match": "exact",
+              "code": "bearing-04",
+              "version": 1,
+              "qty": 4
+            },
+            {
+              "match": "exact",
+              "code": "bearing-06",
+              "version": 1,
+              "qty": 6
+            },
+            {
+              "match": "exact",
+              "code": "bearing-10",
+              "version": 1,
+              "qty": 20
+            },
+            {
+              "match": "exact",
+              "code": "fastener-03",
+              "version": 1,
+              "qty": 120
+            },
+            {
+              "match": "exact",
+              "code": "fastener-08",
+              "version": 1,
+              "qty": 40
+            },
+            {
+              "match": "exact",
+              "code": "pneumatic-03",
+              "version": 1,
+              "qty": 3
+            },
+            {
+              "match": "exact",
+              "code": "pneumatic-06",
+              "version": 1,
+              "qty": 10
+            },
+            {
+              "match": "exact",
+              "code": "electric-03",
+              "version": 1,
+              "qty": 2
+            },
+            {
+              "match": "exact",
+              "code": "electric-08",
+              "version": 1,
+              "qty": 12
+            }
+          ]
+        },
+        "partsInPlay": [
+          {
+            "partNo": "6206-2RS",
+            "specs": ["内径30mm", "双面密封"]
+          },
+          {
+            "partNo": "6207-2RS",
+            "specs": ["内径35mm", "双面密封"]
+          },
+          {
+            "partNo": "6209-2RS",
+            "specs": ["内径45mm", "双面密封"]
+          },
+          {
+            "partNo": "6213-2RS",
+            "specs": ["内径65mm", "双面密封"]
+          },
+          {
+            "partNo": "M6×35",
+            "specs": ["螺纹M6", "长度35mm", "强度8.8级"]
+          },
+          {
+            "partNo": "M10×60",
+            "specs": ["螺纹M10", "长度60mm", "强度8.8级"]
+          },
+          {
+            "partNo": "HS-PV28",
+            "specs": ["接口G1/4", "防护IP65", "公称通径7mm"]
+          },
+          {
+            "partNo": "HS-PV31",
+            "specs": ["接口G1/4", "防护IP65", "公称通径10mm"]
+          },
+          {
+            "partNo": "HS-K03-24",
+            "specs": ["线圈DC24V", "额定电流5A", "防护IP20"]
+          },
+          {
+            "partNo": "HS-K08-24",
+            "specs": ["线圈DC24V", "额定电流10A", "防护IP20"]
+          }
+        ]
+      },
+      "moneyLedger": [
+        {
+          "fen": 1211,
+          "label": "试算单价",
+          "subject": "62062RS"
+        },
+        {
+          "fen": 29064,
+          "label": "试算行金额",
+          "subject": "62062RS"
+        },
+        {
+          "fen": 1460,
+          "label": "试算单价",
+          "subject": "62072RS"
+        },
+        {
+          "fen": 5840,
+          "label": "试算行金额",
+          "subject": "62072RS"
+        },
+        {
+          "fen": 1690,
+          "label": "试算单价",
+          "subject": "62092RS"
+        },
+        {
+          "fen": 10140,
+          "label": "试算行金额",
+          "subject": "62092RS"
+        },
+        {
+          "fen": 1935,
+          "label": "试算单价",
+          "subject": "62132RS"
+        },
+        {
+          "fen": 38700,
+          "label": "试算行金额",
+          "subject": "62132RS"
+        },
+        {
+          "fen": 112,
+          "label": "试算单价",
+          "subject": "M6×35"
+        },
+        {
+          "fen": 13440,
+          "label": "试算行金额",
+          "subject": "M6×35"
+        },
+        {
+          "fen": 189,
+          "label": "试算单价",
+          "subject": "M10×60"
+        },
+        {
+          "fen": 7560,
+          "label": "试算行金额",
+          "subject": "M10×60"
+        },
+        {
+          "fen": 4525,
+          "label": "试算单价",
+          "subject": "HSPV28"
+        },
+        {
+          "fen": 13575,
+          "label": "试算行金额",
+          "subject": "HSPV28"
+        },
+        {
+          "fen": 4950,
+          "label": "试算单价",
+          "subject": "HSPV31"
+        },
+        {
+          "fen": 49500,
+          "label": "试算行金额",
+          "subject": "HSPV31"
+        },
+        {
+          "fen": 2325,
+          "label": "试算单价",
+          "subject": "HSK0324"
+        },
+        {
+          "fen": 4650,
+          "label": "试算行金额",
+          "subject": "HSK0324"
+        },
+        {
+          "fen": 3060,
+          "label": "试算单价",
+          "subject": "HSK0824"
+        },
+        {
+          "fen": 36720,
+          "label": "试算行金额",
+          "subject": "HSK0824"
+        },
+        {
+          "fen": 209189,
+          "label": "试算合计"
+        }
+      ]
+    },
+    "orders": []
+  },
+  "turns": [
+    {
+      "say": "好的，麻烦把剩余3行也算进去，然后给我出一份正式报价单。",
+      "script": [
+        {
+          "toolCalls": [
+            {
+              "name": "quote_items",
+              "args": {
+                "items": [
+                  {
+                    "query": "6206-2RS",
+                    "qty": 24
+                  },
+                  {
+                    "query": "6207-2RS",
+                    "qty": 4
+                  },
+                  {
+                    "query": "6209-2RS",
+                    "qty": 6
+                  },
+                  {
+                    "query": "6213-2RS",
+                    "qty": 20
+                  },
+                  {
+                    "query": "M6×35",
+                    "qty": 120
+                  },
+                  {
+                    "query": "M10×60",
+                    "qty": 40
+                  },
+                  {
+                    "query": "HS-PV28",
+                    "qty": 3
+                  },
+                  {
+                    "query": "HS-PV31",
+                    "qty": 10
+                  },
+                  {
+                    "query": "HS-K03-24",
+                    "qty": 2
+                  },
+                  {
+                    "query": "HS-K08-24",
+                    "qty": 12
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "toolCalls": [
+            {
+              "name": "create_quote_sheet",
+              "args": {
+                "items": [
+                  {
+                    "code": "bearing-03",
+                    "qty": 24
+                  },
+                  {
+                    "code": "bearing-04",
+                    "qty": 4
+                  },
+                  {
+                    "code": "bearing-06",
+                    "qty": 6
+                  },
+                  {
+                    "code": "bearing-10",
+                    "qty": 20
+                  },
+                  {
+                    "code": "fastener-03",
+                    "qty": 120
+                  },
+                  {
+                    "code": "fastener-08",
+                    "qty": 40
+                  },
+                  {
+                    "code": "pneumatic-03",
+                    "qty": 3
+                  },
+                  {
+                    "code": "pneumatic-06",
+                    "qty": 10
+                  },
+                  {
+                    "code": "electric-03",
+                    "qty": 2
+                  },
+                  {
+                    "code": "electric-08",
+                    "qty": 12
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "content": "十行都已核算完毕，正式报价单已提交，目前待顾问审核。审核通过后我会把正式报价单发给您。\n\n价格含税13%，报价有效期7天；库存与交期以顾问确认为准。"
+        }
+      ],
+      "expect": {
+        "replyMatches": ["正式报价单已提交，目前待顾问审核", "另外 3 行已在待审的正式报价单里", "试算合计2091\\.89元"],
+        "replyExcludes": ["需要的话我出一份正式报价单"]
+      }
+    }
+  ]
+}

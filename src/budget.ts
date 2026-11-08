@@ -1,3 +1,4 @@
+import { processLeaseHeld } from './tenancy/process-lease.js';
 import { currentRuntime, withTenantScope, withoutTenantScope, type TenantRuntime } from './tenancy/runtime.js';
 import { registerTenantState } from './tenancy/state.js';
 // LLM 日预算硬闸。演示链接一旦对外公开就会被陌生人点，/api/chat 是公开匿名端点，
@@ -33,7 +34,7 @@ interface HostBudget {
 const hosts = new Map<TenantRuntime, HostBudget>();
 function hostBudget(): HostBudget | null {
   const rt = currentRuntime();
-  if (!rt.isHost || rt.kind !== 'standard') return null;
+  if (!processLeaseHeld() || !rt.isHost || rt.kind !== 'standard') return null;
   let entry = hosts.get(rt);
   if (!entry) {
     entry = { state: { day: today(), calls: 0, perSession: {} }, flushTimer: null };
@@ -60,7 +61,7 @@ function persist(entry: HostBudget): void {
       () =>
         withTenantScope(rt, () => {
           entry.flushTimer = null;
-          if (hosts.get(rt) !== entry || rt.state !== 'serving') return;
+          if (!processLeaseHeld() || hosts.get(rt) !== entry || rt.state !== 'serving') return;
           try {
             fs.mkdirSync(VAR_DIR, { recursive: true });
             const tmp = FILE + '.tmp';

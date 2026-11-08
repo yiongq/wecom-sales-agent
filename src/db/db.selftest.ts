@@ -211,6 +211,7 @@ async function schemaChecks(run: Query, label: string, vector: boolean): Promise
         'orders',
         'outbound_sends',
         'privacy_notices',
+        'process_epochs',
         'quick_replies',
         'sandbox_pool_daily',
         'sandbox_process_epoch',

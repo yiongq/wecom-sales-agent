@@ -1,3 +1,4 @@
+import { processLeaseHeld, waitForProcessLease, ProcessEpochStale } from '../../tenancy/process-lease.js';
 import { limitHandoffReply } from '../../tenancy/limit-handoff.js';
 import { limitVerdict } from '../../tenancy/limits.js';
 import { customerRate } from '../../tenancy/customer-rate.js';
@@ -301,6 +302,7 @@ export function handleMessage(sessionId: string, text: string, channel: string, 
   const receivedAt = Date.now();
   const work = () =>
     serialize(sessionId, async () => {
+      if (!processLeaseHeld() && !(await waitForProcessLease(currentRuntime().id))) throw new ProcessEpochStale();
       rt.cancel.throwIfAborted();
       if (opts.stillCurrent && !opts.stillCurrent())
         return { text: '', stage: getSession(sessionId)?.stage ?? currentPack().runtime.stages[0]!.id, silent: true };

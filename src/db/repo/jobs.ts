@@ -66,6 +66,7 @@ const toDate = (v: string | Date): Date => (v instanceof Date ? v : new Date(v))
 /**
  * 认领一批到点的任务：status='pending' AND run_at <= now ORDER BY run_at LIMIT n FOR UPDATE SKIP LOCKED，改成 running、
  * 记 claimed_at。now 由调用方给（与 runAt 同一个时钟）。kinds 给了就只认领这几类（认领分道，02 plan 第 14 步）。
+ * 通知保留上次令牌，新令牌至少递增 1 毫秒（JS Date 精度），同毫秒认领或时钟回拨也不会复用。
  * 调用方随即提交，再执行任务
  */
 export async function claimDueJobs(tx: Tx, now: Date, limit: number, kinds?: readonly JobKind[]): Promise<JobRow[]> {
@@ -78,7 +79,8 @@ export async function claimDueJobs(tx: Tx, now: Date, limit: number, kinds?: rea
     : sql``;
   const rows = rowsOf<RawJob>(
     await tx.execute(sql`
-      update ${jobs} set status = 'running', claimed_at = ${at}::timestamptz
+      update ${jobs} set status = 'running', claimed_at = case when kind='handoff_notify'
+        then greatest(${at}::timestamptz, claimed_at + interval '1 millisecond') else ${at}::timestamptz end
        where (tenant_id, id) in (
          select tenant_id, id from ${jobs}
           where status = 'pending' and run_at <= ${at}::timestamptz${onlyKinds}
@@ -136,6 +138,27 @@ export async function setJobStatus(
   return out.length === 1;
 }
 
+/**
+ * 租约中断且通知请求确定未发出：归还本次认领，不消耗重试。
+ * 新主可能已先执行启动归位：仅撤销同次 interrupted 的一次扣数；重新认领或有真实执行结果的行绝不改。
+ * 这是认领元数据的 CAS 收尾，允许旧 epoch 调用，不写会话、渠道或业务状态。
+ */
+export async function requeueUnsentNotification(tx: Tx, job: JobRow): Promise<boolean> {
+  if (job.kind !== 'handoff_notify' || !job.claimedAt) return false;
+  const at = job.claimedAt.toISOString();
+  return (
+    rowsOf(
+      await tx.execute(sql`
+    update ${jobs} set status='pending', attempts=${job.attempts},
+      finished_at=null, last_error='process_lease_interrupted'
+    where id=${job.id}::uuid and kind='handoff_notify' and claimed_at=${at}::timestamptz and (
+      (status='running' and attempts=${job.attempts})
+      or (status in ('pending','failed') and last_error='interrupted' and attempts=${job.attempts + 1}))
+    returning id`),
+    ).length === 1
+  );
+}
+
 /** 启动时各类没结束的任务的去向（spec「任务表与跟进 · 重启与停机」），各类的条数 */
 export interface JobRecovery {
   /** running 的跟进改回 pending：还没记账，什么都没发 */
@@ -168,7 +191,8 @@ export async function recoverJobsAtStartup(tx: Tx): Promise<JobRecovery> {
     update ${jobs} set status = 'failed', attempts = attempts + 1, finished_at = now(), last_error = 'interrupted'
      where kind <> 'followup' and status = 'running' and attempts + 1 >= max_attempts returning id`);
   const otherRequeued = await n(sql`
-    update ${jobs} set status = 'pending', attempts = attempts + 1, claimed_at = null, last_error = 'interrupted'
+    update ${jobs} set status = 'pending', attempts = attempts + 1,
+      claimed_at = case when kind='handoff_notify' then claimed_at else null end, last_error = 'interrupted'
      where kind <> 'followup' and status = 'running' returning id`);
   return { followupRequeued, followupAbandoned, otherRequeued: otherRequeued + opsRequeued, otherFailed };
 }

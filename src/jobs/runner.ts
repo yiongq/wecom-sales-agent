@@ -1,3 +1,4 @@
+import { processLeaseEnabled, processLeaseHeld, isProcessLeaseError, ProcessLeaseUnavailable } from '../tenancy/process-lease.js';
 import { ensureDigest, runDigest } from '../ops/digest.js';
 import { recoverReports } from '../db/repo/ops-reports.js';
 import { TenantObservers } from '../tenancy/observers.js';
@@ -24,12 +25,14 @@ import {
 // 租户锁不在本进程手里（锁连接断开还没重取到、或已被别的进程拿走）时不认领、不执行，认领了还没开始的放回 pending。
 // 结果没写进库的（短事务失败）留在本进程的待补队列里，下一拍先补写一次，再失败就留给下次启动归位。
 // 读路径不查库（不变量 9）：认领在后台定时器里，排程与取消经会话写队列。
-import { configHealth, tenantLockTaken } from '../config/source.js';
+import { configHealth, configRuntime, tenantLockTaken } from '../config/source.js';
+import { withTenant } from '../db/client.js';
 import {
   cancelPendingJobs,
   claimDueJobs,
   enqueueJob,
   recoverJobsAtStartup,
+  requeueUnsentNotification,
   setJobStatus,
   type JobKind,
   type JobRow,
@@ -42,7 +45,7 @@ import { retentionPurgeSpec, runRetentionPurgeJob, setRunningJobChecker } from '
 
 const tenantState = scopedState(() => ({
   initialized: false,
-  mine: new Map<string, { job: JobRow; phase: Phase }>(),
+  mine: new Map<string, ClaimedJob>(),
   recovered: false,
   recovering: null as Promise<boolean> | null,
   laneTasks: new Map<string, Promise<number>>(),
@@ -78,6 +81,8 @@ export type JobOutcome =
 export interface JobCtx {
   /** 执行体把 running → sending 排进会话写队列的同一段同步代码里调：从这一刻起停机不再把它改回 pending */
   markSending(): void;
+  /** 持久化归还确定未发出的通知，随后旧调用必须终止。 */
+  onLeaseUnavailable?(): Promise<void>;
 }
 export type JobHandler = (job: JobRow, now: number, ctx: JobCtx) => Promise<JobOutcome>;
 
@@ -155,14 +160,20 @@ const errName = (e: unknown): string => {
 const handlers: Record<JobKind, JobHandler> = {
   ops_daily_digest: (job, now) => runDigest(job, now),
   followup: (job, now, ctx) => followupJobs.run(job, now, ctx),
-  handoff_notify: (job, now) => runHandoffNotifyJob(job, now),
+  handoff_notify: (job, now, ctx) => runHandoffNotifyJob(job, now, ctx),
   retention_purge: (job, now) => runRetentionPurgeJob(job, now),
 };
 
 // ---------------- 认领与执行 ----------------
 
 /** 本进程认领了、还没写下结果的任务：claimed（排着没开始）、started（执行中）、sending（跟进已进 sending）、settling（结果在写） */
-type Phase = 'claimed' | 'started' | 'sending' | 'settling';
+type Phase = 'claimed' | 'started' | 'sending' | 'settling' | 'lease_interrupted';
+interface ClaimedJob {
+  job: JobRow;
+  phase: Phase;
+  /** 同一次认领的归还只启动一次；并发、晚到的回调和停机共享结果（含失败）。 */
+  unsentReturn?: Promise<void>;
+}
 
 let started = false;
 let stopping = false;
@@ -174,7 +185,7 @@ let lastClaimLog = 0;
 /** 结果没写进库的：下一拍先补写一次（照样带令牌），再失败就留给下次启动归位 */
 
 /** 租户锁在本进程手里：锁连接断开（lost，正在重取）或已被另一个进程拿走时，不认领、不执行 */
-const lockHeld = (): boolean => configHealth().lock === 'held' && !tenantLockTaken();
+const lockHeld = (): boolean => processLeaseHeld() && configHealth().lock === 'held' && !tenantLockTaken();
 
 const logThrottled = (msg: string): void => {
   if (Date.now() - lastClaimLog < CLAIM_LOG_MS) return;
@@ -268,14 +279,49 @@ async function runClaimed(job: JobRow, now: number): Promise<void> {
       markSending: () => {
         slot.phase = 'sending';
       },
+      ...(job.kind === 'handoff_notify'
+        ? {
+            onLeaseUnavailable: () => {
+              slot.phase = 'lease_interrupted';
+              return returnUnsentNotification(slot);
+            },
+          }
+        : {}),
     });
   } catch (e) {
+    if (isProcessLeaseError(e)) {
+      if (job.kind === 'handoff_notify') {
+        slot.phase = 'lease_interrupted';
+        // 这里只归还确定未发出的本次认领，不能经已经 stale 的会话写栅栏；CAS 防止覆盖新主认领。
+        try {
+          await returnUnsentNotification(slot);
+          own.mine.delete(job.id);
+        } catch {
+          /* 同次归还失败不再重做，留给启动恢复。 */
+        }
+      }
+      return;
+    }
     console.error(`[jobs] ${job.kind} 执行出错（${errName(e)}），按 max_attempts 重试`);
     // 已进 sending 的不能重来（最多发一次）：状态由执行体经会话写队列改，这里不动
     out = (slot.phase as Phase) === 'sending' ? { status: 'handled' } : retryOutcome(job, now, e);
   }
   if (out.status === 'stopped') return; // 留在 mine 里：停机钩子按它改回 pending
   await settleOrQueue(job, out);
+}
+
+function returnUnsentNotification(slot: ClaimedJob): Promise<void> {
+  return (slot.unsentReturn ??= (async () => {
+    const { deps, tenantId } = configRuntime();
+    try {
+      await withTenant(deps.db, { tenantId, actor: { kind: 'system', userId: null, name: null, ip: null } }, (tx) =>
+        requeueUnsentNotification(tx, slot.job),
+      );
+    } catch (error) {
+      console.error(`[jobs] 未发送通知归还失败（${errName(error)}），不计发送失败`);
+      throw new ProcessLeaseUnavailable();
+    }
+  })());
 }
 
 /** 写下结果；没写进去（库抖动、语句超时）就进待补队列，下一拍补写（任务留在 running，本进程不会再认领它） */
@@ -380,6 +426,7 @@ async function prelude(now: number): Promise<boolean> {
 /** 一条道认领一批（只认领这条道的几类）并逐个执行 */
 async function tickLane(lane: Lane, now: number): Promise<number> {
   const own = state();
+  if (!processLeaseHeld()) return 0;
   let claimed: JobRow[];
   try {
     claimed = await withJobsTx((tx) => claimDueJobs(tx, new Date(now), BATCH, lane.kinds));
@@ -394,7 +441,18 @@ async function tickLane(lane: Lane, now: number): Promise<number> {
     if (!lockHeld()) {
       // 执行途中锁丢了：认领了还没开始的放回 pending（带令牌、不算一次尝试），由持锁的进程去做
       logThrottled(`[jobs] 租户锁不在本进程手里，这一批还没开始的 ${claimed.length - i} 个放回 pending`);
-      for (const rest of claimed.slice(i)) await settleOrQueue(rest, { status: 'pending', runAt: rest.runAt.getTime() });
+      for (const rest of claimed.slice(i)) {
+        if (processLeaseEnabled() && rest.kind === 'handoff_notify') {
+          const slot = own.mine.get(rest.id)!;
+          slot.phase = 'lease_interrupted';
+          try {
+            await returnUnsentNotification(slot);
+            own.mine.delete(rest.id);
+          } catch {
+            /* 同次归还失败不再重做，留给启动恢复。 */
+          }
+        } else await settleOrQueue(rest, { status: 'pending', runAt: rest.runAt.getTime() });
+      }
       break;
     }
     await runClaimed(job, now + (Date.now() - t0));
@@ -408,7 +466,13 @@ async function tickLane(lane: Lane, now: number): Promise<number> {
  */
 export function runJobsOnce(now = Date.now()): Promise<number> {
   const own = state();
-  if (currentRuntime().kind !== 'standard' || currentRuntime().state !== 'serving' || stopping || sessionStoreMode() !== 'db')
+  if (
+    !processLeaseHeld() ||
+    currentRuntime().kind !== 'standard' ||
+    currentRuntime().state !== 'serving' ||
+    stopping ||
+    sessionStoreMode() !== 'db'
+  )
     return Promise.resolve(0);
   const idle = LANES.filter((lane) => !own.laneTasks.has(lane.name));
   if (!idle.length) return Promise.resolve(0);
@@ -457,6 +521,16 @@ async function stopJobs(): Promise<void> {
     }
   }
   await Promise.all([...own.laneTasks.values()].map((t) => t.catch(() => undefined)));
+  if (!processLeaseEnabled()) return;
+  for (const [id, slot] of own.mine) {
+    if (slot.job.kind !== 'handoff_notify' || (slot.phase !== 'lease_interrupted' && slot.phase !== 'claimed')) continue;
+    try {
+      await returnUnsentNotification(slot);
+      own.mine.delete(id);
+    } catch {
+      /* 日志已记录；停机总截止仍由 shutdown 控制。 */
+    }
+  }
 }
 
 /**

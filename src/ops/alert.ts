@@ -507,6 +507,24 @@ let probe: { health: () => StoreHealth; counters: () => ReturnType<typeof storeC
 };
 
 function onIncident(i: StoreIncident): void {
+  if (i.kind === 'spill_failed') {
+    alert('store', `spill_failed：${i.sessions} 个会话的 spill 写入失败，仍释放锁，未保存的改动随退出丢失`, {
+      severity: 'P1',
+      instance: true,
+      scope: 'spill_failed',
+      escalate: true,
+    });
+    return;
+  }
+  if (i.kind === 'process_epoch_stale') {
+    alert('store', `process_epoch_stale：丢弃 ${i.sessions} 个会话、${i.messages} 条消息、${i.channelWrites} 条渠道写入，不写 spill`, {
+      severity: 'P1',
+      instance: true,
+      scope: 'process_epoch_stale',
+      escalate: true,
+    });
+    return;
+  }
   if (i.kind === 'conflict')
     alert(
       'store',

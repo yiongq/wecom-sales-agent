@@ -1,4 +1,7 @@
 import { publicBase } from '../tenancy/hosts.js';
+import { currentRuntime } from '../tenancy/runtime.js';
+import { waitForProcessEpochBeforeSend } from '../config/source.js';
+import { assertProcessLeaseHeld, isProcessLeaseError, processLeaseEnabled, waitForProcessLease } from '../tenancy/process-lease.js';
 // 转人工的外部提醒（docs/architecture/02-conversations-workbench/spec.md「通知」、R13、开放问题 3、不变量 32）：Notifier 接口与
 // 企微群机器人的实现。console 没开时顾问靠它知道有人要人工；与告警（src/ops/alert.ts，ALERT_WEBHOOK_URL）不是同一个群。
 // 消息体只有类型的中文、短码、时间与工作台链接（不带会话 id）：不含客户原话、external_userid、会话原 id。
@@ -35,7 +38,7 @@ export interface HandoffNotice {
 }
 
 export interface Notifier {
-  send(n: HandoffNotice): Promise<void>;
+  send(n: HandoffNotice, onLeaseUnavailable?: () => Promise<void>): Promise<void>;
 }
 
 /** 「记录暂未保存」：unsaved 的提醒在正文里标出来（验收 15） */
@@ -95,19 +98,29 @@ function netCode(e: unknown): string {
 /** 企微群机器人：POST { msgtype: 'text', text: { content } }，HTTP 2xx 且 errcode 为 0 才算发出 */
 export function webhookNotifier(url: string): Notifier {
   return {
-    async send(n) {
+    async send(n, onLeaseUnavailable) {
       let res: Response;
       let raw: string;
-      try {
-        res = await fetch(url, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ msgtype: 'text', text: { content: noticeText(n) } }),
-          signal: AbortSignal.timeout(timing.timeoutMs),
-        });
-        raw = await res.text();
-      } catch (e) {
-        throw new NotifySendError(netCode(e));
+      for (;;) {
+        try {
+          if (processLeaseEnabled()) await waitForProcessEpochBeforeSend(onLeaseUnavailable);
+          assertProcessLeaseHeld();
+          res = await fetch(url, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ msgtype: 'text', text: { content: noticeText(n) } }),
+            signal: AbortSignal.timeout(timing.timeoutMs),
+          });
+          raw = await res.text();
+          break;
+        } catch (e) {
+          if (isProcessLeaseError(e)) {
+            if (onLeaseUnavailable) throw e; // 任务已经归还，旧调用不能在恢复后继续发送。
+            if (await waitForProcessLease(currentRuntime().id)) continue;
+            throw e;
+          }
+          throw new NotifySendError(netCode(e));
+        }
       }
       if (!res.ok) throw new NotifySendError(`http_${res.status}`);
       let errcode = 0;
