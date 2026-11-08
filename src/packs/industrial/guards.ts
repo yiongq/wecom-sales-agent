@@ -96,7 +96,51 @@ function clausesOf(unit: string): string[] {
   return clauses;
 }
 
-type Evidence = { partNo: string; stock?: string; leadDays?: number; substitutes?: string[]; delivery?: string };
+/** 部分现货与剩余交期是一项事实，不能只删前半，让「其余」失去指代。 */
+function inventoryClauses(unit: string): string[] {
+  const clauses: string[] = [];
+  for (const clause of clausesOf(unit)) {
+    const previous = clauses.at(-1);
+    // 「其余型号 / 其余各行」另有主语；只有同一批货的剩余数量、交期才合并。
+    if (
+      previous &&
+      /现货|库存/.test(previous) &&
+      (/^\s*(?:其余|剩余|余量|差额)\s*(?:\d|约|预计|需|数量|部分|交期)/.test(clause) || /^\s*(?:不够|不足)\s*\d+\s*件/.test(clause))
+    )
+      clauses[clauses.length - 1] += clause;
+    else clauses.push(clause);
+  }
+  return clauses;
+}
+
+/** 只清理改写后失去结果的条件，以及失去正文的转折词；有结果的条件句照留。 */
+function finishClaimSentence(original: string, rewritten: string): string {
+  if (original === rewritten) return rewritten;
+  let hasResult = false;
+  const cleaned = clausesOf(rewritten)
+    .toReversed()
+    .map((clause) => {
+      const body = clause
+        .trim()
+        .replace(/^(?:[·•*-]|\d+[.、)）])\s*/, '')
+        .replace(/[，,；;：:。！？!?—–-]+$/u, '')
+        .trim();
+      if (!body || /^(?:但是|但|不过|然而|另外|那么|则|就)$/.test(body)) return '';
+      const condition = body.replace(/^(?:但是|但|不过|然而)\s*/, '');
+      const onlyCondition =
+        condition.endsWith('的话') ||
+        (/^(?:如果|假如|要是|若(?!干)|万一)/.test(condition) &&
+          !/(?:就|那么|则|请|我(?:们)?(?:会|可以|来|帮)|您可以|建议|需(?:要)?等|可(?:以)?(?:再|先|改|降|选|换|按))\S+/.test(condition));
+      if (onlyCondition) return hasResult ? clause : '';
+      hasResult = true;
+      return clause;
+    })
+    .toReversed()
+    .join('');
+  return cleaned === rewritten ? rewritten : cleaned.replace(/[\s，,；;：:—–-]+$/u, cleaned.trim() ? '。' : '');
+}
+
+type Evidence = { partNo: string; stock?: string; leadDays?: number; substitutes?: string[]; delivery?: string; qty?: number };
 function evidence(ctx: FollowupGuardContext, sources: PackSources): Evidence[] {
   // 摘要的版本不随缓存淘汰；只有 exact 试算行才可借历史版本恢复库存 / 交期依据。
   const state = readState(ctx.session);
@@ -112,7 +156,9 @@ function evidence(ctx: FollowupGuardContext, sources: PackSources): Evidence[] {
     }
     const priced = priceLine(current, line.qty);
     if ('reject' in priced) return [];
-    return [{ partNo: part.partNo, delivery: priced.attrs?.['交期'], leadDays: current.leadDays, substitutes: part.substitutes }];
+    return [
+      { partNo: part.partNo, delivery: priced.attrs?.['交期'], leadDays: current.leadDays, substitutes: part.substitutes, qty: line.qty },
+    ];
   });
   for (const call of ctx.toolSources) {
     if (!call.result || !['find_parts', 'quote_items'].includes(call.name)) continue;
@@ -425,33 +471,52 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
     )
       text = followup ? '' : PROMISE_FALLBACK;
     if (text === sentence && pricePromise.test(sentence)) return '';
-    const inventory = sentence.replace(/报价(?:单)?有效期(?:为|是|[:：])?\s*\d+\s*天/g, '').replace(validity, '');
-    if (text !== PROMISE_FALLBACK && assertions && inventoryClaim.test(inventory)) {
+    const inventory = sentence
+      .replace(/报价(?:单)?有效期(?:为|是|[:：])?\s*\d+\s*天/g, '')
+      .replace(validity, '')
+      // 组合事实中的不足数量不是对前后库存、交期说法的否定。
+      .replace(/([，,])(?:不够|不足)\s*\d+\s*件(?:全现货)?(?=[，,])/g, '$1');
+    const inventoryAssertion =
+      !nonAssertion.test(inventory) ||
+      (/现货|库存/.test(inventory) &&
+        /其余|剩余|余量|差额/.test(inventory) &&
+        !nonAssertion.test(inventory.replace(/以.{0,8}确认为准/g, '')));
+    if (text !== PROMISE_FALLBACK && inventoryAssertion && inventoryClaim.test(inventory)) {
       const claimed = subject.length ? subject : implied;
       const supported =
         claimed.length > 0 &&
         claimed.every((model) => {
           const fact = facts.find((entry) => normalizePartNo(entry.partNo) === model);
           if (!fact) return false;
+          // 「A现货30件、B现货50件，其余约7天」按型号分配数量，共用后面的交期。
+          const remaining = /[，,]((?:其余|剩余|余量|差额)[\s\S]*)/.exec(inventory);
+          const perModel = (remaining ? inventory.slice(0, remaining.index) : inventory).split('、');
+          const scoped =
+            claimed.length > 1 &&
+            perModel.length === claimed.length &&
+            perModel.every((part) => mentionedModels(part).length === 1 && inventoryClaim.test(part))
+              ? (perModel.find((part) => mentionedModels(part).includes(model)) ?? '') + (remaining?.[0] ?? '')
+              : inventory;
           // 单型号的剩余数量「约需 N 天到」仍是约期，后续继续核对部分现货与实际天数。
           const deliveryClaim =
-            claimed.length === 1 ? inventory.replace(/((?:其余|剩余|余量)(?:\s*\d+\s*件)?\s*)约需(?=\s*\d+\s*天到)/g, '$1约') : inventory;
-          if (/库存(?:有?\s*\d+)|保证交期|今天.{0,3}发|明天.{0,3}发|(?<!约\s*)\d+\s*天到/.test(deliveryClaim)) return false;
+            claimed.length === 1 ? scoped.replace(/((?:其余|剩余|余量|差额)(?:\s*\d+\s*件)?\s*)约需(?=\s*\d+\s*天到)/g, '$1约') : scoped;
+          if (/保证交期|今天.{0,3}发|明天.{0,3}发|(?<!约\s*)(?<!\d)\d+\s*天到/.test(deliveryClaim)) return false;
           const delivery = fact.delivery ?? '';
           const stock = fact.stock ?? (delivery === '现货' ? '现货' : delivery.startsWith('现货') ? '部分现货' : '无现货');
-          if (/有货|库存充足|全(?:部|都)?现货/.test(inventory) && stock !== '现货') return false;
+          if (/有货|库存充足|全(?:部|都)?现货/.test(scoped) && stock !== '现货') return false;
           const onHand = /现货\s*(\d+)/.exec(delivery)?.[1];
-          const amount = /现货\s*(?:只有|仅有?|有|约)?\s*(\d+)/.exec(inventory)?.[1];
-          const leading = /(\d+)\s*件\s*现货/.exec(inventory)?.[1];
+          // 「现货约5天」的 5 是交期，不能读成现货数量；库存数只认工具明确给过的数量。
+          const amount = /(?:现货\s*(?:只有|仅有?|有|约|的)?|库存\s*(?:现货|有)?)\s*(\d+)(?!\d|\s*天)/.exec(scoped)?.[1];
+          const leading = /(\d+)\s*件\s*(?:为|是)?\s*现货/.exec(scoped)?.[1];
           if (amount && amount !== onHand) return false;
-          if (leading && onHand && leading !== onHand) return false;
-          if (/部分现货|其余|剩余|余量/.test(inventory)) {
+          if (leading && leading !== onHand && !(stock === '现货' && Number(leading) === fact.qty)) return false;
+          if (/部分现货|其余|剩余|余量|差额/.test(scoped)) {
             if (stock !== '部分现货') return false;
-          } else if (/现货/.test(inventory) && !amount && !(leading && onHand) && stock !== '现货') return false;
-          const days = [...inventory.matchAll(/(?:交期\s*)?(\d+)\s*天(?:发)?/g)].map((match) => Number(match[1]));
-          return days.every(
-            (day) => day === fact.leadDays || new RegExp(`(?<![0-9])${day}天`).test((fact.delivery ?? '').replace(/\s/g, '')),
-          );
+            if (/其余|剩余|余量|差额/.test(scoped) && !/现货|库存/.test(scoped)) return false;
+          } else if (/现货/.test(scoped) && !amount && !(leading && onHand) && stock !== '现货') return false;
+          const days = [...scoped.matchAll(/(?:交期\s*)?(\d+)\s*天(?:发)?/g)].map((match) => Number(match[1]));
+          const quotedDays = /(?:约\s*)?(\d+)\s*天/.exec(delivery)?.[1];
+          return days.every((day) => day === (quotedDays === undefined ? fact.leadDays : Number(quotedDays)));
         });
       if (!supported) text = followup || disclaimed ? '' : INVENTORY_FALLBACK + '。';
     }
@@ -488,33 +553,56 @@ function guardedText(ctx: FollowupGuardContext, sources: PackSources, followup: 
     if (text === sentence && !/[?？]/.test(sentence) && noteClaim.test(sentence)) text = followup ? '' : NOTE_FALLBACK;
     return text;
   };
-  return sentenceUnits(body)
-    .map(({ start, end }) => {
-      const unit = body.slice(start, end);
-      // 按完整句删内部指令，避免逗号分句后留下“不得自行计算”等指令残片。
-      if (internalRule.test(unit)) {
-        subject = [];
-        implied = [];
-        return '';
-      }
-      const replacements = new Set<string>();
-      return clausesOf(unit.replace(/[（(](?:内部)?编号\s*[a-z0-9-]+[）)]/gi, ''))
-        .flatMap((unit) => unit.split(/(?=但是|但(?!是)|不过|然而)/))
-        .map((sentence) => {
-          const text = judged(sentence);
-          if (text === sentence) return text;
-          // 只有括号里的说法不成立时，去掉括号，括号外的金额和正文留下。
-          const bare = sentence.replace(bracketed, '');
-          const kept = bare !== sentence && bare.replace(/[\s，,；;。：:]/g, '') && judged(bare) === bare ? bare : '';
-          if (!text) return kept;
-          const seen = text === PROMISE_FALLBACK || text === `${INVENTORY_FALLBACK}。` ? onceReplacements : replacements;
-          if (seen.has(text)) return kept;
-          seen.add(text);
-          return kept + text;
+  let keptContent = false;
+  let removedPrefix = false;
+  return body
+    .split('\n')
+    .map((line) => {
+      const rewritten = sentenceUnits(line)
+        .map(({ start, end }) => {
+          const unit = line.slice(start, end);
+          // 按完整句删内部指令，避免逗号分句后留下“不得自行计算”等指令残片。
+          if (internalRule.test(unit)) {
+            subject = [];
+            implied = [];
+            return '';
+          }
+          const replacements = new Set<string>();
+          let inventoryRemoved = false;
+          const corrected = inventoryClauses(unit.replace(/[（(](?:内部)?编号\s*[a-z0-9-]+[）)]/gi, ''))
+            .flatMap((unit) => unit.split(/(?=但是|但(?!是)|不过|然而)/))
+            .map((sentence) => {
+              // 非数字的「其余按之前交期」也依赖上一片段；上一片段已删就不能单独留下。
+              const orphaned = inventoryRemoved && /^\s*(?:其余|剩余|余量)/.test(sentence);
+              const text = orphaned ? '' : judged(sentence);
+              if (text === sentence) return text;
+              // 只有括号里的说法不成立时，去掉括号，括号外的金额和正文留下。
+              const bare = sentence.replace(bracketed, '');
+              const kept = !orphaned && bare !== sentence && bare.replace(/[\s，,；;。：:]/g, '') && judged(bare) === bare ? bare : '';
+              if (inventoryClaim.test(sentence) && !inventoryClaim.test(kept)) inventoryRemoved = true;
+              if (!text) return kept;
+              const seen = text === PROMISE_FALLBACK || text === `${INVENTORY_FALLBACK}。` ? onceReplacements : replacements;
+              if (seen.has(text)) return kept;
+              seen.add(text);
+              return kept + text;
+            })
+            .join('');
+          return finishClaimSentence(unit, corrected);
         })
         .join('');
+      // 只收尾被改过的行，保留原来的标题冒号与段落；删空的编号不能单独留着。
+      let cleaned = rewritten;
+      if (rewritten !== line && !(/[：:]\s*$/.test(line) && /[：:]\s*$/.test(rewritten))) {
+        if (!keptContent) removedPrefix = true;
+        cleaned = rewritten.replace(/[\s，,：:；;、—–-]+$/u, '');
+        if (/^\s*(?:\d+[.、)）]|[·•-])?\s*$/.test(cleaned)) cleaned = '';
+        else if (/[，,：:；;、—–-]\s*$/.test(rewritten)) cleaned += '。';
+      }
+      if (!keptContent && removedPrefix) cleaned = cleaned.replace(/^(\s*)(?:另外|不过|但是|但|然而)[，,]?\s*/, '$1');
+      if (cleaned.trim()) keptContent = true;
+      return cleaned;
     })
-    .join('')
+    .join('\n')
     .trim();
 }
 

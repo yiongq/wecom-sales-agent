@@ -93,9 +93,128 @@ try {
     { name: 'quote_items', args: {}, result: JSON.stringify({ lines: [{ partNo: 'HS1000', delivery: '现货 3 件，其余约 7 天' }] }) },
   ];
   assert.equal(await guarded('HS1000现货3件，其余约7天。', '', partialFact), 'HS1000现货3件，其余约7天。');
+  assert.equal(await guarded('HS1000库存3件现货，其余约7天交期。', '', partialFact), 'HS1000库存3件现货，其余约7天交期。');
   assert.match(await guarded('HS1000全部现货。', '', partialFact), /确认为准/);
-  assert.match(await guarded('HS1000现货99件，其余约7天。', '', partialFact), /确认为准/);
+  for (const text of [
+    'HS1000现货99件，其余约7天。',
+    'HS1000现货的99件，其余约7天。',
+    'HS1000的99件为现货，其余约7天。',
+    'HS1000现货3件，其余约5天。',
+    'HS1000其余约7天。',
+  ]) {
+    const corrected = await guarded(text, '', partialFact);
+    assert.match(corrected, /确认为准/);
+    assert.doesNotMatch(corrected, /现货|其余|[3579]+天/);
+  }
+  assert.equal(
+    await guarded('HS1000库存3件现货，其余约7天，最终以顾问确认为准。', '', partialFact),
+    'HS1000库存3件现货，其余约7天，最终以顾问确认为准。',
+  );
+  assert.equal(await guarded('HS1000现货99件，其余约7天，最终以顾问确认为准。', '', partialFact), '最终以顾问确认为准。');
+  for (const text of [
+    'HS1000现货3件，不够8件全现货，其余5件预计约7天到货。',
+    'HS1000现货3件，其余部分交期约7天。',
+    'HS1000现货的3件，其余约7天。',
+    'HS1000其中3件为现货，其余约7天。',
+    'HS1000现货3件，其余约7天（以顾问确认为准）。',
+  ])
+    assert.equal(await guarded(text, '', partialFact), text);
+  for (const text of ['HS1000现货99件，其余约7天（以顾问确认为准）。', 'HS1000现货3件，不够8件，其余约9天。'])
+    assert.doesNotMatch(await guarded(text, '', partialFact), /现货|其余|99/);
+  assert.match(
+    await guarded('HS1000现货3件，其余约5天。', '', [
+      { name: 'find_parts', args: {}, result: JSON.stringify({ parts: [{ partNo: 'HS1000', stock: '现货', leadDays: 5 }] }) },
+      ...partialFact,
+    ]),
+    /确认为准/,
+    '最新试算交期覆盖较早查询天数，不能拼接不同时刻的事实',
+  );
+  assert.match(await guarded('HS1000库存3件现货，其余约7天。'), /确认为准/, '无工具依据不放行数字');
+  assert.match(
+    await guarded('HS1000现货3件。', '', [
+      { name: 'find_parts', args: {}, result: JSON.stringify({ parts: [{ partNo: 'HS1000', stock: '现货', leadDays: 7 }] }) },
+    ]),
+    /确认为准/,
+    '查询只给现货状态时不能凭空补数量',
+  );
   session.packState = previousDraft;
+  const mixedStock = [
+    {
+      name: 'quote_items',
+      args: {},
+      result: JSON.stringify({
+        lines: [
+          { partNo: 'HS1000', delivery: '现货 3 件，其余约 7 天' },
+          { partNo: 'HS1001', delivery: '现货 5 件，其余约 7 天' },
+          { partNo: 'HS1002', delivery: '现货', qty: 8 },
+        ],
+      }),
+    },
+  ];
+  for (const text of [
+    'HS1000现货3件、HS1001现货5件，其余约7天。',
+    'HS1000现货3件、其余约7天；其余型号交期以顾问确认为准。',
+    'HS1002现货，其余按明细列示的交期。',
+    'HS1002按8件现货报价。',
+  ])
+    assert.equal(await guarded(text, '', mixedStock), text);
+  assert.doesNotMatch(await guarded('HS1000现货3件、HS1001现货99件，其余约7天。', '', mixedStock), /现货|其余/);
+  assert.equal(await guarded('HS1000库存999件。\n另外，请告诉我数量，以顾问确认为准。'), '请告诉我数量，以顾问确认为准。');
+  assert.equal(
+    await guarded('部分物料现货，其余按试算交期（约5至15天不等），库存和交期以顾问确认为准。', '', mixedStock),
+    '库存和交期以顾问确认为准。',
+    '删除前半句后，不保留没有指代的非数字交期片段',
+  );
+  const listed = [0, 1, 2].map((i) => `${i + 1}. HS${1000 + i} 起订1件，现货约7天`).join('\n');
+  const stockFacts = [
+    {
+      name: 'find_parts',
+      args: {},
+      result: JSON.stringify({ parts: parts.slice(0, 3).map((p) => ({ partNo: p.partNo, stock: '现货', leadDays: 7 })) }),
+    },
+  ];
+  assert.equal(await guarded(listed, '', stockFacts), listed, '现货约7天中的7是交期，多行正确说法逐字保留');
+  for (const separator of ['\n', '\r\n']) {
+    const corrected = await guarded(listed.replaceAll('约7天', '约99天').replaceAll('\n', separator), '', stockFacts);
+    assert.equal(corrected.split('\n').length, 3, '改写仍保留三行');
+    assert.match(corrected, /1\. HS1000[^\n]+\n2\. HS1001[^\n]+\n3\. HS1002/);
+    for (const line of corrected.split('\n')) assert.doesNotMatch(line, /[，,：:—–-]\s*$/);
+    assert.equal((corrected.match(/库存和交期以顾问确认为准/g) ?? []).length, 1);
+  }
+  assert.equal(await guarded('1. HS1000今天发货。\n2. HS1001今天发货。'), '库存和交期以顾问确认为准。');
+  assert.equal(await guarded('HS1000（内部编号 part-0）：\n起订1件。'), 'HS1000：\n起订1件。', '正常标题仍保留冒号');
+  for (const separator of ['，', '：', '——']) {
+    const corrected = await guarded(`HS1000起订1件${separator}（今天发货）\n请告诉我数量。`);
+    assert.doesNotMatch(corrected, /[，,：:—–-]\s*(?:\n|$)/);
+    assert.match(corrected, /\n请告诉我数量。/);
+  }
+  // 结果被删后，不能把条件的逗号换成句号；保留完整结果与不受影响的其他句子。
+  for (const condition of ['如果HS1000没有现货', '假如没有现货', '要是没有现货', '若没有现货', '万一没有现货', '没有现货的话']) {
+    assert.equal(await guarded(`${condition}，库存999件，以顾问确认为准。`), `${condition}，以顾问确认为准。`);
+    assert.equal(await guarded(`库存和交期以顾问确认为准。${condition}，库存999件。`), '库存和交期以顾问确认为准。');
+    assert.equal(
+      await guarded(`库存和交期以顾问确认为准。${condition}，请顾问核对，库存999件。`),
+      `库存和交期以顾问确认为准。${condition}，请顾问核对。`,
+    );
+  }
+  assert.equal(
+    await guarded('库存和交期以顾问确认为准。如果没有现货就请顾问核对，库存999件。'),
+    '库存和交期以顾问确认为准。如果没有现货就请顾问核对。',
+  );
+  for (const complete of ['如果需要请告诉我', '若要一次提齐需等补货', '若后续加到100件可再降到17.2元/件'])
+    assert.equal(await guarded(`库存和交期以顾问确认为准。${complete}，库存999件。`), `库存和交期以顾问确认为准。${complete}。`);
+  assert.equal(await guarded('库存和交期以顾问确认为准。1. 如果没有现货，今天发货。'), '库存和交期以顾问确认为准。');
+  for (const contrast of ['但', '不过']) {
+    assert.equal(
+      await guarded(`库存和交期以顾问确认为准。请核对型号，${contrast}（今天发货）。`),
+      '库存和交期以顾问确认为准。请核对型号。',
+    );
+    assert.equal(await guarded(`库存和交期以顾问确认为准。${contrast}（今天发货）。`), '库存和交期以顾问确认为准。');
+    assert.equal(
+      await guarded(`库存和交期以顾问确认为准。${contrast}请核对型号，今天发货。`),
+      `库存和交期以顾问确认为准。${contrast}请核对型号。`,
+    );
+  }
   // 回复出口不允许上下文摘要或 JSON；正常中文括号、标点仍逐字保留。
   const normal = '型号请核对（含税13%），可以开专票。';
   assert.equal(await guarded(normal), normal);
@@ -110,7 +229,7 @@ try {
     assert.equal(await guarded(`${normal}\n${leak}\n请核对型号。`), `${normal}\n请核对型号。`, leak);
   assert.equal(await guarded('{"key":2}'), '');
 
-  // 「约需」不能被当成确定交期；单型号、现货数和剩余交期仍分别校验。
+  // 「约需」不能被当成确定交期；部分现货与剩余交期整体核对，历史精确试算也可恢复依据。
   const remainingPart = { ...parts[0]!, id: 'remaining', partNo: '6207-2RS', stock: 18, leadDays: 9 };
   const remainingSources = { ...sources, currentCatalog: () => ({ ...sources.currentCatalog(), items: { part: [remainingPart] } }) };
   const remainingSession = store.getOrCreateSession('wecom:wmRemaining', 'wecom');
@@ -120,7 +239,7 @@ try {
   for (const [text, expected] of [
     ['库存现货18件，其余14件约需9天到货，具体以顾问确认为准。', '库存现货18件，其余14件约需9天到货，具体以顾问确认为准。'],
     ['6207-2RS库存现货18件，其余约需9天到货。', '6207-2RS库存现货18件，其余约需9天到货。'],
-    ['库存现货18件，其余14件约需5天到货，具体以顾问确认为准。', '库存现货18件，具体以顾问确认为准。'],
+    ['库存现货18件，其余14件约需5天到货，具体以顾问确认为准。', '具体以顾问确认为准。'],
     ['库存现货30件，具体以顾问确认为准。', '具体以顾问确认为准。'],
     ['其余14件9天到货，具体以顾问确认为准。', '具体以顾问确认为准。'],
   ]) {

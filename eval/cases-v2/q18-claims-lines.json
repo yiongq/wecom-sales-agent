@@ -1,0 +1,35 @@
+{
+  "version": 2,
+  "id": "q18-claims-lines",
+  "desc": "仿真回归：第7次main j-standard-04第1遍第1轮，三个型号的现货交期按工具保留，编号列表不粘连、不留逗号残句",
+  "tags": ["q18", "industrial"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:24:31.604Z",
+    "session": {
+      "stage": "greeting",
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 1791606271604,
+      "updatedAt": 1791606271604,
+      "profile": {},
+      "moneyLedger": []
+    },
+    "orders": []
+  },
+  "turns": [
+    {
+      "say": "这轮采购涉及 M10×30、HS-PV27、6210-2RS。",
+      "script": [
+        {
+          "content": "三个型号都已查到，均为精确匹配：\n\n1. M10×30 六角螺栓（8.8级）—— 起订10件，现货约5天\n2. HS-PV27 气动阀（G1/4，IP65）—— 起订1件，现货约6天\n3. 6210-2RS 密封深沟球轴承（内径50mm）—— 起订2件，现货约12天\n\n{{档位价}}\n\n请提供各型号的采购数量，我为您做价格试算。"
+        }
+      ],
+      "expect": {
+        "replyMatches": ["(?:^|\\n)1\\. M10×30[^\\n]*现货约5天", "\\n2\\. HS-PV27[^\\n]*现货约6天", "\\n3\\. 6210-2RS[^\\n]*现货约12天"],
+        "replyExcludes": ["(?:^|\\n)[123]\\.[^\\n]*[，,：:—–-]\\s*(?:\\n|$)", "库存和交期以顾问确认为准"]
+      }
+    }
+  ]
+}

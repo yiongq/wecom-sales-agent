@@ -140,8 +140,8 @@ try {
     undefined,
     'HS1000。',
   );
-  await sample('G1-有效期不掩盖假交期', 'HS1000报价有效期7天，交期3天。', /确认为准/, 'HS1000', 2, undefined, 'HS1000报价有效期7天，');
-  await sample('G1-无现货不掩盖假交期', '6205-ZZ无现货，交期3天。', /确认为准/, '6205-ZZ', 2, undefined, '6205-ZZ无现货，');
+  await sample('G1-有效期不掩盖假交期', 'HS1000报价有效期7天，交期3天。', /确认为准/, 'HS1000', 2, undefined, 'HS1000报价有效期7天。');
+  await sample('G1-无现货不掩盖假交期', '6205-ZZ无现货，交期3天。', /确认为准/, '6205-ZZ', 2, undefined, '6205-ZZ无现货。');
   for (const [name, check] of [
     [
       'G2-过期报价续算上下文',
@@ -198,10 +198,19 @@ try {
     }
   }
   for (const text of ['HS1000预计3天交货。', 'HS1000交期约3天。', 'HS1000不保证最低价，但今天发货。'])
-    await sample('R1-分句交期', text, /确认为准/, 'HS1000', 2, undefined, text.includes('不保证') ? 'HS1000不保证最低价，' : '');
-  await sample('R1-条件分句', '如果HS1000没有现货，但HS1001今天发货。', /确认为准/, 'HS1000', 2, undefined, '如果HS1000没有现货，');
+    await sample('R1-分句交期', text, /确认为准/, 'HS1000', 2, undefined, text.includes('不保证') ? 'HS1000不保证最低价。' : '');
+  await sample('R1-条件分句', '如果HS1000没有现货，但HS1001今天发货。', /确认为准/, 'HS1000', 2, undefined, '');
+  await sample(
+    'R1-条件结果保留',
+    '如果HS1000没有现货，请顾问核对，但HS1001今天发货。',
+    /确认为准/,
+    'HS1000',
+    2,
+    undefined,
+    '如果HS1000没有现货，请顾问核对。',
+  );
   await sample('R1-合法交期', 'HS1000预计7天交货。', 'HS1000预计7天交货。', 'HS1000', 101);
-  await sample('R1-工具交期格式', 'HS1000现货100件，其余约3天。', /确认为准/, 'HS1000', 101, undefined, 'HS1000现货100件，');
+  await sample('R1-工具交期格式', 'HS1000现货100件，其余约3天。', /确认为准/, 'HS1000', 101, undefined, '');
   await sample('R1-否定条件', '如果HS1000有现货就好了。', '如果HS1000有现货就好了。');
   await sample('R2-全部型号证据', 'HS1000和HS1001全部现货。', /确认为准/);
   await sample('R2-两型号证据齐全', 'HS1000和HS1001全部现货。', 'HS1000和HS1001全部现货。', 'HS1000', 2, undefined, '', 'HS1001');
@@ -213,7 +222,7 @@ try {
     'HS1000',
     2,
     undefined,
-    'HS1000可以替代HS1001，',
+    'HS1000可以替代HS1001。',
   );
   await sample('R4-超量摘要', '数量超过上限，请顾问核对。', '数量超过上限，请顾问核对。', '6205-2RS', 1000001, (s) =>
     assert.equal(readState(s).rfqDraft?.lines[0]?.qty, 1000001),
