@@ -2875,7 +2875,7 @@ fakeCmd('docker', [
 fakeCmd('curl', [
   'for a in "$@"; do',
   '  case "$a" in',
-  '    */healthz) echo "$a" >> "$FAKE_DIR/health-probes"; case "$a" in *:3211/*|*:3998/*) file=sandbox-health ;; *) file=health ;; esac; h="$(cat "$FAKE_DIR/$file")"; if [ "$h" = down ]; then exit 7; fi; printf "%s" "$h"; exit 0 ;;',
+  '    */healthz) echo "$a" >> "$FAKE_DIR/health-probes"; case "$a" in *:3211/*|*:3998/*) file=sandbox-health ;; *:3212/*|*:4001/*) file=standby-health ;; *) file=health ;; esac; h="$(cat "$FAKE_DIR/$file")"; if [ "$h" = down ]; then exit 7; fi; printf "%s" "$h"; exit 0 ;;',
   '  esac',
   'done',
   'exec "$REAL_CURL" "$@"',
@@ -2928,11 +2928,14 @@ const writeOps = (lines: string[]): void =>
     [...lines, 'INSTANCE_LABEL=selftest-host', 'HOST_PORT=3999', `WATCH_STATE=${path.join(wtmp, 'state', 'watch.state')}`, ''].join('\n'),
   );
 writeOps([`ALERT_WEBHOOK_URL=${watchHook}`]);
+fs.writeFileSync(path.join(wfake, 'standby-health'), 'down');
 const scriptEnv = Object.fromEntries(
   Object.entries(process.env).filter(
     (e): e is [string, string] =>
       e[1] !== undefined &&
-      !/^(ALERT_WEBHOOK_URL|INSTANCE_LABEL|COMPOSE_PROJECT|BACKUP_.*|WATCH_.*|APP_CONTAINER|HOST_PORT|SANDBOX_PORT|DISK_PATHS)$/.test(e[0]),
+      !/^(ALERT_WEBHOOK_URL|INSTANCE_LABEL|COMPOSE_PROJECT|BACKUP_.*|WATCH_.*|APP_CONTAINER|HOST_PORT|STANDBY_HOST_PORT|SANDBOX_PORT|DISK_PATHS)$/.test(
+        e[0],
+      ),
   ),
 );
 Object.assign(scriptEnv, { PATH: `${wbin}${path.delimiter}${process.env.PATH ?? ''}`, FAKE_DIR: wfake, REAL_CURL: realCurl ?? 'curl' });
@@ -3023,7 +3026,7 @@ const hostStampRe = /^\[selftest-host\] \[P[12]\] (?:已恢复：)?[^\n]+ · \d{
   await runWatch((now += 60));
   check(
     'watch.sh：/healthz 连续 3 分钟连不上收到一条，第 4 分钟不重发',
-    fresh().length === 3 && fresh()[2]!.startsWith('[selftest-host] [P1] 健康检查连续 3 分钟失败（连不上或 HTTP 出错，curl 退出码 7） · '),
+    fresh().length === 3 && fresh()[2]!.startsWith('[selftest-host] [P1] 健康检查连续 3 分钟失败（两个端口都不健康） · '),
     json(fresh()),
   );
   setFake('health', '{"ok":true}');
@@ -3040,7 +3043,7 @@ const hostStampRe = /^\[selftest-host\] \[P[12]\] (?:已恢复：)?[^\n]+ · \d{
   for (let i = 0; i < 3; i++) await runWatch((now += 60));
   check(
     'watch.sh：ok 为 false 连续 3 分钟同样收到一条',
-    fresh().length === 5 && fresh()[4]!.includes('健康检查连续 3 分钟失败（ok 为 false）'),
+    fresh().length === 5 && fresh()[4]!.includes('健康检查连续 3 分钟失败（两个端口都不健康）'),
     json(fresh()),
   );
   setFake('health', '{"ok":true}');
@@ -3333,9 +3336,10 @@ const hostStampRe = /^\[selftest-host\] \[P[12]\] (?:已恢复：)?[^\n]+ · \d{
   const beforeSandbox = contents().length;
   await runWatch(100_000);
   check(
-    '05 watch 无环境文件：只拨 host，宿主状态/备份行为照旧',
-    fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').trim().endsWith(':3999/healthz') &&
-      fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').trim().split('\n').length === 1 &&
+    '05 watch 无沙箱环境文件：探 host 主备，宿主状态/备份行为照旧',
+    fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').includes(':3999/healthz') &&
+      fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').includes(':4001/healthz') &&
+      fs.readFileSync(path.join(wfake, 'health-probes'), 'utf8').trim().split('\n').length === 2 &&
       contents().length === beforeSandbox,
   );
   fs.writeFileSync(path.join(srv, '.env.sandbox'), 'placeholder');
@@ -4134,7 +4138,8 @@ function sandboxDeploySelftest(): void {
   for (const folder of [bin, repo, remote, flags, path.join(repo, 'deploy'), path.join(repo, 'src/db')])
     fs.mkdirSync(folder, { recursive: true });
   const sourceRoot = path.join(import.meta.dirname, '../..');
-  for (const file of ['deploy.sh', 'deploy/rollback-guard.sh']) fs.copyFileSync(path.join(sourceRoot, file), path.join(repo, file));
+  for (const file of ['deploy.sh', 'deploy/rollback-guard.sh', 'deploy/caddy-dual-upstream.sh', 'deploy/upstream-network.mjs'])
+    fs.copyFileSync(path.join(sourceRoot, file), path.join(repo, file));
   for (const file of ['package.json', 'Dockerfile', 'deploy/compose.yml', 'src/db/migrate.ts'])
     fs.writeFileSync(path.join(repo, file), '{}');
   const baseline = [
@@ -4159,6 +4164,7 @@ function sandboxDeploySelftest(): void {
     show-ref) exit 0 ;;
     cat-file) case "$3" in *runtime.ts) [ "\${NEW_PHASE:-5}" = 5 ] ;; *) exit 0 ;; esac ;;
     ls-tree) case "$*" in *src/core/attachments.ts*) echo src/core/attachments.ts ;; *src/packs/industrial/runtime.ts*) echo src/packs/industrial/runtime.ts ;; *) echo src/core/site-links.ts ;; esac ;;
+    show) case "$2" in *:deploy/compose.yml) cat deploy/compose.yml ;; *) exit 98 ;; esac ;;
     archive) tar -cf - package.json Dockerfile deploy src ;;
     *) exit 98 ;;
   esac`,
@@ -4222,6 +4228,15 @@ if (text.includes('src/tenancy/runtime.ts') && !text.includes('resolveRole')) {
   process.exit(process.env.PREV_PHASE === 'error' ? 125 : Number(process.env.PREV_PHASE || 5) >= 5 ? 0 : 1);
 }
 if (text.includes('psql')) { console.log(text.includes("column_name = 'kind'") ? 't' : text.includes("kind = 'standard'") ? 'f|f' : 'f'); process.exit(0); }
+// 旧单容器夹具：app 只接默认网络，没有 app-standby；沙箱状态由后面的分支单独处理。
+if (text === 'container ls -aq --filter label=com.docker.compose.project=side05 --filter label=com.docker.compose.service=app') {
+  console.log('aaaaaaaaaaaa'); process.exit(0);
+}
+if (text === 'container ls -aq --filter label=com.docker.compose.project=side05 --filter label=com.docker.compose.service=app-standby' ||
+    text === 'ps -q --filter label=com.docker.compose.project=side05 --filter label=com.docker.compose.service=app-standby') process.exit(0);
+if (a[0] === 'inspect' && a[1] === '--format' && a[2].includes('side05_app-upstream') && a[3] === 'aaaaaaaaaaaa') {
+  console.log('clear'); process.exit(0);
+}
 if (text.includes('container ls')) { if (marked('sandbox')) console.log('placeholder'); process.exit(0); }
 if (text.includes('container inspect') && text.includes('-sandbox')) process.exit(marked('sandbox') ? 0 : 1);
 if (text.includes('inspect')) {
@@ -4466,13 +4481,22 @@ console.log(JSON.stringify(result));
     check('05 R16 五项体验客服占位变量齐全通过环境试读', r.code === 0, r.out);
     for (const line of ['DEFAULT_TENANT_SLUG', '=SECRET_VALUE', '1BAD=SECRET_VALUE', 'BAD NAME=SECRET_VALUE']) {
       r = run({}, true, `${line}\n`);
+      // 允许同步前按 project 查询主备网络；其他 Docker 调用仍全部禁止。
+      const onlyNetworkReads = r.log
+        .split('\n')
+        .filter((entry) => entry.includes('docker '))
+        .every((entry) =>
+          /^(?:timeout --kill-after=2s 8s )?docker (?:container ls -aq --filter label=com\.docker\.compose\.project=side05 --filter label=com\.docker\.compose\.service=app(?:-standby)?|inspect --format \{\{if \.NetworkSettings\.Networks\}\}.*side05_app-upstream.*\{\{end\}\} a{12})(?: image=)?$/.test(
+            entry,
+          ),
+        );
       check(
         `05 评审1/2 非赋值或非法名字 ${line.split('=')[0] || '空名字'}：只报行号、退出 1、容器未动`,
         r.code === 1 &&
           r.out.includes('sandbox_env_format line=6') &&
           !r.out.includes('SECRET_VALUE') &&
           !r.out.includes(line) &&
-          !r.log.includes('docker ') &&
+          onlyNetworkReads &&
           !fs.existsSync(path.join(flags, 'host')) &&
           fs.readFileSync(path.join(flags, 'sandbox'), 'utf8') === 'old',
         r.out + r.log,

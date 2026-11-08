@@ -9,23 +9,23 @@
 # 体验客服可不配；配时 SANDBOX_WECOM_CORP_ID / SECRET / TOKEN / AES_KEY / OPEN_KFID 五项必须齐全。
 # 不给 APP_IMAGE 时取 <容器名>:current：deploy.sh 最后一次换上的镜像（部署成功是新镜像，自动回滚后是 :prev），
 # 所以下面的手工命令不用带它。别手写 :latest：自动回滚之后它指向的是那个没起来的坏镜像。
-# 命令行（一律 --rm）：
-#   docker compose -f deploy/compose.yml run --rm app node --import tsx src/cli/import-config.ts --tenant <slug>      # import / catalog-fix
+# 命令行（一律 --rm）：应用身份用 app-cli；需要独占锁时仍先 stop app app-standby。
+#   docker compose -f deploy/compose.yml run --rm app-cli node --import tsx src/cli/import-config.ts --tenant <slug>      # import / catalog-fix
 #   docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/user-create.ts --tenant <slug> …  # 租户、账号、成员
 # export 要写进挂进来的宿主目录：写在容器里的文件会随 --rm 一起删掉。目录放在部署目录之外（下次部署的 rsync --delete
 # 会删掉部署目录里多出来的东西），属主给容器内的 node(1000)；--image-sop 的文件也放进去：
 #   install -d -o 1000 -g 1000 /root/export-<日期>
-#   docker compose -f deploy/compose.yml run --rm -v /root/export-<日期>:/export app \
+#   docker compose -f deploy/compose.yml run --rm -v /root/export-<日期>:/export app-cli \
 #     node --import tsx src/cli/export-config.ts --tenant <slug> --out /export [--image-sop /export/target-sop.md]
-# 会话在文件与库之间切换（02 spec「导入、导出与切换」）先 stop app；--keep 同样是挂进来的宿主目录，而且不能在 var/ 之内：
+# 会话在文件与库之间切换（02 spec「导入、导出与切换」）先 stop app app-standby；--keep 同样是挂进来的宿主目录，而且不能在 var/ 之内：
 #   install -d -o 1000 -g 1000 /root/sessions-keep-<日期>
-#   docker compose -f deploy/compose.yml run --rm -v /root/sessions-keep-<日期>:/keep app \
+#   docker compose -f deploy/compose.yml run --rm -v /root/sessions-keep-<日期>:/keep app-cli \
 #     node --import tsx src/cli/import-sessions.ts --tenant <slug> --keep /keep [--dry-run] [--resync]     # export-sessions 再加 --var /app/var
 # 隐私说明、保留期、行权删除（02 spec「隐私说明、敏感信息同意、保留期与行权」）：
 #   docker compose -f deploy/compose.yml run --rm -v /root/privacy-notice.md:/notice:ro platform \
 #     node --import tsx src/cli/privacy-publish.ts --tenant <slug> --file /notice
 #   docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/tenant-retention.ts --tenant <slug> [--lead <天>] [--customer <天>] [--trace <天>]
-#   docker compose stop app   # 行权删除要取租户锁，先停应用
+#   docker compose stop app app-standby   # 行权删除要取租户锁，先停应用
 #   docker compose -f deploy/compose.yml run --rm platform node --import tsx src/cli/erase-conversation.ts --tenant <slug> --id <会话 id> --reason <文字>
 #
 # 每个服务只拿自己的凭据。env 文件放在服务器的仓库根目录、不进仓库：.gitignore 的 .env.*、lint 的路径黑名单、
@@ -53,6 +53,22 @@
 # 旁路实例的手工命令也要带上这三个，缺省镜像随之是 <NAME>:current。
 name: wecom-sales-agent
 
+# app 与一次性命令共享镜像、应用身份和 var；网络/端口/启动依赖分别声明。
+x-app-runtime: &app-runtime
+  image: ${APP_IMAGE:-${APP_CONTAINER:-wecom-sales-agent}:current}
+  env_file:
+    - path: ../.env
+      format: raw
+  environment:
+    # 端口映射与 HEALTHCHECK 都写死 3200：.env 里误改 PORT 会让容器活着但外部不可达
+    PORT: '3200'
+    # pino 输出 JSON 行（每行带 time、level、msg，请求里带 req，轮次里带 tenant、conv、turn；02 spec R24）。本机开发不设，照旧纯文本
+    LOG_FORMAT: json
+    TENANT_LOCK_WAIT: forever
+  # 与 app 共享持久状态；目录必须归容器内 node(1000) 所有（deploy.sh 会 chown）。
+  volumes:
+    - ../var:/app/var
+
 services:
   db:
     image: pgvector/pgvector:pg17
@@ -75,7 +91,7 @@ services:
       start_period: 60s
 
   migrate:
-    # 应用镜像三个服务同一份，缺省 <容器名>:current（见文件开头）
+    # 应用镜像各服务同一份，缺省 <容器名>:current（见文件开头）
     image: ${APP_IMAGE:-${APP_CONTAINER:-wecom-sales-agent}:current}
     env_file:
       - path: ../.env.migrate
@@ -90,9 +106,52 @@ services:
         condition: service_healthy
 
   app:
-    image: ${APP_IMAGE:-${APP_CONTAINER:-wecom-sales-agent}:current}
+    <<: *app-runtime
     # 与 compose 之前 deploy.sh 用 docker run 起的容器同名：:prev 取「正在跑的容器」的镜像，两种起法都按这个名字找
     container_name: ${APP_CONTAINER:-wecom-sales-agent}
+    restart: unless-stopped
+    # 发布端口只供宿主健康检查/巡检；Caddy 直连 app-upstream 的固定 IP，避开 docker-proxy。
+    ports:
+      - '127.0.0.1:${HOST_PORT:-3210}:3200'
+    networks:
+      default: {}
+      app-upstream:
+        ipv4_address: ${APP_UPSTREAM_IP:-172.30.250.10}
+    # 大于停机钩子等在途企微回复的 8 秒：SIGTERM 之后先发完、落盘再退
+    stop_grace_period: 10s
+    # LOG_FORMAT=json 之后每天的日志量可观；轮转封顶（02 spec「保留期清理」），不靠宿主机另装 logrotate
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: '5'
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  # 应用命令行：显式 run 才启动，不占 Caddy 固定地址，也不启动 app / migrate。
+  app-cli:
+    <<: *app-runtime
+    # CLI 不走等锁启动、没有进程 epoch；整块替换共享 environment。
+    environment:
+      PORT: '3200'
+      LOG_FORMAT: json
+    profiles: [cli]
+    networks:
+      default: {}
+    restart: 'no'
+    healthcheck:
+      disable: true
+    depends_on:
+      db:
+        condition: service_healthy
+
+  app-standby:
+    image: ${APP_IMAGE:-${APP_CONTAINER:-wecom-sales-agent}:current}
+    # 等锁期间不监听；镜像 HEALTHCHECK 显示 unhealthy 属正常，不应据此重启备用。
+    container_name: ${STANDBY_CONTAINER:-${APP_CONTAINER:-wecom-sales-agent}-standby}
     restart: unless-stopped
     env_file:
       - path: ../.env
@@ -102,9 +161,14 @@ services:
       PORT: '3200'
       # pino 输出 JSON 行（每行带 time、level、msg，请求里带 req，轮次里带 tenant、conv、turn；02 spec R24）。本机开发不设，照旧纯文本
       LOG_FORMAT: json
-    # 只绑 127.0.0.1：只让本机的 Caddy 反代进来，别让 docker-proxy 绕过防火墙把明文 HTTP 暴露到公网
+      TENANT_LOCK_WAIT: forever
+    # 发布端口只供宿主健康检查/巡检；Caddy 直连 app-upstream 的固定 IP，避开 docker-proxy。
     ports:
-      - '127.0.0.1:${HOST_PORT:-3210}:3200'
+      - '127.0.0.1:${STANDBY_HOST_PORT:-3212}:3200'
+    networks:
+      default: {}
+      app-upstream:
+        ipv4_address: ${STANDBY_UPSTREAM_IP:-172.30.250.11}
     # var/ 是会话、订单、企微 cursor 的唯一数据源，必须挂卷；必须归容器内 node(1000) 所有（deploy.sh 会 chown）
     volumes:
       - ../var:/app/var
@@ -163,6 +227,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+networks:
+  default: {}
+  # 每个 compose project 独立命名；不同实例还必须使用互不重叠的子网。
+  app-upstream:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${APP_UPSTREAM_SUBNET:-172.30.250.0/28}
 
 volumes:
   db-data:

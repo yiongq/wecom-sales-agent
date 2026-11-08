@@ -1,0 +1,18 @@
+# Caddy 2.11.2；在现有站点块内 import，保留站点的鉴权、路由和 TLS 配置。
+# 默认：import caddy-app-upstreams.snippet 172.30.250.10:3200 172.30.250.11:3200
+# 上游必须用专用 bridge 的固定容器 IP；宿主发布端口的 docker-proxy 会先接受连接再重置，Caddy 不重试。
+# 也不能用容器名：停机时可能连上旧地址后 EOF，不属于可重试的拨号失败。
+reverse_proxy {args[0]} {args[1]} {
+    lb_policy first
+    lb_try_duration 15s
+    lb_try_interval 250ms
+    fail_duration 1s
+    max_fails 1
+    # 禁止已连接后的任何应用层重试；拨号失败仍可重试，包括 POST。
+    lb_retry_match expression false
+    transport http {
+        dial_timeout 1s
+        # 每次重新拨号，避免复用失锁进程的连接及 Go Transport 的透明重试。
+        keepalive off
+    }
+}

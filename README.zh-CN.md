@@ -39,7 +39,7 @@ DEPLOY_PROFILE=demo CONFIG_SOURCE=file SESSION_STORE=file LLM_MOCK=1 pnpm start
 
 平台以租户隔离和行业包支持多行业。工业包负责型号匹配、数量规则与报价人审。旅游作为第二个行业包和回归基线保留在开发者仓库中，不作为另一条对外产品主线。源码 demo 档继续支持重置、匿名只读后台、种子保鲜和访客清理；产品托管使用 prod 与普通登录，源码准备完成不代表已经部署。
 
-租户表采用 FORCE 行级安全，登录表例外见 [ADR-001](docs/adr/adr-001-postgres-drizzle.md)；会话消息只追加。当前运行时仍要求单实例，不能因为存储在数据库就部署多副本。行业逻辑留在包里，SOP 版本内系统前缀保持字节一致，逐轮状态独立传递。
+租户表采用 FORCE 行级安全，登录表例外见 [ADR-001](docs/adr/adr-001-postgres-drizzle.md)；会话消息只追加。同一时刻只有一个活动实例，可加一个等锁的备用实例（见[部署手册](docs/guides/deployment.md)）。行业逻辑留在包里，SOP 版本内系统前缀保持字节一致，逐轮状态独立传递。
 
 ```text
 src/core/        引擎、工具、护栏与模型客户端

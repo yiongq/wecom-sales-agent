@@ -61,9 +61,12 @@ const deploy = (tag: string, env: Record<string, string> = {}) =>
   run('bash', ['deploy.sh', tag], { SERVER: 'fake@srv', REMOTE_DIR: srv, NAME: 'side1', HOST_PORT: '3999', FAKE_REVISION: tag, ...env });
 
 try {
-  for (const dir of [bin, path.join(repo, 'deploy'), path.join(repo, 'src/db'), path.join(srv, 'var')])
+  for (const dir of [bin, path.join(repo, 'deploy'), path.join(repo, 'src/db'), path.join(srv, 'var'), path.join(srv, 'deploy')])
     fs.mkdirSync(dir, { recursive: true });
-  fs.copyFileSync(path.join(root, 'deploy.sh'), path.join(repo, 'deploy.sh'));
+  for (const file of ['deploy.sh', 'deploy/caddy-dual-upstream.sh', 'deploy/upstream-network.mjs'])
+    fs.copyFileSync(path.join(root, file), path.join(repo, file));
+  // 目标 tag 仍由下面的旧 compose 夹具表示；当前服务器配置供 guard 的 app-cli 使用。
+  fs.copyFileSync(path.join(root, 'deploy/compose.yml'), path.join(srv, 'deploy/compose.yml'));
   fs.writeFileSync(path.join(repo, 'deploy/rollback-guard.sh'), guardSource);
   for (const file of ['package.json', 'Dockerfile', 'deploy/compose.yml', 'src/db/migrate.ts'])
     fs.writeFileSync(path.join(repo, file), '{}');
@@ -119,6 +122,9 @@ case "$*" in
 esac
 case "$*" in
   *"inspect --format {{.Image}}"*) [ "\${FAKE_RUNNING:-4}" = missing ] && exit 1; echo sha256:running ;;
+  'container ls -aq --filter label=com.docker.compose.project=side1 --filter label=com.docker.compose.service=app') echo aaaaaaaaaaaa ;;
+  'container ls -aq --filter label=com.docker.compose.project=side1 --filter label=com.docker.compose.service=app-standby'|'ps -q --filter label=com.docker.compose.project=side1 --filter label=com.docker.compose.service=app-standby') exit 0 ;;
+  *'inspect --format {{if .NetworkSettings.Networks}}'*'side1_app-upstream'*' aaaaaaaaaaaa') echo clear ;;
   *"container ls"*) [ "\${FAKE_CONTAINER_DOWN:-0}" = 0 ] || exit 1; [ "\${FAKE_SANDBOX_CONTAINER:-absent}" = absent ] || echo placeholder; exit 0 ;;
   *"sandbox.ts purge --all"*) [ "\${FAKE_PURGE_FAIL:-0}" = 0 ] || { echo "[sandbox] sandbox_tenant_lock_held" >&2; exit 3; }; echo "purge image=\${APP_IMAGE:-missing}" >> "$FAKE_LOG"; touch "$FAKE_PURGED" ;;
   *pg-backend.ts*|*registry.ts*|*pack-api.ts*|*runtime.ts*|*0015_order_refund_status.sql*|*order-view.ts*|*site-links.ts*|*attachments.ts*)
@@ -240,6 +246,7 @@ case "$1" in
         case "$*" in *v10*|*v11*|*v12*) echo src/packs/industrial/runtime.ts ;; esac ;;
       *) case "$*" in *v09*|*v10*|*v11*|*v12*) echo src/core/site-links.ts ;; esac ;;
     esac ;;
+  show) case "$2" in *:deploy/compose.yml) cat deploy/compose.yml ;; *) exit 98 ;; esac ;;
   archive) tar -cf - package.json Dockerfile deploy src ;;
   *) exit 98 ;;
 esac`,
@@ -304,7 +311,7 @@ exit 0`,
         auto && published === 't'
           ? g.out.includes("RECOVERY_IMAGE='side1:<已知可用的04之后tag>'") &&
               g.out.includes(`${useRecovery} && docker tag "\${RECOVERY_IMAGE}" side1:current`) &&
-              g.out.includes(`${dc} stop app\n  ${useRecovery}`) &&
+              g.out.includes(`${dc} stop app app-standby\n  ${useRecovery}`) &&
               (pending === 'f' || g.out.indexOf(useRecovery) < g.out.indexOf(clear)) &&
               g.out.indexOf('按原因 brand 重渲染') < g.out.indexOf('promptHash') &&
               g.out.indexOf('promptHash') < g.out.indexOf(restore)

@@ -323,14 +323,14 @@ export async function runChannelTransfer(command: 'import' | 'export', argv: str
       const tenant = await findTenantBySlug(conn.db, a.tenant);
       if (!tenant) fail('tenant_not_found：租户不存在');
       const lock = await conn.lock(tenant.id);
-      if (!lock) fail('lock_held：先 docker compose stop app，再运行本命令', 3);
+      if (!lock) fail('lock_held：先 docker compose stop app app-standby，再运行本命令', 3);
       try {
         let lost = false;
         lock.onLost(() => {
           lost = true;
         });
         const checkLock = () => {
-          if (lost) fail('lock_held：租户锁已断开，停机后重试', 3);
+          if (lost) fail('lock_held：租户锁已断开，停止 app 和 app-standby 后重试', 3);
         };
         if (!a.dryRun) checkSpill(a.varDir);
         // 导出须先检查全部拒绝条件，连目录探测也不能提前写。

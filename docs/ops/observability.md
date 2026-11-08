@@ -399,7 +399,9 @@ docker compose -f deploy/compose.yml images
 
 ### 症状
 
-服务连续三分钟健康检查失败。
+主备两个端口连续三分钟都不健康，或两个端口都在服务。恰好一个 `ok: true` 正常，备用连不上不告警。
+
+主备切换、回滚与首次 Caddy 配置见[部署手册](../guides/deployment.md#18-主备切换滚动发布与回滚)。
 
 ### 只读检查命令
 

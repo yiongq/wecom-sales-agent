@@ -24,6 +24,7 @@
 #   APP_CONTAINER      app 容器名，缺省同项目名（deploy.sh 用 NAME 做两者）
 #   SANDBOX_PORT       沙箱 /healthz 的宿主端口，缺省 3211；有 .env.sandbox 时才查（含重启）
 #   HOST_PORT          /healthz 的宿主端口，缺省 3210（线上 demo）；旁路实例写它自己的
+#   STANDBY_HOST_PORT  备用端口，缺省 HOST_PORT + 2（3212，3211 留给沙箱）
 #   DISK_PATHS         另外要查的挂载点（空格分开）；根分区与数据库数据卷（<项目名>_db-data）总是查
 #   WATCH_STATE        去重状态文件，缺省 /var/lib/<项目名>/watch.state
 #   WATCH_BACKUP       设成 0 不查备份（没配备份的实例）
@@ -166,17 +167,24 @@ check_restart() {
 
 }
 
+health_port_ok() {
+  local body re='"ok"[[:space:]]*:[[:space:]]*true[[:space:]]*[,}]'
+  body="$(curl -fsS -m 5 "http://127.0.0.1:$1/healthz" 2>/dev/null)" || return 1
+  [[ "$body" =~ $re ]]
+}
+
 check_health() {
-  local PORT="$1" prefix="$2" label="$3" body rc why
-  body="$(curl -fsS -m 5 "http://127.0.0.1:${PORT}/healthz" 2>/dev/null)"
-  rc=$?
-  if ((rc == 0)) && [[ "$body" == *'"ok":true'* ]]; then
+  local PORT="$1" prefix="$2" label="$3" count=0 why='连不上、HTTP 出错或 ok 为 false'
+  health_port_ok "$PORT" && count=$((count + 1))
+  if [[ -z "$prefix" ]]; then
+    health_port_ok "${STANDBY_HOST_PORT:-$((PORT + 2))}" && count=$((count + 1))
+    if ((count == 2)); then why='两个端口都在服务，应当只有一个活动实例'; else why='两个端口都不健康'; fi
+  fi
+  if ((count == 1)); then
     put "${prefix}health_bad" 0
     put "${prefix}health_good" $(($(get "${prefix}health_good") + 1))
     (($(get "${prefix}health_good") >= 3)) && resolve "${prefix}health" "${label}健康检查连续 3 分钟正常"
   else
-    why='ok 为 false'
-    ((rc == 0)) || why="连不上或 HTTP 出错，curl 退出码 ${rc}"
     put "${prefix}health_good" 0
     put "${prefix}health_bad" $(($(get "${prefix}health_bad") + 1))
     (($(get "${prefix}health_bad") >= 3)) && alert "${prefix}health" "${label}健康检查连续 $(get "${prefix}health_bad") 分钟失败（${why}）"

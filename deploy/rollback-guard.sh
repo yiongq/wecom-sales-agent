@@ -495,9 +495,23 @@ if [ "$is_pre05" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
     running=$(docker inspect --format '{{.Image}}' "$project" </dev/null 2>/dev/null)
     [ -n "$running" ] && pre05_image "$running" >/dev/null 2>&1 || sandbox_refuse '当前镜像不能执行 sandbox purge --all'
     # 显式用当前容器的镜像；:latest 或 :prev 可能已指向旧镜像。CLI 使用宿主的 app 环境、不需要 .env.sandbox。
-    (cd "$dir" && APP_IMAGE="$running" APP_CONTAINER="$project" HOST_PORT="$port" \
-      timeout --kill-after=2s 120s docker compose -p "$project" -f deploy/compose.yml run --rm --no-deps app \
-      node --import tsx src/cli/sandbox.ts purge --all </dev/null) || sandbox_refuse 'sandbox purge --all 失败'
+    purge_sandboxes() {
+      # 同步前服务器可能仍是旧 compose。只在它尚无固定 IP 时兼容旧服务；
+      # 已有固定 IP 却没有 app-cli 时拒绝，不能退回会抢地址的一次性 app。
+      local cli_service=app-cli
+      [ -r "$dir/deploy/compose.yml" ] || return 1
+      if ! grep -q '^  app-cli:' "$dir/deploy/compose.yml"; then
+        if grep -q 'ipv4_address:' "$dir/deploy/compose.yml"; then
+          echo '当前 compose 缺 app-cli：先按 deployment.md 更新命令行运行配置，再执行 purge。' >&2
+          return 1
+        fi
+        cli_service=app
+      fi
+      (cd "$dir" && APP_IMAGE="$running" APP_CONTAINER="$project" HOST_PORT="$port" \
+        timeout --kill-after=2s 120s docker compose -p "$project" -f deploy/compose.yml run --rm --no-deps "$cli_service" \
+        node --import tsx src/cli/sandbox.ts purge --all </dev/null)
+    }
+    purge_sandboxes || sandbox_refuse 'sandbox purge --all 失败'
     tenancy=$(tenancy_state) || tenancy=unknown
     [ "$tenancy" = 'f f' ] || sandbox_refuse 'purge 后库里仍有沙箱行或库问不到'
   fi
@@ -546,7 +560,7 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
     else
       echo "clear 只改待生效值：用 04 之后的镜像重启一次，按原因 brand 重渲染，当前发布快照的 brand 也须为空。"
       if [ "$brand_auto" = 1 ]; then
-        echo "  ${dc} stop app"
+        echo "  ${dc} stop app app-standby"
         echo "  APP_IMAGE=\${RECOVERY_IMAGE} ${dc} up -d --no-deps app"
       else
         echo "  ${dc} restart app"
@@ -595,9 +609,9 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
     if [ "$target" != pre-02 ] && [ "$target" != pre-03 ]; then
       echo "这是健康检查失败后的自动回滚：${project}:current 已是这次没过健康检查的新镜像，导出用它。"
     fi
-    echo "  1. ${dc} stop app"
+    echo "  1. ${dc} stop app app-standby"
     echo "  2. install -d -o 1000 -g 1000 /root/channels-keep-<日期>"
-    echo "     ${dc} run --rm -v /root/channels-keep-<日期>:/keep app \\"
+    echo "     ${dc} run --rm -v /root/channels-keep-<日期>:/keep app-cli \\"
     echo "       node --import tsx src/cli/channel-export.ts --tenant ${slug} --var /app/var --keep /keep"
     echo "     （不带 APP_IMAGE，用当前 ${project}:current 镜像里的 channel-export；被拒时照提示处理。"
     echo "      有默认企微账号以外的任何账号，不论状态，只能回到 03 之后的镜像；部分送达或未发的人工回复、通知需以 03 起一次、恢复发完、正常停机再导出。）"
@@ -617,7 +631,7 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
         echo "     APP_IMAGE=${target} ${dc} up -d --no-deps app && docker tag ${target} ${project}:current"
         echo "     curl -fsS http://127.0.0.1:${port}/healthz 确认 revision 是 ${rev:-（取不到 ${target} 的 APP_REVISION）}（${target} 的 APP_REVISION）"
       fi
-      echo "再切回 03：stop app → channel-import --resync --keep <var 之外的目录> → up -d app。"
+      echo "再切回 03：stop app app-standby → channel-import --resync --keep <var 之外的目录> → up -d app。"
       exit 5
     fi
   fi
@@ -626,9 +640,9 @@ dc="APP_CONTAINER=${project} HOST_PORT=${port} docker compose -p ${project} -f d
   else
     echo "这是健康检查失败后的自动回滚：${project}:current 已是这次没过健康检查的新镜像。先用它导出、回到文件存储，再直接起 ${target}（在 ${dir} 下）："
   fi
-  echo "  1. ${dc} stop app"
+  echo "  1. ${dc} stop app app-standby"
   echo "  2. install -d -o 1000 -g 1000 /root/sessions-keep-<日期>"
-  echo "     ${dc} run --rm -v /root/sessions-keep-<日期>:/keep app \\"
+  echo "     ${dc} run --rm -v /root/sessions-keep-<日期>:/keep app-cli \\"
   echo "       node --import tsx src/cli/export-sessions.ts --tenant ${slug} --keep /keep --var /app/var"
   if [ "$target" != pre-02 ]; then
     echo "     （不带 APP_IMAGE，用的是 ${project}:current，也就是这次的新镜像里的 export-sessions）"

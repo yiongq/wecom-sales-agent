@@ -1,5 +1,5 @@
 // 行权删除（02 spec「隐私说明、敏感信息同意、保留期与行权」，R23）。以 platform 身份运行，要求应用已停（要取租户锁）：
-//   docker compose stop app
+//   docker compose stop app app-standby
 //   docker compose run --rm platform node --import tsx src/cli/erase-conversation.ts \
 //     --tenant <slug> --id <会话 id> --reason <文字> [--var <dir>]
 // 不看保留期；删除范围与清除函数相同（会话行连同消息、trace、护栏事件、同意记录，按 id 删发送账本与 payload 里 sessionId
@@ -52,7 +52,9 @@ main(async () => {
     }
     const lock = await holdTenantLock(url, tenant.id);
     if (!lock) {
-      console.error(`[erase-conversation] lock_held：租户「${tenantSlug}」的锁在别的进程手里（应用还在跑？先 docker compose stop app）`);
+      console.error(
+        `[erase-conversation] lock_held：租户「${tenantSlug}」的锁在别的进程手里（应用还在跑？先 docker compose stop app app-standby）`,
+      );
       return 3;
     }
     try {

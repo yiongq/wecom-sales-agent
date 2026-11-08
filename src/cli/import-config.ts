@@ -1,5 +1,5 @@
 // 首次把 data/ 导入租户（spec「导入、导出与回滚 · import-config」）。以 app 身份运行：
-//   docker compose run --rm app node --import tsx src/cli/import-config.ts --tenant <slug> [--data <dir>] [--dry-run]
+//   docker compose run --rm app-cli node --import tsx src/cli/import-config.ts --tenant <slug> [--data <dir>] [--dry-run]
 // 退出码：0 已导入或库里已是这份内容；2 库里已有不同的内容；3 应用正持着租户锁；1 其他错误
 // --data 缺省按租户的包：旅游是 ./data（sop.md、routes.json、hotels.json），其他包是它的参考配置 ./data/packs/<包>/（sop.md、pack.json、
 // catalog/<kind>.json，08 R11）；也可以指向 export-config 的输出。目录的包（pack.json，没有就是旅游）与租户绑定的包不符时拒绝，报错点名两边的包

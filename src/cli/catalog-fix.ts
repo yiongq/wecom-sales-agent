@@ -1,6 +1,6 @@
 // 锁定字段的紧急修正（spec「导入、导出与回滚 · catalog-fix」）。要取租户锁，所以先停应用：
-//   docker compose stop app
-//   docker compose run --rm app node --import tsx src/cli/catalog-fix.ts --tenant <slug> --kind <kind> --code <code> --set '<json>' --reason <text>
+//   docker compose stop app app-standby
+//   docker compose run --rm app-cli node --import tsx src/cli/catalog-fix.ts --tenant <slug> --kind <kind> --code <code> --set '<json>' --reason <text>
 //   docker compose up -d app        # 启动时重新装载快照
 // 退出码：0 已修正；3 应用还在跑（拿不到租户锁）；1 其他错误
 import { CatalogKindParam } from '../shared/console-api.js';
@@ -39,7 +39,7 @@ main(async () => {
     }
     const lock = await holdTenantLock(url, tenant.id);
     if (!lock) {
-      console.error(`[catalog-fix] 租户「${tenantSlug}」的锁在别的进程手里：先 docker compose stop app`);
+      console.error(`[catalog-fix] 租户「${tenantSlug}」的锁在别的进程手里：先 docker compose stop app app-standby`);
       return 3;
     }
     try {

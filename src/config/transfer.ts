@@ -278,7 +278,11 @@ export async function importConfig(o: ImportOptions): Promise<TransferResult> {
   if (brand) code = { ...code, render: tenantRenderer(runtime, brand) };
   // DB 模式的应用在跑时持着锁：拿不到就别动库
   const lock = await o.lock(tenant.id);
-  if (!lock) return { code: EXIT.locked, message: `lock_held：租户「${o.tenantSlug}」的锁在别的进程手里（应用正以 DB 模式运行？）` };
+  if (!lock)
+    return {
+      code: EXIT.locked,
+      message: `lock_held：租户「${o.tenantSlug}」的锁在别的进程手里（先 docker compose stop app app-standby，否则备用会接过锁）`,
+    };
   try {
     let sections: SopSection[];
     let items: Record<string, Record<string, unknown>[]>;

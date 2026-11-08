@@ -1,4 +1,4 @@
-// app 身份、先停应用；--keep 是 var/ 之外持久挂载的目录。退出码：0 成功/无操作，1 用法/IO，2 不一致，3 锁。
+// app 身份、先停 app 和 app-standby，否则备用会接过锁；--keep 是 var/ 之外持久挂载的目录。退出码：0 成功/无操作，1 用法/IO，2 不一致，3 锁。
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { holdTenantLock, openDb } from '../db/client.js';

@@ -14,6 +14,7 @@
 #
 # 用法：bash deploy.sh <tag>        （tag 必须是本地已有的 refs/tags/<tag>；分支名、提交号、~1 这类写法都不收）
 # 可用环境变量覆盖：SERVER / REMOTE_DIR / HOST_PORT / NAME（优先于 .deploy.env）。
+# 固定上游网络同样支持 APP_UPSTREAM_SUBNET / APP_UPSTREAM_IP / STANDBY_UPSTREAM_IP。
 # 旁路实例（在同一台服务器上演练回滚，不打断线上 demo）：NAME、REMOTE_DIR、HOST_PORT 三个必须同时换成和线上不同的值，
 # 它的 .env 不能配企微凭据，否则会和线上实例抢同一个客服账号的消息。两条脚本都会检查
 set -euo pipefail
@@ -47,12 +48,16 @@ done
 
 # 服务器地址不进 git：写在 .deploy.env（已 gitignore），或用环境变量覆盖。环境变量优先：先记下，读完文件再盖回去
 ENV_SERVER="${SERVER:-}" ENV_REMOTE_DIR="${REMOTE_DIR:-}" ENV_HOST_PORT="${HOST_PORT:-}" ENV_NAME="${NAME:-}" ENV_SANDBOX_PORT="${SANDBOX_PORT:-}"
+ENV_UPSTREAM_SUBNET="${APP_UPSTREAM_SUBNET:-}" ENV_UPSTREAM_IP="${APP_UPSTREAM_IP:-}" ENV_STANDBY_IP="${STANDBY_UPSTREAM_IP:-}"
 [[ -f .deploy.env ]] && source .deploy.env
 [[ -n "$ENV_SERVER" ]] && SERVER="$ENV_SERVER"
 [[ -n "$ENV_REMOTE_DIR" ]] && REMOTE_DIR="$ENV_REMOTE_DIR"
 [[ -n "$ENV_HOST_PORT" ]] && HOST_PORT="$ENV_HOST_PORT"
 [[ -n "$ENV_NAME" ]] && NAME="$ENV_NAME"
 [[ -n "$ENV_SANDBOX_PORT" ]] && SANDBOX_PORT="$ENV_SANDBOX_PORT"
+[[ -n "$ENV_UPSTREAM_SUBNET" ]] && APP_UPSTREAM_SUBNET="$ENV_UPSTREAM_SUBNET"
+[[ -n "$ENV_UPSTREAM_IP" ]] && APP_UPSTREAM_IP="$ENV_UPSTREAM_IP"
+[[ -n "$ENV_STANDBY_IP" ]] && STANDBY_UPSTREAM_IP="$ENV_STANDBY_IP"
 SERVER="${SERVER:?未设置 SERVER。写入 .deploy.env（如 SERVER=root@<服务器IP>）或以环境变量传入}"
 LIVE_NAME=wecom-sales-agent LIVE_DIR=/opt/wecom-sales-agent LIVE_PORT=3210 # 线上 demo 实例（宿主 3200 已被别的容器占用）
 REMOTE_DIR="${REMOTE_DIR:-$LIVE_DIR}"
@@ -77,12 +82,23 @@ if [[ "$NAME" != "$LIVE_NAME" || "$REMOTE_DIR" != "$LIVE_DIR" || "$HOST_PORT" !=
   fi
   SIDE=1
 fi
-echo "目标：${NAME} @ ${SERVER}:${REMOTE_DIR}，宿主端口 ${HOST_PORT}$([[ $SIDE == 1 ]] && echo '（旁路实例）')"
+# 固定上游网络参数：旧 tag 没有该网络时不要求新增参数，也不向它传未经校验的值。
+UPSTREAM_ENV='' UPSTREAM_TARGET=''
+if git show "refs/tags/${TAG}:deploy/compose.yml" | grep 'ipv4_address:' >/dev/null; then
+  APP_UPSTREAM_SUBNET="${APP_UPSTREAM_SUBNET:-172.30.250.0/28}"
+  APP_UPSTREAM_IP="${APP_UPSTREAM_IP:-172.30.250.10}"
+  STANDBY_UPSTREAM_IP="${STANDBY_UPSTREAM_IP:-172.30.250.11}"
+  # 本机只校验字面量，不连接服务器；CIDR/IP 通过后才能拼入远端命令。
+  perl -e 'alarm 10; exec @ARGV' node deploy/upstream-network.mjs "$APP_UPSTREAM_SUBNET" "$APP_UPSTREAM_IP" "$STANDBY_UPSTREAM_IP" "$SIDE" || exit 1
+  UPSTREAM_ENV="APP_UPSTREAM_SUBNET=${APP_UPSTREAM_SUBNET} APP_UPSTREAM_IP=${APP_UPSTREAM_IP} STANDBY_UPSTREAM_IP=${STANDBY_UPSTREAM_IP} "
+  UPSTREAM_TARGET="，Caddy 上游 ${APP_UPSTREAM_IP}:3200 ${STANDBY_UPSTREAM_IP}:3200（子网 ${APP_UPSTREAM_SUBNET}）"
+fi
+echo "目标：${NAME} @ ${SERVER}:${REMOTE_DIR}，宿主端口 ${HOST_PORT}${UPSTREAM_TARGET}$([[ $SIDE == 1 ]] && echo '（旁路实例）')"
 
 # 容器的参数（只绑 127.0.0.1、PORT 写死 3200、var/ 挂卷、停机宽限 10 秒）都在 deploy/compose.yml 的 app 服务里。
 # 项目名、容器名用 NAME，宿主端口用 HOST_PORT：旁路实例因此有自己的 compose 项目、数据库卷和容器名，碰不到线上。
 # 新版本与回滚只差 APP_IMAGE
-compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} docker compose -p ${NAME} -f deploy/compose.yml"; }
+compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} ${UPSTREAM_ENV}docker compose -p ${NAME} -f deploy/compose.yml"; }
 # 回滚前检查（02、03「导入、导出与切换」、04 R14、05 R18、07 R20、08 R13、09 R15、10 R17、12 R14）：旧镜像不认识库里的数据或部署状态时拒绝。
 # 判断在服务器上做（deploy/rollback-guard.sh 经 ssh 交给 bash -s）；$1 是镜像名，或 pre-02 到 pre-12 的档位（已按 tag 文件树判定）。
 # 用的是本地这份脚本：02 之前的 tag 里没有它。项目名与宿主端口传进去：打印的手工命令要带上（旁路实例不能去抢线上的端口）。
@@ -93,7 +109,7 @@ compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PO
 guard_rollback() { ssh "${SERVER}" bash -s -- "$REMOTE_DIR" "$1" "$NAME" "$HOST_PORT" <deploy/rollback-guard.sh; }
 # 05 以前只核对 revision；目标镜像判断失败从严按 pre-05 处理。
 pre05_image() { ssh "${SERVER}" "timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh $1 -c 'test -e /app/src/tenancy/runtime.ts'"; }
-sandbox_compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} SANDBOX_PORT=${SANDBOX_PORT} docker compose -p ${NAME} -f deploy/compose.yml --profile sandbox"; }
+sandbox_compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} SANDBOX_PORT=${SANDBOX_PORT} ${UPSTREAM_ENV}docker compose -p ${NAME} -f deploy/compose.yml --profile sandbox"; }
 
 # 1) 归档：只取 tag 里提交过的文件。目录权限改成 755：rsync -a 会把源目录的权限带到 REMOTE_DIR 上，mktemp 给的是 700
 BUILD_DIR="$(mktemp -d)"
@@ -107,6 +123,51 @@ echo "[2/7] 归档目录里安装依赖并跑四个门禁"
 if ! (cd "$BUILD_DIR" && pnpm install --frozen-lockfile >/dev/null && pnpm format:check && pnpm lint && pnpm typecheck && pnpm test); then
   echo "错误：${TAG} 没过四个门禁，中止部署（服务器上什么都没动）。" >&2
   exit 1
+fi
+
+# 固定网络退版检查：必须早于 rollback-guard（可能 purge）及 rsync 等任何远端写操作。
+# 用已经归档、过门禁的目标 compose 判定；查不到目标或服务器状态一律拒绝。
+if [ ! -f "$BUILD_DIR/deploy/compose.yml" ] || [ ! -r "$BUILD_DIR/deploy/compose.yml" ]; then
+  echo '错误：无法读取目标 compose，拒绝部署（服务器上什么都没动）。' >&2
+  exit 1
+fi
+TARGET_FIXED_UPSTREAM=0
+if grep -q 'ipv4_address:' "$BUILD_DIR/deploy/compose.yml"; then
+  TARGET_FIXED_UPSTREAM=1
+else
+  case $? in
+    1) ;; # 明确没有固定地址；grep 读文件失败不能当作旧 compose。
+    *) echo '错误：无法检查目标 compose，拒绝部署（服务器上什么都没动）。' >&2; exit 1 ;;
+  esac
+fi
+if [ "$TARGET_FIXED_UPSTREAM" = 0 ]; then
+  if ! perl -e 'alarm 30; exec @ARGV' ssh "${SERVER}" bash -s -- "$NAME" <<'UPSTREAM_ROLLBACK'
+set -euo pipefail
+project="$1"
+for service in app app-standby; do
+  # 包括停止的容器：稍后重建仍会丢失其固定地址。只查本 project，不触碰旁路实例。
+  ids=$(timeout --kill-after=2s 8s docker container ls -aq \
+    --filter "label=com.docker.compose.project=$project" \
+    --filter "label=com.docker.compose.service=$service" </dev/null) || exit 1
+  for id in $ids; do
+    [[ "$id" =~ ^[a-f0-9]{12,64}$ ]] || exit 1
+    state=$(timeout --kill-after=2s 8s docker inspect --format \
+      "{{if .NetworkSettings.Networks}}{{if index .NetworkSettings.Networks \"${project}_app-upstream\"}}attached{{else}}clear{{end}}{{else}}unknown{{end}}" "$id" </dev/null) || exit 1
+    case "$state" in
+      clear) ;;
+      attached)
+        echo "拒绝部署：本 project 的 $service 仍接着 app-upstream，目标 tag 没有固定 IP；替换 compose 会使 Caddy 断开。" >&2
+        exit 1 ;;
+      *) exit 1 ;;
+    esac
+  done
+done
+UPSTREAM_ROLLBACK
+  then
+    echo '错误：目标 tag 无固定 IP，当前上游网络仍在使用或状态无法确认，拒绝部署（服务器上什么都没动）。' >&2
+    echo '先在维护窗口停两边、保留当前 compose 和固定 IP，用已验证旧镜像手动回滚；不要直接同步旧 compose。步骤见 docs/guides/deployment.md#rollback-before-fixed-ip。' >&2
+    exit 1
+  fi
 fi
 
 # 3) 先查服务器 .env 再同步（只读）。运行时不设 profile 会按 demo 跑，生产实例忘了配就成了 demo
@@ -342,25 +403,150 @@ if ! ssh "${SERVER}" "set -e; $(compose "${NAME}:latest") run --rm migrate"; the
   exit 1
 fi
 
-# 7) 换容器：compose 按 stop_grace_period 10s 发 SIGTERM 换掉 app（依赖的 migrate 会再跑一遍，已是最新，空操作）。
-# 必须走 SIGTERM 而不是 SIGKILL：进程收到 SIGTERM 会先等进行中的企微回复发完（store.ts 停机钩子，最多 8s）再落盘退出，
-# 直接杀会让处理到一半的消息靠重启后重放兜底、丢掉去抖窗口里的会话变更。10s 必须大于那 8s，两处要一起改。
-# 第一次换成 compose 时，原来 docker run 起的同名容器不归 compose 管（没有 compose 的项目标签），先按同样的方式停掉删掉
-echo "[7/7] 换容器并做健康检查（http://127.0.0.1:${HOST_PORT}/healthz via ssh，revision 应为 ${TAG}）"
+# 7) owner 确认 Caddy 双上游后才滚动切换；否则只换 app。第 6 步迁移只增不删。
+# 旧 tag 没有 app-standby 时保留原来的单容器路径；向旧 tag 降级前必须按手册停掉两边。
+PRIMARY=app PRIMARY_PORT="$HOST_PORT" PRIMARY_CONTAINER="$NAME"
+SECONDARY=app-standby SECONDARY_PORT='' SECONDARY_CONTAINER=''
+ROLLING=0 BOOTSTRAP=0
+# 只认服务器部署目录的 .env.ops，本地环境变量不能代替 owner 确认。
+# 使用本地脚本，兼容不含该文件的旧 tag；读失败或备用状态未知时拒绝换容器。
+if ! perl -e 'alarm 20; exec @ARGV' ssh "${SERVER}" bash -s -- "$REMOTE_DIR" "$NAME" <deploy/caddy-dual-upstream.sh >"$BUILD_DIR/caddy-mode"; then
+  echo '错误：Caddy 双上游确认检查失败，旧应用未替换。' >&2
+  exit 1
+fi
+CADDY_DUAL_UPSTREAM=$(cat "$BUILD_DIR/caddy-mode")
+case "$CADDY_DUAL_UPSTREAM" in
+  0 | 1) ;;
+  *) echo '错误：无法读取 Caddy 双上游确认状态，旧应用未替换。' >&2; exit 1 ;;
+esac
+TARGET_HAS_STANDBY=0
+if git show "refs/tags/${TAG}:deploy/compose.yml" | grep '^  app-standby:' >/dev/null; then TARGET_HAS_STANDBY=1; fi
+if [ "$CADDY_DUAL_UPSTREAM" = 1 ] && [ "$TARGET_HAS_STANDBY" = 1 ]; then
+  ROLLING=1
+  # 3211 留给沙箱；旁路实例默认 HOST_PORT + 2，不占用线上备用端口。
+  STANDBY_HOST_PORT="${STANDBY_HOST_PORT:-$((HOST_PORT + 2))}"
+  STANDBY_CONTAINER="${STANDBY_CONTAINER:-${NAME}-standby}"
+  if [[ ! "$STANDBY_HOST_PORT" =~ ^[1-9][0-9]{0,4}$ || ! "$STANDBY_CONTAINER" =~ ^[a-z0-9][a-z0-9_.-]*$ ]] ||
+    ((STANDBY_HOST_PORT > 65535)) || [[ "$STANDBY_HOST_PORT" = "$HOST_PORT" || "$STANDBY_CONTAINER" = "$NAME" ]] ||
+    { [[ "$SANDBOX_ENABLED" = 1 ]] && [[ "$STANDBY_HOST_PORT" = "$SANDBOX_PORT" || "$STANDBY_CONTAINER" = "${NAME}-sandbox" ]]; } ||
+    { [[ "$SIDE" = 1 ]] && [[ "$STANDBY_HOST_PORT" = 3210 || "$STANDBY_HOST_PORT" = 3211 || "$STANDBY_HOST_PORT" = 3212 || "$STANDBY_CONTAINER" = "$LIVE_NAME" || "$STANDBY_CONTAINER" = "${LIVE_NAME}-standby" || "$STANDBY_CONTAINER" = "${LIVE_NAME}-sandbox" ]]; }; then
+    echo '错误：备用容器名或端口无效、与宿主/沙箱冲突，或旁路实例占用线上资源；旧容器未动。' >&2
+    exit 1
+  fi
+  compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} STANDBY_CONTAINER=${STANDBY_CONTAINER} STANDBY_HOST_PORT=${STANDBY_HOST_PORT} ${UPSTREAM_ENV}docker compose -p ${NAME} -f deploy/compose.yml"; }
+  # 只输出服务名，不输出 env；零活动仅在两个容器都不存在时视为首次部署。
+  if ! perl -e 'alarm 20; exec @ARGV' ssh "${SERVER}" bash -s -- "$REMOTE_DIR" "$HOST_PORT" "$STANDBY_HOST_PORT" "$NAME" "$STANDBY_CONTAINER" "$NAME" >"$BUILD_DIR/active" <<'ACTIVE'
+set -euo pipefail
+cd "$1"
+for slot in app app-standby; do
+  if [ "$slot" = app ]; then container="$4"; port="$2"; else container="$5"; port="$3"; fi
+  if docker container inspect "$container" >/dev/null 2>&1; then
+    project=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.project"}}' "$container")
+    service=$(docker inspect --format '{{index .Config.Labels "com.docker.compose.service"}}' "$container")
+    if { [ -n "$project" ] && { [ "$project" != "$6" ] || [ "$service" != "$slot" ]; }; } ||
+      { [ -z "$project" ] && [ "$slot" != app ]; } ||
+      [ "$(docker port "$container" 3200/tcp)" != "127.0.0.1:$port" ]; then
+      echo '错误：容器归属或端口与部署参数不一致，旧容器未动。' >&2; exit 1
+    fi
+  fi
+done
+env_val() { awk -v k="$1=" '{ sub(/^[ \t]+/, ""); sub(/\r$/, "") } index($0,k)==1 { v=substr($0,length(k)+1) } END { print v }' .env; }
+if [ "$(env_val CONFIG_SOURCE)" != db ] || [ "$(env_val SESSION_STORE)" != db ]; then
+  echo '错误：主备要求 CONFIG_SOURCE=db、SESSION_STORE=db；先按手册完成数据导入。' >&2; exit 1
+fi
+ok() { local body; body=$(curl -fsS --max-time 3 "http://127.0.0.1:$1/healthz") || return 1; [[ "$body" =~ \"ok\"[[:space:]]*:[[:space:]]*true([[:space:]]*[,}]) ]]; }
+a=0 b=0
+ok "$2" 2>/dev/null && a=1
+ok "$3" 2>/dev/null && b=1
+case "$a$b" in
+  10) echo app ;;
+  01) echo app-standby ;;
+  00) if docker container inspect "$4" >/dev/null 2>&1 || docker container inspect "$5" >/dev/null 2>&1; then
+        echo '错误：已有容器但两个端口都不健康，拒绝猜测主备；先恢复服务。' >&2; exit 1
+      fi; echo bootstrap ;;
+  *) echo '错误：两个端口都在服务，拒绝切换；先排查租户锁。' >&2; exit 1 ;;
+esac
+ACTIVE
+  then exit 1; fi
+  PRIMARY=$(cat "$BUILD_DIR/active")
+  SECONDARY_PORT="$STANDBY_HOST_PORT" SECONDARY_CONTAINER="$STANDBY_CONTAINER"
+  case "$PRIMARY" in
+    app) ;;
+    app-standby)
+      PRIMARY_PORT="$STANDBY_HOST_PORT" PRIMARY_CONTAINER="$STANDBY_CONTAINER"
+      SECONDARY=app SECONDARY_PORT="$HOST_PORT" SECONDARY_CONTAINER="$NAME" ;;
+    bootstrap) BOOTSTRAP=1 PRIMARY=app ;;
+    *) echo '错误：无法判断主备，旧容器未动。' >&2; exit 1 ;;
+  esac
+  # 第 5 步为兼容旧 tag 仍按 NAME 留存；这里在任何换容器之前从实际主容器刷新 :prev。
+  if [ "$BOOTSTRAP" = 0 ]; then
+    perl -e 'alarm 20; exec @ARGV' ssh "${SERVER}" "set -e; image=\$(docker inspect --format '{{.Image}}' ${PRIMARY_CONTAINER}); docker tag \"\$image\" ${NAME}:prev" || exit 1
+  fi
+elif [ "$TARGET_HAS_STANDBY" = 0 ]; then
+  # 旧 tag 的 compose 不认识备用，不能留下一个无人管理的持锁进程。
+  if ! perl -e 'alarm 20; exec @ARGV' ssh "${SERVER}" "test -z \"\$(docker ps -aq --filter label=com.docker.compose.project=${NAME} --filter label=com.docker.compose.service=app-standby)\""; then
+    echo '错误：部署旧 tag 前须先停止并删除本项目的 app-standby；旧应用未替换。' >&2
+    exit 1
+  fi
+fi
+
+# 每次探测与整轮都有时限，严格核对 ok / revision / role；只用于 18 的宿主。
+rolling_health() {
+  local want="$1" port="$2" body deadline=$((SECONDS + 60))
+  while ((SECONDS < deadline)); do
+    if body=$(perl -e 'alarm 5; exec @ARGV' ssh "${SERVER}" "curl -fsS --max-time 3 http://127.0.0.1:${port}/healthz" 2>/dev/null) &&
+      [[ "$body" =~ \"ok\"[[:space:]]*:[[:space:]]*true([[:space:]]*[,}]) ]] &&
+      [[ "$body" == *"\"revision\":\"${want}\""* && "$body" == *'"role":"host"'* ]]; then
+      echo "$body"; return 0
+    fi
+    sleep 1
+  done
+  return 1
+}
+
+swap_app() {
+  if [ "$ROLLING" = 0 ]; then
+    # 首次从 docker run 切到 compose，沿用同名容器兼容处理。
+    ssh "${SERVER}" "set -e
+      if docker container inspect ${NAME} >/dev/null 2>&1 &&
+        [ -z \"\$(docker container inspect --format '{{index .Config.Labels \"com.docker.compose.project\"}}' ${NAME})\" ]; then
+        docker stop -t 10 ${NAME} && docker rm ${NAME}
+      fi
+      $(compose "${NAME}:latest") up -d app
+      docker tag ${NAME}:latest ${NAME}:current
+      docker ps --filter name=^/${NAME}\$ --format '  {{.Names}}  {{.Status}}  {{.Ports}}'" && health_ok "$TAG" "$HOST_ROLE"
+    return $?
+  fi
+  echo "主=${PRIMARY}，备=${SECONDARY}；先重建备用，SIGTERM 主，再验新版本，最后重建原主。"
+  if [ "$BOOTSTRAP" = 1 ]; then
+    perl -e 'alarm 90; exec @ARGV' ssh "${SERVER}" "$(compose "${NAME}:latest") up -d --no-deps ${PRIMARY}" || return 1
+    rolling_health "$TAG" "$PRIMARY_PORT" || return 1
+    perl -e 'alarm 90; exec @ARGV' ssh "${SERVER}" "$(compose "${NAME}:latest") up -d --no-deps ${SECONDARY}" || return 1
+  else
+    perl -e 'alarm 90; exec @ARGV' ssh "${SERVER}" "$(compose "${NAME}:latest") up -d --no-deps --force-recreate ${SECONDARY}" || return 1
+    # docker stop 也覆盖历史 docker run 容器，并禁用本轮自动重启；始终使用 SIGTERM 与 10 秒宽限。
+    perl -e 'alarm 20; exec @ARGV' ssh "${SERVER}" "docker stop -t 10 ${PRIMARY_CONTAINER}" || return 1
+    rolling_health "$TAG" "$SECONDARY_PORT" || return 1
+    perl -e 'alarm 90; exec @ARGV' ssh "${SERVER}" "set -e
+      if [ -z \"\$(docker inspect --format '{{index .Config.Labels \"com.docker.compose.project\"}}' ${PRIMARY_CONTAINER})\" ]; then docker rm ${PRIMARY_CONTAINER}; fi
+      $(compose "${NAME}:latest") up -d --no-deps --force-recreate ${PRIMARY}" || return 1
+  fi
+  local active_port="$SECONDARY_PORT" waiting_port="$PRIMARY_PORT"
+  if [ "$BOOTSTRAP" = 1 ]; then active_port="$PRIMARY_PORT"; waiting_port="$SECONDARY_PORT"; fi
+  rolling_health "$TAG" "$active_port" || return 1
+  if perl -e 'alarm 5; exec @ARGV' ssh "${SERVER}" "curl -sS --max-time 3 http://127.0.0.1:${waiting_port}/healthz" >/dev/null 2>&1; then
+    echo '错误：重建后的备用仍在监听，拒绝将此次部署标为成功。' >&2
+    return 1
+  fi
+  perl -e 'alarm 20; exec @ARGV' ssh "${SERVER}" "docker tag ${NAME}:latest ${NAME}:current"
+}
+
+echo "[7/7] 换容器并做健康检查（revision 应为 ${TAG}）"
 HOST_ROLE=host
 case "$rollback_target" in
   pre-02 | pre-03 | pre-04 | pre-05) HOST_ROLE='' ;;
 esac
-# set -e：compose up 失败时 ssh 就报失败，直接去回滚，不再白等一整轮健康检查
-if ssh "${SERVER}" "set -e
-  if docker container inspect ${NAME} >/dev/null 2>&1 &&
-    [ -z \"\$(docker container inspect --format '{{index .Config.Labels \"com.docker.compose.project\"}}' ${NAME})\" ]; then
-    docker stop -t 10 ${NAME} && docker rm ${NAME}
-  fi
-  $(compose "${NAME}:latest") up -d app
-  # :current 总是 app 容器正在用的镜像：compose 文件缺省取它，手工的 compose 命令不带 APP_IMAGE 也不会换错镜像
-  docker tag ${NAME}:latest ${NAME}:current
-  docker ps --filter name=^/${NAME}\$ --format '  {{.Names}}  {{.Status}}  {{.Ports}}'" && health_ok "$TAG" "$HOST_ROLE"; then
+if swap_app; then
   if [ "$SANDBOX_ENABLED" = 1 ]; then
     echo "[sandbox] 换沙箱并做健康检查（总时限 90 秒）"
     if ! ssh "${SERVER}" "$(sandbox_compose "${NAME}:latest") up -d --no-deps sandbox" ||
@@ -368,7 +554,7 @@ if ssh "${SERVER}" "set -e
       echo "错误：沙箱换容器或健康检查失败。宿主已上线、沙箱已停；修好之后重新部署。" >&2
       # 服务端 8 秒后终止、再给 2 秒强杀；本地 ssh 12 秒封顶，取日志失败也继续删除。
       perl -e 'alarm 12; exec @ARGV' ssh "${SERVER}" "timeout --kill-after=2s 8s docker logs --tail 40 ${NAME}-sandbox" >&2 || true
-      perl -e 'alarm 12; exec @ARGV' ssh "${SERVER}" "cd ${REMOTE_DIR} && APP_IMAGE=${NAME}:latest APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} SANDBOX_PORT=${SANDBOX_PORT} timeout --kill-after=2s 8s docker compose -p ${NAME} -f deploy/compose.yml --profile sandbox rm -sfv sandbox" >&2 || {
+      perl -e 'alarm 12; exec @ARGV' ssh "${SERVER}" "cd ${REMOTE_DIR} && APP_IMAGE=${NAME}:latest APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} SANDBOX_PORT=${SANDBOX_PORT} ${UPSTREAM_ENV}timeout --kill-after=2s 8s docker compose -p ${NAME} -f deploy/compose.yml --profile sandbox rm -sfv sandbox" >&2 || {
         echo "错误：删除沙箱容器失败，需立即人工处理。" >&2
       }
       exit 1
@@ -378,7 +564,14 @@ if ssh "${SERVER}" "set -e
   exit 0
 fi
 echo "错误：换容器或健康检查失败——容器可能起来即崩。最近日志：" >&2
-ssh "${SERVER}" "docker logs --tail 40 ${NAME}" >&2 || true
+perl -e 'alarm 12; exec @ARGV' ssh "${SERVER}" "docker logs --tail 40 ${PRIMARY_CONTAINER}" >&2 || true
+if [ "$ROLLING" = 1 ]; then
+  perl -e 'alarm 12; exec @ARGV' ssh "${SERVER}" "docker logs --tail 40 ${SECONDARY_CONTAINER}" >&2 || true
+  # 先停止两边，防止坏版本重启抢锁；随后仍完整执行既有的版本判定与 rollback-guard。
+  perl -e 'alarm 40; exec @ARGV' ssh "${SERVER}" "$(compose "${NAME}:latest") stop app app-standby" || {
+    echo '错误：无法停掉新容器，拒绝自动回滚以免争抢锁；需人工处理。' >&2; exit 1
+  }
+fi
 
 # 自动回滚到 :prev（--no-deps，不跑迁移：迁移只增不删，旧镜像的迁移是新镜像的子集）。新容器在 restart: unless-stopped 下只会反复崩溃重启，
 # 不回滚的话企微回调全部 502，要一直停摆到有人手工修好重新部署。
@@ -428,9 +621,26 @@ guard_rollback "${NAME}:prev" || {
   esac
   exit 1
 }
-if ssh "${SERVER}" "set -e
-  $(compose "${NAME}:prev") up -d --no-deps app
-  docker tag ${NAME}:prev ${NAME}:current" >&2 && health_ok "$PREV_REVISION" "$PREV_ROLE"; then
+rollback_health() {
+  if [ "$ROLLING" = 1 ] && [ "$PREV_ROLE" = host ]; then
+    rolling_health "$PREV_REVISION" "$PRIMARY_PORT"
+  else
+    health_ok "$PREV_REVISION" "$PREV_ROLE" "$PRIMARY_PORT"
+  fi
+}
+restore_app() {
+  if [ "$ROLLING" = 1 ]; then
+    perl -e 'alarm 90; exec @ARGV' ssh "${SERVER}" "set -e
+      $(compose "${NAME}:prev") up -d --no-deps --force-recreate ${PRIMARY}
+      docker tag ${NAME}:prev ${NAME}:current"
+  else
+    # 未确认双上游或旧 tag：只恢复 app，不启动备用。
+    perl -e 'alarm 90; exec @ARGV' ssh "${SERVER}" "set -e
+      $(compose "${NAME}:prev") up -d --no-deps app
+      docker tag ${NAME}:prev ${NAME}:current"
+  fi
+}
+if restore_app >&2 && rollback_health; then
   echo "已回滚到 ${NAME}:prev（/healthz 的 revision 是上一版的 tag），服务恢复；${TAG} 未上线，请排查上面的日志后重新部署。" >&2
 else
   echo "错误：回滚后健康检查仍失败，服务当前不可用，需立即人工处理！" >&2

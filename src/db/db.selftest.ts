@@ -3921,8 +3921,8 @@ await t.close();
       .filter((line) => line && !line.startsWith('#')),
   );
   check(
-    'compose：五个服务的 env 文件都是长写法且每一项都 format: raw，只有 sandbox 可 required: false',
-    envBlocks.length === 5 &&
+    'compose：六个服务的 env 文件都是长写法且每一项都 format: raw，只有 sandbox 可 required: false',
+    envBlocks.length === 6 &&
       envBlocks.every((m) => m[2].trim() === '') &&
       envPaths.every(
         (envPath) =>
@@ -3930,7 +3930,7 @@ await t.close();
             (lines) =>
               JSON.stringify(lines) ===
               JSON.stringify([`- path: ${envPath}`, 'format: raw', ...(envPath === '../.env.sandbox' ? ['required: false'] : [])]),
-          ).length === 1,
+          ).length === (envPath === '../.env' ? 2 : 1),
       ) &&
       (composeSrc.match(/^ +required: false$/gm) ?? []).length === 1,
     envBlocks.map((m) => m[0]).join(' / '),
@@ -3938,8 +3938,8 @@ await t.close();
   const appImages = composeSrc.match(/^ +image: .*APP_IMAGE.*$/gm) ?? [];
   const defaultImage = ['image: $', '{APP_IMAGE:-$', '{APP_CONTAINER:-wecom-sales-agent}:current}'].join('');
   check(
-    'compose：四个用应用镜像的服务缺省都取 <容器名>:current，不再要求 APP_IMAGE',
-    appImages.length === 4 && appImages.every((l) => l.trim() === defaultImage),
+    'compose：五个用应用镜像的服务缺省都取 <容器名>:current，不再要求 APP_IMAGE',
+    appImages.length === 5 && appImages.every((l) => l.trim() === defaultImage),
     appImages.join(' / '),
   );
   // :current 要一直是 app 容器在用的镜像：部署成功是新镜像，自动回滚后是 :prev（:latest 那时是没起来的坏镜像）
