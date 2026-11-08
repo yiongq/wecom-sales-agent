@@ -45,7 +45,7 @@ import { retentionPurgeSpec, runRetentionPurgeJob, setRunningJobChecker } from '
 
 const tenantState = scopedState(() => ({
   initialized: false,
-  mine: new Map<string, { job: JobRow; phase: Phase }>(),
+  mine: new Map<string, ClaimedJob>(),
   recovered: false,
   recovering: null as Promise<boolean> | null,
   laneTasks: new Map<string, Promise<number>>(),
@@ -168,6 +168,12 @@ const handlers: Record<JobKind, JobHandler> = {
 
 /** 本进程认领了、还没写下结果的任务：claimed（排着没开始）、started（执行中）、sending（跟进已进 sending）、settling（结果在写） */
 type Phase = 'claimed' | 'started' | 'sending' | 'settling' | 'lease_interrupted';
+interface ClaimedJob {
+  job: JobRow;
+  phase: Phase;
+  /** 同一次认领的归还只启动一次；并发、晚到的回调和停机共享结果（含失败）。 */
+  unsentReturn?: Promise<void>;
+}
 
 let started = false;
 let stopping = false;
@@ -277,7 +283,7 @@ async function runClaimed(job: JobRow, now: number): Promise<void> {
         ? {
             onLeaseUnavailable: () => {
               slot.phase = 'lease_interrupted';
-              return returnUnsentNotification(job);
+              return returnUnsentNotification(slot);
             },
           }
         : {}),
@@ -288,10 +294,10 @@ async function runClaimed(job: JobRow, now: number): Promise<void> {
         slot.phase = 'lease_interrupted';
         // 这里只归还确定未发出的本次认领，不能经已经 stale 的会话写栅栏；CAS 防止覆盖新主认领。
         try {
-          await returnUnsentNotification(job);
+          await returnUnsentNotification(slot);
           own.mine.delete(job.id);
         } catch {
-          /* 元数据归还仍失败，保留 mine，由停机再试。 */
+          /* 同次归还失败不再重做，留给启动恢复。 */
         }
       }
       return;
@@ -304,16 +310,18 @@ async function runClaimed(job: JobRow, now: number): Promise<void> {
   await settleOrQueue(job, out);
 }
 
-async function returnUnsentNotification(job: JobRow): Promise<void> {
-  const { deps, tenantId } = configRuntime();
-  try {
-    await withTenant(deps.db, { tenantId, actor: { kind: 'system', userId: null, name: null, ip: null } }, (tx) =>
-      requeueUnsentNotification(tx, job),
-    );
-  } catch (error) {
-    console.error(`[jobs] 未发送通知归还失败（${errName(error)}），不计发送失败`);
-    throw new ProcessLeaseUnavailable();
-  }
+function returnUnsentNotification(slot: ClaimedJob): Promise<void> {
+  return (slot.unsentReturn ??= (async () => {
+    const { deps, tenantId } = configRuntime();
+    try {
+      await withTenant(deps.db, { tenantId, actor: { kind: 'system', userId: null, name: null, ip: null } }, (tx) =>
+        requeueUnsentNotification(tx, slot.job),
+      );
+    } catch (error) {
+      console.error(`[jobs] 未发送通知归还失败（${errName(error)}），不计发送失败`);
+      throw new ProcessLeaseUnavailable();
+    }
+  })());
 }
 
 /** 写下结果；没写进去（库抖动、语句超时）就进待补队列，下一拍补写（任务留在 running，本进程不会再认领它） */
@@ -435,12 +443,13 @@ async function tickLane(lane: Lane, now: number): Promise<number> {
       logThrottled(`[jobs] 租户锁不在本进程手里，这一批还没开始的 ${claimed.length - i} 个放回 pending`);
       for (const rest of claimed.slice(i)) {
         if (processLeaseEnabled() && rest.kind === 'handoff_notify') {
-          own.mine.get(rest.id)!.phase = 'lease_interrupted';
+          const slot = own.mine.get(rest.id)!;
+          slot.phase = 'lease_interrupted';
           try {
-            await returnUnsentNotification(rest);
+            await returnUnsentNotification(slot);
             own.mine.delete(rest.id);
           } catch {
-            /* 保留认领，停机时再归还；不能让 stale 的结果写队列吞掉未发送凭据。 */
+            /* 同次归还失败不再重做，留给启动恢复。 */
           }
         } else await settleOrQueue(rest, { status: 'pending', runAt: rest.runAt.getTime() });
       }
@@ -516,7 +525,7 @@ async function stopJobs(): Promise<void> {
   for (const [id, slot] of own.mine) {
     if (slot.job.kind !== 'handoff_notify' || (slot.phase !== 'lease_interrupted' && slot.phase !== 'claimed')) continue;
     try {
-      await returnUnsentNotification(slot.job);
+      await returnUnsentNotification(slot);
       own.mine.delete(id);
     } catch {
       /* 日志已记录；停机总截止仍由 shutdown 控制。 */

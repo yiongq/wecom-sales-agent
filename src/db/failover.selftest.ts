@@ -199,6 +199,54 @@ if (!process.env.PG_TEST_URL) {
       await jobRepo.setJobStatus(tx, id!, 'cancelled');
     });
     console.log('FAILOVER PASS 通知未发送归还 / 最后一次重试恢复 / 旧认领不能覆盖新主');
+    // A 归还后 B 再认领并中断：归位必须保留 B 的令牌，A 的晚到归还不能撤销 B 的扣数。
+    for (const [attempts, secondAt] of [
+      [0, 2000],
+      [0, 1000], // 同毫秒重新认领
+      [3, 999], // 时钟回拨，且 B 的这一次已经用完重试
+    ] as const) {
+      await withTenant(appDb.db, ctx(fx.tenantId), async (tx) => {
+        const id = await jobRepo.enqueueJob(tx, {
+          kind: 'handoff_notify',
+          dedupeKey: `r3-unsent-aba-${attempts}-${secondAt}`,
+          runAt: new Date(0),
+          maxAttempts: 4,
+          payload: { sessionId: 'wecom:wmJobs' },
+        });
+        await jobRepo.setJobStatus(tx, id!, 'pending', { attemptsDelta: attempts });
+        const [a] = await jobRepo.claimDueJobs(tx, new Date(1000), 1, ['handoff_notify']);
+        assert.equal(await jobRepo.requeueUnsentNotification(tx, a!), true);
+        const [b] = await jobRepo.claimDueJobs(tx, new Date(secondAt), 1, ['handoff_notify']);
+        assert.ok(b!.claimedAt!.getTime() > a!.claimedAt!.getTime(), '每次通知认领的令牌必须不同');
+        await jobRepo.recoverJobsAtStartup(tx);
+        assert.equal(await jobRepo.requeueUnsentNotification(tx, a!), false, 'A 第二次归还不能撤销 B 的中断扣数');
+        const [row] = rowsOf<{ status: string; attempts: number; claimed_at: Date }>(
+          await tx.execute(sql`select status, attempts, claimed_at from jobs where id=${id}::uuid`),
+        );
+        assert.equal(row!.status, attempts === 3 ? 'failed' : 'pending');
+        assert.equal(row!.attempts, attempts + 1, 'B 可能已发送的那次扣数必须保留');
+        assert.equal(new Date(row!.claimed_at).getTime(), b!.claimedAt!.getTime());
+        await jobRepo.setJobStatus(tx, id!, 'cancelled');
+      });
+    }
+    await withTenant(appDb.db, ctx(fx.tenantId), async (tx) => {
+      for (const kind of ['followup', 'retention_purge', 'ops_daily_digest'] as const) {
+        const id = await jobRepo.enqueueJob(tx, {
+          kind,
+          dedupeKey: `r3-recovery-unchanged-${kind}`,
+          runAt: new Date(0),
+          maxAttempts: 4,
+          payload: {},
+        });
+        await jobRepo.claimDueJobs(tx, new Date(1000), 1, [kind]);
+        await jobRepo.recoverJobsAtStartup(tx);
+        assert.deepEqual(rowsOf(await tx.execute(sql`select status, attempts, claimed_at from jobs where id=${id}::uuid`)), [
+          { status: 'pending', attempts: kind === 'retention_purge' ? 1 : 0, claimed_at: null },
+        ]);
+        await jobRepo.setJobStatus(tx, id!, 'cancelled');
+      }
+    });
+    console.log('FAILOVER PASS A/B 归还竞争 / 同毫秒与时钟回拨不复用令牌 / B 扣数保留 / 其他任务归位不变');
 
     // 等待全部锁时不留住部分锁；释放阻塞者后迅速取得整组。
     const blocker = await holdTenantLocks(fx.urls.app, [other!.id]);

@@ -258,8 +258,16 @@ if (mode === 'boot' || mode === 'boot-spill' || mode === 'boot-spill-fail') {
         const gate = new Promise<void>((resolve) => {
           release = resolve;
         });
+        let returnAgain!: () => Promise<void>;
+        let returnQueries = 0;
+        const logQuery = client.countingLogger.logQuery;
+        client.countingLogger.logQuery = (sql, params) => {
+          if (sql.includes("last_error='process_lease_interrupted'")) returnQueries++;
+          logQuery(sql, params);
+        };
         const original = jobs.__jobsTest.setHandler('handoff_notify', async (job, now, context) => {
           if (job.id !== id) return original(job, now, context);
+          returnAgain = context.onLeaseUnavailable!;
           await lose();
           try {
             return await original(job, now, context);
@@ -289,6 +297,9 @@ if (mode === 'boot' || mode === 'boot-spill' || mode === 'boot-spill-fail') {
         release();
         await running;
         await jobs.__jobsTest.stop();
+        await Promise.all([returnAgain(), returnAgain()]); // 已结束认领的晚到回调仍复用同一次归还。
+        client.countingLogger.logQuery = logQuery;
+        assert.equal(returnQueries, 2, '执行中与排队通知各归还一次，回调、catch、停机及晚到调用不能重复归还');
         assert.equal(notifications, 0);
         for (const jobId of [id, queued])
           assert.deepEqual(await query.query('select status,attempts,last_error from jobs where id=$1', [jobId]), [
