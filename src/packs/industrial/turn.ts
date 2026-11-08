@@ -138,11 +138,25 @@ function changedQty(text: string): number | null {
   const quantities = new Set([...compact.matchAll(QTY_TOKEN)].map((m) => Number(m[1])));
   return quantities.size === 1 ? [...quantities][0]! : null;
 }
+/** 上一句客户只写了一个精确型号、没给数量时的那个型号；当前这句已记进会话时跳过它。 */
+function previousSinglePart(ctx: TurnContext, sources: PackSources) {
+  const said = ctx.session.messages.filter((message) => message.role === 'customer');
+  const previous = said.at(-1)?.content === ctx.text ? said.at(-2) : said.at(-1);
+  const mentions = previous ? mentionedParts(previous.content, sources) : [];
+  const only = mentions.length === 1 ? mentions[0]! : null;
+  return only?.match === 'exact' && only.qty === undefined ? only.parts[0]! : null;
+}
 /** 单行询价只改数量：这句没写型号，模型常常不调工具自己乘，金额被护栏删掉后客户拿不到价格，由引擎按新数量替算。 */
 async function requantify(ctx: TurnContext, sources: PackSources): Promise<PrefetchResult | null> {
   const qty = changedQty(ctx.text);
   if (!qty || pendingIntake(ctx.session)) return null;
   const candidate = latestQuoteCandidate(ctx.session, Date.now());
+  // 还没试算过：上一句只报了一个型号、这句只给数量（第 6 次 main 的 j-rejection-01「先按6件来试算」），
+  // 模型写了试算占位符却没调工具，客户拿不到价，也由引擎替算。
+  if (!candidate) {
+    const part = previousSinglePart(ctx, sources);
+    return part ? { calls: [await ctx.callTool('quote_items', { items: [{ query: part.partNo, qty }] })], timings: [] } : null;
+  }
   const lines = !candidate ? [] : candidate.kind === 'draft' ? candidate.draft.lines : candidate.order.lines;
   const line = lines.length === 1 ? lines[0]! : null;
   if (!line || !('code' in line) || line.qty === qty) return null;

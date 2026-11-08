@@ -3953,7 +3953,7 @@
           "stage": "quote",
           "text": {
             "head": "试算：\n6205-2RS × 2：单价10.00元，小计20.00元；现货，以顾",
-            "sha256": "f8335347e26eb7fa194835f5d98bdd7a0a86e5a5b691c4c7e54a5d4b34156241"
+            "sha256": "cc253ee03c9efde115d56bc3130245b8de63abf053e908dd007484b0996ab2f4"
           },
           "tools": ["quote_items"]
         }
@@ -4033,7 +4033,7 @@
           "stage": "quote",
           "text": {
             "head": "试算：\n6205-ZZ × 2：单价12.00元，小计24.00元；约 7 天，",
-            "sha256": "7cdde26c7c116ee832d7d6fdf21e999f9e20b179668b5c9fa3692ce2a5736fdb"
+            "sha256": "e6220ea8607cb63c5c88d4f167b59876579da94d1eff7a6073d15d0c521b6883"
           },
           "tools": ["quote_items"]
         }
@@ -4323,7 +4323,7 @@
           "stage": "quote",
           "text": {
             "head": "试算：\n6205-2RS × 20：单价9.00元，小计180.00元；现货，以",
-            "sha256": "d9472546deec04ddcaa8f4061d87544536872d4131972fd6e174ac88dc9e75a2"
+            "sha256": "2d226198caf3ddb1b5f073831874789256c34a395ad00fe63f1feab97596d8d2"
           },
           "tools": ["quote_items"]
         }
@@ -4343,7 +4343,7 @@
           "stage": "quote",
           "text": {
             "head": "试算：\n6205-2RS × 19：单价10.00元，小计190.00元；现货，",
-            "sha256": "5d829633a89d75e708ff0ca4fbec76e39f09ebe69d62ef26ad1ad6cea83245d8"
+            "sha256": "af8b08cf758835c5901a768a507039db29fb487bf75bd33e4a2f7907e546a3c6"
           },
           "tools": ["quote_items"]
         }
@@ -4363,7 +4363,7 @@
           "stage": "quote",
           "text": {
             "head": "试算：\n6205-2RS × 100：单价8.00元，小计800.00元；现货 ",
-            "sha256": "d741eb2cadacafa17d58c1ec5e8b7a1a675d9e0280d21d8834c9cd9f7e171419"
+            "sha256": "4bcd2964ec9b4dffdbac322327736470920524476beed591061125e9e9243747"
           },
           "tools": ["quote_items"]
         }
@@ -4383,7 +4383,7 @@
           "stage": "quote",
           "text": {
             "head": "试算：\n6205-2RS × 99：单价9.00元，小计891.00元；现货 3",
-            "sha256": "7ef9990e43dd1a1050fb9dbe4afcf1e94b730f6c6c59c8843e525862e0065b79"
+            "sha256": "c315a901eaee2bb6478a634308bc76545c919dea968da7b43257c3b909cfc1be"
           },
           "tools": ["quote_items"]
         }
@@ -4403,7 +4403,7 @@
           "stage": "quote",
           "text": {
             "head": "试算：\n6205-2RS × 200：单价7.00元，小计1400.00元；现货",
-            "sha256": "e243aaa501dfb06415f989c8660c1fd0e96a0df4c903084d2ea2eb39a1e7ca71"
+            "sha256": "f26aaddb97945769d1119117d042bfc113e6fe7169324da23e774e8a01b63b7d"
           },
           "tools": ["quote_items"]
         }
@@ -4423,7 +4423,7 @@
           "stage": "quote",
           "text": {
             "head": "试算：\n6205-2RS × 199：单价8.00元，小计1592.00元；现货",
-            "sha256": "3d21d343e733fdbc7242196b1396b06a9d3fc56833f11c895609d9b76a6469d4"
+            "sha256": "c5077f47563a1e32be05118c9bcdbc552a9ca9617984b38e49babbdc6c8dd2c9"
           },
           "tools": ["quote_items"]
         }
@@ -4703,7 +4703,7 @@
           "stage": "quote",
           "text": {
             "head": "试算：\n6210-2RS × 40：单价16.25元，小计650.00元；现货 ",
-            "sha256": "441562c9f24dde718d6a04925649c20b64e32458becea6f150630020e8aee1ba"
+            "sha256": "28cd7d111645f61f3afe5d9f1c18e3e9ce5f4ed0a5805b2e7a0804138a45cc95"
           },
           "tools": ["quote_items"]
         }
@@ -4738,7 +4738,7 @@
           "stage": "quote",
           "text": {
             "head": "试算：\n6210-2RS × 40：单价16.25元，小计650.00元；现货 ",
-            "sha256": "441562c9f24dde718d6a04925649c20b64e32458becea6f150630020e8aee1ba"
+            "sha256": "28cd7d111645f61f3afe5d9f1c18e3e9ce5f4ed0a5805b2e7a0804138a45cc95"
           },
           "tools": ["quote_items"]
         }
@@ -4828,7 +4828,7 @@
           "stage": "quote",
           "text": {
             "head": "试算：\n6207-2RS × 20：单价13.14元，小计262.80元；现货 ",
-            "sha256": "22973f64e51ad2fa955f98c07b46fb259ceb0fbd36a1277714f5870dcb65a8fe"
+            "sha256": "be3890b5830efa2fd2833f2201b52c51c5f6273914aab220b495d7b2380f466e"
           },
           "tools": ["quote_items"]
         }
@@ -4878,7 +4878,7 @@
           "stage": "quote",
           "text": {
             "head": "试算：\n6208-2RS × 100：单价12.60元，小计1260.00元；现",
-            "sha256": "210dd2fea87d55574b75cad87c84050677fcb83302fb3658c52911e3e04a4496"
+            "sha256": "9a0b901de50305a6749ed4fb519273f60c6dc124221edc2e1db4e4f339d9ac30"
           },
           "tools": ["quote_items"]
         }
@@ -5023,7 +5023,7 @@
           "stage": "quote",
           "text": {
             "head": "试算：\n6206-2RS × 5：单价13.45元，小计67.25元；约 8 天",
-            "sha256": "6a93beadc4ccddbd64bed6ec7ccc117140a0c7bd0eea07f9aacf926e9e678f10"
+            "sha256": "b42b99f04bc66e30502cff0916a815af229227e09f3ba986db7a6218a5429197"
           },
           "tools": ["quote_items"]
         },

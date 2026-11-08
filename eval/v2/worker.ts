@@ -110,7 +110,9 @@ async function executeCaseInScope(c: CaseV2, varDir: string, prepareDb: PrepareD
     const { createQuote } = await import('../../src/tools.js');
     const sid = `eval:v2-${c.id}`;
     const session = store.getOrCreateSession(sid, 'simulator');
-    Object.assign(session, structuredClone(c.fixtures?.session), { id: sid, channel: 'simulator' });
+    // 消息等订单号解析完再放：pglite 严格模式下建夹具订单时会落库，消息先分到序号，之后整体换数组会被判成「换成了副本」。
+    const { messages: _messages, ...beforeOrders } = structuredClone(c.fixtures?.session) ?? {};
+    Object.assign(session, beforeOrders, { id: sid, channel: 'simulator' });
     // 夹具订单共用同一个 createdAt：listOrders 按 createdAt 倒序，跨毫秒创建时「最后一张」会随机变，快照不稳
     const fixtureCreatedAt = Date.now();
     if (isPackCase(c)) {

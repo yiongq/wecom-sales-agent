@@ -194,6 +194,24 @@ export function promote(journal: Journal, review: TriageVerdict[], id: string, c
   for (const run of journal.runs) visit(run);
   if (matches.length !== 1) throw new Error('找不到唯一候选：id 不存在、检测未命中或 replaced 证据有歧义');
   const { turn, detector, evidence } = matches[0]!;
+  return turnCase(journal, turn, { id: caseId, desc: `仿真回归：${detector}（候选 ${id}）`, tags: ['q18', 'industrial', detector] }, () => {
+    const expect = assertions(detector, turn, catalog, evidence);
+    if (
+      !expect.replyMatches?.some((pattern) => !new RegExp(pattern, 'm').test(turn.reply)) &&
+      !expect.replyExcludes?.some((pattern) => new RegExp(pattern, 'm').test(turn.reply))
+    )
+      throw new Error(`${detector} 无法生成断言：当前证据未被规则覆盖，请手写用例`);
+    return expect;
+  });
+}
+
+/** 用 journal 里某一轮的轮前会话、订单和模型原稿生成 v2 用例；断言由调用方给（检测器规则或手写）。 */
+export function turnCase(
+  journal: Journal,
+  turn: SimTurn,
+  meta: { id: string; desc: string; tags: string[] },
+  expectFor: () => CaseV2['turns'][number]['expect'],
+): CaseV2 {
   if (!turn.sessionBefore) throw new Error('旧 journal 只能手写用例：缺少 sessionBefore');
   const before = turn.sessionBefore;
   const allIds = new Set(journal.runs.flatMap((r) => [...r.initial.orders, ...r.turns.flatMap((t) => t.state.orders)].map((o) => o.id)));
@@ -236,17 +254,12 @@ export function promote(journal: Journal, review: TriageVerdict[], id: string, c
     };
   });
   const { id: _sid, channel: _channel, ...session } = before.session;
-  const expect = assertions(detector, turn, catalog, evidence);
-  if (
-    !expect.replyMatches?.some((pattern) => !new RegExp(pattern, 'm').test(turn.reply)) &&
-    !expect.replyExcludes?.some((pattern) => new RegExp(pattern, 'm').test(turn.reply))
-  )
-    throw new Error(`${detector} 无法生成断言：当前证据未被规则覆盖，请手写用例`);
+  const expect = expectFor();
   const generated = {
     version: 2,
-    id: caseId,
-    desc: `仿真回归：${detector}（候选 ${id}）`,
-    tags: ['q18', 'industrial', detector],
+    id: meta.id,
+    desc: meta.desc,
+    tags: meta.tags,
     pack: 'industrial',
     fixtures: {
       now: new Date(turn.trace.turn.startedAt).toISOString(),

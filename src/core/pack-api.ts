@@ -604,6 +604,14 @@ export interface ReplyBlocks {
   names: readonly string[];
   autoAppend: readonly string[];
   render(ctx: ReplyGuardContext): Readonly<Record<string, string | null>>;
+  /** 正文没有可读内容、只剩块时补在块后的下一步；placed 是本轮实际放置的块名，返回 null 不补。 */
+  nextStep?(ctx: ReplyGuardContext, placed: readonly string[]): string | null;
+}
+
+/** 同名占位符写了多处时的分行：每行带归属键（如型号），after 跟在最后放出的那一行之后（如裁剪说明）。 */
+export interface ReplyBlockRows {
+  rows: readonly { key: string; text: string }[];
+  after: readonly string[];
 }
 
 export interface TurnBlocks {
@@ -620,6 +628,9 @@ export interface ReplyBlockState {
   originalTokens: readonly string[];
   autoAppend: readonly string[];
   trimmedRows: Record<string, number>;
+  /** render 写入；没有分行的块写了多处时只放第一处。 */
+  rows: Record<string, ReplyBlockRows>;
+  nextStep?: (placed: readonly string[]) => string | null;
   trace: TurnBlocks;
 }
 

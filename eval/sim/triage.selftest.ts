@@ -118,6 +118,26 @@ try {
   expect('price_withheld', true, run(turn('满160元包邮，运费8元。', undefined, [quote()])), '政策金额即使等于商品价也不算');
   expect('price_withheld', true, run(turn('TEST-B 单价8元。', undefined, [quote()])), '另一个型号的金额不算');
   expect('price_withheld', true, run(turn('请稍候。', 'TEST-A 20件多少钱？', [quote()])), '型号与数量用空格分隔');
+  const unpriced = turn('好的，先给您试算。\n价格就按以上档位。', '先按20件来试算。');
+  unpriced.trace.turn.draft = '好的，先给您试算。\n{{试算明细}}\n价格就按以上档位。';
+  unpriced.trace.turn.blocks = {
+    rendered: [],
+    suppressed: false,
+    droppedTokens: 1,
+    bareItemAmounts: 0,
+    finalShape: { lines: 2, chars: 20 },
+  };
+  expect('price_withheld', true, run(unpriced), '18 写了价格占位符却没有数据');
+  const placed = turn('试算：\nTEST-A × 20：单价8.00元，小计160.00元', 'TEST-A 要20件，帮我试算价格。', [quote()]);
+  placed.trace.turn.draft = '{{试算明细}}';
+  placed.trace.turn.blocks = {
+    rendered: [{ name: '试算明细', placed: 'inline', rows: 2, trimmedRows: 0 }],
+    suppressed: false,
+    droppedTokens: 0,
+    bareItemAmounts: 0,
+    finalShape: { lines: 2, chars: 30 },
+  };
+  expect('price_withheld', false, run(placed), '18 占位符有数据且已放置');
   expect('price_withheld', false, run(turn('请稍候。', 'TEST-A20 要20件多少钱？', [quote()])), '不能匹配较长的未知型号');
   expect('price_withheld', false, run(turn('TEST-A 单价8元，小计160元。', undefined, [quote()])), '单价可见');
   expect('price_withheld', false, run(turn('TEST-A\n单价 8，小计 160', undefined, [quote()])), '跨行无单位金额可见');

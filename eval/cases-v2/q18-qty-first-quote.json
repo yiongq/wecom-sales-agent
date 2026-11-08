@@ -1,0 +1,74 @@
+{
+  "version": 2,
+  "id": "q18-qty-first-quote",
+  "desc": "仿真回归：第 6 次 main 上一句只报型号、这句只给数量，模型写了占位符却没调试算，引擎替算（手写断言）",
+  "tags": ["q18", "industrial"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:26:11.881Z",
+    "session": {
+      "stage": "discovery",
+      "messages": [
+        {
+          "role": "customer",
+          "content": "HS-K07-24 有一批采购要走正式报价。",
+          "at": 1791606368091
+        },
+        {
+          "role": "agent",
+          "content": "查到了：HS-K07-24 控制继电器（线圈DC24V，额定电流9A，IP20），有现货。请告知采购数量，我按档位给您试算。",
+          "at": 1791606369883
+        }
+      ],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 1791606368091,
+      "updatedAt": 1791606369883,
+      "profile": {},
+      "packState": {
+        "partsInPlay": [
+          {
+            "partNo": "HS-K07-24",
+            "specs": ["线圈DC24V", "额定电流9A", "防护IP20"]
+          }
+        ]
+      },
+      "moneyLedger": [
+        {
+          "fen": 3185,
+          "label": "档位单价",
+          "subject": "HSK0724"
+        },
+        {
+          "fen": 2867,
+          "label": "档位单价",
+          "subject": "HSK0724"
+        },
+        {
+          "fen": 2548,
+          "label": "档位单价",
+          "subject": "HSK0724"
+        },
+        {
+          "fen": 2229,
+          "label": "档位单价",
+          "subject": "HSK0724"
+        }
+      ]
+    },
+    "orders": []
+  },
+  "turns": [
+    {
+      "say": "先按6件来试算。这是合成测试设备的备料，后面需要走正式报价流程。",
+      "script": [
+        {
+          "content": "好的，6件 HS-K07-24，先给您试算。\n\n{{试算明细}}\n\n价格就按以上档位，确认数量没问题的话我就起草正式报价单，提交后由顾问审核。"
+        }
+      ],
+      "expect": {
+        "replyMatches": ["HS-K07-24 × 6：单价31\\.85元，小计191\\.10元"]
+      }
+    }
+  ]
+}

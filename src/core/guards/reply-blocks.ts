@@ -1,4 +1,4 @@
-import type { GuardStep, ReplyBlocks, ReplyGuardContext, TurnBlocks, ShapePolicy } from '../pack-api.js';
+import type { GuardStep, ReplyBlockRows, ReplyBlocks, ReplyGuardContext, TurnBlocks, ShapePolicy } from '../pack-api.js';
 import { trimDangling } from './text.js';
 import { sentenceUnits } from '../parse/sentences.js';
 import { replyCharCount, replyLineCount } from './shape.js';
@@ -56,24 +56,72 @@ function withoutItemAmounts(body: string): string {
     .join('');
 }
 
+/**
+ * 同名占位符写了多处（模型每查一个型号写一处，第 6 次 main 的 j-standard-04）：每行放到正文最后一次提到它、
+ * 且后面还有这个占位符的那一处，对不上的行放最后一处。一行都对不上时返回 null，照旧整块放第一处。
+ */
+function splitRows(body: string, name: string, split: ReplyBlockRows | undefined): string[] | null {
+  const token = `{{${name}}}`;
+  const at: number[] = [];
+  for (let i = body.indexOf(token); i >= 0; i = body.indexOf(token, i + token.length)) at.push(i);
+  if (at.length < 2 || !split?.rows.length) return null;
+  const slots: string[][] = at.map(() => []);
+  const loose: string[] = [];
+  for (const row of split.rows) {
+    let target = -1;
+    if (row.key)
+      for (let i = body.indexOf(row.key); i >= 0; i = body.indexOf(row.key, i + row.key.length)) {
+        const next = at.findIndex((position) => position > i);
+        if (next >= 0) target = next;
+      }
+    (target >= 0 ? slots[target]! : loose).push(row.text);
+  }
+  if (loose.length === split.rows.length) return null;
+  slots.at(-1)!.push(...loose);
+  slots[slots.findLastIndex((slot) => slot.length)]!.push(...split.after);
+  return slots.map((slot) => slot.join('\n'));
+}
+
 function place(ctx: ReplyGuardContext, body: string, trace?: TurnBlocks): string {
   const state = ctx.replyBlocks;
   if (!state) return body;
   const selected = placements(ctx, body);
-  const seen = new Set<string>();
+  const split = new Map<string, string[]>();
+  for (const [name, placed] of selected.blocks) {
+    const slots = placed === 'inline' ? splitRows(selected.body, name, state.rows[name]) : null;
+    if (slots) split.set(name, slots);
+  }
+  const seen = new Map<string, number>();
+  const placedNames = new Set<string>();
   const ownsAmounts = selected.blocks.has('试算明细');
+  // 模型没给可用正文时正文是代码兜底句；有块可放就不留兜底句，由包补下一步（第 6 次 main 的 j-list-02 答非所问）。
+  const fallback = ctx.turn.flags.emptyModelReply && selected.blocks.size ? ctx.fallbackReply(ctx.session.stage).trim() : null;
+  let hasProse = false;
   let text = selected.body
     .split('\n')
     .map((line) => {
       const inline: string[] = [];
       // 先取出这一行的标记，再处理正文，块始终放在整行之后。
       let prose = line.replace(/\{\{([^{}]+)\}\}/g, (_token, name: string) => {
-        if (selected.blocks.get(name) === 'inline' && !seen.has(name)) {
-          seen.add(name);
-          inline.push(name);
+        if (selected.blocks.get(name) !== 'inline') return '';
+        const index = seen.get(name) ?? 0;
+        seen.set(name, index + 1);
+        const slots = split.get(name);
+        const value = slots ? slots[index]! : index === 0 ? state.texts[name]! : '';
+        if (index === 0)
+          trace?.rendered.push({
+            name,
+            placed: 'inline',
+            rows: replyLineCount(slots ? slots.filter(Boolean).join('\n') : value),
+            trimmedRows: state.trimmedRows[name] ?? 0,
+          });
+        if (value) {
+          inline.push(value);
+          placedNames.add(name);
         }
         return '';
       });
+      if (fallback && prose.trim() === fallback) prose = '';
       if (ownsAmounts) prose = withoutItemAmounts(prose);
       if (inline.length) {
         // 去掉标记后留下的价格引子没有可读内容；正常说明句照常保留。
@@ -86,16 +134,8 @@ function place(ctx: ReplyGuardContext, body: string, trace?: TurnBlocks): string
         const trimmed = trimDangling(prose);
         prose = /(?:[:：，,、]|为|单价|小计|合计|总价|金额)\s*$/.test(trimmed) ? '' : trimmed;
       }
-      return [
-        prose.trim(),
-        ...inline.map((name) => {
-          const value = state.texts[name]!;
-          trace?.rendered.push({ name, placed: 'inline', rows: replyLineCount(value), trimmedRows: state.trimmedRows[name] ?? 0 });
-          return value;
-        }),
-      ]
-        .filter(Boolean)
-        .join('\n');
+      if (prose.trim()) hasProse = true;
+      return [prose.trim(), ...inline].filter(Boolean).join('\n');
     })
     .join('\n');
   // 正文开头的金额句被删后，剩下的第一句不能以连接词开头（开发集定向复跑查出「另外满100件…」）。
@@ -104,8 +144,12 @@ function place(ctx: ReplyGuardContext, body: string, trace?: TurnBlocks): string
     if (placed !== 'appended') continue;
     const value = state.texts[name]!;
     text = [text.trim(), value].filter(Boolean).join('\n');
+    placedNames.add(name);
     trace?.rendered.push({ name, placed, rows: replyLineCount(value), trimmedRows: state.trimmedRows[name] ?? 0 });
   }
+  // 正文删空或模型只写了占位符：块后补下一步，客户不会只收到一串价格（第 6 次 main 的 j-tier-01）。
+  const next = !hasProse && placedNames.size ? state.nextStep?.([...placedNames]) : null;
+  if (next) text = [text.trim(), next].join('\n');
   return text.replace(/\n(?:[ \t]*\n)+/g, '\n').trim();
 }
 
@@ -133,6 +177,8 @@ export function replyBlockSteps(blocks: ReplyBlocks): GuardStep<ReplyGuardContex
           originalTokens: tokens(ctx.raw),
           autoAppend: blocks.autoAppend,
           trimmedRows: {},
+          rows: {},
+          ...(blocks.nextStep ? { nextStep: (placed: readonly string[]) => blocks.nextStep!(ctx, placed) } : {}),
           trace: { rendered: [], suppressed: false, droppedTokens: 0, bareItemAmounts: 0, finalShape: shape('') },
         };
         const values = blocks.render(ctx);
@@ -149,7 +195,7 @@ export function replyBlockSteps(blocks: ReplyBlocks): GuardStep<ReplyGuardContex
     {
       id: 'reply_blocks:place',
       after: ['rfq_trim', 'reply_blocks:render'],
-      reads: ['blocksSuppressed'],
+      reads: ['blocksSuppressed', 'emptyModelReply'],
       run(ctx) {
         const trace = ctx.replyBlocks!.trace;
         trace.suppressed = !!ctx.turn.flags.blocksSuppressed;
