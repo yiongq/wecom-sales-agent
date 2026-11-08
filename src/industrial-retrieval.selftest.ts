@@ -30,6 +30,34 @@ for (const p of demo) {
     assert.deepEqual(await hybrid(q), await legacy(q), q);
 }
 assert.equal(embeddings, 0, '精确/别名/去汉字/前缀不调embedding');
+for (const query of [
+  'M10×30 六角螺栓 8.8级',
+  '六角螺栓 M10 x 30 强度8.8级 件',
+  'HS-BOLT02 六角螺栓 螺纹M10 长度30mm 8.8级',
+  '密封深沟球轴承 6205 2rs 内径25mm 外径52mm pcs',
+]) {
+  const found = await hybrid(query);
+  assert.equal(found.match, 'exact', query);
+  assert.equal(found.parts[0]!.partNo, query.includes('6205') ? '6205-2RS' : 'M10×30', query);
+  assert.deepEqual(found, matchInMemory(query, demo));
+}
+assert.equal(embeddings, 0, '名称和规格均吻合的精确型号不调embedding');
+assert.equal(matchInMemory(demo[0]!.name, [{ ...demo[0]!, aliases: ['---'] }]).match, 'none', '归一为空的别名不能让纯品名冒充精确型号');
+for (const query of [
+  'M10×30 六角螺栓 12.9级',
+  'M10×30 六角螺栓 长度40mm',
+  'M10×30 M8×30 六角螺栓 8.8级',
+  'HS-BOLT02 HS-BOLT8 六角螺栓',
+  'M10×30 六角螺栓 8.8级 120件',
+  'M10×300 六角螺栓 8.8级',
+  'XM10×30 六角螺栓 8.8级',
+  'M10×30 气动阀 8.8级',
+]) {
+  assert.notEqual(matchInMemory(query, demo).match, 'exact', query);
+  assert.notEqual((await hybrid(query)).match, 'exact', query);
+}
+assert.equal((await hybrid('M10×30 六角螺栓 8.8级', '轴承')).match, 'none', '显式类目仍约束精确匹配');
+embeddings = 0;
 assert.deepEqual(await hybrid('6205'), matchInMemory('6205', demo));
 assert.equal((await hybrid('ZZZ999999QQ')).match, 'none');
 assert.equal(embeddings, 0, '无规格字面支持的纯型号直接拒绝');

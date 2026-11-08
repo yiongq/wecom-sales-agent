@@ -1,0 +1,92 @@
+{
+  "version": 2,
+  "id": "q18-qty-chinese",
+  "desc": "第8次main j-writing-04#1第2轮原稿：中文数量接续精确型号，查询附带名称及规格仍能正确试算",
+  "tags": ["q18", "industrial"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:37:01.516Z",
+    "session": {
+      "stage": "discovery",
+      "messages": [
+        {
+          "role": "customer",
+          "content": "螺栓记的是 m10 x 30，按这个帮我找找。",
+          "at": 1791607018623
+        },
+        {
+          "role": "agent",
+          "content": "查到了：M10×30 六角螺栓，8.8级，库存现货，交期约5天，起订10件。\n请告诉我需要多少数量，我帮您试算价格。",
+          "at": 1791607020063
+        }
+      ],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 1791607018622,
+      "updatedAt": 1791607020063,
+      "profile": {},
+      "packState": {
+        "partsInPlay": [
+          {
+            "partNo": "M10×30",
+            "specs": ["螺纹M10", "长度30mm", "强度8.8级"]
+          }
+        ]
+      },
+      "moneyLedger": [
+        {
+          "fen": 111,
+          "label": "档位单价",
+          "subject": "M10×30"
+        },
+        {
+          "fen": 100,
+          "label": "档位单价",
+          "subject": "M10×30"
+        },
+        {
+          "fen": 89,
+          "label": "档位单价",
+          "subject": "M10×30"
+        },
+        {
+          "fen": 78,
+          "label": "档位单价",
+          "subject": "M10×30"
+        }
+      ]
+    },
+    "orders": []
+  },
+  "turns": [
+    {
+      "say": "一百二十个。",
+      "script": [
+        {
+          "toolCalls": [
+            {
+              "name": "quote_items",
+              "args": {
+                "items": [
+                  {
+                    "query": "M10×30 六角螺栓 8.8级",
+                    "qty": 120
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "content": "M10×30 有多个候选，请确认您要哪一款：\n1. M10×30 六角螺栓 8.8级\n2. M6×35\n3. M8×40\n4. M10×45\n5. M6×50\n\n确认后我马上帮您试算价格。"
+        }
+      ],
+      "expect": {
+        "replyMatches": ["M10×30 × 120：单价1\\.00元，小计120\\.00元", "合计120\\.00元"],
+        "replyExcludes": ["未找到", "暂时报不了价"],
+        "tools": ["quote_items", "quote_items"],
+        "handoff": false
+      }
+    }
+  ]
+}

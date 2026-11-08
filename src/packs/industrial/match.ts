@@ -10,6 +10,39 @@ const result = (parts: Part[], exact: boolean): PartMatch => ({
     .toSorted((a, b) => Number(b.stock > 0) - Number(a.stock > 0) || (a.partNo < b.partNo ? -1 : a.partNo > b.partNo ? 1 : 0))
     .slice(0, 5),
 });
+/** 型号外的每个字都须由该条目的名称、规格或单位解释；不能只取搜索结果第一名。 */
+function describedPart(normalized: string, parts: readonly Part[]): Part | null {
+  const mentioned = parts.filter((part) =>
+    [part.partNo, ...(part.aliases ?? [])].map(normalizePartNo).some((model) => model && normalized.includes(model)),
+  );
+  if (mentioned.length !== 1) return null;
+  const part = mentioned[0]!;
+  const words = [
+    part.partNo,
+    ...(part.aliases ?? []),
+    part.name,
+    ...part.specs,
+    // 「强度8.8级」「内径25mm」允许省略属性名，但不能拆出任意数字碎片。
+    ...part.specs.map((spec) => spec.replace(/^\p{Script=Han}+/u, '')),
+    part.unit,
+    '件',
+    '个',
+    '只',
+    '套',
+    '米',
+    '千克',
+    '盒',
+    'pcs',
+  ]
+    .map(normalizePartNo)
+    .filter(Boolean);
+  const ends = new Set([0]);
+  for (let i = 0; i < normalized.length; i++) {
+    if (!ends.has(i)) continue;
+    for (const word of words) if (normalized.startsWith(word, i)) ends.add(i + word.length);
+  }
+  return ends.has(normalized.length) ? part : null;
+}
 /** 已装载快照上的路径，不查库；语义候选不能当作精确型号。 */
 export function matchInMemory(query: string, parts: readonly Part[]): PartMatch {
   const normalized = normalizePartNo(query);
@@ -18,6 +51,8 @@ export function matchInMemory(query: string, parts: readonly Part[]): PartMatch 
   if (direct.length) return result(direct, true);
   const aliases = parts.filter((part) => part.aliases?.some((alias) => normalizePartNo(alias) === normalized));
   if (aliases.length) return result(aliases, true);
+  const described = describedPart(normalized, parts);
+  if (described) return result([described], true);
   // 品名只允许从两端去掉，且只重试全等；系列与语义回退仍用整串。
   const model = normalized.replace(/^\p{Script=Han}+|\p{Script=Han}+$/gu, '');
   if (model && model !== normalized) {

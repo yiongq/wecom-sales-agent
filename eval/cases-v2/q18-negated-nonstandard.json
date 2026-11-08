@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "id": "q18-negated-nonstandard",
+  "desc": "第8次main j-list-03#3第2轮：标准目录清单否定非标和账期，不转人工；原轮无模型请求，另补中性回复桩",
+  "tags": ["q18", "industrial"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:18:22.385Z",
+    "session": {
+      "stage": "discovery",
+      "messages": [
+        {
+          "role": "customer",
+          "content": "检修采购表一共十二行，想合并走一份报价。",
+          "at": 1791605896604
+        },
+        {
+          "role": "agent",
+          "content": "好的，可以把十二行合并走一份报价。请把清单发我：每行一个型号（或产品名称）加数量，我逐行查证后统一试算。\n提醒一下：如果单条消息超过30行，或涉及非标、来图加工、账期等情况，就需要转顾问人工核对。",
+          "at": 1791605898529
+        }
+      ],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 1791605896603,
+      "updatedAt": 1791605898529,
+      "profile": {},
+      "moneyLedger": []
+    },
+    "orders": []
+  },
+  "turns": [
+    {
+      "say": "清单如下：6205-ZZ 4件；6208-2RS 100件；6210-2RS 20件；6212-2RS 2件；M8×40 100件；M6×50 20件；M6×65 500件；HS-PV29 2件；HS-PV32 10件；HS-PV35 50件；HS-K04-24 10件；HS-K10-24 2件。都是标准目录品，没有非标和账期需求。",
+      "script": [
+        {
+          "content": "请核对型号和数量。\n{{试算明细}}"
+        }
+      ],
+      "expect": {
+        "replyMatches": ["试算：", "合计[0-9.]+元"],
+        "replyExcludes": ["非标和来图加工需要顾问确认"],
+        "tools": ["quote_items"],
+        "handoff": false
+      }
+    }
+  ]
+}

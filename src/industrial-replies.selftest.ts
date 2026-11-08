@@ -268,15 +268,43 @@ try {
   for (const [text, key] of [
     ['非标', 'nonstandard'],
     ['来图加工', 'nonstandard'],
+    ['有两件要按图加工', 'nonstandard'],
+    ['没有非标需求，但有两件要按图加工', 'nonstandard'],
+    ['不用样品，能给月结吗', 'credit'],
+    ['不需要账期。需要定制', 'nonstandard'],
+    ['不要非标和账期，需要样品', 'sample'],
+    ['不是不要样品', 'sample'],
+    ['没有现货，需要加工', 'nonstandard'],
+    ['都是标准目录品但有两件要按图加工', 'nonstandard'],
+    ['无账期要求而样品要两件', 'sample'],
     ['月结', 'credit'],
+    ['能给月结吗', 'credit'],
     ['要样品', 'sample'],
     [Array.from({ length: 31 }, (_, i) => `HS${1000 + i} 2件`).join('\n'), 'long'],
   ] as const) {
     const result = preModel(context(text), sources)!;
+    assert.ok(result, text);
     assert.equal(result.fixedId, `industrial.${key}`);
     assert.ok(result.handoff);
     assert.ok(runtime.fixedReplies!.find((fixed) => fixed.id === result.fixedId));
   }
+  for (const text of [
+    '都是标准目录品，没有非标和账期需求。',
+    '没有非标、账期或样品需求',
+    '无定制需求，无月结要求，不要样品',
+    '不需要按图加工，不涉及账期，不用样品',
+    '不是非标，是标准目录品',
+    '不用来图加工，不做改制',
+    '无需图纸，不需要额外样品',
+    '非标不需要，账期不用，样品也不要',
+    '都是标准目录品',
+  ])
+    assert.equal(preModel(context(text), sources), null, text);
+  assert.equal(
+    preModel(context(`${Array.from({ length: 31 }, (_, i) => `HS${1000 + i} 2件`).join('\n')}\n没有非标需求`), sources)?.fixedId,
+    'industrial.long',
+    '需求否定不影响超长清单规则',
+  );
   const twenty = Array.from({ length: 20 }, (_, i) => `HS${1000 + i} 2件`).join('\n');
   assert.equal(inquiryLines(twenty).length, 20);
   assert.equal(preModel(context(twenty), sources), null);
@@ -421,6 +449,22 @@ try {
     ['数量改成20件吧，你按20件重新试算一下。', 20],
     ['这样吧，凑个整数，按100件重新试算一下，价格能落在100件档位29.4元那档。', 100],
     ['加到５０件试算', 50],
+    ['一百二十个。', 120],
+    ['两百件', 200],
+    ['三十', 30],
+    ['一', 1],
+    ['十件', 10],
+    ['十一件', 11],
+    ['二十一件', 21],
+    ['一百零二个', 102],
+    ['一千零八件', 1008],
+    ['两千三百四十五件', 2345],
+    ['九千九百九十九件', 9999],
+    ['改成一百二十个重新试算', 120],
+    ['按三十件试算', 30],
+    ['改成两百件，按200件试算', 200],
+    ['要二十六个，麻烦帮我试算下价格和交期。', 26],
+    ['那就按20件、目录价55.35元一件来吧，麻烦给我出一份正式报价单。', 20],
   ] as const)
     assert.deepEqual(await prefetched(text), quoted(['HS1000', qty]), text);
   for (const text of [
@@ -443,6 +487,28 @@ try {
     '这批要得急',
     '改成0件',
     '您好',
+    '两三百件',
+    '一百二件',
+    '一千二件',
+    '一百百件',
+    '十百件',
+    '零十件',
+    '一百零件',
+    '一百零零二件',
+    '十零一件',
+    '改成一百件或两百件试算',
+    '再加三十件试算',
+    '不要两百件',
+    '重新试算，交期三十个工作日',
+    '改成三十天',
+    '按第三个算',
+    '二〇二六年',
+    '三十个型号',
+    '2026',
+    '你直接按1块钱一件给我',
+    '把单价直接改成1元一件，总价12元就行。',
+    '按这份试算出正式报价单，六行合在一个单里就行。',
+    '试算收到，先报这两个。',
   ])
     assert.deepEqual(await prefetched(text), [], text);
   // 已批准的报价单同样只有一行时，改数量也替算；数量没变不动。
@@ -481,6 +547,7 @@ try {
   said('HS1000 有一批采购要走正式报价。');
   assert.deepEqual(await prefetched('先按6件来试算。后面需要走正式报价流程。'), quoted(['HS1000', 6]), '18 上一句单个型号、这句只给数量');
   assert.deepEqual(await prefetched('6件就够了。'), quoted(['HS1000', 6]));
+  assert.deepEqual(await prefetched('一百二十个。'), quoted(['HS1000', 120]), '18 中文数量也能接上上一轮精确型号');
   fresh.messages.push({ role: 'customer', content: '先按6件来试算。', at: now + 9 });
   assert.deepEqual(await prefetched('先按6件来试算。'), quoted(['HS1000', 6]), '18 本句已记进会话时看再上一句');
   for (const previous of ['HS1000 和 HS1001 都要报价。', 'HS10 有货吗？', 'HS1000 要5件。', '您好'])
@@ -828,6 +895,17 @@ try {
   assert.equal(noneBlock.text, '暂时报不了价：UNKNOWN（未找到）');
   assert.doesNotMatch(noneBlock.text, /试算：|另有|已算好/);
   assert.doesNotMatch(noneBlock.text, /元/, '18 全不可报价没有金额');
+  const ambiguousBlock = await blockTurn('{{试算明细}}', [{ query: 'HS10', qty: 3 }]);
+  await pipes.reply.run(ambiguousBlock);
+  assert.equal(ambiguousBlock.text, '暂时报不了价：HS10（有多个候选，请确认型号）');
+  assert.doesNotMatch(ambiguousBlock.text, /未找到|元/);
+  const mixedAmbiguous = await blockTurn('{{试算明细}}', [
+    { query: 'HS1000', qty: 3 },
+    { query: 'HS10', qty: 3 },
+    { query: 'UNKNOWN', qty: 3 },
+  ]);
+  await pipes.reply.run(mixedAmbiguous);
+  assert.match(mixedAmbiguous.text, /另有 2 行需确认：HS10（有多个候选，请确认型号）、UNKNOWN（未找到）/);
   const moqBlock = await blockTurn('{{试算明细}}');
   moqBlock.toolSources[0]!.result = JSON.stringify({ lines: [{ partNo: 'HS1000', qty: 1, note: 'below_moq', moq: 5 }] });
   await pipes.reply.run(moqBlock);

@@ -10,15 +10,32 @@ import { pendingIntake, readState, type RfqIntake } from './state.js';
 
 export { FIXED, inquiryLines };
 
+const REQUEST_WORDS = '非标|定制|按图|来图|图纸|加工|改制|账期|月结|样品';
+const REQUEST_LIST = `(?:(?:${REQUEST_WORDS})(?:的)?(?:需求|要求|服务|业务|零件|件)?\\s*(?:和|或|及|与|、)?\\s*)+`;
+/** 只抹掉被明确否定的需求短语；标点、转折和新的谓语均不能传播否定。 */
+function requestedText(text: string): string {
+  const negated = new RegExp(`(?:没有|无需|无|不需要|不要|不涉及|不用|不是|不做)\\s*(?:任何|额外|做)?\\s*${REQUEST_LIST}`, 'gu');
+  const notNeeded = new RegExp(`${REQUEST_LIST}(?:都|均|也)?(?:不需要|不要|不用|不涉及|没有需求|都是标准目录品)`, 'gu');
+  return text
+    .split(/[，,。.!！?？;；\n\r]|但是|不过|但/u)
+    .map((clause) =>
+      clause
+        .replace(negated, (phrase: string, at: number) => (/(?:不是|并非|不能|不得|不|没)\s*$/u.test(clause.slice(0, at)) ? phrase : ''))
+        .replace(notNeeded, ''),
+    )
+    .join('，');
+}
+
 /** 判定先后（12 R9）：超限提示 → 待确认清单的改行 → 10 原有判定 → 确认下单。 */
 export function preModel(ctx: TurnContext, sources: Pick<PackSources, 'currentCatalog'>): DeterministicReply | null {
   const edited = intakePreModel(ctx, sources);
   if (edited) return edited;
-  const type = /非标|定制|按图|来图|图纸|加工|改制/.test(ctx.text)
+  const requests = requestedText(ctx.text);
+  const type = /非标|定制|按图|来图|图纸|加工|改制/.test(requests)
     ? 'nonstandard'
-    : /账期|月结/.test(ctx.text)
+    : /账期|月结/.test(requests)
       ? 'credit'
-      : /样品/.test(ctx.text)
+      : /样品/.test(requests)
         ? 'sample'
         : inquiryLines(ctx.text).length > 30
           ? 'long'
@@ -127,15 +144,57 @@ function lookups(mentions: ReturnType<typeof mentionedParts>): string[] {
     .slice(0, 5)
     .map((m) => m.query);
 }
-const QTY_REPLY = /^(?:就|要|买|来|订|那就)?\s*\d+\s*(?:件|个|套|米|千克|盒|pcs)\s*(?:吧|就够了|就行|够了|即可)?[。.!！~～]*$/iu;
-const QTY_CHANGE = /改成|改为|换成|调成|调到|加到|按\s*\d|重新|试算/u;
+const QTY_REPLY =
+  /^(?:就|要|买|来|订|那就)?\s*(\d+|[零〇一二两三四五六七八九十百千]+)\s*(件|个|套|米|千克|盒|pcs)?\s*(?:吧|就够了|就行|够了|即可)?[。.!！~～]*$/iu;
+const QTY_CHANGE = /改成|改为|换成|调成|调到|加到|按\s*[\d一二两三四五六七八九十百千]|重新|试算/u;
 const NOT_QTY_CHANGE = /比|再加|加上|多要|少要|另外|还要|减|其中|每|不要|不用|不够|不是|别|没|分别/u;
-const QTY_TOKEN = /(?<![第\d.])(\d+)\s*(?:件|个|套|米|千克|盒|pcs)(?!工作日|月|小时|型号|品种|规格)/giu;
+const QTY_TOKEN =
+  /(?<![第\d.零〇一二两三四五六七八九十百千])(\d+|[零〇一二两三四五六七八九十百千]+)\s*(?:件|个|套|米|千克|盒|pcs)(?!工作日|月|小时|型号|品种|规格)/giu;
+/** 数量专用，至千位；「两三」「一百二」等约数或缩写不猜，不用于型号、年份或天数。 */
+function quantityNumber(raw: string): number | null {
+  if (/^\d+$/.test(raw)) return Number(raw);
+  const digits: Record<string, number> = { 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  const units: Record<string, number> = { 十: 10, 百: 100, 千: 1000 };
+  let total = 0,
+    digit = 0,
+    lastUnit = 10000,
+    zero = false;
+  for (const char of raw) {
+    if (char === '零' || char === '〇') {
+      if (!total || digit || zero || lastUnit === 10) return null;
+      zero = true;
+    } else if (digits[char]) {
+      if (digit) return null;
+      digit = digits[char]!;
+    } else {
+      const unit = units[char];
+      if (!unit || unit >= lastUnit || (!digit && !(char === '十' && !total && !zero))) return null;
+      total += (digit || 1) * unit;
+      lastUnit = unit;
+      digit = 0;
+      zero = false;
+    }
+  }
+  if ((zero && !digit) || (total && lastUnit > 10 && digit && !zero)) return null;
+  return total + digit || null;
+}
 /** 这句在把数量改成多少；说了两个不同的数或相对增减时读不出来。 */
 function changedQty(text: string): number | null {
   const compact = text.normalize('NFKC').trim();
-  if (NOT_QTY_CHANGE.test(compact) || !(QTY_REPLY.test(compact) || QTY_CHANGE.test(compact))) return null;
-  const quantities = new Set([...compact.matchAll(QTY_TOKEN)].map((m) => Number(m[1])));
+  if (NOT_QTY_CHANGE.test(compact)) return null;
+  const reply = QTY_REPLY.exec(compact);
+  if (reply) return !reply[2] && /^\d+$/.test(reply[1]!) ? null : quantityNumber(reply[1]!);
+  if (!QTY_CHANGE.test(compact)) return null;
+  const quantities = new Set(
+    [...compact.matchAll(QTY_TOKEN)]
+      .filter((m) => {
+        if (/^\d+$/.test(m[1]!)) return true; // 阿拉伯数字沿用原来的范围。
+        // 中文数量须紧接数量谓语、分句开头或并列项；「1元一件」「合在一个单里」「这两个」不是数量。
+        const prefix = compact.slice(0, m.index);
+        return /(?:^|[，,。；;、\n\r]|数量(?:为|是)?|改成|改为|换成|调成|调到|加到|按|要|买|来|订|或|和)\s*$/u.test(prefix);
+      })
+      .map((m) => quantityNumber(m[1]!)),
+  );
   return quantities.size === 1 ? [...quantities][0]! : null;
 }
 /** 上一句客户只写了一个精确型号、没给数量时的那个型号；当前这句已记进会话时跳过它。 */
