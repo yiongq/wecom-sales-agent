@@ -136,6 +136,28 @@ export async function setJobStatus(
   return out.length === 1;
 }
 
+/**
+ * 租约中断且通知请求确定未发出：归还本次认领，不消耗重试。
+ * 新主可能已先执行启动归位：仅撤销同次 interrupted 的一次扣数；重新认领或有真实执行结果的行绝不改。
+ * 这是认领元数据的 CAS 收尾，允许旧 epoch 调用，不写会话、渠道或业务状态。
+ */
+export async function requeueUnsentNotification(tx: Tx, job: JobRow): Promise<boolean> {
+  if (job.kind !== 'handoff_notify' || !job.claimedAt) return false;
+  const at = job.claimedAt.toISOString();
+  return (
+    rowsOf(
+      await tx.execute(sql`
+    update ${jobs} set status='pending', attempts=${job.attempts}, claimed_at=null,
+      finished_at=null, last_error='process_lease_interrupted'
+    where id=${job.id}::uuid and kind='handoff_notify' and (
+      (status='running' and claimed_at=${at}::timestamptz and attempts=${job.attempts})
+      or (status in ('pending','failed') and last_error='interrupted' and attempts=${job.attempts + 1}
+        and (claimed_at=${at}::timestamptz or claimed_at is null)))
+    returning id`),
+    ).length === 1
+  );
+}
+
 /** 启动时各类没结束的任务的去向（spec「任务表与跟进 · 重启与停机」），各类的条数 */
 export interface JobRecovery {
   /** running 的跟进改回 pending：还没记账，什么都没发 */

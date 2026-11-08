@@ -1220,6 +1220,11 @@ async function sendSegment(
         throw e;
       }
     }
+    // epoch 查询/租约等待也可能跨过停机截止。首次请求还没发出，不能结算 rejected/0。
+    if (attempts === 0 && sendsClosed(rt)) {
+      if (mark === 'marked' && !already) await unmarkSending(intent);
+      return 'deferred';
+    }
     if (!stillCurrent(g) || sendsClosed(rt) || (attempt > 0 && !maySendAgain(intent))) break;
     noteAttempt(intent);
     attempts++;

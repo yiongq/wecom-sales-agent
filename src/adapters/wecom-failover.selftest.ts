@@ -17,7 +17,7 @@ async function until(test: () => boolean | Promise<boolean>, timeout = 15_000): 
     await delay(20);
   }
 }
-if (mode === 'boot' || mode === 'boot-spill') {
+if (mode === 'boot' || mode === 'boot-spill' || mode === 'boot-spill-fail') {
   process.env.ALERT_WEBHOOK_URL = 'https://alerts.example.test/hook';
   const lease = await import('../tenancy/process-lease.js');
   // 覆盖实际 server 导入期、等锁与退出期的同步/异步文件访问。
@@ -48,6 +48,8 @@ if (mode === 'boot' || mode === 'boot-spill') {
           process.send?.({ event: 'var-before-lock', name });
           throw new Error('var_before_lock');
         }
+        if (mode === 'boot-spill-fail' && name === 'renameSync' && String(args[1]).includes('store-spill-'))
+          throw Object.assign(new Error('synthetic_spill_failure'), { code: 'EACCES' });
         const result = Reflect.apply(original, target, args);
         if (name === 'renameSync' && String(args[1]).includes('store-spill-') && String(args[1]).endsWith('.json'))
           process.send?.({ event: 'spill', held: lease.processLeaseHeld() });
@@ -78,7 +80,7 @@ if (mode === 'boot' || mode === 'boot-spill') {
   onShutdown(() => {
     process.send?.({ event: 'shutdown-hook' });
   });
-  if (mode === 'boot-spill') onShutdown(() => delay(600), { phase: 'late' });
+  if (mode.startsWith('boot-spill')) onShutdown(() => delay(600), { phase: 'late' });
   lease.onProcessLeaseChange(() => process.send?.({ event: 'lease', held: lease.processLeaseHeld(), stale: lease.processLeaseStale() }));
   process.send?.({ event: 'starting' });
   await import('../server.js');
@@ -96,7 +98,7 @@ if (mode === 'boot' || mode === 'boot-spill') {
       }
     }),
   );
-  process.on('message', (message: { action?: string }) => {
+  process.on('message', (message: { action?: string; count?: number }) => {
     void withTenantScope(hostRuntime(), async () => {
       if (message.action === 'try-pull') {
         const account = registry.installedChannelAccounts().find((a) => a.kind === 'wecom_kf')!;
@@ -104,9 +106,13 @@ if (mode === 'boot' || mode === 'boot-spill') {
         process.send?.({ event: 'pull-probed' });
       } else if (message.action === 'dirty') {
         hostRuntime().store.pgBackend!.close();
-        const session = store.getOrCreateSession('wecom:wmStale', 'wecom');
-        session.messages.push({ role: 'customer', content: '待丢弃的合成消息', at: Date.now() });
-        store.saveSession(session);
+        for (let i = 0; i < (message.count ?? 1); i++) {
+          const session = store.getOrCreateSession(i === 0 ? 'wecom:wmStale' : `wecom:wmSpill${i}`, 'wecom');
+          session.messages.push({ role: 'customer', content: '待丢弃的合成消息', at: Date.now() });
+          if (message.count)
+            for (let j = 0; j < 9; j++) session.messages.push({ role: 'customer', content: '合成停机负载'.repeat(256), at: Date.now() });
+          store.saveSession(session);
+        }
         process.send?.({ event: 'dirty' });
       }
     }).catch(() => process.send?.({ event: 'probe-failed' }));
@@ -131,12 +137,14 @@ if (mode === 'boot' || mode === 'boot-spill') {
   const sentMsgids: string[] = [];
   const alerts: string[] = [];
   let notifications = 0;
+  const notificationTexts: string[] = [];
   let failNotification: (() => Promise<void>) | undefined;
   let afterFirst: (() => Promise<void>) | undefined;
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     if (url === 'https://notify.example.test/hook') {
       notifications++;
+      notificationTexts.push(JSON.parse(String(init?.body)).text.content);
       if (failNotification) {
         const action = failNotification;
         failNotification = undefined;
@@ -209,7 +217,136 @@ if (mode === 'boot' || mode === 'boot-spill') {
       await until(() => !lease.processLeaseHeld());
     };
     const regain = async () => rt.config.loaded!.lock.reacquire();
-    if (mode.startsWith('notify-')) {
+    if (mode.startsWith('job-')) {
+      process.env.NOTIFY_WEBHOOK_URL = 'https://notify.example.test/hook';
+      const jobs = await import('../jobs/runner.js');
+      const repo = await import('../db/repo/jobs.js');
+      const ctx = { tenantId, actor: { kind: 'system' as const, userId: null, name: null, ip: null } };
+      jobs.__jobsTest.start(async () => true);
+      if (mode === 'job-recover') {
+        const pending = await query.query<{ id: string }>(
+          "select id from jobs where kind='handoff_notify' and last_error='process_lease_interrupted' and status='pending'",
+        );
+        assert.equal(pending.length, 2);
+        await jobs.runJobsOnce();
+        assert.equal(notifications, 2, '新进程启动归位后两条通知各发一次');
+        assert.equal(new Set(notificationTexts).size, 2);
+        for (const { id } of pending)
+          assert.deepEqual(await query.query('select status,attempts from jobs where id=$1', [id]), [{ status: 'done', attempts: 3 }]);
+      } else {
+        const id = await store.withJobsTx((tx) =>
+          repo.enqueueJob(tx, {
+            kind: 'handoff_notify',
+            dedupeKey: mode,
+            runAt: new Date(0),
+            maxAttempts: 4,
+            payload: { sessionId: sid, reason: 'intake_unmatched', intakeId: 'int_012345abcdef', lines: [1] },
+          }),
+        );
+        const queued = await store.withJobsTx((tx) =>
+          repo.enqueueJob(tx, {
+            kind: 'handoff_notify',
+            dedupeKey: `${mode}-queued`,
+            runAt: new Date(1),
+            maxAttempts: 4,
+            payload: { sessionId: sid, reason: 'intake_unmatched', intakeId: 'int_012345abcdef', lines: [2] },
+          }),
+        );
+        for (const jobId of [id, queued]) await query.query('update jobs set attempts=3 where id=$1', [jobId]);
+        let interrupted = false;
+        let release!: () => void;
+        const gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const original = jobs.__jobsTest.setHandler('handoff_notify', async (job, now, context) => {
+          if (job.id !== id) return original(job, now, context);
+          await lose();
+          try {
+            return await original(job, now, context);
+          } catch (error) {
+            interrupted = true;
+            await gate;
+            throw error;
+          }
+        });
+        const running = jobs.runJobsOnce();
+        await until(() => !lease.processLeaseHeld());
+        await until(() => interrupted);
+        assert.equal(notifications, 0);
+        assert.deepEqual(
+          await query.query('select status,attempts from jobs where id=$1', [id]),
+          [{ status: 'pending', attempts: 3 }],
+          '发现失锁时即持久归还，不能带 running 等到停机/新主启动才处理',
+        );
+        if (mode === 'job-lease-recovered-first') {
+          await takeover();
+          assert.equal(await regain(), 'held_by_other');
+          await until(() => interrupted);
+          await client.withTenant(admin.db, ctx, repo.recoverJobsAtStartup);
+          assert.deepEqual(await query.query('select status,attempts from jobs where id=$1', [id]), [{ status: 'pending', attempts: 3 }]);
+        } else lease.stopProcessLeaseWaits();
+        await until(() => interrupted);
+        release();
+        await running;
+        await jobs.__jobsTest.stop();
+        assert.equal(notifications, 0);
+        for (const jobId of [id, queued])
+          assert.deepEqual(await query.query('select status,attempts,last_error from jobs where id=$1', [jobId]), [
+            { status: 'pending', attempts: 3, last_error: 'process_lease_interrupted' },
+          ]);
+        await client.withTenant(admin.db, ctx, repo.recoverJobsAtStartup);
+        for (const jobId of [id, queued])
+          assert.deepEqual(await query.query('select status,attempts from jobs where id=$1', [jobId]), [
+            { status: 'pending', attempts: 3 },
+          ]);
+        jobs.__jobsTest.setHandler('handoff_notify', original);
+      }
+    } else if (mode === 'poisoned-discard') {
+      process.env.ALERT_WEBHOOK_URL = 'https://alerts.example.test/hook';
+      const ops = await import('../ops/alert.js');
+      ops.startAlerts();
+      ops.__alertTest.stopTimer();
+      await ops.__alertTest.settle();
+      alerts.length = 0;
+      const poisonedId = `wecom:${'q'.repeat(195)}`;
+      const poisoned = store.getOrCreateSession(poisonedId, 'wecom');
+      poisoned.messages.push({ role: 'customer', content: '合成 poisoned 消息', at: Date.now() });
+      store.saveSession(poisoned);
+      await until(() => rt.store.pgBackend!.isPoisoned(poisonedId));
+      let blocked = false;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      Object.defineProperty(db.faults, 'gate', {
+        configurable: true,
+        get() {
+          blocked = true;
+          return gate;
+        },
+      });
+      const [intent] = ledger.planOutbound(account, { sessionId: poisonedId, hasSession: true }, 'notice', null, null, [
+        { msgtype: 'text', text: { content: '合成 poisoned 回复' } },
+      ]);
+      ledger.settleIntent(intent!, 'accepted', { attempts: 1 });
+      store.queueInboxState(poisonedId, { inboxId: randomUUID(), state: 'done' });
+      await until(() => blocked);
+      await takeover();
+      Object.defineProperty(db.faults, 'gate', { configurable: true, writable: true, value: null });
+      release();
+      await until(() => store.__storeTest.pgStats()!.staleDiscardedChannelWrites > 0);
+      await ops.__alertTest.settle();
+      const stats = store.__storeTest.pgStats()!;
+      assert.deepEqual([stats.staleDiscardedSessions, stats.staleDiscardedMessages, stats.staleDiscardedChannelWrites], [1, 1, 3]);
+      assert.equal(alerts.filter((text) => text.includes('process_epoch_stale')).length, 1);
+      assert.match(
+        alerts.find((text) => text.includes('process_epoch_stale'))!,
+        /丢弃 1 个会话、1 条消息、3 条渠道写入/,
+      );
+      await store.drainStore(30);
+      store.spillStoresSync();
+      assert.deepEqual(store.__storeTest.pgStats(), stats);
+    } else if (mode.startsWith('notify-')) {
       process.env.NOTIFY_WEBHOOK_URL = 'https://notify.example.test/hook';
       process.env.ALERT_WEBHOOK_URL = 'https://alerts.example.test/hook';
       const { webhookNotifier } = await import('../notify/notifier.js');
@@ -409,7 +546,47 @@ if (mode === 'boot' || mode === 'boot-spill') {
         { msgtype: 'text', text: { content: '合成回复' } },
       ]);
       await store.flushSession(sid);
-      if (mode === 'token-pause' || mode === 'token-initial-pause') {
+      if (mode === 'deadline-before-send') {
+        const epochDb = await testing.openGatedDb(process.env.DATABASE_URL!);
+        const previousDb = config.configRuntime().deps.db;
+        let release!: () => void;
+        epochDb.faults.gate = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        config.configRuntime().deps.db = epochDb.db;
+        try {
+          const pending = wecom.__wecomTest.resend(account.id, intent!, false);
+          await until(
+            async () =>
+              (await query.query<{ status: string }>('select status from outbound_sends where channel_msgid=$1', [intent!.msgid]))[0]
+                ?.status === 'sending',
+          );
+          wecom.__wecomTest.closeSends(account.id, 0);
+          epochDb.faults.gate = null;
+          release();
+          assert.equal(await pending, false);
+          assert.equal(sends, 0);
+          assert.deepEqual(await query.query('select status,attempts from outbound_sends where channel_msgid=$1', [intent!.msgid]), [
+            { status: 'pending', attempts: 0 },
+          ]);
+          assert.equal(ledger.__ledgerTest.rows(sid).find((row) => row.msgid === intent!.msgid)!.status, 'pending');
+          wecom.__wecomTest.closeSends(account.id, null);
+          assert.equal(await wecom.__wecomTest.resend(account.id, intent!, false), true);
+          assert.equal(sends, 1, '未发送的回复恢复后只发一次');
+        } finally {
+          release();
+          config.configRuntime().deps.db = previousDb;
+          await epochDb.close();
+        }
+      } else if (mode === 'deadline-after-send') {
+        afterFirst = async () => {
+          wecom.__wecomTest.closeSends(account.id, 0);
+        };
+        assert.equal(await wecom.__wecomTest.resend(account.id, intent!, false), false);
+        assert.equal(sends, 1);
+        const row = ledger.__ledgerTest.rows(sid).find((row) => row.msgid === intent!.msgid)!;
+        assert.equal(row.status, 'rejected');
+      } else if (mode === 'token-pause' || mode === 'token-initial-pause') {
         let release!: () => void;
         const gate = new Promise<void>((resolve) => {
           release = resolve;
@@ -479,6 +656,8 @@ if (mode === 'boot' || mode === 'boot-spill') {
       'notify-stale',
       'reply-stale',
       'discard-alert',
+      'poisoned-discard',
+      'job-lease-recovered-first',
     ].includes(mode);
     if (expectedStale) {
       assert.equal(lease.processLeaseStale(), true);

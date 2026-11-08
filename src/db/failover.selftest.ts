@@ -180,6 +180,25 @@ if (!process.env.PG_TEST_URL) {
     await old;
     assert.equal(await next, n + 1n);
     console.log('FAILOVER PASS epoch 原子推进 / FOR SHARE 提交顺序 / 跨租户 RLS');
+    const jobRepo = await import('./repo/jobs.js');
+    await withTenant(appDb.db, ctx(fx.tenantId), async (tx) => {
+      const id = await jobRepo.enqueueJob(tx, {
+        kind: 'handoff_notify',
+        dedupeKey: 'r3-unsent-cas',
+        runAt: new Date(0),
+        maxAttempts: 4,
+        payload: { sessionId: 'wecom:wmJobs' },
+      });
+      await jobRepo.setJobStatus(tx, id!, 'pending', { attemptsDelta: 3 });
+      const [old] = await jobRepo.claimDueJobs(tx, new Date(1000), 1, ['handoff_notify']);
+      assert.equal((await jobRepo.recoverJobsAtStartup(tx)).otherFailed, 1);
+      assert.equal(await jobRepo.requeueUnsentNotification(tx, old!), true, '晚到的未发送归还撤销启动归位的错误扣数');
+      const [next] = await jobRepo.claimDueJobs(tx, new Date(2000), 1, ['handoff_notify']);
+      assert.equal(next!.attempts, 3);
+      assert.equal(await jobRepo.requeueUnsentNotification(tx, old!), false, '旧认领不能覆盖新主的认领');
+      await jobRepo.setJobStatus(tx, id!, 'cancelled');
+    });
+    console.log('FAILOVER PASS 通知未发送归还 / 最后一次重试恢复 / 旧认领不能覆盖新主');
 
     // 等待全部锁时不留住部分锁；释放阻塞者后迅速取得整组。
     const blocker = await holdTenantLocks(fx.urls.app, [other!.id]);
@@ -310,7 +329,8 @@ if (!process.env.PG_TEST_URL) {
     console.log('FAILOVER PASS held_by_other 优雅退出，不写 spill');
     const spillPrimary = await start('spill-primary', 'boot-spill');
     await until(() => spillPrimary.events.some((e) => e.event === 'booted'));
-    spillPrimary.process.send({ action: 'dirty' });
+    const dirtySessions = 128;
+    spillPrimary.process.send({ action: 'dirty', count: dirtySessions });
     await until(() => spillPrimary.events.some((e) => e.event === 'dirty'));
     const spillStandby = await start('spill-standby', 'boot', true, spillPrimary.dir);
     await until(() => spillStandby.events.some((e) => e.event === 'starting'));
@@ -319,22 +339,44 @@ if (!process.env.PG_TEST_URL) {
       spillStandby.events.some((e) => e.event === 'booted'),
       false,
     );
+    const stopAt = Date.now();
     spillPrimary.process.kill('SIGTERM');
     assert.equal(await spillPrimary.done, 143, spillPrimary.output());
+    const stopMs = Date.now() - stopAt;
+    assert.ok(stopMs < 10_000, `含最终同步 spill 的正常停机 ${stopMs}ms 必须小于 stop_grace_period 10 秒`);
     await until(() => spillStandby.events.some((e) => e.event === 'booted'));
     assert.deepEqual(
       spillPrimary.events.filter((e) => e.event === 'spill'),
       [{ event: 'spill', held: true }],
       '仍持锁时只写一次最终 spill，exit 不重复写',
     );
-    assert.equal(spillStandby.events.find((e) => e.event === 'booted')!.replayed, 1, spillStandby.output());
+    assert.equal(spillStandby.events.find((e) => e.event === 'booted')!.replayed, dirtySessions, spillStandby.output());
     assert.equal(
       (await fx.query("select seq from messages where conversation_id='wecom:wmStale' and content='待丢弃的合成消息'")).length,
       1,
     );
     spillStandby.process.kill('SIGTERM');
     assert.equal(await spillStandby.done, 143, spillStandby.output());
-    console.log('FAILOVER PASS 正常停机持锁完成 spill / 共用 VAR_DIR 的备用启动回放一次 / exit 不重复写');
+    console.log(
+      `FAILOVER PASS 正常停机 ${stopMs}ms < 10000ms，${dirtySessions} 个脏会话 / 持锁 spill / 共用 VAR_DIR 回放一次 / exit 不重复写`,
+    );
+    const spillFailure = await start('spill-failure', 'boot-spill-fail');
+    await until(() => spillFailure.events.some((e) => e.event === 'booted'));
+    spillFailure.process.send({ action: 'dirty' });
+    await until(() => spillFailure.events.some((e) => e.event === 'dirty'));
+    spillFailure.process.kill('SIGTERM');
+    assert.equal(await spillFailure.done, 143, spillFailure.output());
+    const failureAlerts = spillFailure.events.filter((e) => e.event === 'alert' && String(e.text).includes('spill_failed'));
+    assert.equal(failureAlerts.length, 1, spillFailure.output());
+    assert.match(String(failureAlerts[0]!.text), /1 个会话.*仍释放锁.*丢失/);
+    assert.equal(
+      fs.readdirSync(spillFailure.dir).some((name) => name.startsWith('store-spill-') && name.endsWith('.json')),
+      false,
+    );
+    const afterFailure = await holdTenantLocks(fx.urls.app, [fx.tenantId]);
+    assert.ok(afterFailure, 'spill 失败仍释放锁');
+    await afterFailure.release();
+    console.log('FAILOVER PASS spill 写失败发出一次运维告警 / 仍放锁 / exit 不重试');
     for (const kind of [
       'pause',
       'claim',
@@ -354,6 +396,11 @@ if (!process.env.PG_TEST_URL) {
       'token-pause',
       'token-initial-pause',
       'discard-alert',
+      'deadline-before-send',
+      'deadline-after-send',
+      'poisoned-discard',
+      'job-lease',
+      'job-lease-recovered-first',
     ]) {
       const child = await start(kind, kind);
       assert.equal(await child.done, 0, `${kind}\n${child.output()}`);
@@ -363,6 +410,11 @@ if (!process.env.PG_TEST_URL) {
           .split('\n')
           .find((line) => line.startsWith('FAILOVER PASS')),
       );
+      if (kind.startsWith('job-lease')) {
+        const resumed = await start(`${kind}-new`, 'job-recover');
+        assert.equal(await resumed.done, 0, resumed.output());
+        console.log(`FAILOVER PASS ${kind} 最后一次重试由新主恢复，执行中与排队通知各发一次`);
+      }
     }
     assert.equal((await fx.query("select id from channel_accounts where cursor='r3-stale-cursor'")).length, 0);
     const claimed = await fx.query('select id from channel_inbox where msgid=$1', ['r3-claim']);

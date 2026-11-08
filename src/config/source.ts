@@ -386,15 +386,25 @@ export async function checkProcessEpochBeforeSend(): Promise<boolean> {
 }
 
 /** 业务通知等未走 markSending 的请求：暂失锁保留调用栈，过期/停机则留给持久化恢复。 */
-export async function waitForProcessEpochBeforeSend(): Promise<void> {
+export async function waitForProcessEpochBeforeSend(onUnavailable?: () => Promise<void>): Promise<void> {
   if (!processLeaseEnabled()) return;
   for (;;) {
+    // 有持久任务的通知先归还认领，再终止旧调用；不能带着 running 长时间等锁，让新主误扣重试。
+    if (onUnavailable && !processLeaseHeld()) {
+      await onUnavailable();
+      if (processLeaseStale()) throw new ProcessEpochStale();
+      throw new ProcessLeaseUnavailable();
+    }
     if (!(await waitForProcessLease(currentRuntime().id))) {
+      await onUnavailable?.();
       if (processLeaseStale()) throw new ProcessEpochStale();
       throw new ProcessLeaseUnavailable();
     }
     if (await checkProcessEpochBeforeSend()) return;
-    if (processLeaseStale()) throw new ProcessEpochStale();
+    if (processLeaseStale()) {
+      await onUnavailable?.();
+      throw new ProcessEpochStale();
+    }
     if (processLeaseHeld()) throw new ProcessLeaseUnavailable();
   }
 }

@@ -38,7 +38,7 @@ export interface HandoffNotice {
 }
 
 export interface Notifier {
-  send(n: HandoffNotice): Promise<void>;
+  send(n: HandoffNotice, onLeaseUnavailable?: () => Promise<void>): Promise<void>;
 }
 
 /** 「记录暂未保存」：unsaved 的提醒在正文里标出来（验收 15） */
@@ -98,12 +98,12 @@ function netCode(e: unknown): string {
 /** 企微群机器人：POST { msgtype: 'text', text: { content } }，HTTP 2xx 且 errcode 为 0 才算发出 */
 export function webhookNotifier(url: string): Notifier {
   return {
-    async send(n) {
+    async send(n, onLeaseUnavailable) {
       let res: Response;
       let raw: string;
       for (;;) {
         try {
-          if (processLeaseEnabled()) await waitForProcessEpochBeforeSend();
+          if (processLeaseEnabled()) await waitForProcessEpochBeforeSend(onLeaseUnavailable);
           assertProcessLeaseHeld();
           res = await fetch(url, {
             method: 'POST',
@@ -115,6 +115,7 @@ export function webhookNotifier(url: string): Notifier {
           break;
         } catch (e) {
           if (isProcessLeaseError(e)) {
+            if (onLeaseUnavailable) throw e; // 任务已经归还，旧调用不能在恢复后继续发送。
             if (await waitForProcessLease(currentRuntime().id)) continue;
             throw e;
           }

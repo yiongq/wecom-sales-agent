@@ -346,6 +346,7 @@ export interface PgBackendDeps {
   /** 落库撞上另一写者：store.ts 接到 gracefulExit(1) */
   onConflict(detail: string): void;
   onStaleDiscard?(counts: { sessions: number; messages: number; channelWrites: number }): void;
+  onSpillFailure?(sessions: number): void;
   /** 租户锁还在本进程手里。被别的进程拿走（held_by_other）时 drain 不写库，直接 spill */
   writable(): boolean;
   /** 每次提交之后调（store.ts 接旧 /api/admin/stream 的 change，只在提交之后发，不变量 10） */
@@ -1241,6 +1242,12 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
   async function runPoisoned(e: Entry, rows: ChannelRows): Promise<void> {
     const r = await nowTx((tx) => writeChannelRows(tx, rows));
     if (rt.kind === 'sandbox' && rt.cancel.aborted) return;
+    if (!r.ok && processLeaseStale()) {
+      // 先统计在途批次；提前清 pcRun 会漏掉这批出站、入站与结果行。
+      discardStaleWrites();
+      e.pcRun = null;
+      return;
+    }
     e.pcRun = null;
     if (r.ok) {
       if (e.pcFailing) {
@@ -1254,10 +1261,6 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       // 主事务的那几行提交了：发送账本据此知道 pending 落库了（与会话落库的 afterCommit 同一个出口）
       if (rows.outbound.length) d.outboundCommitted?.(rows.outbound);
       pumpPoisoned(e);
-      return;
-    }
-    if (processLeaseStale()) {
-      discardStaleWrites();
       return;
     }
     if ('error' in r && classify(r.error) === 'data') {
@@ -2081,15 +2084,17 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
         console.log(`[sandbox] 停机丢弃未落库会话 ${count}`);
         return count;
       }
+      let failed = 0;
+      const dirty = [...entries.values()].filter((e) => isDirty(e) || hasChannelRows(e.pc) || e.pcRun !== null);
       try {
         // poisoned 的会话总是脏的；渠道行还没写完的也一并写出（防御）
-        const dirty = [...entries.values()].filter((e) => isDirty(e) || hasChannelRows(e.pc) || e.pcRun !== null);
         if (!dirty.length) return 0;
         const out: SpillEntry[] = [];
         for (const e of dirty) {
           try {
             out.push(spillEntryOf(e));
           } catch (err) {
+            failed++;
             console.error(`[store] 会话 ${short(e.id)} 写不进 spill（${errLabel(err)}）`);
           }
         }
@@ -2102,8 +2107,11 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
         console.error(`[store] ${out.length} 个会话还有没落库的改动，已写进 ${path.basename(file)}，下次启动先回放`);
         return out.length;
       } catch (err) {
+        failed = dirty.length;
         console.error(`[store] spill 写不出来（${errLabel(err)}）：没落库的改动随进程退出丢失`);
         return 0;
+      } finally {
+        if (failed) d.onSpillFailure?.(failed);
       }
     },
     health(): StoreHealth {

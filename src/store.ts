@@ -145,6 +145,7 @@ export const storeEvents = new Proxy(new EventEmitter(), {
 export type StoreIncident =
   | { kind: 'conflict'; detail: string }
   | { kind: 'spill'; sessions: number }
+  | { kind: 'spill_failed'; sessions: number }
   | { kind: 'process_epoch_stale'; sessions: number; messages: number; channelWrites: number };
 export function onStoreIncident(cb: (i: StoreIncident) => void): () => void {
   const hooks = hookState().incidentHooks;
@@ -330,6 +331,7 @@ async function loadSessionStore(deps: SessionStoreDeps | null): Promise<void> {
       gracefulExit(1, `store_conflict（${detail}）：落库撞上另一写者`);
     },
     onStaleDiscard: (counts) => incident({ kind: 'process_epoch_stale', ...counts }),
+    onSpillFailure: (sessions) => incident({ kind: 'spill_failed', sessions }),
     writable: () => !tenantLockTaken(),
     afterCommit: committedChange,
     ordersTaken: (ids) => {
@@ -822,7 +824,10 @@ export function spillStoresSync(): void {
     }
   }
 }
-/** 等锁模式的最终交接：停止写队列、同步写完共享目录，再让配置源释放锁；exit 不再重复写。 */
+/**
+ * 等锁模式的最终交接：停止写队列、同步写完共享目录，再让配置源释放锁；exit 不再重复写。
+ * spill 写失败只记错误并发运维告警，仍 finalize/放锁；退出不重试，未保存的改动会丢失。
+ */
 export function finalizeStoresSync(): void {
   if (processLeaseFinalized() || processLeaseWaiting()) return;
   if (!processLeaseHeld()) staleProcessLease();
