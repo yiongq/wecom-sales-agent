@@ -1,0 +1,162 @@
+{
+  "version": 2,
+  "id": "q18-accept-phrase",
+  "desc": "仿真回归：main-6 j-standard-02 第4遍第4轮，按型号、数量与合计接受并走这单采购，接受被认出，不当成新询价重新试算，回复里有合计 115.20 元（正文或应付金额块都算）",
+  "tags": ["q18", "industrial", "quote-acceptance"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:28:41.777Z",
+    "session": {
+      "stage": "closing",
+      "messages": [
+        {
+          "role": "customer",
+          "content": "我这边要配 6211-2RS，能先看下吗？",
+          "at": 1791606500460
+        },
+        {
+          "role": "agent",
+          "content": "查到了，库内有现货：\n6211-2RS 密封深沟球轴承，内径55mm，双面密封，起订量2件，13天左右发货。\n请问需要多少件？我可以帮您试算价格。",
+          "at": 1791606502241
+        },
+        {
+          "role": "customer",
+          "content": "需要6件，麻烦按这个数量试算一下价格。",
+          "at": 1791606503716
+        },
+        {
+          "role": "agent",
+          "content": "试算：\n6211-2RS × 6：单价19.20元，小计115.20元；现货，以顾问确认为准；满20件17.28元\n合计115.20元\n现货，约13天发货，含13%税，运费0元，报价有效期7天。\n提示：数量到20件单价可降一档，如有后续需求可一起核算。需要我起草正式报价单吗？",
+          "at": 1791606509681
+        },
+        {
+          "role": "customer",
+          "content": "可以，请帮我出正式报价单。",
+          "at": 1791606514758
+        },
+        {
+          "role": "agent",
+          "content": "好的，正式报价单已提交，正在由顾问审核。审核通过后会把正式报价链接发给您，请您留意。",
+          "at": 1791606517715
+        },
+        {
+          "role": "agent",
+          "content": "/quote/{{order:0.id}}",
+          "at": 1791606517919
+        }
+      ],
+      "orderIds": ["{{order:0.id}}"],
+      "handedOver": false,
+      "createdAt": 1791606500459,
+      "updatedAt": 1791606517715,
+      "profile": {},
+      "packState": {
+        "rfqDraft": {
+          "at": 1791606507802,
+          "lines": [
+            {
+              "match": "exact",
+              "code": "bearing-08",
+              "version": 1,
+              "qty": 6
+            }
+          ]
+        },
+        "lastQuoteId": "{{order:0.id}}",
+        "partsInPlay": [
+          {
+            "partNo": "6211-2RS",
+            "specs": ["内径55mm", "双面密封"]
+          }
+        ]
+      },
+      "moneyLedger": [
+        {
+          "fen": 1920,
+          "label": "档位单价",
+          "subject": "62112RS"
+        },
+        {
+          "fen": 1728,
+          "label": "档位单价",
+          "subject": "62112RS"
+        },
+        {
+          "fen": 1536,
+          "label": "档位单价",
+          "subject": "62112RS"
+        },
+        {
+          "fen": 1344,
+          "label": "档位单价",
+          "subject": "62112RS"
+        },
+        {
+          "fen": 1920,
+          "label": "档位单价",
+          "subject": "62112RS"
+        },
+        {
+          "fen": 1728,
+          "label": "档位单价",
+          "subject": "62112RS"
+        },
+        {
+          "fen": 1536,
+          "label": "档位单价",
+          "subject": "62112RS"
+        },
+        {
+          "fen": 1344,
+          "label": "档位单价",
+          "subject": "62112RS"
+        },
+        {
+          "fen": 1920,
+          "label": "试算单价",
+          "subject": "62112RS"
+        },
+        {
+          "fen": 11520,
+          "label": "试算行金额",
+          "subject": "62112RS"
+        },
+        {
+          "fen": 11520,
+          "label": "试算合计",
+          "subject": "62112RS"
+        }
+      ]
+    },
+    "orders": [
+      {
+        "status": "pending_payment",
+        "lines": [
+          {
+            "kind": "part",
+            "code": "bearing-08",
+            "qty": 6
+          }
+        ],
+        "approval": {
+          "state": "approved",
+          "decidedAt": "2026-10-10T04:28:37.716Z"
+        }
+      }
+    ]
+  },
+  "turns": [
+    {
+      "say": "这份报价我看过没问题，按6211-2RS 6件、合计115.20元接受，就走这单采购。",
+      "script": [
+        {
+          "content": "您的报价单已批准且仍在有效期内，可以直接确认：\n\n6211-2RS × 6，合计115.20元（含13%税），现货，运费0元，报价有效期7天。\n\n付款条款：款到发货，对公转账，可开增值税普通发票或专用发票，具体开票要求可在下单时备注。请按报价单链接完成付款，顾问收到款后会安排发货。还有其他需要吗？"
+        }
+      ],
+      "expect": {
+        "replyMatches": ["(?<![\\d.])115\\.20\\s*元"],
+        "replyExcludes": ["试算[：:]"]
+      }
+    }
+  ]
+}
