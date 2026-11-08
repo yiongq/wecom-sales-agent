@@ -1,3 +1,4 @@
+import { processLeaseEnabled, processLeaseStale, ProcessEpochStale } from '../tenancy/process-lease.js';
 import { currentRuntime, withTenantScope, withoutTenantScope, tenantCallback, type TenantRuntime } from '../tenancy/runtime.js';
 // PG 会话后端（docs/architecture/02-conversations-workbench/spec.md「identity map 与写入」，R2、R4、R7）：
 // 分批预载、每会话写队列与合并、一次落库的七步、进快照即冻结、失败两类与 poisoned、撞上另一写者即优雅停机、
@@ -12,7 +13,7 @@ import { randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { pgErrorOf, trySavepoint, withTenant, type Db, type TenantCtx, type Tx } from '../db/client.js';
+import { fenceCurrentProcessEpoch, pgErrorOf, trySavepoint, withTenant, type Db, type TenantCtx, type Tx } from '../db/client.js';
 import { writeAuditAs, type AuditEntry } from '../db/repo/audit.js';
 import { insertAttachments, writeAttachmentResult, type AttachmentItem, type AttachmentResultWrite } from '../db/repo/attachments.js';
 import { applyInboxStates, type InboxStateWrite } from '../db/repo/channel-inbox.js';
@@ -61,6 +62,25 @@ import {
   type OrderRowShape,
 } from './project.js';
 import { assignSeqs, lastSeqOf, linkTurn, seedSeqs, seqOf, turnIdOf, WindowCorruptError, windowStartOf } from './seq.js';
+
+// 18 R3：同一事务先栅栏再写；预载的只读快照不加行锁，非等锁模式原样调用。
+function withStoreTenant<T>(
+  db: Db,
+  ctx: TenantCtx,
+  fn: (tx: Tx) => Promise<T>,
+  opts: import('../db/client.js').WithTenantOpts = {},
+): Promise<T> {
+  if (!processLeaseEnabled() || opts.readOnly) return withTenant(db, ctx, fn, opts);
+  return withTenant(
+    db,
+    ctx,
+    async (tx) => {
+      await fenceCurrentProcessEpoch(tx);
+      return fn(tx);
+    },
+    opts,
+  );
+}
 
 // 模块加载时取一个空的异步上下文：每次落库都在它里面启动。在 withTenant 回调或轮次上下文里调 saveSession，
 // 排出的落库也不继承那个上下文（withTenant 不能嵌套，轮次的 trace 也不该串进落库）
@@ -122,7 +142,7 @@ export interface TelemetryRows {
 }
 
 /** markOutboundSending 的结果（03 spec「出站：投递状态」的 markSending） */
-export type MarkSendingResult = 'marked' | 'not_pending' | 'absent' | 'db_unavailable';
+export type MarkSendingResult = 'marked' | 'not_pending' | 'absent' | 'db_unavailable' | 'stale';
 
 // ---------------- spill 文件 ----------------
 
@@ -596,7 +616,7 @@ async function preload(d: PgBackendDeps): Promise<Preloaded> {
   };
   const since = new Date(Date.now() - MSGID_WINDOW_MS);
   try {
-    await withTenant(
+    await withStoreTenant(
       d.db,
       systemCtx(d.tenantId),
       async (tx) => {
@@ -835,7 +855,7 @@ async function replayEntry(tx: Tx, entry: SpillEntry): Promise<{ result: 'applie
 async function replayChannelOnly(d: PgBackendDeps, name: string, entry: SpillEntry): Promise<boolean> {
   try {
     return await detached(() =>
-      withTenant(d.db, systemCtx(d.tenantId), async (tx) => {
+      withStoreTenant(d.db, systemCtx(d.tenantId), async (tx) => {
         const rows = replayChannelOf(entry, await lockConversation(tx, entry.id));
         if (!rows || !hasChannelRows(rows)) return false;
         const w = await writeChannelRows(tx, rows);
@@ -936,7 +956,7 @@ async function replayFile(d: PgBackendDeps, name: string): Promise<Replayed> {
   for (const entry of doc.sessions) {
     let r: 'applied' | 'skipped' | 'conflict';
     try {
-      const res = await detached(() => withTenant(d.db, systemCtx(d.tenantId), (tx) => replayEntry(tx, entry)));
+      const res = await detached(() => withStoreTenant(d.db, systemCtx(d.tenantId), (tx) => replayEntry(tx, entry)));
       r = res.result;
       if (res.wroteChannel) channelWritten++;
     } catch (e) {
@@ -1229,6 +1249,10 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       pumpPoisoned(e);
       return;
     }
+    if (processLeaseStale()) {
+      discardStaleWrites();
+      return;
+    }
     if ('error' in r && classify(r.error) === 'data') {
       // 重来一遍还是一样（只剩代码缺陷一种来源，R21 的同步校验）：这一批丢掉、计数，后面的照写
       dropChannelRows(rows, e.id, errLabel(r.error));
@@ -1257,7 +1281,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     const refused = conflict ? 'conflict' : closed ? 'closed' : !d.writable() ? 'held_by_other' : null;
     if (refused) return { ok: false, refused };
     try {
-      return { ok: true, value: await detached(() => withTenant(d.db, ctx, fn)) };
+      return { ok: true, value: await detached(() => withStoreTenant(d.db, ctx, fn)) };
     } catch (error) {
       return { ok: false, error };
     }
@@ -1395,7 +1419,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     let error: unknown = null;
     let recognized = false;
     try {
-      await withTenant(d.db, ctx, (tx) => writeSnap(tx, e, snap));
+      await withStoreTenant(d.db, ctx, (tx) => writeSnap(tx, e, snap));
     } catch (err) {
       if (err instanceof AlreadyCommitted) recognized = true;
       else error = err;
@@ -1447,7 +1471,32 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     if (e.poisoned) kickPoisoned(e);
   }
 
+  function discardStaleWrites(): number {
+    closed = true;
+    lastError = 'process_epoch_stale';
+    let count = 0;
+    let messages = 0;
+    let channel = 0;
+    for (const e of entries.values()) {
+      if (isDirty(e) || hasChannelRows(e.pc) || e.pcRun) count++;
+      messages += e.pending.length;
+      channel += e.channel.length + e.inbox.length + e.pc.outbound.length + e.pc.inbox.length + e.pc.results.length;
+      if (e.inflight) channel += e.inflight.channel.length + e.inflight.inbox.length;
+      if (e.timer) clearTimeout(e.timer);
+      if (e.pcTimer) clearTimeout(e.pcTimer);
+      rejectWaiters(e);
+    }
+    entries.clear();
+    if (count)
+      console.error(`[store] process_epoch_stale：丢弃 ${count} 个未落库会话、${messages} 条消息、${channel} 条渠道写入，不写 spill`);
+    return count;
+  }
+
   function failed(e: Entry, snap: Snap, err: unknown): void {
+    if (err instanceof ProcessEpochStale || processLeaseStale()) {
+      discardStaleWrites();
+      return;
+    }
     const label = errLabel(err);
     const kind = classify(err);
     if (kind === 'conflict') {
@@ -1591,7 +1640,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     if (conflict) return Promise.reject(new JobsTxRefused('conflict'));
     if (closed) return Promise.reject(new JobsTxRefused('closed'));
     if (!d.writable()) return Promise.reject(new JobsTxRefused('held_by_other'));
-    return detached(() => withTenant(d.db, ctx, fn));
+    return detached(() => withStoreTenant(d.db, ctx, fn));
   }
 
   return {
@@ -1785,10 +1834,11 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       return false;
     },
     async markOutboundSending(channelMsgid, timeoutMs) {
+      if (processLeaseStale()) return 'stale';
       if (conflict || closed || !d.writable()) return 'db_unavailable';
       let gaveUp = false;
       const work = detached(() =>
-        withTenant(d.db, ctx, async (tx) => {
+        withStoreTenant(d.db, ctx, async (tx) => {
           if (gaveUp) throw new MarkAbandoned();
           const r = await markOutboundSending(tx, channelMsgid);
           if (gaveUp) throw new MarkAbandoned();
@@ -1805,6 +1855,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       try {
         return await Promise.race([work, late]);
       } catch (err) {
+        if (err instanceof ProcessEpochStale) return 'stale';
         if (!(err instanceof MarkAbandoned)) console.error(`[store] 出站行标 sending 的短事务没写成（${errLabel(err)}），按库不可用处理`);
         return 'db_unavailable';
       } finally {
@@ -1815,7 +1866,9 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     async unmarkOutbound(channelMsgid) {
       if (conflict || closed || !d.writable()) return false;
       try {
-        return (await detached(() => withTenant(d.db, ctx, (tx) => transitionOutbound(tx, channelMsgid, 'pending', 'unmark')))) !== null;
+        return (
+          (await detached(() => withStoreTenant(d.db, ctx, (tx) => transitionOutbound(tx, channelMsgid, 'pending', 'unmark')))) !== null
+        );
       } catch (err) {
         console.error(`[store] 出站行迁回 pending 的短事务没写成（${errLabel(err)}）`);
         return false;
@@ -1827,7 +1880,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       if (closed) throw new UsageWriteError('closed');
       if (!d.writable()) throw new UsageWriteError('held_by_other');
       try {
-        await detached(() => withTenant(d.db, ctx, (tx) => addUsage(tx, deltas), { sandboxMaintenance: true }));
+        await detached(() => withStoreTenant(d.db, ctx, (tx) => addUsage(tx, deltas), { sandboxMaintenance: true }));
       } catch (err) {
         // drizzle 把驱动错误包一层，SQLSTATE 在 cause 里：在这一侧取好（src/trace 不 import src/db/**）
         throw new UsageWriteError(pgErrorOf(err).code ?? (err instanceof Error ? err.name : 'unknown'), { cause: err });
@@ -1835,7 +1888,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
     },
     async writeStandaloneAudit(item) {
       try {
-        await detached(() => withTenant(d.db, ctx, (tx) => writeAuditAs(tx, item.actor, item.entry)));
+        await detached(() => withStoreTenant(d.db, ctx, (tx) => writeAuditAs(tx, item.actor, item.entry)));
       } catch (err) {
         console.error(`[store] demo 类会话的审计没写进去（${errLabel(err)}）：${item.entry.action}`);
       }
@@ -1857,7 +1910,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
         return;
       }
       try {
-        await detached(() => withTenant(d.db, ctx, (tx) => insertOutboundSends(tx, rows)));
+        await detached(() => withStoreTenant(d.db, ctx, (tx) => insertOutboundSends(tx, rows)));
       } catch (err) {
         console.error(`[store] 没有会话的发送账本行没写进去（${errLabel(err)}），丢弃 ${rows.length} 行`);
       }
@@ -1869,7 +1922,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       }
       try {
         const sessionId = await detached(() =>
-          withTenant(d.db, ctx, async (tx) => {
+          withStoreTenant(d.db, ctx, async (tx) => {
             let sid: string | null = null;
             if (full) await insertOutboundSends(tx, [full]);
             else sid = await markOutboundFailed(tx, channelMsgid, failType);
@@ -1979,6 +2032,10 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       });
     },
     async drain(timeoutMs) {
+      if (processLeaseStale()) {
+        discardStaleWrites();
+        return { undrained: [] };
+      }
       const deadline = Date.now() + timeoutMs;
       // 已冲突或租户锁在别人手里：不写库，全部留给 exit 时的 spill
       if (!conflict && d.writable()) {
@@ -2004,6 +2061,7 @@ function createBackend(d: PgBackendDeps, pre: Preloaded, replay: Replayed): PgBa
       return { undrained: [...entries.values()].filter(isDirty).map((e) => e.id) };
     },
     spillSync() {
+      if (processLeaseStale()) return discardStaleWrites();
       if (rt.kind === 'sandbox') {
         const count = [...entries.values()].filter((e) => isDirty(e) || hasChannelRows(e.pc) || e.pcRun !== null).length;
         console.log(`[sandbox] 停机丢弃未落库会话 ${count}`);

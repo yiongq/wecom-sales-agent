@@ -398,9 +398,12 @@ async function suite(q: Query, app: AsApp, real: boolean): Promise<void> {
     'purge 返回每表删除数',
   );
   check(
-    catalogue.filter((t) => !['channel_accounts', 'channel_inbox'].includes(t)).every((t) => (counts?.counts[t] ?? 0) > 0),
+    catalogue
+      .filter((t) => !['channel_accounts', 'channel_inbox', 'process_epochs'].includes(t))
+      .every((t) => (counts?.counts[t] ?? 0) > 0),
     '全部可写租户表返回正删除数，级联子表没有漏数',
   );
+  check(counts?.counts.process_epochs === 0, '标准宿主的 process_epochs 在沙箱中没有写入');
   for (const table of catalogue) {
     check((await q(`select 1 from public.${table} where tenant_id=$1`, [created.tenantId])).length === 0, `purge 后 ${table} 为 0 行`);
   }

@@ -3,6 +3,25 @@ export const STATE_MANIFEST: Record<
   string,
   { kind: 'tenant'; state: string } | { kind: 'instance'; why: string } | { kind: 'object-keyed' }
 > = Object.freeze({
+  'src/tenancy/process-lease.ts:waiters': { kind: 'tenant', state: 'processLease.waiters' },
+  'src/tenancy/process-lease.ts:epochs': { kind: 'tenant', state: 'processLease.epochs' },
+  'src/db/schema.ts:processEpochs': { kind: 'instance', why: 'Drizzle 静态表定义，不保存租户行。' },
+  'src/tenancy/process-lease.ts:processHolder': {
+    kind: 'instance',
+    why: '18 R3 宿主共享锁的进程身份、状态与停止/监听订阅，影响全部标准租户。',
+  },
+  'src/tenancy/process-lease.ts:listeners': {
+    kind: 'instance',
+    why: '18 R3 宿主共享锁的进程身份、状态与停止/监听订阅，影响全部标准租户。',
+  },
+  'src/tenancy/process-lease.ts:acquired': { kind: 'instance', why: '18 R3 宿主共享锁的进程身份、状态与停止/监听订阅，影响全部标准租户。' },
+  'src/tenancy/process-lease.ts:held': { kind: 'instance', why: '18 R3 宿主共享锁的进程身份、状态与停止/监听订阅，影响全部标准租户。' },
+  'src/tenancy/process-lease.ts:stale': { kind: 'instance', why: '18 R3 宿主共享锁的进程身份、状态与停止/监听订阅，影响全部标准租户。' },
+  'src/tenancy/process-lease.ts:exitStale': {
+    kind: 'instance',
+    why: '18 R3 宿主共享锁的进程身份、状态与停止/监听订阅，影响全部标准租户。',
+  },
+
   'src/ops/runbooks.ts:sections': { kind: 'instance', why: '公共固定手册文件的只读缓存，不保存租户数据；缺失延迟到请求返回 503。' },
   'src/ops/ops-config.ts:validated': { kind: 'instance', why: '环境配置及运行时目录的校验签名，仅用于抑制重复配置错误；目录改变即重验。' },
   'src/ops/digest.ts:scheduled': { kind: 'tenant', state: 'ops.digest.schedule' },

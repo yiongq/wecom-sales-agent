@@ -1,3 +1,11 @@
+import {
+  processLeaseEnabled,
+  processLeaseHeld,
+  processLeaseStale,
+  assertProcessLeaseHeld,
+  waitForProcessLease,
+  ProcessLeaseUnavailable,
+} from '../tenancy/process-lease.js';
 import { customerRate } from '../tenancy/customer-rate.js';
 import { limitHandoffReply } from '../tenancy/limit-handoff.js';
 import { limitVerdict } from '../tenancy/limits.js';
@@ -18,7 +26,7 @@ import {
   type TenantRuntime,
 } from '../tenancy/runtime.js';
 import { cardLinks, coreSiteLinks, registeredTextLinks } from '../core/site-links.js';
-import { currentPack } from '../config/source.js';
+import { checkProcessEpochBeforeSend, currentPack } from '../config/source.js';
 import { earlyAttachment, prepareAttachment, type PreparedAttachment } from '../core/attachment-intake.js';
 import { INTAKE_FAILED } from '../core/engine/intake.js';
 import { listAttachmentMetadata, readAttachment } from '../store.js';
@@ -484,6 +492,8 @@ async function getAccessToken(rt: SendRuntime, cfg: WecomConfig, force = false):
   rt.tokenInflight ??= (async () => {
     try {
       const url = `${API_BASE}/gettoken?corpid=${encodeURIComponent(cfg.corpId)}&corpsecret=${encodeURIComponent(cfg.secret)}`;
+      if (processLeaseEnabled() && !(await checkProcessEpochBeforeSend())) throw new ProcessLeaseUnavailable();
+      assertProcessLeaseHeld();
       const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
       const data = (await res.json()) as { errcode?: number; errmsg?: string; access_token?: string; expires_in?: number };
       if (data.errcode || !data.access_token) {
@@ -535,6 +545,8 @@ async function callApi<T extends { errcode?: number; errmsg?: string }>(
   if (rt instanceof SandboxWecomRuntime) return rt.callApi<T>(endpoint, body as Record<string, unknown>);
   let token = await tokenOrThrow(rt, cfg);
   for (let attempt = 0; attempt < 2; attempt++) {
+    if (processLeaseEnabled() && !(await checkProcessEpochBeforeSend())) throw new ProcessLeaseUnavailable();
+    assertProcessLeaseHeld();
     beforeSend?.();
     const res = await fetch(`${API_BASE}/${endpoint}?access_token=${encodeURIComponent(token)}`, {
       method: 'POST',
@@ -640,6 +652,8 @@ async function uploadThumb(rt: SendRuntime, cfg: WecomConfig, target?: string): 
       const token = await getAccessToken(rt, cfg);
       const form = new FormData();
       form.append('media', new Blob([new Uint8Array(buf)], { type: 'image/png' }), 'proposal-thumb.png');
+      if (processLeaseEnabled() && !(await checkProcessEpochBeforeSend())) return null;
+      assertProcessLeaseHeld();
       const res = await (rt instanceof SandboxWecomRuntime
         ? rt.upload(token, form, target)
         : fetch(`${API_BASE}/media/upload?access_token=${encodeURIComponent(token)}&type=image`, {
@@ -1110,6 +1124,7 @@ async function sendSegment(
   rest: readonly OutboundIntent[],
 ): Promise<'accepted' | 'failed' | 'skipped' | 'taken_over' | 'deferred'> {
   const { rt, cfg } = g;
+  if (!processLeaseHeld()) return 'deferred';
   const isLink = intent.payload.msgtype === 'link';
   // 发之前要等的（access_token、卡片的缩略图）先等完：markSending 之后到发请求之间不再等别的
   let token: string;
@@ -1134,6 +1149,7 @@ async function sendSegment(
   // 4 markSending（启动恢复补发的 sending 段已是 sending，直接发）
   const already = g.alreadySending?.has(intent.msgid) ?? false;
   const mark = already ? 'marked' : await markSending(intent);
+  if (mark === 'stale' || !processLeaseHeld()) return 'deferred';
   if (mark === 'not_pending') return 'skipped';
   if (mark === 'absent' && g.commit.get(intent.msgid) !== 'timeout') {
     // pending 提交过、行又没了：只会是被清除（保留期清理、行权删除）。不发
@@ -1171,6 +1187,9 @@ async function sendSegment(
       }
       if (!stillCurrent(g) || sendsClosed(rt) || !maySendAgain(intent)) break;
     }
+    if (processLeaseEnabled() && (already || attempt > 0) && !(await checkProcessEpochBeforeSend())) return 'deferred';
+    if (!processLeaseHeld()) return 'deferred';
+    if (!stillCurrent(g) || sendsClosed(rt) || (attempt > 0 && !maySendAgain(intent))) break;
     noteAttempt(intent);
     attempts++;
     try {
@@ -1185,6 +1204,9 @@ async function sendSegment(
         } catch {
           break;
         }
+        if (!stillCurrent(g) || sendsClosed(rt) || !maySendAgain(intent)) break;
+        if (processLeaseEnabled() && !(await checkProcessEpochBeforeSend())) return 'deferred';
+        if (!processLeaseHeld()) return 'deferred';
         if (!stillCurrent(g) || sendsClosed(rt) || !maySendAgain(intent)) break;
         noteAttempt(intent);
         attempts++;
@@ -1944,6 +1966,7 @@ const chainKeyOf = (row: InboxRow): string => row.conversationId ?? row.msgid;
  * 与保底）；为空的是这个进程新收的（received）。replied 的行（只补发分段、不调模型）同样计次，一组分段反复把进程带崩也会停下来
  */
 async function processInboxRow(rt: WecomRuntime, cfg: WecomConfig, row: InboxRow, rec: InboundRecoveryCtx | null = null): Promise<void> {
+  if (!processLeaseHeld() && !(await waitForProcessLease(currentRuntime().id))) return;
   const inbox = inboxOf(rt);
   // 停机时这个会话排在前面的那一行放下了：它后面的也都不出队，按 ord 整段留给重启恢复
   if (rt.haltedChains.has(chainKeyOf(row))) return;
@@ -2310,6 +2333,8 @@ async function downloadAttachment(rt: WecomRuntime, cfg: WecomConfig, msg: KfMes
     for (let attempt = 0; attempt < 2; attempt++) {
       const token = await getAccessToken(rt, cfg, attempt > 0);
       signal.throwIfAborted();
+      if (processLeaseEnabled() && !(await checkProcessEpochBeforeSend())) throw new ProcessLeaseUnavailable();
+      assertProcessLeaseHeld();
       const response = await fetch(
         `${API_BASE}/media/get?access_token=${encodeURIComponent(token)}&media_id=${encodeURIComponent(media.media_id)}`,
         { signal },
@@ -2606,7 +2631,7 @@ async function drainInbox(rt: WecomRuntime, inbox: AccountInbox, cfg: WecomConfi
       console.error(`${rt.tag} kf/sync_msg 失败: errcode=${data.errcode}`);
       return;
     }
-    if (rt.stopping) return;
+    if (rt.stopping || !processLeaseHeld()) return;
     const page = data.msg_list ?? [];
     let rows: InboxRow[];
     try {
@@ -2623,7 +2648,7 @@ async function drainInbox(rt: WecomRuntime, inbox: AccountInbox, cfg: WecomConfi
     }
     notePullSuccess(rt);
     dispatchInboxRows(rt, cfg, rows, new Map(page.map((m) => [m.msgid, m])));
-    if (!data.has_more || rt.stopping) return;
+    if (!data.has_more || rt.stopping || !processLeaseHeld()) return;
   }
 }
 
@@ -2636,7 +2661,16 @@ async function drainInbox(rt: WecomRuntime, inbox: AccountInbox, cfg: WecomConfi
 
 function enqueueForUser(rt: WecomRuntime, uid: string, task: () => Promise<void>): void {
   const prev = rt.userChains.get(uid) ?? Promise.resolve();
-  const next = prev.then(task).catch((err) => console.error(`${rt.tag} 单条消息处理异常（继续后续消息）:`, apiErrorCode(err)));
+  const next = prev
+    .then(
+      processLeaseEnabled()
+        ? async () => {
+            if (!processLeaseHeld() && !(await waitForProcessLease(currentRuntime().id))) return;
+            return task();
+          }
+        : task,
+    )
+    .catch((err) => console.error(`${rt.tag} 单条消息处理异常（继续后续消息）:`, apiErrorCode(err)));
   rt.userChains.set(uid, next);
   void next.finally(() => {
     if (rt.userChains.get(uid) === next) rt.userChains.delete(uid);
@@ -2681,7 +2715,7 @@ function dispatch(rt: WecomRuntime, cfg: WecomConfig, msg: KfMessage, replay = f
 // 记 pending，本轮拉完立刻补拉。
 
 function syncOnce(rt: WecomRuntime, cfg: WecomConfig, syncToken?: string): Promise<void> {
-  if (currentRuntime().kind === 'sandbox' || rt.stopping || rt.recovery !== 'done') return Promise.resolve();
+  if (!processLeaseHeld() || currentRuntime().kind === 'sandbox' || rt.stopping || rt.recovery !== 'done') return Promise.resolve();
   if (rt.syncTask) {
     rt.pendingRequested = true;
     if (syncToken) rt.pendingToken = syncToken;
@@ -2698,7 +2732,7 @@ function syncOnce(rt: WecomRuntime, cfg: WecomConfig, syncToken?: string): Promi
         rt.pendingToken = undefined;
         // 两个标志都在 await 期间由别的调用改（syncOnce 记 pending、停机置 stopping），不是死循环
         // oxlint-disable-next-line no-unmodified-loop-condition
-      } while (rt.pendingRequested && !rt.stopping);
+      } while (rt.pendingRequested && !rt.stopping && processLeaseHeld());
     } catch (e) {
       rt.pullFailureAt ??= observationClock();
       rt.lastErrorCode = apiErrorCode(e);
@@ -2725,7 +2759,7 @@ async function drainMessages(rt: WecomRuntime, state: FileWecomState, cfg: Wecom
       return;
     }
     // 拉取途中收到停机信号：这一页不认领（cursor 不推进、不标记），新进程启动补拉时会再拿到
-    if (rt.stopping) return;
+    if (rt.stopping || !processLeaseHeld()) return;
     notePullSuccess(rt);
     const accepted: KfMessage[] = [];
     let skippedOld = 0;
@@ -2764,7 +2798,7 @@ async function drainMessages(rt: WecomRuntime, state: FileWecomState, cfg: Wecom
     // sync_msg 不会再返回这批消息，进程若死在处理途中，只能靠落盘的原文重放
     await state.save();
     for (const msg of accepted) dispatch(rt, cfg, msg);
-    if (!data.has_more || rt.stopping) return;
+    if (!data.has_more || rt.stopping || !processLeaseHeld()) return;
   }
 }
 
@@ -2991,7 +3025,7 @@ async function runRecovery(rt: WecomRuntime, cfg: WecomConfig, start: WecomAccou
       );
       if (out.stop === 'deferred') console.log(`${rt.tag} 停机中、发送已截止，恢复要补发的一段留在库里（下次启动再按出站恢复表处理）`);
     },
-    stopping: () => rt.stopping,
+    stopping: () => rt.stopping || processLeaseStale(),
   };
   try {
     // R11：停机前只排队、还没发的等待句已过时；其余 notice 的恢复规则不变。
@@ -3323,6 +3357,19 @@ export { __channelTest } from '../channels/recovery.js';
 
 /** 仅供自测（src/adapters/wecom-03.selftest.ts）：按账号看运行时 */
 export const __wecomTest = {
+  async welcome(accountId: string): Promise<boolean> {
+    const rt = state().runtimes.get(accountId);
+    const cfg = rt?.config();
+    return rt && cfg ? sendWelcomeOnEvent(rt, cfg, 'fake-welcome') : false;
+  },
+  /** 驱动启动恢复使用的同一发送组，验证 alreadySending 与每次重试的进程栅栏。 */
+  async resend(accountId: string, intent: OutboundIntent, alreadySending: boolean): Promise<boolean> {
+    const rt = state().runtimes.get(accountId);
+    const cfg = rt?.config();
+    if (!rt || !cfg) return false;
+    const result = await sendGroup(groupOfIntents(rt, cfg, [intent], { inboxId: null, alreadySending }));
+    return result.ok && result.stop === null;
+  },
   /** 实际推送路由选择的账号，用于验证同前缀的跨租户选择。 */
   routeAccount(sessionId: string): string | null {
     return pushRoute(sessionId, true)?.rt.id ?? null;

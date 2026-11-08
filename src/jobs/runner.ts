@@ -1,3 +1,4 @@
+import { processLeaseHeld } from '../tenancy/process-lease.js';
 import { ensureDigest, runDigest } from '../ops/digest.js';
 import { recoverReports } from '../db/repo/ops-reports.js';
 import { TenantObservers } from '../tenancy/observers.js';
@@ -174,7 +175,7 @@ let lastClaimLog = 0;
 /** 结果没写进库的：下一拍先补写一次（照样带令牌），再失败就留给下次启动归位 */
 
 /** 租户锁在本进程手里：锁连接断开（lost，正在重取）或已被另一个进程拿走时，不认领、不执行 */
-const lockHeld = (): boolean => configHealth().lock === 'held' && !tenantLockTaken();
+const lockHeld = (): boolean => processLeaseHeld() && configHealth().lock === 'held' && !tenantLockTaken();
 
 const logThrottled = (msg: string): void => {
   if (Date.now() - lastClaimLog < CLAIM_LOG_MS) return;
@@ -380,6 +381,7 @@ async function prelude(now: number): Promise<boolean> {
 /** 一条道认领一批（只认领这条道的几类）并逐个执行 */
 async function tickLane(lane: Lane, now: number): Promise<number> {
   const own = state();
+  if (!processLeaseHeld()) return 0;
   let claimed: JobRow[];
   try {
     claimed = await withJobsTx((tx) => claimDueJobs(tx, new Date(now), BATCH, lane.kinds));
@@ -408,7 +410,13 @@ async function tickLane(lane: Lane, now: number): Promise<number> {
  */
 export function runJobsOnce(now = Date.now()): Promise<number> {
   const own = state();
-  if (currentRuntime().kind !== 'standard' || currentRuntime().state !== 'serving' || stopping || sessionStoreMode() !== 'db')
+  if (
+    !processLeaseHeld() ||
+    currentRuntime().kind !== 'standard' ||
+    currentRuntime().state !== 'serving' ||
+    stopping ||
+    sessionStoreMode() !== 'db'
+  )
     return Promise.resolve(0);
   const idle = LANES.filter((lane) => !own.laneTasks.has(lane.name));
   if (!idle.length) return Promise.resolve(0);

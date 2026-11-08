@@ -1,3 +1,4 @@
+import { processLeaseWaiting, processLeaseStale } from './tenancy/process-lease.js';
 import { noteAiReply } from './tenancy/limits.js';
 import { LIMIT_QUOTA_REPLY, LIMIT_SUSPENDED_REPLY, LIMIT_RATE_REPLY } from './tenancy/limit-replies.js';
 import { assertSandboxNewConversation } from './tenancy/sandbox/limits.js';
@@ -795,11 +796,12 @@ export function flushStoreNow(): void {
 
 /** 每个已装载的后端独立收尾，坏租户不能跳过宿主；检查不触发 store 创建。 */
 export function spillStoresSync(): void {
+  if (processLeaseWaiting()) return;
   const runtimes = tenantRuntimes().toSorted((a, b) => Number(b.isHost) - Number(a.isHost));
   for (const rt of runtimes) {
     const state = tenantStoreIfLoaded(rt);
     if (!state) continue;
-    for (const backend of [state.fileBackend, state.pgBackend]) {
+    for (const backend of [processLeaseStale() ? null : state.fileBackend, state.pgBackend]) {
       if (!backend) continue;
       try {
         tenantCallback(rt, () => backend.spillSync())();
@@ -915,6 +917,7 @@ export function pruneStaleVisitorData(): void {
 
 // 启动即保鲜/清理一次，此后每小时一次（unref 不阻退出）
 export function startStoreMaintenance(rt: TenantRuntime): void {
+  if (processLeaseWaiting() || processLeaseStale()) return;
   withTenantScope(rt, () => {
     if (!rt.isHost || rt.store.maintenanceTimer) return;
     freshenDemoData();
@@ -922,6 +925,7 @@ export function startStoreMaintenance(rt: TenantRuntime): void {
     rt.store.maintenanceTimer = withoutTenantScope(() =>
       setInterval(
         tenantCallback(rt, () => {
+          if (processLeaseStale()) return;
           freshenDemoData();
           pruneStaleVisitorData();
         }),

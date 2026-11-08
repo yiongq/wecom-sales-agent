@@ -1,3 +1,4 @@
+import { processLeaseEnabled } from '../tenancy/process-lease.js';
 import { registerTenantState } from '../tenancy/state.js';
 import { TenantObservers } from '../tenancy/observers.js';
 // 入站：channel_inbox（docs/architecture/03-channels-v2/spec.md「入站：channel_inbox」、R2、R3、不变量 1、2、8、11、12）。
@@ -12,7 +13,7 @@ import { TenantObservers } from '../tenancy/observers.js';
 // 没有会话可挂的经 writeInboxStateNow 单独一个短事务。出队时的判定（poison、too_old、恢复截止）在适配器的处理链里（src/adapters/wecom.ts）。
 // 短事务都经 store 的 withChannelTx（与任务表的短事务同一套拒写规则：已冲突、停机、租户锁在别人手里时不写）。
 import type { KfMessage } from '../adapters/wecom-state.js';
-import { pgErrorOf, type Tx } from '../db/client.js';
+import { fenceCurrentProcessEpoch, pgErrorOf, type Tx } from '../db/client.js';
 import { readAccountCursor, updateChannelAccount } from '../db/repo/channel-accounts.js';
 import { bumpInboxAttempts, insertInboxRows, readOpenInbox, type InboxRecord, type NewInboxRow } from '../db/repo/channel-inbox.js';
 import { readOutboundOfInboxes } from '../db/repo/outbound.js';
@@ -278,6 +279,7 @@ export class AccountInbox implements PgInbox {
     const advance = !!nextCursor && nextCursor !== this.cursor;
     if (!rows.length && !advance) return [];
     const inserted = await inboxTx(async (tx) => {
+      if (processLeaseEnabled()) await fenceCurrentProcessEpoch(tx);
       const ins = rows.length ? await insertInboxRows(tx, accountId, rows) : [];
       if (advance) await updateChannelAccount(tx, accountId, { cursor: nextCursor, cursorAt: new Date() });
       return ins;

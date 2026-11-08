@@ -1,3 +1,5 @@
+import { processLeaseEnabled, processLeaseHeld } from './tenancy/process-lease.js';
+import { listenWithProcessLease } from './server-listener.js';
 import { isSiteHtml } from './core/site-links.js';
 // HTTP 服务：静态页面 + 模拟器 API + 管理后台 API + 企微回调。
 // 注意路由注册顺序：API 在前，serveStatic 兜底在后。
@@ -126,6 +128,8 @@ import { sandboxSessionOf, sandboxSimulatorId } from './tenancy/sandbox/session.
 import { CONSOLE_SECURITY_HEADERS } from './shared/security-headers.js';
 
 const app = new Hono();
+// 已接受连接上的后续请求也不得在失锁后开新轮次。
+if (processLeaseEnabled()) app.use('/*', async (c, next) => (processLeaseHeld() ? next() : c.json({ error: 'service_unavailable' }, 503)));
 const sandbox = process.env.APP_ROLE === 'sandbox' ? new SandboxProcess(process.env) : null;
 // 每个请求一个 req（响应头 x-request-id），两个角色都在任何路由分派之前建立日志上下文。
 app.use('/*', requestLogContext);
@@ -1372,11 +1376,24 @@ if (!SELFTEST && !sandbox) {
           ),
       );
     },
-    serve: (onListening) =>
-      void serve({ fetch: app.fetch, port }, (info) => {
-        withTenantScope(hostRuntime(), () => logStartup(info.port));
-        onListening();
-      }),
+    serve: (onListening) => {
+      if (!processLeaseEnabled()) {
+        serve({ fetch: app.fetch, port }, (info) => {
+          withTenantScope(hostRuntime(), () => logStartup(info.port));
+          onListening();
+        });
+        return;
+      }
+      const close = listenWithProcessLease((first) =>
+        serve({ fetch: app.fetch, port }, (info) => {
+          if (first) {
+            withTenantScope(hostRuntime(), () => logStartup(info.port));
+            onListening();
+          }
+        }),
+      );
+      onShutdown(close);
+    },
     preflight: startupPreflight,
     // 语义检索索引异步构建：不阻塞启动，构建完成前 search_routes 自动走关键词匹配
     buildIndex: () =>

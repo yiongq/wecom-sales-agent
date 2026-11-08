@@ -10,6 +10,7 @@ import { drizzle } from 'drizzle-orm/node-postgres';
 import type { PgDatabase, PgQueryResultHKT, PgTransaction } from 'drizzle-orm/pg-core';
 import pg from 'pg';
 import * as schema from './schema.js';
+import { processEpoch, processLeaseEnabled, processLeaseStale, ProcessEpochStale, staleProcessLease } from '../tenancy/process-lease.js';
 
 export type Schema = typeof schema;
 /** 两个驱动共同的基类：node-postgres 与 PGlite 都满足 */
@@ -213,6 +214,49 @@ export function rowsOf<T>(result: unknown): T[] {
 }
 
 // ---------------- 租户上下文 ----------------
+
+/** 18 R3：锁持有者启动时推进；共享行锁与写入事务一起结束，接管的 UPDATE 必须等旧事务提交。 */
+export async function bumpProcessEpoch(
+  tenantId: string,
+  holder: string,
+  db = runtimeOf(tenantId)?.config.loaded?.deps.db,
+): Promise<bigint> {
+  if (!db) throw new Error('process_epoch_database_required');
+  return withTenant(db, { tenantId, actor: { kind: 'system', userId: null, name: null, ip: null } }, async (tx) => {
+    const [row] = rowsOf<{ epoch: string }>(
+      await tx.execute(sql`
+      insert into public.process_epochs (tenant_id, epoch, holder, acquired_at)
+      values (${tenantId}::uuid, 1, ${holder}, now())
+      on conflict (tenant_id) do update set epoch = process_epochs.epoch + 1, holder = excluded.holder, acquired_at = excluded.acquired_at
+      returning epoch`),
+    );
+    return BigInt(row!.epoch);
+  });
+}
+
+export async function fenceProcessEpoch(tx: Tx, epoch: bigint): Promise<void> {
+  const { tenantId } = currentTenantCtx();
+  const [row] = rowsOf<{ epoch: string }>(
+    await tx.execute(sql`
+    select epoch from public.process_epochs where tenant_id = ${tenantId}::uuid for share`),
+  );
+  if (!row || BigInt(row.epoch) !== epoch) {
+    if (processLeaseEnabled()) staleProcessLease();
+    throw new ProcessEpochStale();
+  }
+}
+
+/** 只给运行时的三类写事务用；CLI 与非等锁模式不增加查询。 */
+export async function fenceCurrentProcessEpoch(tx: Tx): Promise<void> {
+  if (!processLeaseEnabled()) return;
+  if (processLeaseStale()) throw new ProcessEpochStale();
+  const epoch = processEpoch(currentTenantCtx().tenantId);
+  if (epoch === undefined) {
+    staleProcessLease();
+    throw new ProcessEpochStale();
+  }
+  await fenceProcessEpoch(tx, epoch);
+}
 
 /** 05 R2：实例 epoch 的共享行锁持有到事务提交，bigint 不转成不精确的 JS number。 */
 export async function fenceSandboxEpoch(tx: Tx, epoch: string): Promise<void> {
@@ -429,14 +473,15 @@ export async function holdTenantLock(url: string, tenantId: string, opts: { keep
   return holdTenantLocks(url, [tenantId], opts);
 }
 
-/** 05 R2：宿主进程一条专用连接，启动时一次取得全部装载租户的锁。 */
+/** 05 R2：宿主一条专用连接。18 R3 的 waitForever 仅由标准宿主启动传入，CLI 与沙箱的等待策略不变。 */
 export async function holdTenantLocks(
   url: string,
   tenantIds: readonly string[],
-  opts: { keepAliveMs?: number; waitMs?: number } = {},
+  opts: { keepAliveMs?: number; waitMs?: number; waitForever?: boolean } = {},
 ): Promise<ProcessTenantLock | null> {
   assertPgUrl(url);
   const started = Date.now();
+  const forever = opts.waitForever ?? false;
   const keys = tenantIds.map((id) => `wecom-sales-agent:${id}`);
   const connect = async (): Promise<pg.Client> => {
     // 连接超时要比 5 秒一次的重取间隔短，免得一次重取拖过下一次
@@ -444,11 +489,15 @@ export async function holdTenantLocks(
       connectionString: url,
       keepAlive: true,
       keepAliveInitialDelayMillis: opts.keepAliveMs ?? 10_000,
-      connectionTimeoutMillis: 4_000,
+      connectionTimeoutMillis: forever ? 400 : 4_000,
+      ...(forever ? { query_timeout: 400 } : {}),
     });
     // 连接失败或之后断开都会发 error；先挂上监听，免得未处理的 error 事件让进程崩掉
     withoutTenantScope(() => c.on('error', () => {}));
-    await c.connect();
+    await c.connect().catch(async (error: unknown) => {
+      await c.end().catch(() => {});
+      throw error;
+    });
     return c;
   };
   const tryLock = async (c: pg.Client): Promise<boolean> => {
@@ -462,7 +511,30 @@ export async function holdTenantLocks(
     void c.end().catch(() => {});
   };
 
-  let client = await connect();
+  // 等锁不占住部分租户的锁，避免两个宿主按不同顺序选租户时互相等待。
+  let client: pg.Client;
+  let loggedAt = started;
+  if (forever) {
+    for (;;) {
+      const attemptAt = Date.now();
+      let candidate: pg.Client | undefined;
+      try {
+        candidate = await connect();
+        if (await tryLock(candidate)) {
+          client = candidate;
+          break;
+        }
+      } catch {
+        /* 库暂不可达也继续等；不打印连接串或驱动参数。 */
+      }
+      if (candidate) await candidate.end().catch(() => {});
+      if (Date.now() - loggedAt >= 60_000) {
+        console.log('[config] 等待全部租户锁，备用进程尚未启动服务');
+        loggedAt = Date.now();
+      }
+      await new Promise<void>((resolve) => withoutTenantScope(() => setTimeout(resolve, Math.max(0, 250 - (Date.now() - attemptAt)))));
+    }
+  } else client = await connect();
   const lostCallbacks: (() => void)[] = [];
   let released = false;
   let lost = false;
@@ -495,29 +567,31 @@ export async function holdTenantLocks(
     } while (Date.now() < started + waitMs);
     return false;
   };
-  const got = await (
-    waitMs > 0
-      ? Promise.race([
-          attemptInitial(),
-          new Promise<boolean>((resolve) => {
-            waitTimer = withoutTenantScope(() =>
-              setTimeout(
-                () => {
-                  drop(client); // 也终止迟迟不返回的锁查询，30 秒是整次取得锁的上限。
-                  resolve(false);
-                },
-                Math.max(0, started + waitMs - Date.now()),
-              ),
-            );
-          }),
-        ])
-      : attemptInitial()
-  )
-    .catch((err: unknown) => {
-      drop(client);
-      throw err;
-    })
-    .finally(() => clearTimeout(waitTimer));
+  const got =
+    forever ||
+    (await (
+      waitMs > 0
+        ? Promise.race([
+            attemptInitial(),
+            new Promise<boolean>((resolve) => {
+              waitTimer = withoutTenantScope(() =>
+                setTimeout(
+                  () => {
+                    drop(client); // 也终止迟迟不返回的锁查询，30 秒是整次取得锁的上限。
+                    resolve(false);
+                  },
+                  Math.max(0, started + waitMs - Date.now()),
+                ),
+              );
+            }),
+          ])
+        : attemptInitial()
+    )
+      .catch((err: unknown) => {
+        drop(client);
+        throw err;
+      })
+      .finally(() => clearTimeout(waitTimer)));
 
   if (!got) {
     drop(client);

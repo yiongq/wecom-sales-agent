@@ -1183,3 +1183,13 @@ export const erpItemLinks = pgTable(
     check('erp_item_links_source_check', sql`${t.source} IN ('auto', 'manual')`),
   ],
 );
+
+/** 18 R3：每个标准租户的当前进程代次。 */
+export const processEpochs = pgTable('process_epochs', {
+  tenantId: uuid('tenant_id')
+    .primaryKey()
+    .references(() => tenants.id),
+  epoch: bigint('epoch', { mode: 'bigint' }).notNull(),
+  holder: text('holder').notNull(),
+  acquiredAt: timestamp('acquired_at', { withTimezone: true }).notNull(),
+});

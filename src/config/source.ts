@@ -1,5 +1,18 @@
 import { installPublicHost, validatePublicHosts } from '../tenancy/hosts.js';
 import {
+  acquireProcessLease,
+  loseProcessLease,
+  resumeProcessLease,
+  staleProcessLease,
+  processHolder,
+  processEpoch,
+  rememberProcessEpoch,
+  processLeaseEnabled,
+  processLeaseHeld,
+  processLeaseStale,
+  ProcessEpochStale,
+} from '../tenancy/process-lease.js';
+import {
   currentRuntime,
   scopedRuntime,
   hostRuntime,
@@ -27,6 +40,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   holdTenantLock,
+  bumpProcessEpoch,
+  fenceCurrentProcessEpoch,
   holdTenantLocks,
   lockTenantConfig,
   openDb,
@@ -353,6 +368,21 @@ export function configHealth(): ConfigHealth {
   return { lock: state.lockState, sopStale: state.sopStale, catalogStale: state.catalogStale };
 }
 
+/** 未经 markSending 的每次发送（含同段重试）补查 epoch；R6 的库不可用只在仍持锁时放行。 */
+export async function checkProcessEpochBeforeSend(): Promise<boolean> {
+  if (!processLeaseEnabled()) return true;
+  if (!processLeaseHeld()) return false;
+  const current = configState().loaded;
+  if (!current || processEpoch(current.tenantId) === undefined) return false;
+  try {
+    await withTenant(current.deps.db, systemCtx(current.tenantId), fenceCurrentProcessEpoch);
+  } catch (error) {
+    if (error instanceof ProcessEpochStale) return false;
+    // 03 R6：库不可用不等于过期，最终同步检查仍须确认锁视图。
+  }
+  return processLeaseHeld();
+}
+
 /** 当前缓存与镜像 data/ 的差异，给后台 /status：每次现算，发布和上架之后跟着变 */
 export function configDrift(): ConfigDrift {
   const state = configState();
@@ -508,10 +538,47 @@ async function loadConfigFromEnv(env: NodeJS.ProcessEnv, gracefulExit: (code: nu
       holdTenantLocks(
         env.DATABASE_URL!,
         selected.map((t) => t.id),
+        { waitForever: processLeaseEnabled() },
       ),
     );
     hostLocks = held;
     if (!held) throw startup('lock_held', '装载的 standard 租户中有锁被另一个进程持有');
+    let lockGeneration = 0;
+    if (processLeaseEnabled()) {
+      acquireProcessLease(() => gracefulExit(1));
+      held.onLost(() => {
+        lockGeneration++;
+        loseProcessLease();
+      });
+      for (const t of selected) rememberProcessEpoch(t.id, await bumpProcessEpoch(t.id, processHolder, deps.db));
+      if (!processLeaseHeld()) throw startup('lock_held', '装载前租户锁已丢失');
+    }
+    // 共享锁全部租户核对完才恢复；任一个租户的内存过期都必须退出整个宿主。
+    let reacquiring: Promise<'ok' | 'held_by_other' | 'unreachable'> | null = null;
+    const reacquire = (): Promise<'ok' | 'held_by_other' | 'unreachable'> => {
+      if (!processLeaseEnabled()) return held.reacquire();
+      reacquiring ??= (async () => {
+        const generation = lockGeneration;
+        const result = await held.reacquire();
+        if (result === 'held_by_other') {
+          staleProcessLease();
+          return result;
+        }
+        if (result !== 'ok') return result;
+        try {
+          for (const t of selected) await withTenant(deps.db, systemCtx(t.id), fenceCurrentProcessEpoch);
+        } catch (error) {
+          if (error instanceof ProcessEpochStale) return 'held_by_other';
+          return 'unreachable';
+        }
+        if (generation !== lockGeneration || processLeaseStale()) return 'unreachable';
+        resumeProcessLease();
+        return 'ok';
+      })().finally(() => {
+        reacquiring = null;
+      });
+      return reacquiring;
+    };
     // 共享连接只在所有运行时完成 late 收尾后释放；每个配置保留自己的锁视图。
     let remaining = selected.length;
     const locks = new Map(
@@ -519,7 +586,7 @@ async function loadConfigFromEnv(env: NodeJS.ProcessEnv, gracefulExit: (code: nu
         let released = false;
         const lock: TenantLock = {
           onLost: (cb) => held.onLost(cb),
-          reacquire: () => held.reacquire(),
+          reacquire,
           release: async () => {
             if (!released) {
               released = true;
@@ -1104,7 +1171,10 @@ function onLockLost(): void {
   state.lockState = 'lost';
   // 沙箱的共享锁连接由组合根 fail-stop，永远不在原进程重取。
   if (currentRuntime().kind === 'sandbox') return;
-  console.error(`[config] 租户锁连接断开：配置写入暂停，对话照常；每 ${state.reacquireMs / 1000} 秒重取`);
+  if (processLeaseEnabled()) loseProcessLease();
+  console.error(
+    `[config] 租户锁连接断开：${processLeaseEnabled() ? '暂停拉取、新轮次与 HTTP 监听' : '配置写入暂停，对话照常'}；每 ${state.reacquireMs / 1000} 秒重取`,
+  );
   lockEvent('lost');
   scheduleReacquire();
 }
@@ -1132,12 +1202,25 @@ async function reacquireOnce(): Promise<void> {
   const r = await cur.lock.reacquire().catch(() => 'unreachable' as const);
   if (state.shuttingDown || state.loaded !== cur) return;
   if (r === 'ok') {
+    if (processLeaseEnabled()) {
+      try {
+        await withTenant(cur.deps.db, systemCtx(cur.tenantId), fenceCurrentProcessEpoch);
+      } catch (error) {
+        if (!(error instanceof ProcessEpochStale)) scheduleReacquire();
+        return;
+      }
+      if (state.shuttingDown || processLeaseStale()) return;
+    }
     state.lockState = 'held';
     console.log('[config] 租户锁已重新取得，配置写入恢复');
     lockEvent('held');
   } else if (r === 'held_by_other') {
     // 另一个进程已经接管：先跑全部停机钩子（在途的企微回复发完、会话落盘），再退出
     state.lockTaken = true;
+    if (processLeaseEnabled()) {
+      staleProcessLease();
+      return;
+    }
     console.error('[config] 租户锁已被另一个进程拿走，本进程优雅退出');
     lockEvent('taken');
     cur.deps.gracefulExit(1);
