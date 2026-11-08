@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "id": "q18-tier-per-item",
+  "desc": "仿真回归：第 6 次 main 三个型号各写一处 {{档位价}}，档位按型号分行放到各自那一处（手写断言）",
+  "tags": ["q18", "industrial"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:31:53.896Z",
+    "session": {
+      "stage": "greeting",
+      "messages": [],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 1791606713895,
+      "updatedAt": 1791606713895,
+      "profile": {},
+      "moneyLedger": []
+    },
+    "orders": []
+  },
+  "turns": [
+    {
+      "say": "这轮采购涉及 M10×30、HS-PV27、6210-2RS。",
+      "script": [
+        {
+          "content": "三个型号都查到了：\n\n1. M10×30 六角螺栓（8.8级，现货，5天）\n{{档位价}}\n\n2. HS-PV27 气动阀（G1/4接口，IP65，现货，6天，可替代型号 HS-PV25）\n{{档位价}}\n\n3. 6210-2RS 密封深沟球轴承（内径50mm，现货，12天）\n{{档位价}}\n\n请告知各型号的采购数量，我来为您试算价格。"
+        }
+      ],
+      "expect": {
+        "replyMatches": [
+          "M10×30：[^\\n]*\\n2\\. HS-PV27",
+          "2\\. HS-PV27[\\s\\S]*\\nHS-PV27：[^\\n]*\\n3\\. 6210-2RS",
+          "3\\. 6210-2RS[^\\n]*\\n6210-2RS："
+        ],
+        "replyExcludes": ["试算档位价："]
+      }
+    }
+  ]
+}

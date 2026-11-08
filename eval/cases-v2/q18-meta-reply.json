@@ -1,0 +1,346 @@
+{
+  "version": 2,
+  "id": "q18-meta-reply",
+  "desc": "仿真回归：第 6 次 main 接受报价时模型回「没有需要翻译的内容」，整句删掉、块后补下一步（手写断言）",
+  "tags": ["q18", "industrial"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:20:23.779Z",
+    "session": {
+      "stage": "closing",
+      "messages": [
+        {
+          "role": "customer",
+          "content": "这次检修有十行物料，可以一起核报价吗？",
+          "at": 1791605991070
+        },
+        {
+          "role": "agent",
+          "content": "可以的。请把这十行物料的型号和数量发给我，型号齐全的我会逐行查询并核算报价；如果某行涉及非标或定制，我会单独说明并转顾问核对。",
+          "at": 1791605992775
+        },
+        {
+          "role": "customer",
+          "content": "好的，明细如下：\n6206-2RS 24件\n6207-2RS 4件\n6209-2RS 6件\n6213-2RS 20件\nM6×35 120件\nM10×60 40件\nHS-PV28 3件\nHS-PV31 10件\nHS-K03-24 2件\nHS-K08-24 12件\n一共这十行，麻烦按这个数量核算，交期按你们目录标准就行。",
+          "at": 1791606000414
+        },
+        {
+          "role": "agent",
+          "content": "试算：\n6206-2RS × 24：单价12.11元，小计290.64元；约 8 天，以顾问确认为准；满100件10.76元\n6207-2RS × 4：单价14.60元，小计58.40元；现货，以顾问确认为准；满20件13.14元\n6209-2RS × 6：单价16.90元，小计101.40元；约 11 天，以顾问确认为准；满20件15.21元\n6213-2RS × 20：单价19.35元，小计387.00元；现货 18 件，其余约 15 天，以顾问确认为准；满100件17.20元\nM6×35 × 120：单价1.12元，小计134.40元；约 6 天，以顾问确认为准；满500件0.99元\nM10×60 × 40：单价1.89元，小计75.60元；现货，以顾问确认为准；满100件1.70元\nHS-PV28 × 3：单价45.25元，小计135.75元；约 7 天，以顾问确认为准；满10件40.73元\n另外 3 行已算好，需要的话我出一份正式报价单\n合计2091.89元\n十行全部按目录价精确匹配核算完成，含税，运费0元，报价有效期7天。交期情况：6207-2RS、M10×60、HS-K08-24 现货；6213-2RS 现货18件、其余约15天；最终以顾问确认为准。\n如果需要出正式报价单，告诉我一声即可。",
+          "at": 1791606002891
+        },
+        {
+          "role": "customer",
+          "content": "试算看着没问题，数量也核对过了。麻烦出一份正式报价单吧，我这边要走审批流程。",
+          "at": 1791606008209
+        },
+        {
+          "role": "agent",
+          "content": "正式报价单已按本次试算的十行明细起草，目前已提交，处于待顾问审核状态。审核通过后才能确认和付款，付款条款为款到发货、对公转账，可开增值税普通发票或专用发票，报价有效期7天。审核结果一有进展会同步您，也可以随时来问我进度。",
+          "at": 1791606012667
+        },
+        {
+          "role": "agent",
+          "content": "/quote/{{order:0.id}}",
+          "at": 1791606012871
+        }
+      ],
+      "orderIds": ["{{order:0.id}}"],
+      "handedOver": false,
+      "createdAt": 1791605991069,
+      "updatedAt": 1791606012667,
+      "profile": {},
+      "packState": {
+        "rfqDraft": {
+          "at": 1791606000424,
+          "lines": [
+            {
+              "match": "exact",
+              "code": "bearing-03",
+              "version": 1,
+              "qty": 24
+            },
+            {
+              "match": "exact",
+              "code": "bearing-04",
+              "version": 1,
+              "qty": 4
+            },
+            {
+              "match": "exact",
+              "code": "bearing-06",
+              "version": 1,
+              "qty": 6
+            },
+            {
+              "match": "exact",
+              "code": "bearing-10",
+              "version": 1,
+              "qty": 20
+            },
+            {
+              "match": "exact",
+              "code": "fastener-03",
+              "version": 1,
+              "qty": 120
+            },
+            {
+              "match": "exact",
+              "code": "fastener-08",
+              "version": 1,
+              "qty": 40
+            },
+            {
+              "match": "exact",
+              "code": "pneumatic-03",
+              "version": 1,
+              "qty": 3
+            },
+            {
+              "match": "exact",
+              "code": "pneumatic-06",
+              "version": 1,
+              "qty": 10
+            },
+            {
+              "match": "exact",
+              "code": "electric-03",
+              "version": 1,
+              "qty": 2
+            },
+            {
+              "match": "exact",
+              "code": "electric-08",
+              "version": 1,
+              "qty": 12
+            }
+          ]
+        },
+        "lastQuoteId": "{{order:0.id}}",
+        "partsInPlay": [
+          {
+            "partNo": "6206-2RS",
+            "specs": ["内径30mm", "双面密封"]
+          },
+          {
+            "partNo": "6207-2RS",
+            "specs": ["内径35mm", "双面密封"]
+          },
+          {
+            "partNo": "6209-2RS",
+            "specs": ["内径45mm", "双面密封"]
+          },
+          {
+            "partNo": "6213-2RS",
+            "specs": ["内径65mm", "双面密封"]
+          },
+          {
+            "partNo": "M6×35",
+            "specs": ["螺纹M6", "长度35mm", "强度8.8级"]
+          },
+          {
+            "partNo": "M10×60",
+            "specs": ["螺纹M10", "长度60mm", "强度8.8级"]
+          },
+          {
+            "partNo": "HS-PV28",
+            "specs": ["接口G1/4", "防护IP65", "公称通径7mm"]
+          },
+          {
+            "partNo": "HS-PV31",
+            "specs": ["接口G1/4", "防护IP65", "公称通径10mm"]
+          },
+          {
+            "partNo": "HS-K03-24",
+            "specs": ["线圈DC24V", "额定电流5A", "防护IP20"]
+          },
+          {
+            "partNo": "HS-K08-24",
+            "specs": ["线圈DC24V", "额定电流10A", "防护IP20"]
+          }
+        ]
+      },
+      "moneyLedger": [
+        {
+          "fen": 1211,
+          "label": "试算单价",
+          "subject": "62062RS"
+        },
+        {
+          "fen": 29064,
+          "label": "试算行金额",
+          "subject": "62062RS"
+        },
+        {
+          "fen": 1460,
+          "label": "试算单价",
+          "subject": "62072RS"
+        },
+        {
+          "fen": 5840,
+          "label": "试算行金额",
+          "subject": "62072RS"
+        },
+        {
+          "fen": 1690,
+          "label": "试算单价",
+          "subject": "62092RS"
+        },
+        {
+          "fen": 10140,
+          "label": "试算行金额",
+          "subject": "62092RS"
+        },
+        {
+          "fen": 1935,
+          "label": "试算单价",
+          "subject": "62132RS"
+        },
+        {
+          "fen": 38700,
+          "label": "试算行金额",
+          "subject": "62132RS"
+        },
+        {
+          "fen": 112,
+          "label": "试算单价",
+          "subject": "M6×35"
+        },
+        {
+          "fen": 13440,
+          "label": "试算行金额",
+          "subject": "M6×35"
+        },
+        {
+          "fen": 189,
+          "label": "试算单价",
+          "subject": "M10×60"
+        },
+        {
+          "fen": 7560,
+          "label": "试算行金额",
+          "subject": "M10×60"
+        },
+        {
+          "fen": 4525,
+          "label": "试算单价",
+          "subject": "HSPV28"
+        },
+        {
+          "fen": 13575,
+          "label": "试算行金额",
+          "subject": "HSPV28"
+        },
+        {
+          "fen": 4950,
+          "label": "试算单价",
+          "subject": "HSPV31"
+        },
+        {
+          "fen": 49500,
+          "label": "试算行金额",
+          "subject": "HSPV31"
+        },
+        {
+          "fen": 2325,
+          "label": "试算单价",
+          "subject": "HSK0324"
+        },
+        {
+          "fen": 4650,
+          "label": "试算行金额",
+          "subject": "HSK0324"
+        },
+        {
+          "fen": 3060,
+          "label": "试算单价",
+          "subject": "HSK0824"
+        },
+        {
+          "fen": 36720,
+          "label": "试算行金额",
+          "subject": "HSK0824"
+        },
+        {
+          "fen": 209189,
+          "label": "试算合计"
+        }
+      ]
+    },
+    "orders": [
+      {
+        "status": "pending_payment",
+        "lines": [
+          {
+            "kind": "part",
+            "code": "bearing-03",
+            "qty": 24
+          },
+          {
+            "kind": "part",
+            "code": "bearing-04",
+            "qty": 4
+          },
+          {
+            "kind": "part",
+            "code": "bearing-06",
+            "qty": 6
+          },
+          {
+            "kind": "part",
+            "code": "bearing-10",
+            "qty": 20
+          },
+          {
+            "kind": "part",
+            "code": "fastener-03",
+            "qty": 120
+          },
+          {
+            "kind": "part",
+            "code": "fastener-08",
+            "qty": 40
+          },
+          {
+            "kind": "part",
+            "code": "pneumatic-03",
+            "qty": 3
+          },
+          {
+            "kind": "part",
+            "code": "pneumatic-06",
+            "qty": 10
+          },
+          {
+            "kind": "part",
+            "code": "electric-03",
+            "qty": 2
+          },
+          {
+            "kind": "part",
+            "code": "electric-08",
+            "qty": 12
+          }
+        ],
+        "approval": {
+          "state": "approved",
+          "decidedAt": "2026-10-10T04:20:12.668Z"
+        }
+      }
+    ]
+  },
+  "turns": [
+    {
+      "say": "收到，这份报价单我们内部看过了，十行明细和金额都对得上。我接受这份报价，按2,091.89元下单采购，麻烦安排后续流程。",
+      "script": [
+        {
+          "content": "本次会话未提供需要翻译的 `` 内容，因此没有可输出的译文。如果您能提供该标签内的文本，我将按要求进行翻译。"
+        }
+      ],
+      "expect": {
+        "replyMatches": ["^您接受的这份报价合计2091\\.89元\\n顾问会尽快联系您确认付款和发货。"],
+        "replyExcludes": ["翻译|译文|标签"]
+      }
+    }
+  ]
+}

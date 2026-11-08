@@ -20,6 +20,7 @@ export const DETECTORS = [
   'duplicate_text',
 ] as const;
 export type DetectorId = (typeof DETECTORS)[number];
+const PRICE_BLOCKS = ['试算明细', '档位价', '应付金额'] as const;
 export interface TriageCandidate {
   id: string;
   detector: DetectorId;
@@ -271,6 +272,12 @@ export function triageRun(run: RunResult, catalog: TriagePart[], runId = run.run
         if (!shown && !shownTotal) hit('price_withheld', `${line.part.partNo} × ${line.qty}：最终回复无对应商品金额；${reply}`);
       }
     }
+    // 模型写了价格占位符、本轮却没有数据（第 6 次 main 的 j-rejection-01#1 t2 没调试算）：上面只认工具给过的价，会漏掉。
+    const rendered = new Set(rows(blocks.rendered).map((row) => row.name));
+    const draft = turn.trace.turn.draft ?? '';
+    if (!handoff && !flags.blocksSuppressed && !blocks.suppressed && !hits.has('price_withheld'))
+      for (const name of PRICE_BLOCKS)
+        if (draft.includes(`{{${name}}}`) && !rendered.has(name)) hit('price_withheld', `占位符 {{${name}}} 本轮没有数据；${reply}`);
     for (const guard of turn.trace.turn.guards)
       for (const removed of guard.removed) {
         // 格式清洗、同句追加、替换后仍保留的内容不算删对。

@@ -1,0 +1,110 @@
+{
+  "version": 2,
+  "id": "q18-block-only",
+  "desc": "仿真回归：第 6 次 main 模型照抄试算块，删掉后正文为空，块后补下一步（手写断言）",
+  "tags": ["q18", "industrial"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:38:03.298Z",
+    "session": {
+      "stage": "quote",
+      "messages": [
+        {
+          "role": "customer",
+          "content": "先查下 6208-2RS 的数量档怎么走。",
+          "at": 1791607070229
+        },
+        {
+          "role": "agent",
+          "content": "查到了，6208-2RS（密封深沟球轴承，内径40mm，双面密封），起订量2件，档位如下：\n· 2–19件：15.75元/件\n· 20–99件：14.18元/件\n· 100–199件：12.60元/件\n· 200件起：11.02元/件\n目前现货，交期约10天（以顾问确认为准）。告诉我数量，我帮您试算总价。",
+          "at": 1791607072452
+        },
+        {
+          "role": "customer",
+          "content": "19件。",
+          "at": 1791607073386
+        },
+        {
+          "role": "agent",
+          "content": "需要起草正式报价单吗？\n试算：\n6208-2RS × 19：单价15.75元，小计299.25元；现货，以顾问确认为准；满20件14.18元\n合计299.25元",
+          "at": 1791607077762
+        }
+      ],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 1791607070228,
+      "updatedAt": 1791607077762,
+      "profile": {},
+      "packState": {
+        "rfqDraft": {
+          "at": 1791607075190,
+          "lines": [
+            {
+              "match": "exact",
+              "code": "bearing-05",
+              "version": 1,
+              "qty": 19
+            }
+          ]
+        },
+        "partsInPlay": [
+          {
+            "partNo": "6208-2RS",
+            "specs": ["内径40mm", "双面密封"]
+          }
+        ]
+      },
+      "moneyLedger": [
+        {
+          "fen": 1575,
+          "label": "档位单价",
+          "subject": "62082RS"
+        },
+        {
+          "fen": 1418,
+          "label": "档位单价",
+          "subject": "62082RS"
+        },
+        {
+          "fen": 1260,
+          "label": "档位单价",
+          "subject": "62082RS"
+        },
+        {
+          "fen": 1102,
+          "label": "档位单价",
+          "subject": "62082RS"
+        },
+        {
+          "fen": 1575,
+          "label": "试算单价",
+          "subject": "62082RS"
+        },
+        {
+          "fen": 29925,
+          "label": "试算行金额",
+          "subject": "62082RS"
+        },
+        {
+          "fen": 29925,
+          "label": "试算合计",
+          "subject": "62082RS"
+        }
+      ]
+    },
+    "orders": []
+  },
+  "turns": [
+    {
+      "say": "数量改成20件，按20件重新试算一下。",
+      "script": [
+        {
+          "content": "按20件重新试算：\n6208-2RS × 20：单价14.18元，小计283.60元；现货，以顾问确认为准；满100件12.60元\n合计283.60元"
+        }
+      ],
+      "expect": {
+        "replyMatches": ["合计283\\.60元\\n数量没问题的话，我可以为您起草正式报价单。"]
+      }
+    }
+  ]
+}
