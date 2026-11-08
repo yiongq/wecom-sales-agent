@@ -6,6 +6,9 @@ const ACCEPT =
 // 客户常把数量、金额和接受写在一句里，整句对不上白名单。这些明确的说法出现在分句里就算（16 小样实测）。
 const STRONG =
   /确认接受|接受这(?:个|份|张)报价|报价单?(?:我们?)?(?:确认|接受|认可)|(?:就按|确认按|(?:就|按)这(?:个|份|张))[^,。;；]{0,20}?(?:采购|下单)|确认采购|决定采购|同意采购/u;
+// 18 journal：型号、数量、合计可写在「按…接受」里。「就走这单（采购）」也明确接受。
+// 整个分句匹配，不能截取「交期按目录可以接受」「128的价格我就走这单」或「接受不了」。
+const TERMS_ACCEPT = /^(?:我们?|那)?(?:就?按[^,。;；不没未无难拒]{1,40}?接受|就走这单(?:采购)?)(?:了|吧)?$/u;
 const QUESTION = /[?？]|吗|是否|能否|能不能|会不会|是不是|多少/u;
 // 条件、否定和转述不算，只作用于上面这种分句内匹配。
 const NOT_MINE =
@@ -26,11 +29,17 @@ export function quoteAcceptance(text: string): { accepted: boolean; needsModel: 
     .map((clause) => clause.trim())
     .filter(Boolean);
   if (clauses.some((clause) => HOLD.test(clause))) return { accepted: false, needsModel: true };
+  // 新说法的条件、否定可能在逗号前：「如果能按这个价，我们就走这单」。
+  const termsBlocked = clauses.some(
+    (clause) => NOT_MINE.test(clause) || /只要|除非|不(?:按|走|采购|下单|予|可能)|无法|没法|接受不了|未接受/u.test(clause),
+  );
   const accepts = clauses.map(
     (clause) => !QUESTION.test(clause) && (ACCEPT.test(clause) || (STRONG.test(clause) && !NOT_MINE.test(clause))),
   );
+  const termsAccepts = clauses.map((clause) => !termsBlocked && !QUESTION.test(clause) && TERMS_ACCEPT.test(clause));
   return {
-    accepted: accepts.some(Boolean),
-    needsModel: clauses.some((clause, i) => !accepts[i] && !ACK.test(clause)),
+    accepted: accepts.some(Boolean) || termsAccepts.some(Boolean),
+    // 新识别的型号、数量、金额长句继续走预取接受与模型回复，保留应付金额块。
+    needsModel: clauses.some((clause, i) => !accepts[i] && !ACK.test(clause) && !(termsAccepts[i] && !/\d/u.test(clause))),
   };
 }
