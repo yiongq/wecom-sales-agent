@@ -1,0 +1,172 @@
+{
+  "version": 2,
+  "id": "q18-old-quote-valid",
+  "desc": "仿真回归：第8次main只重新试算未建新单，旧批准单仍有效",
+  "tags": ["q18", "industrial"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:09:50.107Z",
+    "session": {
+      "stage": "closing",
+      "messages": [
+        {
+          "role": "customer",
+          "content": "这批轴承暂定 6208-2RS。",
+          "at": 1791605376829
+        },
+        {
+          "role": "agent",
+          "content": "查到了 6208-2RS 密封深沟球轴承（内径40mm，双面密封），有现货，起订量2件。\n请告诉我需要多少件，我帮您试算价格。",
+          "at": 1791605378394
+        },
+        {
+          "role": "customer",
+          "content": "需要20件。",
+          "at": 1791605380842
+        },
+        {
+          "role": "agent",
+          "content": "提示：一次采购满100件可享12.60元/件的档位价，如有后续用量可考虑合并采购。\n需要我起草正式报价单吗？\n试算：\n6208-2RS × 20：单价14.18元，小计283.60元；现货，以顾问确认为准；满100件12.60元\n合计283.60元",
+          "at": 1791605383958
+        },
+        {
+          "role": "customer",
+          "content": "先出第一张正式报价单吧。",
+          "at": 1791605384977
+        },
+        {
+          "role": "agent",
+          "content": "报价单已起草，正在由顾问审核，审核通过后我会告知您后续安排。",
+          "at": 1791605387653
+        },
+        {
+          "role": "agent",
+          "content": "/quote/{{order:0.id}}",
+          "at": 1791605387855
+        }
+      ],
+      "orderIds": ["{{order:0.id}}"],
+      "handedOver": false,
+      "createdAt": 1791605376828,
+      "updatedAt": 1791605387653,
+      "profile": {},
+      "packState": {
+        "rfqDraft": {
+          "at": 1791605382223,
+          "lines": [
+            {
+              "match": "exact",
+              "code": "bearing-05",
+              "version": 1,
+              "qty": 20
+            }
+          ]
+        },
+        "lastQuoteId": "{{order:0.id}}",
+        "partsInPlay": [
+          {
+            "partNo": "6208-2RS",
+            "specs": ["内径40mm", "双面密封"]
+          }
+        ]
+      },
+      "moneyLedger": [
+        {
+          "fen": 1575,
+          "label": "档位单价",
+          "subject": "62082RS"
+        },
+        {
+          "fen": 1418,
+          "label": "档位单价",
+          "subject": "62082RS"
+        },
+        {
+          "fen": 1260,
+          "label": "档位单价",
+          "subject": "62082RS"
+        },
+        {
+          "fen": 1102,
+          "label": "档位单价",
+          "subject": "62082RS"
+        },
+        {
+          "fen": 1418,
+          "label": "试算单价",
+          "subject": "62082RS"
+        },
+        {
+          "fen": 28360,
+          "label": "试算行金额",
+          "subject": "62082RS"
+        },
+        {
+          "fen": 28360,
+          "label": "试算合计",
+          "subject": "62082RS"
+        }
+      ]
+    },
+    "orders": [
+      {
+        "status": "pending_payment",
+        "lines": [
+          {
+            "kind": "part",
+            "code": "bearing-05",
+            "qty": 20
+          }
+        ],
+        "approval": {
+          "state": "approved",
+          "decidedAt": "2026-10-10T04:09:47.654Z"
+        }
+      }
+    ]
+  },
+  "turns": [
+    {
+      "say": "这张报价单我先不接受，需求有变化：型号改为6211-2RS，数量26件，麻烦按这个重出报价单，旧的这张作废。",
+      "script": [
+        {
+          "toolCalls": [
+            {
+              "name": "find_parts",
+              "args": {
+                "category": "轴承",
+                "query": "6211-2RS"
+              }
+            }
+          ]
+        },
+        {
+          "toolCalls": [
+            {
+              "name": "quote_items",
+              "args": {
+                "items": [
+                  {
+                    "query": "6211-2RS",
+                    "qty": 26
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "content": "好的，旧报价单作废，已按新需求试算。确认无误的话我就按此重出正式报价单。\n试算：\n6211-2RS × 26：单价17.28元，小计449.28元；现货，货期约13天（以顾问确认为准）；满100件15.36元\n合计449.28元"
+        }
+      ],
+      "expect": {
+        "replyMatches": [
+          "原报价单仍有效，需要按新需求起草新的报价单，待新报价单审核通过后才会作废",
+          "确认无误的话我就按此重出正式报价单",
+          "6211-2RS × 26：单价17\\.28元，小计449\\.28元"
+        ],
+        "replyExcludes": ["好的，旧报价单作废"]
+      }
+    }
+  ]
+}
