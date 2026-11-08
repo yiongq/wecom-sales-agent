@@ -4,14 +4,14 @@
 
 第 1–2 步（`eval/sim/`）、第 3 步（核心护栏与工业包）、第 4 步（检索）、第 7 步（数据库、配置、部署）改的文件互不重叠，可以分开并行；第 5–6 步要等第 1、3、4 步合入。第 9 步只要 owner 有空就能做。第 6.1 冻结之后到 6.2 跑完之前，不合入任何改 `src/` 的 PR（含第 7 步），否则留出集拒绝运行。
 
-- [ ] 0. 开工核对
+- [x] 0. 开工核对
   - [x] 0.1 第 1、2、4、5 次 main、第 3 次中止、两次换客户模型、两次开发集的 journal 已复制到本 worktree 的 `var/eval-sim-archive/`（不提交），sha256 记在同目录 `SHA256SUMS`；`main-3.jsonl` 只有 763 字节（中止）
   - [x] 0.2 启动重渲染（01「启动重渲染」第 8 步，`src/config/source.ts`）发现【硬性要求】或工具哈希变了，会直接发布一个 `source='rerender'` 的新版本并记 `sop.rerender` 审计，不经过发布闸。所以 R1 的提示词改动靠第 6 次 main 与 v2 用例验证（AGENTS.md 要求的真实模型评测就是第 6 次 main）
   - [x] 0.3 入站认领：`src/channels/inbox.ts` 的 `insertInboxRows` 与 cursor 同一事务（`src/cli/channel-transfer.ts` 也写，但要求先停应用）。发送标记：`src/store/pg-backend.ts` 的 `markOutboundSending` → `src/db/repo/outbound.ts`。发请求：`src/adapters/wecom.ts` 的 `sendText`、`sendLinkCard`、`sendMenu`（`kf/send_msg`）与欢迎语 `kf/send_msg_on_event`；分段发送循环里 `alreadySending` 跳过标记、同段重试最多 3 次。会话落库在 `pg-backend.ts`，第 7.2 步再细到函数
   - [x] 0.4 已复核：`eval/sim/audit.ts` 的金额正则含「(单价|合计|总价|小计) 数字」且不要求「元」，独立审计能识别「小计 360.00」；只有产品护栏的 `parseMoney` 漏
   - [x] 0.5 按仓库价目表 `src/usage.ts`，`embedding-3` 每百万 token ¥0.5；5000 条加约 1000 条查询估 30 多万 token，约 ¥0.2（官方现价未另核，账本按同一张表记）
-  - [ ] 0.6 等锁进程的内存占用：要等第 7.1 步做出等锁启动后才量得到，挪到 7.6 一起测
-  - [ ] 0.7 请 owner 提供服务器 Caddy 的上游写法（或授权只读查看），定 spec 开放问题 2
+  - [x] 0.6 等锁进程的内存占用：容器 kill 演练里连续采样，备用等锁的 5.6 秒内 198–199 MiB，同期主进程约 137 MiB；服务器要给备用多留 200 MiB 左右。长时间等锁后的稳态没量
+  - [x] 0.7 服务器 Caddy 的上游写法：没等到服务器配置，改在本机用 Caddy 2.11.2 实测定写法（`lb_policy first`，拨号失败重试 15 秒，连上后不重试），片段是 `deploy/caddy-app-upstreams.snippet`。演练查出上游不能写宿主端口（docker-proxy 先接受再重置），owner 定直连两个容器的固定 IP（11-08），spec R3 与开放问题 2 已改。服务器 Caddy 的版本和现有站点块第 8 步再核
   - [x] 0.8 `var/` 里的文件与写方：`usage.json`（`src/usage.ts`）、`budget.json`（`src/budget.ts`）、语义索引缓存（`src/core/retrieval.ts`）、发布闸临时目录 `var/gate/`（`src/config/gate.ts`）、会话 spill（`src/store/pg-backend.ts`）、渠道标记与恢复哨兵（`src/channels/markers.ts`）、`sessions-in-db` 标记（`src/store.ts`）、旧的 `wecom-cursor.json`（`src/adapters/wecom-state.ts`，文件状态时才用）。都由活动进程读写，符合 spec 的规则。第 7.1 步要核：等锁进程收到 SIGTERM 时直接退出、不跑停机钩子，否则 `usage.json`、`budget.json` 的定时落盘可能用空状态盖掉主进程的文件
   - [x] 0.9 工业包整段换成固定话术的分支（写 `blocksSuppressed`）：`guardedText` 待审带金额时整段换 `FIXED.pending`；`quote_claim` 自动建单后整段换成「报价单：链接 + 合计」；`money_provenance` 删空后用兜底句（动作 `replace`）；`turn_failure` 转人工。`quote_claim` 的 `correctClaim`（`ACCEPT_ASK`、`NOT_SUBMITTED`）只换那一句，属局部纠正，不写旗标。`rfq_trim` 的 `TRIM_FALLBACK` 在块计入预算后应很少出现，第 3 步定是否写旗标
 - [x] 1. 检测器：`eval/sim/triage.ts` 与自测（每个检测器至少一正一反，用合成 journal 片段）；回溯第 1、2、4、5 次，逐条核对验收 7 的已知问题
@@ -49,14 +49,14 @@
   - [x] 6.7 第 6、7 次查出的问题分 4 路派 Codex 修（owner「现在派」），#481 接受说法、#482 转人工告知、#483 待审单回复、#484 合计只说一遍与照抄清单；新用例 7 条，修复前全部失败、修复后通过；四路合并后整体复测 946/946
   - [x] 6.8 第 8 次 main（owner「跑第 8 次」）：冻结 `ac28a079`（含 #481–#485），117/119，¥1.827（18 累计 ¥10.959 / ¥12）；报告 [docs/reports/industrial-sim/2026-11-08-main-8](../../reports/industrial-sim/2026-11-08-main-8/report.md)（同一天第二份，目录加了后缀）
   - [x] 6.9 第 8 次查出的问题再修一轮（owner「再修一轮」），4 路 Codex：#487 输入识别、#488 金额护栏只删没出处的片段、#489 工业品说法护栏不切坏文字、#490 报价状态措辞；新用例 8 条修复前全部失败、修复后通过；四路合并后整体复测 954/954。预算不够再跑 main，这轮没有仿真数字
-- [ ] 7. 主备切换
-  - [ ] 7.1 `TENANT_LOCK_WAIT`、等锁启动、等锁时的 SIGTERM
-  - [ ] 7.2 `process_epochs` 迁移与 RLS，`bumpProcessEpoch`、`fenceProcessEpoch`，按 0.3 的清单接栅栏
-  - [ ] 7.3 发送前检查（含恢复补发、同段重试）、`markOutboundSending` 的 `stale` 结果、等锁模式下 03 R6 照发只在锁视图 `held` 时允许
-  - [ ] 7.4 失锁即停收并关闭监听；重取成功后核对 epoch；等锁模式下失去主身份后的停机不写 spill
-  - [ ] 7.5 compose `app-standby`、`deploy.sh` 滚动切换与回滚、`deploy/watch.sh` 探两个端口、运维手册、要求停应用的命令行提示、README 与总参考「从单实例到多租户」里单实例的说法
-  - [ ] 7.6 真实 PG 演练自测：杀主进程、掐锁连接、重取时 epoch 已变、本机 compose 加 Caddy 容器的滚动发版（验收 10–14）
-- [ ] 8. 主备上线前置（owner 点名才做）：服务器 Caddy 改上游、首次以主备方式部署
+- [x] 7. 主备切换（#492 进程侧、#493 部署侧）
+  - [x] 7.1 `TENANT_LOCK_WAIT`、等锁启动、等锁时的 SIGTERM
+  - [x] 7.2 `process_epochs` 迁移与 RLS，`bumpProcessEpoch`、`fenceProcessEpoch`，按 0.3 的清单接栅栏
+  - [x] 7.3 发送前检查（含恢复补发、同段重试）、`markOutboundSending` 的 `stale` 结果、等锁模式下 03 R6 照发只在锁视图 `held` 时允许
+  - [x] 7.4 失锁即停收并关闭监听；重取成功后核对 epoch；等锁模式下失去主身份后的停机不写 spill
+  - [x] 7.5 compose `app-standby`、`deploy.sh` 滚动切换与回滚、`deploy/watch.sh` 探两个端口、运维手册、要求停应用的命令行提示、README 与总参考「从单实例到多租户」里单实例的说法
+  - [x] 7.6 真实 PG 演练自测：杀主进程、掐锁连接、重取时 epoch 已变、本机 compose 加 Caddy 容器的滚动发版（验收 10–14）
+- [ ] 8. 主备上线前置（owner 点名才做）：服务器 Caddy 改上游、首次以主备方式部署。先只读核对服务器 Caddy 版本（片段按 2.11.2 写）、空闲内存（备用约 200 MiB）、所选固定子网不和已有网络或路由冲突；再按 `docs/guides/deployment.md`「18 主备切换」的首次接入顺序：开关保持 0 单容器部署一次让 app 拿到固定 IP → 核对 IP 上的 `/healthz` → 改 Caddy 上游并 validate / reload → 写 `CADDY_DUAL_UPSTREAM=1` → 部署
 - [ ] 9. 企微去重实测：`src/cli/wecom-dedup-probe.ts`（每个间隔独立 msgid 的成对实验）；owner 授权后在服务器上跑，owner 手机看每一对；按结果改窗口规则与发送层截止检查（03 顶部标记已在 ready 时加）（验收 15）
 - [ ] 10. 对照全部验收标准逐条验证，结果记在下面
 - [ ] 11. 清理临时探针、演练容器与 `var/` 里的临时文件
@@ -310,3 +310,19 @@
 - 回归：8 条新用例（`q18-negated-nonstandard`、`q18-qty-chinese`、`q18-tier-fragment`、`q18-claims-lines`、`q18-claims-stock`、`q18-pending-trim-note`、`q18-old-quote-valid`、`q18-no-ask-after-accept`；#487 另改了 `q18-blocks-basic` 两条已有用例的期望），协调者在修复前的 `456762ab` 上逐条复跑，全部失败、修复后通过。
 - 接缝：四个分支本地合到 dev 后整体复测，两种存储都是 954/954、快照 0 差异，相关自测全过；这次没有接缝问题，复测通过后才打开四个 PR 的自动合并。
 - 剩下没修：模型过早转人工（第 8 次 `j-injection-01#3`，提示词层面的问题）；长清单受 12 行 / 600 字上限只放一部分时客户别的问题没被直接回答；延迟分析建议的合并重复工具说明。验收 5 是否算达到，要再跑一次 main 抽检，需要 owner 调高 18 的预算上限。
+
+2026-11-08：第 7 步完成（owner「开始做」）。两路 Codex（gpt-6-astra xhigh）并行：进程侧 7.1–7.4（#492），部署侧 7.5–7.6（#493，含进程侧的合并，两边都改 `package.json` 的 test 行）。协调者审查、跑演练、提交。
+
+- 复审：Codex 只读复审三轮。
+  - 第一、二轮查出业务通知绕过栅栏、同 epoch 重取后不续发、取 token 时失锁记成永久失败、先放锁后写 spill、截止前没发出的段记成 rejected、失锁中断的通知扣重试、poisoned 丢弃漏计。
+  - 第三轮查出通知归还会撤销后一次认领的扣数、已切固定 IP 后部署旧 tag 会让 Caddy 断开、在线跑的 app 命令行抢固定 IP。
+  - 都已修。协调者另查出 `app-cli` 继承了 `TENANT_LOCK_WAIT`（命令行会被 epoch 栅栏拒写）、`rollback-guard` 自测自 7.5 起一直是红的。
+- 偏离 spec：演练查出 Docker 的 docker-proxy 在进程不监听时也先接受宿主端口的连接再重置，Caddy 当成已连上、不换上游，滚动发版 13 条里 3–4 条回 502。owner 定改为 Caddy 直连两个容器在专用网络上的固定 IP，宿主端口只留给健康检查和巡检；spec R3、开放问题 2、总参考已改。
+- 演练（最终代码，合并 dev `9fd62b8a`）：
+  - 验收 10：进程 kill，9 发 9 收，0 重复，拿锁 108 ms，拿锁到恢复 921 ms，03 R5 边界内 1 段（`unknown`）；容器 kill，8 发 8 收，拿锁 174 ms，拿锁到经 Caddy 健康 1421 ms。
+  - 验收 11：容器 rolling，15 发 15 收，最长等待 1271 ms，拿锁 330 ms，拿锁到恢复 1453 ms；坏备用健康超时后回滚恢复，镜像与 revision 对得上；切换前后巡检都正常。重复由进程演练按 msgid 统计。
+  - 验收 12：进程 terminate，9 发 9 收，两进程都发出的段 0，停拉取 0 ms，关监听 24 ms，spill 0，失去主身份时在路上的请求 1 条。旧进程三类写入被栅栏拒绝、补发与同段重试发不出去，由 `src/db/failover.selftest.ts` 覆盖。
+  - 验收 13：`src/db/failover.selftest.ts`（重取时 epoch 已变，优雅退出）。验收 14：锁定套件逐字节未改，旧模式自测期望未改。
+  - 四份结果离线汇总 `acceptance10to12Complete` 为 true。
+- 全量 `pnpm test` 在合并树上通过；eval 两种存储 954/954，快照 0 差异。
+- 下一步：第 8 步要 owner 点名；第 9 步企微去重实测要 owner 授权。
