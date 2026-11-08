@@ -6,12 +6,13 @@ import {
   getAnyOrder,
   partsOf,
   sentenceUnits,
-  type quoteState,
+  quoteState,
   type FollowupGuardContext,
   type GuardStep,
   type PackSources,
   type ReplyGuardContext,
   type Session,
+  type LineOrder,
 } from '../../core/pack-api.js';
 import { latestQuoteCandidate, expiredQuoteAwaitingConfirmation } from './quote-candidate.js';
 import { mentionedParts, unresolvedParts, FIXED } from './turn.js';
@@ -146,11 +147,11 @@ export function staleAcceptText(session: Session, state: ReturnType<typeof quote
 }
 const unitsOf = (text: string): string[] => sentenceUnits(text).map(({ start, end }) => text.slice(start, end));
 /** 说了没发生的事：整句换成实话，多句只换一次，其余内容留着。 */
-function correctClaim(text: string, claim: RegExp, truth: string): string {
+function correctClaim(text: string, claim: RegExp | ((unit: string) => boolean), truth: string): string {
   let replaced = false;
   return unitsOf(text)
     .map((unit) => {
-      if (!claim.test(unit)) return unit;
+      if (!(typeof claim === 'function' ? claim(unit) : claim.test(unit))) return unit;
       if (replaced) return '';
       replaced = true;
       return truth;
@@ -161,16 +162,75 @@ function correctClaim(text: string, claim: RegExp, truth: string): string {
 
 // 09 R1：工具账本证明金额出处，试算标识证明身份；待审正式金额不能借账本放行。
 const moneyText = /(?:[¥￥]\s*\d|\d+(?:\.\d+)?\s*元)/;
+// 09 R6：新单待审只取代旧待审单；旧单已批准且有效时，不能说它已经作废或只能以新单为准。
+const oldQuoteReplaced =
+  /(?:原|旧|之前|此前|刚才|上一)[^。！？\n]*(?:作废|不再(?:使用|沿用|用|[^。！？\n]*生效)|不予理会|忽略|不用管)|以(?:这|本|新)[^。！？\n]{0,8}为准/;
+const OLD_QUOTE_VALID = '原报价单仍有效，待新报价单审核通过后才会作废。';
+const pendingQuoteClaim =
+  /审核中|(?:还|仍|尚|正在)(?:在|处于)?(?:顾问)?审核|(?:待|等待|等|需要?|需)(?:顾问)?审核|(?:审核|审批)通过(?:之)?后/;
+const pendingQuoteNonAssertion =
+  /[?？]|(?:不再|不用|不必|无需|无须|不需要|不是|并非|没有|不在|不处于)[^，,。；;\n]{0,8}(?:审核|待审)|已(?:经)?(?:通过(?:了)?(?:顾问)?审核|(?:顾问)?审核通过)|(?:审核|审批)通过(?:之)?后已/;
+const newQuoteSubject = /新(?:的)?(?:正式)?(?:报价单|单子|单)|另(?:外)?一[张份](?:报价单|单)/;
 function quoteBehaviorText(ctx: FollowupGuardContext, sources: PackSources, followup: boolean): string {
-  const quote = latestQuoteCandidate({ ...ctx.session, packState: {} }, Date.now());
+  const now = Date.now();
+  const quote = latestQuoteCandidate({ ...ctx.session, packState: {} }, now);
   let text = ctx.text;
   if (quote?.kind === 'quote' && quote.state === 'pending') {
     const unsafe = (unit: string) => moneyText.test(unit) && (!/试算/.test(unit) || /正式报价单[^。！？\n]*\d+(?:\.\d+)?\s*元/.test(unit));
     const units = sentenceUnits(text).map(({ start, end }) => text.slice(start, end));
     if (!followup && text.trim() === FIXED.pending && ctx.turn) ctx.turn.flags.blocksSuppressed = true;
     if (units.some(unsafe)) {
-      if (!followup && ctx.turn) ctx.turn.flags.blocksSuppressed = true;
-      text = followup ? units.filter((unit) => !unsafe(unit)).join('') : FIXED.pending;
+      text = units.filter((unit) => !unsafe(unit)).join('');
+      // 18 第 0.9 步：局部删句保留正文和块，不写旗标；只有删空 / 仅剩标题、残句才整段兜底并抑制块。
+      // 有效占位符留给 reply_blocks:place；照抄的块行也由该步骤清理，不在这里重复裁正文。
+      const hasContent = unitsOf(text).some((unit) => {
+        const body = unit.trim().replace(/^(?:[·•-]|\d+[.、)）])\s*/, '');
+        return (
+          /[\p{L}\p{N}]/u.test(body) &&
+          !/[：:，,、]$/.test(body) &&
+          !/^(?:试算(?:结果)?|报价明细|价格明细|合计如下|好的|好|另外|不过|以及)[。！!？?]*$/.test(body)
+        );
+      });
+      if (!followup && !hasContent) {
+        if (ctx.turn) ctx.turn.flags.blocksSuppressed = true;
+        text = FIXED.pending;
+      }
+    }
+    if (!followup) {
+      // 「原单」按最近一张旧单核对；更早还有已批准单，也不能否认刚被取代的待审单已作废。
+      const previous = ctx.session.orderIds
+        .map((id) => getAnyOrder(id))
+        .filter(
+          (old): old is LineOrder => !!old && old.sessionId === ctx.session.id && 'v' in old && !!old.approval && old.id !== quote.order.id,
+        )
+        .toSorted((a, b) => b.createdAt - a.createdAt || (a.id < b.id ? 1 : -1))[0];
+      if (previous && quoteState(previous, now) === 'approved') text = correctClaim(text, oldQuoteReplaced, OLD_QUOTE_VALID);
+    }
+  }
+  if (!followup) {
+    const accepting = 'acceptingOrderId' in ctx && typeof ctx.acceptingOrderId === 'string' ? getAnyOrder(ctx.acceptingOrderId) : undefined;
+    const approved =
+      accepting && accepting.sessionId === ctx.session.id && 'v' in accepting && quoteState(accepting, now) === 'approved'
+        ? accepting
+        : quote?.kind === 'quote' && quote.state === 'approved'
+          ? quote.order
+          : undefined;
+    if (approved) {
+      const otherPending = ctx.session.orderIds.some((id) => {
+        const order = getAnyOrder(id);
+        return (
+          !!order && order.sessionId === ctx.session.id && 'v' in order && order.id !== approved.id && quoteState(order, now) === 'pending'
+        );
+      });
+      // 接受旧批准单时可能另有新单待审：只纠正当前这份报价的错话，不把新单说成已批准。
+      text = correctClaim(
+        text,
+        (unit) =>
+          !(otherPending && newQuoteSubject.test(unit)) &&
+          !/(?:发票|合同|资质|图纸|资料|退款|账期|样品)[^，,。；;\n]{0,8}(?:审核|审批)/.test(unit) &&
+          clausesOf(unit).some((clause) => pendingQuoteClaim.test(clause) && !pendingQuoteNonAssertion.test(clause)),
+        `${FIXED.accepted.replace(/^好的，/, '这份报价已批准，')}。`,
+      );
     }
   }
   if (followup && !quote)
