@@ -103,9 +103,13 @@ services:
       # pino 输出 JSON 行（每行带 time、level、msg，请求里带 req，轮次里带 tenant、conv、turn；02 spec R24）。本机开发不设，照旧纯文本
       LOG_FORMAT: json
       TENANT_LOCK_WAIT: forever
-    # 只绑 127.0.0.1：只让本机的 Caddy 反代进来，别让 docker-proxy 绕过防火墙把明文 HTTP 暴露到公网
+    # 发布端口只供宿主健康检查/巡检；Caddy 直连 app-upstream 的固定 IP，避开 docker-proxy。
     ports:
       - '127.0.0.1:${HOST_PORT:-3210}:3200'
+    networks:
+      default: {}
+      app-upstream:
+        ipv4_address: ${APP_UPSTREAM_IP:-172.30.250.10}
     # var/ 是会话、订单、企微 cursor 的唯一数据源，必须挂卷；必须归容器内 node(1000) 所有（deploy.sh 会 chown）
     volumes:
       - ../var:/app/var
@@ -137,9 +141,13 @@ services:
       # pino 输出 JSON 行（每行带 time、level、msg，请求里带 req，轮次里带 tenant、conv、turn；02 spec R24）。本机开发不设，照旧纯文本
       LOG_FORMAT: json
       TENANT_LOCK_WAIT: forever
-    # 只绑 127.0.0.1：只让本机的 Caddy 反代进来，别让 docker-proxy 绕过防火墙把明文 HTTP 暴露到公网
+    # 发布端口只供宿主健康检查/巡检；Caddy 直连 app-upstream 的固定 IP，避开 docker-proxy。
     ports:
       - '127.0.0.1:${STANDBY_HOST_PORT:-3212}:3200'
+    networks:
+      default: {}
+      app-upstream:
+        ipv4_address: ${STANDBY_UPSTREAM_IP:-172.30.250.11}
     # var/ 是会话、订单、企微 cursor 的唯一数据源，必须挂卷；必须归容器内 node(1000) 所有（deploy.sh 会 chown）
     volumes:
       - ../var:/app/var
@@ -198,6 +206,15 @@ services:
     depends_on:
       db:
         condition: service_healthy
+
+networks:
+  default: {}
+  # 每个 compose project 独立命名；不同实例还必须使用互不重叠的子网。
+  app-upstream:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${APP_UPSTREAM_SUBNET:-172.30.250.0/28}
 
 volumes:
   db-data:

@@ -14,6 +14,7 @@
 #
 # 用法：bash deploy.sh <tag>        （tag 必须是本地已有的 refs/tags/<tag>；分支名、提交号、~1 这类写法都不收）
 # 可用环境变量覆盖：SERVER / REMOTE_DIR / HOST_PORT / NAME（优先于 .deploy.env）。
+# 固定上游网络同样支持 APP_UPSTREAM_SUBNET / APP_UPSTREAM_IP / STANDBY_UPSTREAM_IP。
 # 旁路实例（在同一台服务器上演练回滚，不打断线上 demo）：NAME、REMOTE_DIR、HOST_PORT 三个必须同时换成和线上不同的值，
 # 它的 .env 不能配企微凭据，否则会和线上实例抢同一个客服账号的消息。两条脚本都会检查
 set -euo pipefail
@@ -47,12 +48,16 @@ done
 
 # 服务器地址不进 git：写在 .deploy.env（已 gitignore），或用环境变量覆盖。环境变量优先：先记下，读完文件再盖回去
 ENV_SERVER="${SERVER:-}" ENV_REMOTE_DIR="${REMOTE_DIR:-}" ENV_HOST_PORT="${HOST_PORT:-}" ENV_NAME="${NAME:-}" ENV_SANDBOX_PORT="${SANDBOX_PORT:-}"
+ENV_UPSTREAM_SUBNET="${APP_UPSTREAM_SUBNET:-}" ENV_UPSTREAM_IP="${APP_UPSTREAM_IP:-}" ENV_STANDBY_IP="${STANDBY_UPSTREAM_IP:-}"
 [[ -f .deploy.env ]] && source .deploy.env
 [[ -n "$ENV_SERVER" ]] && SERVER="$ENV_SERVER"
 [[ -n "$ENV_REMOTE_DIR" ]] && REMOTE_DIR="$ENV_REMOTE_DIR"
 [[ -n "$ENV_HOST_PORT" ]] && HOST_PORT="$ENV_HOST_PORT"
 [[ -n "$ENV_NAME" ]] && NAME="$ENV_NAME"
 [[ -n "$ENV_SANDBOX_PORT" ]] && SANDBOX_PORT="$ENV_SANDBOX_PORT"
+[[ -n "$ENV_UPSTREAM_SUBNET" ]] && APP_UPSTREAM_SUBNET="$ENV_UPSTREAM_SUBNET"
+[[ -n "$ENV_UPSTREAM_IP" ]] && APP_UPSTREAM_IP="$ENV_UPSTREAM_IP"
+[[ -n "$ENV_STANDBY_IP" ]] && STANDBY_UPSTREAM_IP="$ENV_STANDBY_IP"
 SERVER="${SERVER:?未设置 SERVER。写入 .deploy.env（如 SERVER=root@<服务器IP>）或以环境变量传入}"
 LIVE_NAME=wecom-sales-agent LIVE_DIR=/opt/wecom-sales-agent LIVE_PORT=3210 # 线上 demo 实例（宿主 3200 已被别的容器占用）
 REMOTE_DIR="${REMOTE_DIR:-$LIVE_DIR}"
@@ -77,12 +82,23 @@ if [[ "$NAME" != "$LIVE_NAME" || "$REMOTE_DIR" != "$LIVE_DIR" || "$HOST_PORT" !=
   fi
   SIDE=1
 fi
-echo "目标：${NAME} @ ${SERVER}:${REMOTE_DIR}，宿主端口 ${HOST_PORT}$([[ $SIDE == 1 ]] && echo '（旁路实例）')"
+# 固定上游网络参数：旧 tag 没有该网络时不要求新增参数，也不向它传未经校验的值。
+UPSTREAM_ENV='' UPSTREAM_TARGET=''
+if git show "refs/tags/${TAG}:deploy/compose.yml" | grep 'ipv4_address:' >/dev/null; then
+  APP_UPSTREAM_SUBNET="${APP_UPSTREAM_SUBNET:-172.30.250.0/28}"
+  APP_UPSTREAM_IP="${APP_UPSTREAM_IP:-172.30.250.10}"
+  STANDBY_UPSTREAM_IP="${STANDBY_UPSTREAM_IP:-172.30.250.11}"
+  # 本机只校验字面量，不连接服务器；CIDR/IP 通过后才能拼入远端命令。
+  perl -e 'alarm 10; exec @ARGV' node deploy/upstream-network.mjs "$APP_UPSTREAM_SUBNET" "$APP_UPSTREAM_IP" "$STANDBY_UPSTREAM_IP" "$SIDE" || exit 1
+  UPSTREAM_ENV="APP_UPSTREAM_SUBNET=${APP_UPSTREAM_SUBNET} APP_UPSTREAM_IP=${APP_UPSTREAM_IP} STANDBY_UPSTREAM_IP=${STANDBY_UPSTREAM_IP} "
+  UPSTREAM_TARGET="，Caddy 上游 ${APP_UPSTREAM_IP}:3200 ${STANDBY_UPSTREAM_IP}:3200（子网 ${APP_UPSTREAM_SUBNET}）"
+fi
+echo "目标：${NAME} @ ${SERVER}:${REMOTE_DIR}，宿主端口 ${HOST_PORT}${UPSTREAM_TARGET}$([[ $SIDE == 1 ]] && echo '（旁路实例）')"
 
 # 容器的参数（只绑 127.0.0.1、PORT 写死 3200、var/ 挂卷、停机宽限 10 秒）都在 deploy/compose.yml 的 app 服务里。
 # 项目名、容器名用 NAME，宿主端口用 HOST_PORT：旁路实例因此有自己的 compose 项目、数据库卷和容器名，碰不到线上。
 # 新版本与回滚只差 APP_IMAGE
-compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} docker compose -p ${NAME} -f deploy/compose.yml"; }
+compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} ${UPSTREAM_ENV}docker compose -p ${NAME} -f deploy/compose.yml"; }
 # 回滚前检查（02、03「导入、导出与切换」、04 R14、05 R18、07 R20、08 R13、09 R15、10 R17、12 R14）：旧镜像不认识库里的数据或部署状态时拒绝。
 # 判断在服务器上做（deploy/rollback-guard.sh 经 ssh 交给 bash -s）；$1 是镜像名，或 pre-02 到 pre-12 的档位（已按 tag 文件树判定）。
 # 用的是本地这份脚本：02 之前的 tag 里没有它。项目名与宿主端口传进去：打印的手工命令要带上（旁路实例不能去抢线上的端口）。
@@ -93,7 +109,7 @@ compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PO
 guard_rollback() { ssh "${SERVER}" bash -s -- "$REMOTE_DIR" "$1" "$NAME" "$HOST_PORT" <deploy/rollback-guard.sh; }
 # 05 以前只核对 revision；目标镜像判断失败从严按 pre-05 处理。
 pre05_image() { ssh "${SERVER}" "timeout --kill-after=2s 8s docker run --rm --entrypoint /bin/sh $1 -c 'test -e /app/src/tenancy/runtime.ts'"; }
-sandbox_compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} SANDBOX_PORT=${SANDBOX_PORT} docker compose -p ${NAME} -f deploy/compose.yml --profile sandbox"; }
+sandbox_compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} SANDBOX_PORT=${SANDBOX_PORT} ${UPSTREAM_ENV}docker compose -p ${NAME} -f deploy/compose.yml --profile sandbox"; }
 
 # 1) 归档：只取 tag 里提交过的文件。目录权限改成 755：rsync -a 会把源目录的权限带到 REMOTE_DIR 上，mktemp 给的是 700
 BUILD_DIR="$(mktemp -d)"
@@ -372,7 +388,7 @@ if [ "$CADDY_DUAL_UPSTREAM" = 1 ] && [ "$TARGET_HAS_STANDBY" = 1 ]; then
     echo '错误：备用容器名或端口无效、与宿主/沙箱冲突，或旁路实例占用线上资源；旧容器未动。' >&2
     exit 1
   fi
-  compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} STANDBY_CONTAINER=${STANDBY_CONTAINER} STANDBY_HOST_PORT=${STANDBY_HOST_PORT} docker compose -p ${NAME} -f deploy/compose.yml"; }
+  compose() { echo "cd ${REMOTE_DIR} && APP_IMAGE=$1 APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} STANDBY_CONTAINER=${STANDBY_CONTAINER} STANDBY_HOST_PORT=${STANDBY_HOST_PORT} ${UPSTREAM_ENV}docker compose -p ${NAME} -f deploy/compose.yml"; }
   # 只输出服务名，不输出 env；零活动仅在两个容器都不存在时视为首次部署。
   if ! perl -e 'alarm 20; exec @ARGV' ssh "${SERVER}" bash -s -- "$REMOTE_DIR" "$HOST_PORT" "$STANDBY_HOST_PORT" "$NAME" "$STANDBY_CONTAINER" "$NAME" >"$BUILD_DIR/active" <<'ACTIVE'
 set -euo pipefail
@@ -493,7 +509,7 @@ if swap_app; then
       echo "错误：沙箱换容器或健康检查失败。宿主已上线、沙箱已停；修好之后重新部署。" >&2
       # 服务端 8 秒后终止、再给 2 秒强杀；本地 ssh 12 秒封顶，取日志失败也继续删除。
       perl -e 'alarm 12; exec @ARGV' ssh "${SERVER}" "timeout --kill-after=2s 8s docker logs --tail 40 ${NAME}-sandbox" >&2 || true
-      perl -e 'alarm 12; exec @ARGV' ssh "${SERVER}" "cd ${REMOTE_DIR} && APP_IMAGE=${NAME}:latest APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} SANDBOX_PORT=${SANDBOX_PORT} timeout --kill-after=2s 8s docker compose -p ${NAME} -f deploy/compose.yml --profile sandbox rm -sfv sandbox" >&2 || {
+      perl -e 'alarm 12; exec @ARGV' ssh "${SERVER}" "cd ${REMOTE_DIR} && APP_IMAGE=${NAME}:latest APP_CONTAINER=${NAME} HOST_PORT=${HOST_PORT} SANDBOX_PORT=${SANDBOX_PORT} ${UPSTREAM_ENV}timeout --kill-after=2s 8s docker compose -p ${NAME} -f deploy/compose.yml --profile sandbox rm -sfv sandbox" >&2 || {
         echo "错误：删除沙箱容器失败，需立即人工处理。" >&2
       }
       exit 1

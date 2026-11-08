@@ -7,7 +7,7 @@
 1. 服务器已装 Docker（带 Compose 插件，2.30 及以上：compose 文件用 `env_file` 的 `format: raw`），且本机能 `ssh` 免密登录。服务器地址不入库：写在已 gitignore 的 `.deploy.env`（`SERVER=root@<你的服务器>`），或通过 `SERVER` 环境变量传入；**未设置时脚本直接中止**，没有内置默认值。
 2. 服务器上创建 `<部署目录>/.env`（参考 `.env.example`）：至少填 `LLM_API_KEY`、`ADMIN_PASS`、`PUBLIC_BASE_URL`（发给微信客户的支付链接靠它拼完整 URL），并**显式写明 `DEPLOY_PROFILE=demo` 或 `DEPLOY_PROFILE=prod`**（不带引号）。deploy.sh 在同步之前检查它，缺 `.env` 或没写明 profile 会直接中止，不会打掉在跑的旧容器。
 3. 同一目录下还有 `.env.db`、`.env.migrate`（数据库容器与迁移各自的凭据，写法见 [deploy/compose.yml](../../deploy/compose.yml) 开头），跑平台命令行时再加 `.env.platform`。应用的 `.env` 里不能有 owner、platform 或超级用户的口令，查到就拒绝启动。这几个文件都按 `docker run --env-file` 的规则读：值是 `=` 后面的整行，引号、`$`、`#` 都原样进容器，所以不要加引号和行尾注释。deploy.sh 也会查 `.env.db` 里四个口令都有、没有 `POSTGRES_DB`。
-4. HTTPS 用 Caddy 反代到宿主机 3210 端口（Compose 仅绑定本机回环地址），SSE 透传；云防火墙放行 80/443。站点地址仅在服务器配置，不写入仓库。
+4. HTTPS 用宿主机 Caddy 直连专用 bridge 上的固定容器 IP（默认 `172.30.250.10:3200`，主备启用后再加 `172.30.250.11:3200`），SSE 透传；云防火墙放行 80/443。宿主发布的 3210/3212 仍仅绑定回环地址，供健康检查与巡检，不作为 Caddy 上游。网络参数及首次接入顺序见下文「18 主备切换」；站点地址仅在服务器配置，不写入仓库。
 5. 应用库里要有 **vector 扩展**（07 起，迁移 0016 的 `kb_vectors` 用 pgvector 的 `halfvec`）。它不是 trusted 扩展，迁移用的 `agent_owner` 不是超级用户，建不了：新库首次初始化时 `deploy/db-init/roles.sh` 建完库会顺带调 `extensions.sh` 建好；**现有的线上库在第一次部署含迁移 0016 的版本之前，由 owner 手工执行一次**：`docker compose -f deploy/compose.yml exec db /db-init/extensions.sh`（可重复执行，用超级用户连应用库执行 `deploy/db-init/extensions.sql`）。没做这一步，migrate 服务报「先由超级用户在应用库里建 vector 扩展」并整批回退，部署停在切换之前，旧容器照常运行；`deploy.sh` 此时已把 `deploy/` 同步到服务器，补做上面那条命令后重新部署即可。也可以在第一次部署之前直接执行同一句 SQL（这时 `extensions.sh` 还不在服务器上）：`docker compose -f deploy/compose.yml exec -T db psql -X -v ON_ERROR_STOP=1 -U postgres -d agent -c 'CREATE EXTENSION IF NOT EXISTS vector WITH SCHEMA public;'`（库名按 `.env.db` 的 `AGENT_DB`，缺省 `agent`）。
 6. 同一部署装多个 standard 租户时（例如旅游演示租户之外再开工业品询价演示租户 `industrial-demo`），公开路由严格按 Host 匹配：每个租户都要有 `public_host`，宿主租户的 `public_host` 要与 `PUBLIC_BASE_URL` 一致，否则拒绝启动（[src/tenancy/hosts.ts](../../src/tenancy/hosts.ts)）。用 `src/cli/tenant-host.ts set --tenant <slug> --host <host>` 以 platform 身份设置，下次启动生效。开通新租户前先核对：旅游的公开地址按 Host 都命中旅游租户，新租户的 Host 只命中它自己（10 R16）。
 
@@ -99,8 +99,20 @@ docker compose -f deploy/compose.yml up -d app
 首次切换前由 owner 按顺序完成：
 
 1. 备份并完成 DB 配置与会话导入，确认两个镜像都含 18 进程侧实现。
-2. 在服务器现有 Caddy 站点块内导入[上游片段](../../deploy/caddy-app-upstreams.snippet)，先 `caddy validate --config <配置文件>`，成功后 `caddy reload --config <配置文件>`。上游必须为 `127.0.0.1:宿主端口`；默认 3210 与 3212，3211 留给沙箱。实际端口须同步到部署参数、Caddy 和 `.env.ops`。
-3. 确认经 Caddy 的实际入口能访问应用及 `/healthz`，再在**服务器部署目录**的 `.env.ops` 写入 `CADDY_DUAL_UPSTREAM=1`，最后运行 `deploy.sh <tag>`。仓库脚本不修改或自动验证服务器 Caddy；此开关代表 owner 已完成上述确认。
+2. 选定 `APP_UPSTREAM_SUBNET`、`APP_UPSTREAM_IP`、`STANDBY_UPSTREAM_IP`，在服务器只读查看已有 Docker 网段和宿主路由，确认没有重叠（含 VPN/静态路由）。不能只看两个 IP 有没有被使用。以下命令不修改网络：
+
+   ```bash
+   docker network ls -q | xargs -r docker network inspect --format '{{.Name}} {{json .IPAM.Config}}'
+   ip -4 route show table all
+   ```
+
+3. 旧实例尚未接入固定 IP 网络时，先保持开关为 `0`，单容器部署一次含新网络的 tag，让 `app` 取得固定 IP；已有备用的实例须先按下文流程退回单容器、停止备用。此准备步骤会有单容器重启窗口。核对宿主主端口和 `http://<APP_UPSTREAM_IP>:3200/healthz` 均正常后，再配置 Caddy；否则新上游尚不存在，无法完成下一步访问确认。
+4. 在服务器现有 Caddy 站点块内导入[上游片段](../../deploy/caddy-app-upstreams.snippet)，上游写 `<APP_UPSTREAM_IP>:3200 <STANDBY_UPSTREAM_IP>:3200`（默认 `172.30.250.10:3200 172.30.250.11:3200`）。先 `caddy validate --config <配置文件>`，成功后 `caddy reload --config <配置文件>`；宿主端口 3210/3212 留给巡检，3211 留给沙箱。
+5. 确认经 Caddy 的实际入口能访问应用及 `/healthz`，再在**服务器部署目录**的 `.env.ops` 写入 `CADDY_DUAL_UPSTREAM=1`，最后运行 `deploy.sh <tag>`。从旧的宿主端口双上游迁移时，也须重新完成以上确认，旧开关不能证明 Caddy 已直连固定 IP。仓库脚本不修改或自动验证服务器 Caddy。
+
+两个 app 同时接入默认网络（连接 db）与专用 `app-upstream` bridge（Caddy 直连），沙箱不接专用网络；固定地址与 IPAM 对应关系见 [Docker Compose 网络文档](https://docs.docker.com/compose/how-tos/networking/)。三个部署参数可写入本机 `.deploy.env`，或用环境变量覆盖（环境变量优先）；默认依次为 `172.30.250.0/28`、`172.30.250.10`、`172.30.250.11`。脚本在连接服务器之前校验规范 IPv4 CIDR、网络地址、两个不同且可用的子网内地址；网络地址、广播地址及首个可用地址（Docker 默认网关）不可用于 app，前缀最大 /29。目标 tag 不含此网络时保留旧部署参数要求。
+
+旁路实例除同时更换 `NAME`、`REMOTE_DIR`、`HOST_PORT` 外，还须显式选另一组子网与 IP；脚本拒绝与线上默认子网有任何重叠。线上自定义网段及其他实例的子网由 owner 用上述命令核对，Docker IPAM 也会拒绝重叠网络；不能靠换 project 名复用同一子网。三个参数同步传给手工 compose（含回滚）并保留稳定，改变已用网段须另开维护窗口。Caddy 同步两个 IP，`watch.sh` 和部署 revision 核对继续用宿主端口。
 
 `deploy.sh` 保留前六步，迁移只增不删，第七步先读服务器 `.env.ops` 的确认开关（不继承本机环境变量或 `.deploy.env` 的同名值，不执行 `.env.ops`，也不输出其中凭据）。只有字面值 `1` 才启用主备；兼容单/双引号、`export` 和行尾空白注释，重复键取最后一项。缺失或其他值都视为未确认，打印「Caddy 未确认双上游，本次不启用备用」，仅更新 `app`；此时若本 compose project 已有 `app-standby` 运行，或无法检查其状态，则拒绝换容器。停止的备用不会被启动。此模式失败时也只以 `:prev` 恢复 `app`，保持原来的回滚检查和健康检查。
 
@@ -114,9 +126,11 @@ docker compose -f deploy/compose.yml up -d app
 
 滚动模式健康检查或换容器失败：先停两边，完整执行既有版本判断、`rollback-guard.sh` 和 revision 核对，再以 `:prev`、`--no-deps` 重建原主，不回退迁移；失败部署始终非零退出。回滚成功后备用保持停止，修复后再次部署恢复双容器。回滚检查拒绝时按错误说明处理，不跳过保护。模式在本次第七步开始时确定，自动回滚沿用同一模式；部署和回滚期间不要修改开关。
 
+回滚检查需要执行 `sandbox purge --all` 时，固定 IP 配置下改用当前镜像、应用 `.env` 和本 project 默认网络的一次性容器；它不占用 app 的固定 IP、不读写 `var/`。其他要求独占租户锁的 app 命令仍先停两边再运行。
+
 手动回滚同样先停 `app app-standby`，用当前部署参数执行 `deploy/rollback-guard.sh` 核对目标镜像，通过后以 `APP_IMAGE=<已验证镜像>` 重建切换前的主服务并核对 revision。回到不认识等锁模式的旧 tag 前，必须停掉并删除备用容器，否则旧 compose 不再管理它；旧版本仍只起一份。
 
-关闭开关、退回单容器时，安排维护窗口并保持 Caddy 双上游：先用当前部署参数停止 `app app-standby`，再以已验证的当前镜像和 `up -d --no-deps app` 只启动 `app`，核对主端口的 `ok` / `role` / `revision` 及经 Caddy 的访问均正常，确认备用已停止。然后把服务器 `.env.ops` 改为 `CADDY_DUAL_UPSTREAM=0`，再部署单容器版本；需要把 Caddy 改回单上游时，最后再移除备用上游并 validate / reload、验证访问。不能先关闭开关再指望部署脚本替正在运行的备用迁回主端口；脚本会拒绝。关闭后的手动回滚也只恢复 `app`，若回退到旧 tag 还须删除已停止的备用容器。
+关闭开关、退回单容器时，安排维护窗口并保持 Caddy 双上游：先用当前部署参数停止 `app app-standby`，再以已验证的当前镜像和 `up -d --no-deps app` 只启动 `app`，核对主端口的 `ok` / `role` / `revision` 及经 Caddy 的访问均正常，确认备用已停止。然后把服务器 `.env.ops` 改为 `CADDY_DUAL_UPSTREAM=0`，再部署单容器版本；需要把 Caddy 改回单上游时，最后改为 `reverse_proxy <APP_UPSTREAM_IP>:3200`（默认 `reverse_proxy 172.30.250.10:3200`），再 validate / reload、验证访问，不能改回宿主发布端口。不能先关闭开关再指望部署脚本替正在运行的备用迁回主端口；脚本会拒绝。关闭后的手动回滚也只恢复 `app`。若回退到尚无固定 IP 网络的旧 tag，须删除已停止的备用，并在维护窗口由 owner 用当前网络配置和旧镜像保留 app 的固定 IP、验证 Caddy 后再恢复服务；不要直接让旧 compose 删除 app 的网络接入。
 
 `STANDBY_CONTAINER` 默认 `<NAME>-standby`；脚本的 `STANDBY_HOST_PORT` 默认 `HOST_PORT + 2`，compose 自身默认固定为 3212。旁路实例必须避开线上和沙箱的端口与容器名；自定义值也传给手工 compose 与巡检。catalog-fix、会话/渠道导入导出、channel-account、erp-connector、行权删除等需要独占租户锁的命令，都先 `docker compose -f deploy/compose.yml stop app app-standby`，否则备用会接过锁；操作结束再恢复两边。
 
@@ -143,7 +157,7 @@ docker compose -f deploy/compose.yml up -d app
 | `dial_timeout 1s`                 | 限制单次拨号等待。                                                            |
 | `keepalive off`                   | 每个请求重新拨号，避免复用失锁进程的旧连接及底层连接复用重试。                |
 
-连接被拒的 POST 可以等另一个上游；已经送达的 POST 即使断开或返回 5xx，也不会由代理重发。15 秒是重试判断预算，末次拨号或等待间隔可能少量超出，不是精确请求总时限。上游必须写 `127.0.0.1:宿主端口`，不要写 Docker 容器名：容器刚被 kill / 停掉时，名称可能指向旧地址，连接建立后断开会返回 EOF，按设计不会重试，无法代表线上端口拒绝连接的行为。协调者已用 2.11.2 验证回环端口切换、15 秒重试窗口和已送达 POST 不重发。
+连接被拒的 POST 可以等另一个上游；已经送达的 POST 即使断开或返回 5xx，也不会由代理重发。15 秒是重试判断预算，末次拨号或等待间隔可能少量超出，不是精确请求总时限。上游必须写专用 bridge 的固定容器 IP 加 `:3200`，不能写宿主发布端口：即使等锁进程不监听，docker-proxy 也可能先接受 TCP 再重置，Caddy 视为已连接，不会重试。也不要写 Docker 容器名：容器刚被 kill / 停掉时，名称可能指向旧地址，连接后 EOF 同样不可重试。协调者已用固定 IP 直连完成 rolling 对照演练（14 发 14 收、0 reset）；仓库自测验证配置及测量逻辑，实际可用性须再跑容器演练。
 
 ### 本机演练（协调者执行）
 
@@ -153,6 +167,9 @@ docker compose -f deploy/compose.yml up -d app
 pnpm exec tsx scripts/failover-drill.selftest.ts
 pnpm exec tsx scripts/failover-drill.ts kill > container-kill.json
 pnpm exec tsx scripts/failover-drill.ts rolling > container-rolling.json
+# 可选：仅导出当前演练栈的日志，路径相对仓库根目录，文件须尚不存在。
+mkdir -p var/drill
+DRILL_DUMP_LOGS=var/drill/rolling.log pnpm exec tsx scripts/failover-drill.ts rolling > var/drill/rolling.json
 # PG_TEST_URL 由协调者注入：一次性 pgvector/pgvector:pg17 集群的超级用户 URL。
 pnpm exec tsx scripts/failover-process-drill.ts kill > process-kill.json
 pnpm exec tsx scripts/failover-process-drill.ts terminate > process-terminate.json
@@ -161,7 +178,9 @@ pnpm exec tsx scripts/failover-drill.ts report container-kill.json container-rol
 
 结果文件放在仓库之外或 gitignored 的 `var/`。每次执行 stdout 只有一份 JSON，进度写 stderr；任何必要数字缺失为 null、任何检查失败或清理不完整都退出非零。每份结果含当前 `metrics`、`scopeComplete`、`cleanupComplete` 和四场景的 `acceptanceMetrics`（其他场景为 null）。离线 `report` 合并四份结果；只有四种结果各一份、数字齐全且达标、检查和清理均通过时，`acceptance10to12Complete` 才为 true。它是本节演练数字的汇总，旧进程三类写入的直接 epoch 栅栏回归仍由进程侧自测覆盖。
 
-**容器演练只量对外可用性。** 脚本构建 drill-old、drill-new 两个 revision，使用随机 project、随机本机端口、临时随机凭据和 tmpfs PG，初始化合成旅游租户；`LLM_MOCK=1`，不读取部署 env、不调用 deploy.sh。演练自己的临时 `.env.ops` 显式写入 `CADDY_DUAL_UPSTREAM=1`，经与 deploy.sh 共用的确认检查通过后才进入主备演练与回滚，JSON 的 `caddyDualUpstream` 记录确认结果。Caddy 使用 host 网络并 import 部署的同一片段，上游为两个 `127.0.0.1:宿主端口`；两个 app 仍用 bridge 网络连接 PG，只将 3200 发布到各自的宿主回环端口。
+**容器演练只量对外可用性。** 脚本构建 drill-old、drill-new 两个 revision，使用随机 project、随机本机端口、临时随机凭据和 tmpfs PG，初始化合成旅游租户；`LLM_MOCK=1`，不读取部署 env、不调用 deploy.sh。演练自己的临时 `.env.ops` 显式写入 `CADDY_DUAL_UPSTREAM=1`，经与 deploy.sh 共用的确认检查通过后才进入主备演练与回滚，JSON 的 `caddyDualUpstream` 记录确认结果。脚本通过 `docker network ls` / `inspect` 只读获取已有网段，从 `172.30/16`、`172.31/16` 的候选 /28 中选择无重叠子网；查不到或候选耗尽就明确报错、退出非零。先创建并标记本 project 的专用网络，再由 Compose 分配默认网络，避免自己的默认网络抢占所选网段。两个 app 都接默认网络连 PG、接专用网络取得固定 IP；Caddy 使用 host 网络并 import 同一片段，直连这两个 IP 的 3200 端口。JSON 的 `upstream` 记录 `subnet`、`appIP`、`standbyIP`。并发演练若在选网之后抢到同段，创建失败即退出，不删除其他网络。
+
+`DRILL_DUMP_LOGS` 默认不导出；设置后，在 down 之前把本 project 的 `docker compose logs --no-color --timestamps` 写入指定文件。路径必须位于本仓库 `var/` 下（支持相对路径或该目录内的绝对路径），拒绝越界、符号链接和覆盖已有文件；父目录按需创建，文件权限 0600。写出前将本次临时密码的全部出现替换为 `[REDACTED]`。成功与失败场景均尝试导出；收集的是当时仍存在的容器日志，被重建删除的旧容器日志不在其中。JSON 的 `logDump` 记录是否请求、是否写出及相对路径；导出失败会令演练失败，但仍继续清理。输出 JSON 若也放 `var/drill/`，先 `mkdir -p var/drill` 再执行命令，shell 重定向不会替你建目录。
 
 Colima 下 host 网络指虚拟机。演练先用 host 网络的 `probe` 在虚拟机回环地址选择三个空闲端口（主、备、Caddy），写入临时 compose env；app 重建时复用相同发布端口。Caddy 只监听虚拟机的回环地址，不配置 `ports`（[Docker 的 host 模式不支持端口映射](https://docs.docker.com/engine/network/drivers/host/)）。macOS 上的脚本通过 `docker compose exec -T probe` 在同一虚拟机网络内探测主备并经 Caddy 发消息，因此不依赖 Colima 向 macOS 自动转发 Caddy 端口，也不把 macOS 的 127.0.0.1 当成虚拟机。HTTP 客户端每次建新连接、不重试、不跟随重定向；`maxWaitMs` 在虚拟机内部从发请求到收完响应计时，不包含 Docker exec 启动开销。若探测进程失败，等待时间为 null，演练不通过。probe 与其余服务由同一个 project 的 down 一起清理；端口分配后若被其他进程抢占，compose 绑定失败即退出，不停止其他服务。
 

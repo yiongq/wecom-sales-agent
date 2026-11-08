@@ -1,6 +1,7 @@
 # Caddy 2.11.2；在现有站点块内 import，保留站点的鉴权、路由和 TLS 配置。
-# 默认：import caddy-app-upstreams.snippet 127.0.0.1:3210 127.0.0.1:3212
-# 上游必须用 127.0.0.1:宿主端口；容器名在停机时可能连上旧地址后 EOF，不属于可重试的拨号失败。
+# 默认：import caddy-app-upstreams.snippet 172.30.250.10:3200 172.30.250.11:3200
+# 上游必须用专用 bridge 的固定容器 IP；宿主发布端口的 docker-proxy 会先接受连接再重置，Caddy 不重试。
+# 也不能用容器名：停机时可能连上旧地址后 EOF，不属于可重试的拨号失败。
 reverse_proxy {args[0]} {args[1]} {
     lb_policy first
     lb_try_duration 15s

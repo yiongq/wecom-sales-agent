@@ -10,6 +10,8 @@ import { promisify } from 'node:util';
 import { setTimeout as sleep } from 'node:timers/promises';
 
 import { acceptanceReport, emptyMetrics, metricsPass, type DrillResult, type Scope } from './failover-metrics.js';
+import { selectDrillUpstream, type UpstreamNetwork } from '../deploy/upstream-network.mjs';
+import { prepareDrillLogPath, writeDrillLogs } from './failover-artifacts.js';
 
 const exec = promisify(execFile);
 type Slot = 'app' | 'app-standby';
@@ -73,6 +75,8 @@ async function drill(scenario: string): Promise<void> {
   const password = randomBytes(24).toString('hex');
   const images: Record<Slot, string> = { app: oldImage, 'app-standby': oldImage };
   let ports: ReturnType<typeof parseDrillPorts> | undefined;
+  let upstream: UpstreamNetwork | undefined;
+  let dumpLogs: string | undefined;
   // 不继承任何应用配置/密钥；只保留查找本机 Docker 所需变量。
   const env = Object.fromEntries(
     ['PATH', 'HOME', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG', 'TMPDIR'].flatMap((key) =>
@@ -88,7 +92,14 @@ async function drill(scenario: string): Promise<void> {
   const failures: string[] = [];
   const scope: Scope = scenario === 'kill' ? 'containerKill' : 'containerRolling';
   const result: DrillResult = { scope, metrics: emptyMetrics(scope), scopeComplete: false, cleanupComplete: false };
-  const report: Record<string, unknown> = { scenario, project, probeLocation: 'docker-host-loopback', caddyDualUpstream: null };
+  const report: Record<string, unknown> = {
+    scenario,
+    project,
+    probeLocation: 'docker-host-loopback',
+    caddyDualUpstream: null,
+    upstream: null,
+    logDump: { requested: process.env.DRILL_DUMP_LOGS !== undefined, written: false },
+  };
   const m = result.metrics;
   const check = (ok: boolean, name: string) => {
     if (!ok) failures.push(name);
@@ -109,6 +120,7 @@ async function drill(scenario: string): Promise<void> {
     }
   }
   async function writeEnv() {
+    if (!upstream) throw new Error('drill_upstream_unavailable');
     await writeFile(
       envFile,
       [
@@ -121,6 +133,9 @@ async function drill(scenario: string): Promise<void> {
         `DRILL_APP_PORT=${ports?.app ?? 0}`,
         `DRILL_STANDBY_PORT=${ports?.standby ?? 0}`,
         `DRILL_CADDY_PORT=${ports?.caddy ?? 0}`,
+        `DRILL_UPSTREAM_SUBNET=${upstream.subnet}`,
+        `DRILL_APP_IP=${upstream.appIP}`,
+        `DRILL_STANDBY_IP=${upstream.standbyIP}`,
         '',
       ].join('\n'),
       { mode: 0o600 },
@@ -182,6 +197,16 @@ async function drill(scenario: string): Promise<void> {
     await Promise.allSettled(pending);
     let cleaned = true;
     if (started) {
+      if (dumpLogs !== undefined) {
+        try {
+          const logs = await compose(['logs', '--no-color', '--timestamps']);
+          await writeDrillLogs(root, dumpLogs, logs, password);
+          report.logDump = { requested: true, written: true, path: path.relative(root, dumpLogs) };
+        } catch {
+          failures.push('DRILL_DUMP_LOGS 导出失败（路径不可写/已存在、路径被替换或读取日志失败）；仍继续清理');
+          result.scopeComplete = false;
+        }
+      }
       try {
         await compose(['down', '--volumes', '--remove-orphans', '--timeout', '10'], 60_000);
       } catch {
@@ -208,6 +233,7 @@ async function drill(scenario: string): Promise<void> {
   process.on('SIGTERM', onSignal);
   const deadline = setTimeout(onSignal, 20 * 60_000);
   try {
+    if (process.env.DRILL_DUMP_LOGS !== undefined) dumpLogs = await prepareDrillLogPath(root, process.env.DRILL_DUMP_LOGS);
     // 演练 Caddy 已配置双上游；显式开启，并经过与 deploy.sh 相同的只读门槛。
     // 不读取服务器或本机仓库的 .env.ops；未确认时禁止进入后面的主备演练与回滚。
     await writeFile(path.join(tmp, '.env.ops'), 'CADDY_DUAL_UPSTREAM=1\n', { mode: 0o600 });
@@ -224,7 +250,6 @@ async function drill(scenario: string): Promise<void> {
     // 固定到已验证的本机 socket，防止默认 context 或 DOCKER_CONTEXT 改变后操作远端。
     delete env.DOCKER_CONTEXT;
     env.DOCKER_HOST = endpoint;
-    await writeEnv();
     for (const [image, revision] of [
       [oldImage, 'drill-old'],
       [newImage, 'drill-new'],
@@ -234,7 +259,27 @@ async function drill(scenario: string): Promise<void> {
       built.push(image);
       await docker(['build', '--build-arg', `APP_REVISION=${revision}`, '-t', image, '.'], 600_000);
     }
+    const networkIds = (await docker(['network', 'ls', '-q'])).split(/\s+/).filter(Boolean);
+    if (!networkIds.length) throw new Error('drill_network_inspect_invalid：Docker 网络列表为空');
+    upstream = selectDrillUpstream(JSON.parse(await docker(['network', 'inspect', ...networkIds])));
+    report.upstream = upstream;
+    await writeEnv();
     started = true;
+    // 先保留专用网段，再让 Compose 分配默认网络，避免新建的默认网段占用所选地址。
+    // 标签与 Compose 一致，down 会清理这一个 project 的网络；冲突时退出，不动其他网络。
+    await docker([
+      'network',
+      'create',
+      '--driver',
+      'bridge',
+      '--subnet',
+      upstream.subnet,
+      '--label',
+      `com.docker.compose.project=${project}`,
+      '--label',
+      'com.docker.compose.network=app-upstream',
+      `${project}_app-upstream`,
+    ]);
     ports = parseDrillPorts(
       JSON.parse(await compose(['run', '--rm', '--no-deps', 'probe', 'node', '/drill/probe.mjs', 'reserve'], 10_000)),
     );

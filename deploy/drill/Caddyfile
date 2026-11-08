@@ -4,5 +4,5 @@
 }
 http://127.0.0.1:{$DRILL_CADDY_PORT} {
     bind 127.0.0.1
-    import /etc/caddy/app.snippet 127.0.0.1:{$DRILL_APP_PORT} 127.0.0.1:{$DRILL_STANDBY_PORT}
+    import /etc/caddy/app.snippet {$DRILL_APP_IP}:3200 {$DRILL_STANDBY_IP}:3200
 }

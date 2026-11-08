@@ -19,6 +19,154 @@ import {
   type RequestRecord,
 } from './failover-wecom.js';
 import { computeSignature, decryptWecom } from '../src/wecom-crypto.js';
+import { DEFAULT_UPSTREAM, selectDrillUpstream, validateUpstream } from '../deploy/upstream-network.mjs';
+import { prepareDrillLogPath, redactDrillLogs, writeDrillLogs } from './failover-artifacts.js';
+
+assert.deepEqual(validateUpstream(DEFAULT_UPSTREAM.subnet, DEFAULT_UPSTREAM.appIP, DEFAULT_UPSTREAM.standbyIP), DEFAULT_UPSTREAM);
+for (const [subnet, appIP, standbyIP, error] of [
+  ['172.30.250.0', '172.30.250.10', '172.30.250.11', /CIDR/],
+  ['172.30.250.0/33', '172.30.250.10', '172.30.250.11', /前缀/],
+  ['172.30.250.1/28', '172.30.250.10', '172.30.250.11', /网络地址/],
+  ['172.30.250.0/30', '172.30.250.2', '172.30.250.3', /前缀/],
+  ['172.30.250.0/28', '172.30.250.10', '172.30.250.10', /不能相同/],
+  ['172.30.250.0/28', '172.30.251.10', '172.30.250.11', /子网内/],
+  ['172.30.250.0/28', '172.30.250.0', '172.30.250.11', /网络地址/],
+  ['172.30.250.0/28', '172.30.250.1', '172.30.250.11', /默认网关/],
+  ['172.30.250.0/28', '172.30.250.15', '172.30.250.11', /广播地址/],
+  ['172.30.250.0/28', '172.030.250.10', '172.30.250.11', /规范 IPv4/],
+  ['172.30.250.0/28', '172.30.250.256', '172.30.250.11', /规范 IPv4/],
+  ['172.30.250.0/28', '$(echo injection)', '172.30.250.11', /规范 IPv4/],
+] as const)
+  assert.throws(() => validateUpstream(subnet, appIP, standbyIP), error);
+assert.throws(() => validateUpstream('172.30.250.0/24', '172.30.250.20', '172.30.250.21', true), /旁路实例.*不能与线上默认子网重叠/);
+assert.equal(validateUpstream('172.30.251.0/28', '172.30.251.10', '172.30.251.11', true).subnet, '172.30.251.0/28');
+const occupied = (...subnets: string[]) => subnets.map((Subnet) => ({ IPAM: { Config: [{ Subnet }] } }));
+assert.equal(selectDrillUpstream([]).subnet, '172.30.0.0/28');
+assert.equal(selectDrillUpstream(occupied('172.30.0.0/28')).subnet, '172.30.1.0/28');
+assert.equal(selectDrillUpstream(occupied('172.30.0.8/29')).subnet, '172.30.1.0/28');
+assert.equal(selectDrillUpstream(occupied('172.30.0.16/28')).subnet, '172.30.0.0/28');
+assert.equal(selectDrillUpstream(occupied('172.30.0.0/16')).subnet, '172.31.0.0/28');
+assert.equal(selectDrillUpstream([...occupied('fd00::/64'), { IPAM: { Config: [] } }, { IPAM: { Config: null } }]).subnet, '172.30.0.0/28');
+assert.throws(() => selectDrillUpstream(occupied('172.16.0.0/12')), /drill_no_free_subnet/);
+for (const invalid of [null, {}, [{}], [{ IPAM: { Config: [{}] } }], occupied('invalid'), occupied('172.30.0.0/99')])
+  assert.throws(() => selectDrillUpstream(invalid), /drill_network_inspect_invalid/);
+
+const logRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'drill-logs-'));
+try {
+  const outside = path.join(logRoot, 'outside');
+  fs.mkdirSync(outside);
+  for (const invalid of ['', 'var', 'var/../escape.log', '../escape.log', path.join(outside, 'dump.log'), 'var/bad\0.log'])
+    await assert.rejects(prepareDrillLogPath(logRoot, invalid), /DRILL_DUMP_LOGS 必须/);
+  fs.symlinkSync(outside, path.join(logRoot, 'var'));
+  await assert.rejects(prepareDrillLogPath(logRoot, 'var/dump.log'), /符号链接/);
+  fs.unlinkSync(path.join(logRoot, 'var'));
+  const target = await prepareDrillLogPath(logRoot, 'var/nested/rolling.log');
+  const secret = randomBytes(24).toString('hex');
+  const raw = `app timestamp ${secret}\ndb postgres://user:${secret}@db\n${secret}${secret}\n`;
+  assert.ok(!redactDrillLogs(raw, secret).includes(secret));
+  assert.throws(() => redactDrillLogs(raw, ''), /missing_password/);
+  await writeDrillLogs(logRoot, target, raw, secret);
+  const saved = fs.readFileSync(target, 'utf8');
+  assert.equal(saved, `app timestamp [REDACTED]\ndb postgres://user:[REDACTED]@db\n[REDACTED][REDACTED]\n`);
+  assert.equal(fs.statSync(target).mode & 0o777, 0o600);
+  await assert.rejects(writeDrillLogs(logRoot, target, 'overwrite', secret), /文件已存在/);
+  assert.equal(fs.readFileSync(target, 'utf8'), saved);
+  fs.symlinkSync(outside, path.join(logRoot, 'var/link'));
+  await assert.rejects(prepareDrillLogPath(logRoot, 'var/link/dump.log'), /符号链接/);
+  fs.symlinkSync(path.join(outside, 'dump.log'), path.join(logRoot, 'var/file.log'));
+  await assert.rejects(writeDrillLogs(logRoot, 'var/file.log', raw, secret), /符号链接/);
+  const replaced = await prepareDrillLogPath(logRoot, 'var/replaced/dump.log');
+  fs.rmdirSync(path.dirname(replaced));
+  fs.symlinkSync(outside, path.dirname(replaced));
+  await assert.rejects(writeDrillLogs(logRoot, replaced, raw, secret), /符号链接/);
+  assert.deepEqual(fs.readdirSync(outside), []);
+} finally {
+  fs.rmSync(logRoot, { recursive: true, force: true });
+}
+console.log('固定上游与日志：CIDR/IP/旁路校验、避开相交网段、候选耗尽、路径边界/符号链接/覆盖保护、密码脱敏自测通过');
+
+// 完整演练入口配假 Docker：在 probe 启动处制造失败，验证选网、导出、清理顺序，不启动容器。
+const lifecycleTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'drill-lifecycle-'));
+const artifactDir = path.join('var', `drill-selftest-${randomBytes(6).toString('hex')}`);
+try {
+  fs.writeFileSync(
+    path.join(lifecycleTmp, 'docker'),
+    `#!/usr/bin/env node
+const fs = require('node:fs');
+const base = ${JSON.stringify(lifecycleTmp)};
+const args = process.argv.slice(2);
+fs.appendFileSync(base + '/calls', JSON.stringify(args) + '\\n');
+const mode = fs.readFileSync(base + '/mode', 'utf8');
+if (args[0] === 'context') { console.log(args[1] === 'show' ? 'fake-local' : 'unix:///synthetic-docker.sock'); }
+else if (args[0] === 'network') {
+  if (args[1] === 'ls') console.log('existing-network');
+  if (args[1] === 'inspect') console.log(JSON.stringify([{ IPAM: { Config: [{ Subnet: mode === 'exhausted' ? '172.16.0.0/12' : '172.30.0.0/28' }] } }]));
+  if (args[1] === 'create') console.log('own-network');
+} else if (args[0] === 'compose') {
+  if (args.includes('reserve')) process.exit(1);
+  if (args.includes('logs')) {
+    const env = fs.readFileSync(args[args.indexOf('--env-file') + 1], 'utf8');
+    const password = env.match(/^DRILL_PASSWORD=(.+)$/m)[1];
+    fs.writeFileSync(base + '/password', password);
+    console.log('app timestamp password=' + password + '\\ndb timestamp password=' + password);
+    if (mode === 'export-fails') fs.writeFileSync(fs.readFileSync(base + '/target', 'utf8'), 'keep-existing');
+  }
+}
+`,
+    { mode: 0o755 },
+  );
+  const run = (mode: string, dump?: string) => {
+    fs.writeFileSync(path.join(lifecycleTmp, 'calls'), '');
+    fs.writeFileSync(path.join(lifecycleTmp, 'mode'), mode);
+    if (dump) fs.writeFileSync(path.join(lifecycleTmp, 'target'), path.resolve(dump));
+    const r = spawnSync(process.execPath, ['--import', 'tsx', 'scripts/failover-drill.ts', 'kill'], {
+      encoding: 'utf8',
+      timeout: 15_000,
+      env: { PATH: `${lifecycleTmp}:${process.env.PATH}`, ...(dump === undefined ? {} : { DRILL_DUMP_LOGS: dump }) },
+    });
+    assert.ifError(r.error);
+    assert.equal(r.status, 1, '故障演练不能误报通过');
+    return {
+      report: JSON.parse(r.stdout),
+      calls: fs
+        .readFileSync(path.join(lifecycleTmp, 'calls'), 'utf8')
+        .trim()
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as string[]),
+    };
+  };
+  let r = run('normal');
+  assert.equal(r.report.logDump.requested, false);
+  assert.ok(!r.calls.some((args) => args.includes('logs')) && r.report.cleanupComplete);
+  r = run('normal', path.join(artifactDir, 'dump.log'));
+  assert.deepEqual(r.report.upstream, { subnet: '172.30.1.0/28', appIP: '172.30.1.10', standbyIP: '172.30.1.11' });
+  const createAt = r.calls.findIndex((args) => args[0] === 'network' && args[1] === 'create');
+  const firstCompose = r.calls.findIndex((args) => args[0] === 'compose');
+  const logsAt = r.calls.findIndex((args) => args.includes('logs'));
+  const downAt = r.calls.findIndex((args) => args.includes('down'));
+  assert.ok(createAt >= 0 && createAt < firstCompose && logsAt > firstCompose && downAt > logsAt);
+  assert.ok(r.calls[createAt]!.includes(`com.docker.compose.project=${r.report.project}`));
+  assert.ok(r.calls[createAt]!.includes(`${r.report.project}_app-upstream`));
+  assert.ok(r.calls[logsAt]!.includes('--no-color') && r.calls[logsAt]!.includes('--timestamps'));
+  assert.ok(r.report.cleanupComplete && r.report.logDump.written && !r.report.scopeComplete);
+  const dumped = fs.readFileSync(path.join(artifactDir, 'dump.log'), 'utf8');
+  assert.ok(dumped.includes('[REDACTED]') && !dumped.includes(fs.readFileSync(path.join(lifecycleTmp, 'password'), 'utf8')));
+  r = run('normal', path.join(lifecycleTmp, 'outside.log'));
+  assert.match(r.report.error, /DRILL_DUMP_LOGS 必须/);
+  assert.equal(r.calls.length, 0, '非法路径在 Docker 操作前拒绝');
+  r = run('exhausted');
+  assert.match(r.report.error, /drill_no_free_subnet/);
+  assert.ok(!r.calls.some((args) => args.includes('create') || args[0] === 'compose'));
+  r = run('export-fails', path.join(artifactDir, 'occupied.log'));
+  assert.ok(r.report.cleanupComplete && !r.report.logDump.written && !r.report.scopeComplete);
+  assert.ok(r.calls.some((args) => args.includes('down')) && r.report.failures.some((s: string) => s.includes('导出失败')));
+  assert.equal(fs.readFileSync(path.join(artifactDir, 'occupied.log'), 'utf8'), 'keep-existing');
+} finally {
+  fs.rmSync(lifecycleTmp, { recursive: true, force: true });
+  fs.rmSync(artifactDir, { recursive: true, force: true });
+}
+console.log('演练入口：假 Docker 验证选网、创建项目网络、可选日志导出先于 down、脱敏及导出失败仍清理');
 
 assert.equal(healthOK({ ok: 'true' }), false);
 assert.equal(healthOK({ nested: { ok: true } }), false);
@@ -46,7 +194,7 @@ for (const bad of [null, [], [41001, 41001, 41003], [0, 41002, 41003], [80, 4100
   assert.throws(() => parseDrillPorts(bad), /drill_invalid_ports/);
 assert.equal(summarize([{ id: 'sim-probe-failed', status: 0, replied: false, waitMs: null }]).maxWaitMs, null);
 
-// 网络拓扑是演练契约：Caddy 不走容器名，探测与 Caddy 同在 Docker host 的回环网络。
+// 网络拓扑是演练契约：Caddy 直连固定容器 IP，probe 仍经宿主端口测健康。
 const drillCompose = fs.readFileSync('deploy/drill/compose.drill.yml', 'utf8');
 const caddyService = drillCompose.slice(drillCompose.indexOf('\n  caddy:'), drillCompose.indexOf('\n  probe:'));
 assert.match(caddyService, /network_mode: host/);
@@ -54,9 +202,22 @@ assert.doesNotMatch(caddyService, /\bports:/);
 assert.match(drillCompose.slice(drillCompose.indexOf('\n  probe:')), /network_mode: host/);
 for (const variable of ['DRILL_APP_PORT', 'DRILL_STANDBY_PORT']) assert.ok(drillCompose.includes(`127.0.0.1:\${${variable}:?}:3200`));
 const drillCaddy = fs.readFileSync('deploy/drill/Caddyfile', 'utf8');
-assert.ok(drillCaddy.includes('import /etc/caddy/app.snippet 127.0.0.1:{$DRILL_APP_PORT} 127.0.0.1:{$DRILL_STANDBY_PORT}'));
+assert.ok(drillCaddy.includes('import /etc/caddy/app.snippet {$DRILL_APP_IP}:3200 {$DRILL_STANDBY_IP}:3200'));
 assert.ok(drillCaddy.includes('http://127.0.0.1:{$DRILL_CADDY_PORT}') && drillCaddy.includes('bind 127.0.0.1'));
 assert.doesNotMatch(drillCaddy, /app(?:-standby)?:3200/);
+assert.doesNotMatch(caddyService + drillCaddy, /DRILL_(APP|STANDBY)_PORT/);
+assert.ok(drillCompose.includes('subnet: ${DRILL_UPSTREAM_SUBNET:?}'));
+for (const variable of ['DRILL_APP_IP', 'DRILL_STANDBY_IP']) assert.ok(drillCompose.includes(`ipv4_address: '\${${variable}:?}'`));
+const deploymentCompose = fs.readFileSync('deploy/compose.yml', 'utf8');
+for (const [service, variable, ip] of [
+  ['app', 'APP_UPSTREAM_IP', DEFAULT_UPSTREAM.appIP],
+  ['app-standby', 'STANDBY_UPSTREAM_IP', DEFAULT_UPSTREAM.standbyIP],
+]) {
+  const section = deploymentCompose.split(`\n  ${service}:\n`)[1]!.split(/\n  (?=\S)/)[0]!;
+  assert.ok(section.includes('default: {}') && section.includes(`ipv4_address: \${${variable}:-${ip}}`));
+}
+assert.ok(deploymentCompose.includes(`subnet: \${APP_UPSTREAM_SUBNET:-${DEFAULT_UPSTREAM.subnet}}`));
+assert.doesNotMatch(deploymentCompose.split('\n  sandbox:\n')[1]!.split('\n  platform:')[0]!, /app-upstream/);
 
 // 执行容器内实际使用的测量程序；这里用本机 HTTP 服务器验证，无需 Docker。
 const probeScript = path.resolve('scripts/failover-probe.mjs');
@@ -178,6 +339,73 @@ try {
 // 只提取第 7 步的函数，以内存中的假 ssh/compose 执行，不运行 deploy.sh。
 // 确认任意一侧为主时都先重建备、再停主；健康失败不能重建原主或更新 current。
 const deploy = fs.readFileSync('deploy.sh', 'utf8');
+const parameters = deploy.slice(deploy.indexOf('# 服务器地址不进 git'), deploy.indexOf('# 1)'));
+const paramTmp = fs.mkdtempSync(path.join(os.tmpdir(), 'deploy-network-'));
+try {
+  fs.mkdirSync(path.join(paramTmp, 'deploy'));
+  fs.copyFileSync('deploy/upstream-network.mjs', path.join(paramTmp, 'deploy/upstream-network.mjs'));
+  const runParameters = (overrides: Record<string, string> = {}, config = '') => {
+    fs.writeFileSync(path.join(paramTmp, '.deploy.env'), config);
+    const r = spawnSync(
+      'bash',
+      [
+        '-c',
+        `set -euo pipefail\nTAG=synthetic\ngit() { echo 'ipv4_address:'; }\nssh() { exit 99; }\n${parameters}\ncompose test:image\nsandbox_compose test:image`,
+      ],
+      {
+        cwd: paramTmp,
+        encoding: 'utf8',
+        timeout: 5000,
+        env: { PATH: process.env.PATH, SERVER: 'synthetic', SANDBOX_PORT: '3211', ...overrides },
+      },
+    );
+    assert.ifError(r.error);
+    return { code: r.status, out: r.stdout + r.stderr };
+  };
+  let r = runParameters();
+  assert.equal(r.code, 0, r.out);
+  assert.ok(r.out.includes(`Caddy 上游 ${DEFAULT_UPSTREAM.appIP}:3200 ${DEFAULT_UPSTREAM.standbyIP}:3200`));
+  assert.equal(
+    r.out.split('\n').filter((line) => line.includes(`APP_UPSTREAM_SUBNET=${DEFAULT_UPSTREAM.subnet}`) && line.includes('docker compose'))
+      .length,
+    2,
+  );
+  const side = { NAME: 'side-drill', REMOTE_DIR: '/opt/side-drill', HOST_PORT: '4000' };
+  r = runParameters(side);
+  assert.equal(r.code, 1);
+  assert.match(r.out, /旁路实例须同时更换/);
+  r = runParameters(
+    { ...side, APP_UPSTREAM_SUBNET: '172.29.250.0/28', APP_UPSTREAM_IP: '172.29.250.10', STANDBY_UPSTREAM_IP: '172.29.250.11' },
+    'APP_UPSTREAM_SUBNET=172.30.250.0/28\nAPP_UPSTREAM_IP=172.30.250.10\nSTANDBY_UPSTREAM_IP=172.30.250.11\n',
+  );
+  assert.equal(r.code, 0, r.out);
+  assert.ok(r.out.includes('APP_UPSTREAM_SUBNET=172.29.250.0/28 APP_UPSTREAM_IP=172.29.250.10 STANDBY_UPSTREAM_IP=172.29.250.11'));
+  r = runParameters({ APP_UPSTREAM_IP: '172.29.250.10' });
+  assert.equal(r.code, 1);
+  assert.match(r.out, /子网内/);
+
+  const guard = fs.readFileSync('deploy/rollback-guard.sh', 'utf8');
+  const purge = guard.slice(guard.indexOf('    purge_sandboxes() {'), guard.indexOf('    purge_sandboxes || sandbox_refuse'));
+  assert.ok(purge.includes('docker run --rm --network'));
+  fs.writeFileSync(path.join(paramTmp, 'deploy/compose.yml'), 'ipv4_address: synthetic\n');
+  const trace = execFileSync(
+    'bash',
+    [
+      '-c',
+      `set -eu\ndir="$1" project=side-drill env_file="$1/.env" running=synthetic:image\ntimeout() { shift 2; "$@"; }\ndocker() { printf '%s\\n' "$*"; }\n${purge}\npurge_sandboxes`,
+      '--',
+      paramTmp,
+    ],
+    { encoding: 'utf8', timeout: 5000 },
+  );
+  assert.ok(
+    trace.includes('run --rm --network side-drill_default --env-file') &&
+      trace.includes('synthetic:image node --import tsx src/cli/sandbox.ts purge --all'),
+  );
+  assert.doesNotMatch(trace, /docker compose|--ip|app-upstream/);
+} finally {
+  fs.rmSync(paramTmp, { recursive: true, force: true });
+}
 const swap = deploy.slice(deploy.indexOf('swap_app() {'), deploy.indexOf('\n\necho "[7/7]'));
 assert.ok(swap.startsWith('swap_app() {') && swap.endsWith('}'));
 const selectMode = deploy.slice(deploy.indexOf('# 7)'), deploy.indexOf('# 每次探测与整轮都有时限'));
@@ -205,6 +433,7 @@ case "$FAKE_STANDBY" in running) echo standby-id ;; error) exit 1 ;; stopped|abs
         `set -euo pipefail
 REMOTE_DIR="$1" BUILD_DIR="$1" SERVER=synthetic NAME=drill TAG=new HOST_PORT=4000 HOST_ROLE=host
 SANDBOX_ENABLED=0 SIDE=1 LIVE_NAME=unused
+UPSTREAM_ENV='APP_UPSTREAM_SUBNET=172.29.250.0/28 APP_UPSTREAM_IP=172.29.250.10 STANDBY_UPSTREAM_IP=172.29.250.11 '
 compose() { printf 'compose[%s]' "$1"; }
 perl() { shift 2; "$@"; }
 git() { if [ "$NEW_TAG" = 1 ]; then echo '  app-standby:'; fi; }

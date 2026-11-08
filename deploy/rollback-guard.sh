@@ -495,9 +495,19 @@ if [ "$is_pre05" = 1 ] && [ ${#risks[@]} -eq 0 ]; then
     running=$(docker inspect --format '{{.Image}}' "$project" </dev/null 2>/dev/null)
     [ -n "$running" ] && pre05_image "$running" >/dev/null 2>&1 || sandbox_refuse '当前镜像不能执行 sandbox purge --all'
     # 显式用当前容器的镜像；:latest 或 :prev 可能已指向旧镜像。CLI 使用宿主的 app 环境、不需要 .env.sandbox。
-    (cd "$dir" && APP_IMAGE="$running" APP_CONTAINER="$project" HOST_PORT="$port" \
-      timeout --kill-after=2s 120s docker compose -p "$project" -f deploy/compose.yml run --rm --no-deps app \
-      node --import tsx src/cli/sandbox.ts purge --all </dev/null) || sandbox_refuse 'sandbox purge --all 失败'
+    purge_sandboxes() {
+      if grep -q 'ipv4_address:' "$dir/deploy/compose.yml" 2>/dev/null; then
+        # 固定 IP 不能同时给活动 app 与一次性容器。该 CLI 只读 app env、连 DB，不读写 var/。
+        # 默认网络仍由当前 compose project 管理；不创建网络、不申请 Caddy 的上游 IP。
+        timeout --kill-after=2s 120s docker run --rm --network "${project}_default" --env-file "$env_file" \
+          "$running" node --import tsx src/cli/sandbox.ts purge --all </dev/null
+      else
+        (cd "$dir" && APP_IMAGE="$running" APP_CONTAINER="$project" HOST_PORT="$port" \
+          timeout --kill-after=2s 120s docker compose -p "$project" -f deploy/compose.yml run --rm --no-deps app \
+          node --import tsx src/cli/sandbox.ts purge --all </dev/null)
+      fi
+    }
+    purge_sandboxes || sandbox_refuse 'sandbox purge --all 失败'
     tenancy=$(tenancy_state) || tenancy=unknown
     [ "$tenancy" = 'f f' ] || sandbox_refuse 'purge 后库里仍有沙箱行或库问不到'
   fi

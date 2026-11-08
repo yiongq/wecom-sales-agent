@@ -68,17 +68,23 @@ services:
     <<: *app
     image: ${DRILL_APP_IMAGE:?}
     ports: ['127.0.0.1:${DRILL_APP_PORT:?}:3200']
+    networks:
+      default: {}
+      app-upstream: { ipv4_address: '${DRILL_APP_IP:?}' }
   app-standby:
     <<: *app
     image: ${DRILL_STANDBY_IMAGE:?}
     ports: ['127.0.0.1:${DRILL_STANDBY_PORT:?}:3200']
+    networks:
+      default: {}
+      app-upstream: { ipv4_address: '${DRILL_STANDBY_IP:?}' }
   caddy:
     image: caddy:2.11.2-alpine
     # Colima 下 host 是虚拟机；不能搭配 ports，HTTP 请求由同一网络中的 probe 发出。
     network_mode: host
     environment:
-      DRILL_APP_PORT: ${DRILL_APP_PORT:?}
-      DRILL_STANDBY_PORT: ${DRILL_STANDBY_PORT:?}
+      DRILL_APP_IP: ${DRILL_APP_IP:?}
+      DRILL_STANDBY_IP: ${DRILL_STANDBY_IP:?}
       DRILL_CADDY_PORT: ${DRILL_CADDY_PORT:?}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
@@ -91,6 +97,14 @@ services:
     command: ['node', '/drill/probe.mjs', 'idle']
     healthcheck:
       disable: true
+
+networks:
+  default: {}
+  app-upstream:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: ${DRILL_UPSTREAM_SUBNET:?}
 
 volumes:
   app-var:
