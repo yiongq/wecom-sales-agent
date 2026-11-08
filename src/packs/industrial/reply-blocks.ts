@@ -12,6 +12,7 @@ import { latestQuoteCandidate } from './quote-candidate.js';
 type Tier = { minQty: number; maxQty?: number; unitPrice: number };
 type QuoteLine = {
   query: string;
+  code?: string;
   partNo?: string;
   qty: number;
   note?: string;
@@ -157,7 +158,19 @@ export const industrialReplyBlocks: ReplyBlocks = {
         ...(block.confirmation
           ? [block.confirmation.prefix + block.confirmation.items.join('、') + (block.confirmation.omitted ? '等' : '')]
           : []),
-        ...(block.trimmed ? [trimNote(block.trimmed)] : []),
+        ...(block.trimmed
+          ? [
+              trimNote(
+                block.trimmed,
+                ctx.session,
+                block.name === '试算明细'
+                  ? lastResult<{ lines?: QuoteLine[] }>(ctx, 'quote_items')
+                      ?.lines?.filter((line) => line.unitPrice !== undefined && line.amount !== undefined)
+                      .slice(-block.trimmed)
+                  : undefined,
+              ),
+            ]
+          : []),
         ...block.tail,
       ].join('\n');
     const active = blocks.filter(
@@ -190,7 +203,7 @@ export const industrialReplyBlocks: ReplyBlocks = {
       if (block.keys)
         ctx.replyBlocks.rows[block.name] = {
           rows: block.details.map((text, i) => ({ key: block.keys![i]!, text })),
-          after: block.trimmed ? [trimNote(block.trimmed)] : [],
+          after: block.trimmed ? [trimNote(block.trimmed, ctx.session)] : [],
         };
     }
     return values;
