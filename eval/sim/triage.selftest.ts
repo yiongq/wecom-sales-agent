@@ -138,6 +138,22 @@ try {
     finalShape: { lines: 2, chars: 30 },
   };
   expect('price_withheld', false, run(placed), '18 占位符有数据且已放置');
+  for (const [reply, missing] of [
+    ['合计160元，含税13%。', false],
+    ['本次为¥160。', false],
+    ['合计159元。', true],
+    ['运费160元。', true],
+    ['单价160元。', true],
+    ['160元/件。', true],
+  ] as const) {
+    const t = accepting(reply);
+    t.trace.turn.draft = '{{应付金额}}';
+    t.trace.turn.blocks = { ...unpriced.trace.turn.blocks!, droppedTokens: 0 };
+    expect('price_withheld', missing, run(t), `18 无应付块时核对接受订单合计：${reply}`);
+  }
+  const noAcceptedOrder = turn('合计160元。');
+  noAcceptedOrder.trace.turn.draft = '{{应付金额}}';
+  expect('price_withheld', true, run(noAcceptedOrder), '18 没有本轮接受订单不以正文金额豁免缺块');
   expect('price_withheld', false, run(turn('请稍候。', 'TEST-A20 要20件多少钱？', [quote()])), '不能匹配较长的未知型号');
   expect('price_withheld', false, run(turn('TEST-A 单价8元，小计160元。', undefined, [quote()])), '单价可见');
   expect('price_withheld', false, run(turn('TEST-A\n单价 8，小计 160', undefined, [quote()])), '跨行无单位金额可见');

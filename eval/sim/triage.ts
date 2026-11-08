@@ -135,6 +135,20 @@ const sameMoney = (a: number, b: number): boolean => Math.abs(a - b) < 1e-7;
 function goodsAmounts(text: string): Amount[] {
   return amounts(text).filter((a) => !a.policy);
 }
+/** 接受轮可由正文给出合计；单价、逐行小计和政策金额不能替代应付金额。 */
+function payableAmounts(text: string): Amount[] {
+  return goodsAmounts(text).filter((amount) => {
+    const prefix =
+      text
+        .slice(0, amount.index)
+        .split(/[，,。；;\n]/u)
+        .at(-1)! + amount.text;
+    if (/^\s*(?:元|块)?\s*(?:[/／]\s*(?:件|个|只|套|台|米)|每(?:件|个|只|套|台|米))/u.test(text.slice(amount.index + amount.text.length)))
+      return false;
+    if (/运费|包邮|门槛/u.test(prefix)) return false;
+    return !/单价|小计|每(?:件|个|只|套|台|米)/u.test(prefix) || /合计|总价|总额|货款|应付/u.test(prefix);
+  });
+}
 function newlyAccepted(before: Snapshot, after: Snapshot): Snapshot['orders'] {
   return after.orders.filter(
     (o) =>
@@ -274,10 +288,14 @@ export function triageRun(run: RunResult, catalog: TriagePart[], runId = run.run
     }
     // 模型写了价格占位符、本轮却没有数据（第 6 次 main 的 j-rejection-01#1 t2 没调试算）：上面只认工具给过的价，会漏掉。
     const rendered = new Set(rows(blocks.rendered).map((row) => row.name));
+    const hasPayable = accepted.some(
+      (order) => 'v' in order && payableAmounts(reply).some((amount) => sameMoney(amount.fen, order.totalFen)),
+    );
     const draft = turn.trace.turn.draft ?? '';
     if (!handoff && !flags.blocksSuppressed && !blocks.suppressed && !hits.has('price_withheld'))
       for (const name of PRICE_BLOCKS)
-        if (draft.includes(`{{${name}}}`) && !rendered.has(name)) hit('price_withheld', `占位符 {{${name}}} 本轮没有数据；${reply}`);
+        if (draft.includes(`{{${name}}}`) && !rendered.has(name) && !(name === '应付金额' && hasPayable))
+          hit('price_withheld', `占位符 {{${name}}} 本轮没有数据；${reply}`);
     for (const guard of turn.trace.turn.guards)
       for (const removed of guard.removed) {
         // 格式清洗、同句追加、替换后仍保留的内容不算删对。

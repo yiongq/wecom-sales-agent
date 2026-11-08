@@ -1219,6 +1219,117 @@ try {
   // 只跑放置的正反边界：不借其他金额护栏改写来掩盖误删。
   const renderBlocks = pipes.reply.steps.find((step) => step.id === 'reply_blocks:render')!;
   const placeBlocks = pipes.reply.steps.find((step) => step.id === 'reply_blocks:place')!;
+  for (const line of [
+    'HS1000 × 3',
+    'HS1000×3件',
+    '1. HS1000 × 3 件',
+    '2、HS1000 × 3',
+    '(3) HS1000 × 3',
+    '4）HS1000 × 3',
+    '- HS1000 × 3',
+    '* HS1000 × 3',
+    '•HS1000 × 3',
+    '· HS1000 × 3',
+  ]) {
+    const ctx = await blockTurn(`{{试算明细}}\n${line}`);
+    renderBlocks.run(ctx);
+    const preview = expandedReply(ctx);
+    const placed = placeBlocks.run(ctx) as { text: string };
+    assert.equal(placed.text, preview, '18 型号数量去重与 expandedReply 的预算预览一致');
+    assert.equal(placed.text, `${ctx.replyBlocks!.texts['试算明细']}\n${NEXT.quoted}`, `18 只照抄型号数量的行删除：${line}`);
+    assert.equal(ctx.replyBlocks!.trace.rendered.length, 1, '18 预览不重复记入 trace');
+  }
+  for (const line of ['HS1000 × 4', 'HS1001 × 3', '1. HS1000 × 30件', 'HS 1000 × 3', 'HS1000 × 3，请确认交期', 'HS1000 × 3件可以吗？']) {
+    const ctx = await blockTurn(`{{试算明细}}\n${line}`);
+    renderBlocks.run(ctx);
+    const placed = placeBlocks.run(ctx) as { text: string };
+    assert.equal(placed.text, `${ctx.replyBlocks!.texts['试算明细']}\n${line}`, `18 不同型号/数量或额外说明保留：${line}`);
+  }
+  for (const mode of ['suppressed', 'no-data', 'token-removed', 'trimmed-row'] as const) {
+    const line = mode === 'trimmed-row' ? 'HS1014 × 3' : 'HS1000 × 3';
+    const ctx = await blockTurn(
+      `{{试算明细}}\n${line}`,
+      mode === 'trimmed-row' ? parts.map((p) => ({ query: p.partNo, qty: 3 })) : undefined,
+    );
+    if (mode === 'suppressed') ctx.turn.flags.blocksSuppressed = true;
+    if (mode === 'no-data') ctx.toolSources = [];
+    renderBlocks.run(ctx);
+    if (mode === 'token-removed') ctx.text = line;
+    if (mode === 'trimmed-row') assert.doesNotMatch(ctx.replyBlocks!.texts['试算明细']!, /HS1014/);
+    const placed = placeBlocks.run(ctx) as { text?: string };
+    assert.ok((placed.text ?? ctx.text).split('\n').includes(line), `18 ${mode} 没有对应块行时保留型号数量`);
+  }
+  const dimension = await blockTurn('{{试算明细}}\n1. M8×30 × 60件\nM8×40 × 60');
+  dimension.toolSources[0]!.result = JSON.stringify({ lines: [{ partNo: 'M8×30', qty: 60, unitPrice: 1, amount: 60 }], total: 60 });
+  renderBlocks.run(dimension);
+  const dimensionPlaced = placeBlocks.run(dimension) as { text: string };
+  assert.equal(
+    dimensionPlaced.text,
+    `${dimension.replyBlocks!.texts['试算明细']}\nM8×40 × 60`,
+    '18 型号自身含 × 时只取末尾数量，不能混淆型号',
+  );
+  const sixItems = parts.slice(0, 6).map((p) => ({ query: p.partNo, qty: 3 }));
+  const policies = '报价含税（税率13%），运费0元，付款条款为款到发货、对公转账。';
+  const nextQuote = '如需正式报价单，告诉我一声即可为您起草。';
+  const copiedList = await blockTurn(
+    `{{试算明细}}\n${sixItems.map((p) => `${p.query} × ${p.qty}`).join('\n')}\n${policies}\n${nextQuote}`,
+    sixItems,
+  );
+  renderBlocks.run(copiedList);
+  assert.ok(replyLineCount(expandedReply(copiedList)) <= 12, '18 长度预览不计照抄的六行');
+  await pipes.reply.run(copiedList);
+  assert.ok(copiedList.text.includes(policies) && copiedList.text.includes(nextQuote), '18 去重让出预算，税率/付款/正式报价下一步不被裁掉');
+  assert.doesNotMatch(copiedList.text, /^HS100\d × 3$/m);
+  assert.ok(replyLineCount(copiedList.text) <= 12);
+  console.log('18 型号数量去重：格式、精确匹配、抑制/无数据/未放置/被裁行、预算与下一步通过');
+  async function acceptingBlock(raw: string) {
+    const ctx = await blockTurn(raw);
+    const order = { ...approved, id: `ord_blocks_${blockSeq}`, sessionId: ctx.session.id, totalFen: 114935 };
+    orderStore.set(order.id, order);
+    ctx.session.orderIds = [order.id];
+    ctx.toolSources = [];
+    ctx.acceptingOrderId = order.id;
+    ctx.orderSources = [order];
+    return ctx;
+  }
+  for (const amount of ['1149.35元', '1,149.35 元', '1149.35 元', '¥1149.35', '￥ 1,149.35', '1149.35元（含税）']) {
+    const body = `这份报价为${amount}，含税13%。付款条款为款到发货、对公转账。`;
+    const ctx = await acceptingBlock(body);
+    await pipes.reply.run(ctx);
+    assert.equal(ctx.text, body, `18 接受正文等额 ${amount} 保留税率和付款信息，不重复附后`);
+    assert.deepEqual(ctx.replyBlocks!.trace.rendered, [], '18 跳过应付金额不记入 rendered');
+  }
+  const droppedTotal = await acceptingBlock('合计1149.35元，另收999元。请等顾问确认付款。');
+  const droppedRun = await pipes.reply.run(droppedTotal);
+  assert.equal(droppedRun.verdicts.find((v) => v.id === 'money_provenance')!.action, 'drop_sentence');
+  assert.equal(droppedTotal.text, '请等顾问确认付款。\n您接受的这份报价合计1149.35元', '18 原稿合计随错价句删掉后仍附块');
+  assert.deepEqual(droppedTotal.replyBlocks!.trace.rendered, [{ name: '应付金额', placed: 'appended', rows: 1, trimmedRows: 0 }]);
+  for (const body of [
+    '合计1149.34元。',
+    '运费0元。',
+    '运费1149.35元。',
+    '包邮门槛1149.35元。',
+    '单价1149.35元。',
+    '小计1149.35元。',
+    '1149.35元/件。',
+  ]) {
+    const ctx = await acceptingBlock(body);
+    renderBlocks.run(ctx);
+    const placed = placeBlocks.run(ctx) as { text: string };
+    assert.equal(placed.text, `${body}\n您接受的这份报价合计1149.35元`, `18 ${body} 不是订单合计，仍附应付块`);
+  }
+  // 放置内部清理也可能删掉正文金额：试算块接管商品金额后，应付不能沿用清理前的去重判断。
+  const trialAndPayable = await acceptingBlock('合计1149.35元。');
+  trialAndPayable.toolSources = complete.toolSources;
+  renderBlocks.run(trialAndPayable);
+  const bothPlaced = placeBlocks.run(trialAndPayable) as { text: string };
+  assert.match(bothPlaced.text, /合计30\.00元\n您接受的这份报价合计1149\.35元/);
+  assert.ok(bothPlaced.text.endsWith(NEXT.accepted));
+  const explicitPayable = await acceptingBlock('合计1149.35元。\n{{应付金额}}');
+  renderBlocks.run(explicitPayable);
+  const explicitPlaced = placeBlocks.run(explicitPayable) as { text: string };
+  assert.match(explicitPlaced.text, /您接受的这份报价合计1149\.35元$/, '18 仅自动附后去重，显式占位符照常展开');
+  console.log('18 接受合计去重：等额格式、删句后补块、非合计金额、占位符与 trace 通过');
   for (const mode of ['suppressed', 'no-data', 'tier-only'] as const) {
     const original = '试算：\nHS1000 × 3：单价10元，小计30元\n合计30元\n运费金额0元。包邮门槛金额200元。';
     const untouched = await blockTurn(original);

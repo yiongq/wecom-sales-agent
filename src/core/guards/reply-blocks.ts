@@ -41,7 +41,7 @@ function placements(ctx: ReplyGuardContext, body: string) {
 
 /** 与实际放置共用决策，包含无数据、抑制和占位符随句删除的分支。 */
 export function willPlaceReplyBlock(ctx: ReplyGuardContext, name: string, body = ctx.text): boolean {
-  return placements(ctx, body).blocks.has(name);
+  return place(ctx, body).blocks.has(name);
 }
 
 /** 只裁正文；运费和包邮门槛等政策金额仍由原有护栏核对。 */
@@ -54,6 +54,12 @@ function withoutItemAmounts(body: string): string {
       return !/(?:单价|小计|合计|总价|金额)\s*(?:为|是)?\s*[:：]?\s*[¥￥]?\s*\d+(?:\.\d+)?/.test(items);
     })
     .join('');
+}
+
+/** 只认完整的型号 × 数量行；型号里的 × 保留，末尾「件」不影响和块行对照。 */
+function itemQuantity(line: string): string | null {
+  const match = /^(.+)\s*×\s*(\d+(?:\.\d+)?)\s*(?:件)?$/u.exec(line.trim());
+  return match ? `${match[1]!.trim()} × ${match[2]}` : null;
 }
 
 /**
@@ -82,9 +88,9 @@ function splitRows(body: string, name: string, split: ReplyBlockRows | undefined
   return slots.map((slot) => slot.join('\n'));
 }
 
-function place(ctx: ReplyGuardContext, body: string, trace?: TurnBlocks): string {
+function place(ctx: ReplyGuardContext, body: string, trace?: TurnBlocks): { text: string; blocks: Set<string> } {
   const state = ctx.replyBlocks;
-  if (!state) return body;
+  if (!state) return { text: body, blocks: new Set() };
   const selected = placements(ctx, body);
   const split = new Map<string, string[]>();
   for (const [name, placed] of selected.blocks) {
@@ -94,9 +100,17 @@ function place(ctx: ReplyGuardContext, body: string, trace?: TurnBlocks): string
   const seen = new Map<string, number>();
   const placedNames = new Set<string>();
   const ownsAmounts = selected.blocks.has('试算明细');
+  // 只认实际放出的明细；被预算裁掉的行、未报价摘要不能借此删掉正文里的型号数量。
+  const quotedItems = new Set(
+    (ownsAmounts ? state.texts['试算明细']!.split('\n') : []).flatMap((line) => {
+      const colon = line.search(/[:：]/u);
+      const key = colon >= 0 ? itemQuantity(line.slice(0, colon)) : null;
+      return key ? [key] : [];
+    }),
+  );
   // 模型没给可用正文时正文是代码兜底句；有块可放就不留兜底句，由包补下一步（第 6 次 main 的 j-list-02 答非所问）。
   const fallback = ctx.turn.flags.emptyModelReply && selected.blocks.size ? ctx.fallbackReply(ctx.session.stage).trim() : null;
-  let hasProse = false;
+  const proseLines: string[] = [];
   let text = selected.body
     .split('\n')
     .map((line) => {
@@ -122,7 +136,10 @@ function place(ctx: ReplyGuardContext, body: string, trace?: TurnBlocks): string
         return '';
       });
       if (fallback && prose.trim() === fallback) prose = '';
-      if (ownsAmounts) prose = withoutItemAmounts(prose);
+      if (ownsAmounts) {
+        const listed = prose.trim().replace(/^(?:[-*+]\s+|[•·]\s*|\d+\.\s+|\d+[、)）]\s*|[（(]\d+[）)]\s*)/u, '');
+        prose = quotedItems.has(itemQuantity(listed) ?? '') ? '' : withoutItemAmounts(prose);
+      }
       if (inline.length) {
         // 去掉标记后留下的价格引子没有可读内容；正常说明句照常保留。
         prose = sentenceUnits(prose)
@@ -134,7 +151,7 @@ function place(ctx: ReplyGuardContext, body: string, trace?: TurnBlocks): string
         const trimmed = trimDangling(prose);
         prose = /(?:[:：，,、]|为|单价|小计|合计|总价|金额)\s*$/.test(trimmed) ? '' : trimmed;
       }
-      if (prose.trim()) hasProse = true;
+      if (prose.trim()) proseLines.push(prose.trim());
       return [prose.trim(), ...inline].filter(Boolean).join('\n');
     })
     .join('\n');
@@ -142,20 +159,22 @@ function place(ctx: ReplyGuardContext, body: string, trace?: TurnBlocks): string
   if (ownsAmounts) text = text.replace(/^\s*(?:另外|不过|此外|同时)[，,、\s]*/u, '');
   for (const [name, placed] of selected.blocks) {
     if (placed !== 'appended') continue;
+    // 所有正文清理之后再问包；不把其他价格块当正文，也不把跳过的块记进 trace。
+    if (state.shouldAppend?.(name, proseLines.join('\n')) === false) continue;
     const value = state.texts[name]!;
     text = [text.trim(), value].filter(Boolean).join('\n');
     placedNames.add(name);
     trace?.rendered.push({ name, placed, rows: replyLineCount(value), trimmedRows: state.trimmedRows[name] ?? 0 });
   }
   // 正文删空或模型只写了占位符：块后补下一步，客户不会只收到一串价格（第 6 次 main 的 j-tier-01）。
-  const next = !hasProse && placedNames.size ? state.nextStep?.([...placedNames]) : null;
+  const next = !proseLines.length && placedNames.size ? state.nextStep?.([...placedNames]) : null;
   if (next) text = [text.trim(), next].join('\n');
-  return text.replace(/\n(?:[ \t]*\n)+/g, '\n').trim();
+  return { text: text.replace(/\n(?:[ \t]*\n)+/g, '\n').trim(), blocks: placedNames };
 }
 
 /** 护栏按展开后的文本算预算，但永远只改正文。 */
 export function expandedReply(ctx: ReplyGuardContext, body = ctx.text): string {
-  return place(ctx, body);
+  return place(ctx, body).text;
 }
 
 /** 渲染给正文至少留两行；字数保留至多 200 字供正文裁剪使用。 */
@@ -178,6 +197,7 @@ export function replyBlockSteps(blocks: ReplyBlocks): GuardStep<ReplyGuardContex
           autoAppend: blocks.autoAppend,
           trimmedRows: {},
           rows: {},
+          ...(blocks.shouldAppend ? { shouldAppend: (name: string, body: string) => blocks.shouldAppend!(ctx, name, body) } : {}),
           ...(blocks.nextStep ? { nextStep: (placed: readonly string[]) => blocks.nextStep!(ctx, placed) } : {}),
           trace: { rendered: [], suppressed: false, droppedTokens: 0, bareItemAmounts: 0, finalShape: shape('') },
         };
@@ -205,7 +225,7 @@ export function replyBlockSteps(blocks: ReplyBlocks): GuardStep<ReplyGuardContex
         trace.bareItemAmounts = [
           ...ctx.text.matchAll(/(?:单价|小计|合计|应付(?:金额)?|总价|金额)\s*[:：]?\s*[¥￥]?\s*\d+(?:\.\d+)?\s*(?:元)?/g),
         ].length;
-        const text = place(ctx, ctx.text, trace);
+        const text = place(ctx, ctx.text, trace).text;
         trace.finalShape = shape(text);
         return text === ctx.text ? { action: 'pass' } : { action: 'replace', text };
       },

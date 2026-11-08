@@ -1126,7 +1126,7 @@ try {
       return { session, current };
     };
     for (const [modelText, expected, same] of [
-      ['已确认您接受这份报价。', '已确认您接受这份报价。', false],
+      ['已确认您接受这份报价。', '已确认您接受这份报价。\n您接受的这份报价合计449.28元', false],
       ['已为您确认6211-2RS×26件订单，货款283.60元请安排对公转账（款到发货），顾问将随后与您对接收款与开票事宜。', FIXED.accepted, false],
       ['货款283.60元请安排对公转账。', FIXED.accepted, false],
       ['HS9010×18件，货款189.90元请安排对公转账。', FIXED.accepted, true],
@@ -1140,11 +1140,7 @@ try {
       mockAction = async () => modelText;
       now++;
       const reply = await handleMessage(session.id, '接受这份报价，能开专票吗？', 'wecom');
-      assert.equal(
-        reply.text,
-        expected === FIXED.accepted ? expected : `${expected}\n您接受的这份报价合计${(current.totalFen / 100).toFixed(2)}元`,
-        modelText,
-      );
+      assert.equal(reply.text, expected, modelText);
       assert.ok(!reply.text.includes(ACCEPT_ASK));
       assert.ok(current.approval!.acceptedAt !== undefined);
       assert.equal(await acceptanceJobs(current.id), 1);
