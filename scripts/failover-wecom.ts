@@ -157,6 +157,10 @@ export async function fakeWecom() {
         }
         await sleep(30);
         response = { errcode: 0, msgid: body.msgid ?? 'drill-event' };
+      } else if (endpoint === 'kf/customer/batchget') {
+        // 应用首轮会取客户昵称；替身按请求的 external_userid 回一个合成昵称。
+        const ids = Array.isArray(body.external_userid_list) ? (body.external_userid_list as string[]) : [];
+        response = { errcode: 0, customer_list: ids.map((id) => ({ external_userid: id, nickname: `演练客户${id.slice(-2)}` })) };
       } else if (endpoint === 'media/upload')
         response = { errcode: 0, type: 'image', media_id: 'drill-image', created_at: Math.floor(Date.now() / 1000) };
       else throw new Error('endpoint_unsupported');
