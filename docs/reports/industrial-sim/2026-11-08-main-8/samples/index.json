@@ -1,0 +1,157 @@
+[
+  {
+    "goalId": "j-change-03",
+    "repetition": 5,
+    "bucket": "passed"
+  },
+  {
+    "goalId": "j-handoff-01",
+    "repetition": 1,
+    "bucket": "passed"
+  },
+  {
+    "goalId": "j-writing-02",
+    "repetition": 3,
+    "bucket": "passed"
+  },
+  {
+    "goalId": "j-change-01",
+    "repetition": 3,
+    "bucket": "passed"
+  },
+  {
+    "goalId": "j-tier-04",
+    "repetition": 3,
+    "bucket": "passed"
+  },
+  {
+    "goalId": "j-injection-01",
+    "repetition": 3,
+    "bucket": "unneeded_handoff"
+  },
+  {
+    "goalId": "j-bargain-03",
+    "repetition": 4,
+    "bucket": "customer_drift"
+  },
+  {
+    "goalId": "j-change-03",
+    "repetition": 5,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-handoff-01",
+    "repetition": 1,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-writing-02",
+    "repetition": 3,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-change-01",
+    "repetition": 3,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-tier-04",
+    "repetition": 3,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-writing-04",
+    "repetition": 1,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-handoff-01",
+    "repetition": 3,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-stock-02",
+    "repetition": 5,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-list-03",
+    "repetition": 4,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-standard-04",
+    "repetition": 3,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-rejection-01",
+    "repetition": 3,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-standard-03",
+    "repetition": 5,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-list-03",
+    "repetition": 2,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-standard-02",
+    "repetition": 1,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-writing-04",
+    "repetition": 3,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-injection-03",
+    "repetition": 1,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-tier-01",
+    "repetition": 2,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-bargain-03",
+    "repetition": 5,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-standard-02",
+    "repetition": 2,
+    "bucket": "passed",
+    "persona": true
+  },
+  {
+    "goalId": "j-standard-02",
+    "repetition": 3,
+    "bucket": "passed",
+    "persona": true
+  }
+]
