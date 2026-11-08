@@ -1,0 +1,147 @@
+{
+  "version": 2,
+  "id": "q18-handoff-notice",
+  "desc": "仿真回归：第 6 次 main j-bargain-03 第 1 遍第 4 轮，转人工状态与告知一致（手写断言）",
+  "tags": ["q18", "industrial", "handoff"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:05:10.755Z",
+    "session": {
+      "stage": "quote",
+      "messages": [
+        {
+          "role": "customer",
+          "content": "HS-PV33 我想比较一下采购价。",
+          "at": 1791605091314
+        },
+        {
+          "role": "agent",
+          "content": "查到 HS-PV33 气动阀（接口G1/4，防护IP65，公称通径12mm，起订1件），分档采购价如下：\n· 1–9件：61.50元/件\n· 10–49件：55.35元/件\n· 50–99件：49.20元/件\n· 100件起：43.05元/件\n库存现货。告诉我采购数量，我可以帮您试算总价。",
+          "at": 1791605093378
+        },
+        {
+          "role": "customer",
+          "content": "这次要采购10件。",
+          "at": 1791605094415
+        },
+        {
+          "role": "agent",
+          "content": "如需正式报价单，告诉我，我可以帮您起草。\n试算：\nHS-PV33 × 10：单价55.35元，小计553.50元；现货，以顾问确认为准；满50件49.20元\n合计553.50元",
+          "at": 1791605098071
+        },
+        {
+          "role": "customer",
+          "content": "这批是长期合作备货，能不能在553.50的基础上再给个九折？",
+          "at": 1791605100204
+        },
+        {
+          "role": "agent",
+          "content": "抱歉，价格按档位统一执行，没法在553.50元基础上再打折。\n如果备货量能到50件，单价可降到49.20元；需要长期合作或账期等安排，我可以转顾问为您评估。需要正式报价单的话请告诉我。\n试算：\nHS-PV33 × 10：单价55.35元，小计553.50元；现货，以顾问确认为准；满50件49.20元\n合计553.50元",
+          "at": 1791605107267
+        }
+      ],
+      "orderIds": [],
+      "handedOver": false,
+      "createdAt": 1791605091314,
+      "updatedAt": 1791605107267,
+      "profile": {},
+      "packState": {
+        "rfqDraft": {
+          "at": 1791605105557,
+          "lines": [
+            {
+              "match": "exact",
+              "code": "pneumatic-08",
+              "version": 1,
+              "qty": 10
+            }
+          ]
+        },
+        "partsInPlay": [
+          {
+            "partNo": "HS-PV33",
+            "specs": ["接口G1/4", "防护IP65", "公称通径12mm"]
+          }
+        ]
+      },
+      "moneyLedger": [
+        {
+          "fen": 6150,
+          "label": "档位单价",
+          "subject": "HSPV33"
+        },
+        {
+          "fen": 5535,
+          "label": "档位单价",
+          "subject": "HSPV33"
+        },
+        {
+          "fen": 4920,
+          "label": "档位单价",
+          "subject": "HSPV33"
+        },
+        {
+          "fen": 4305,
+          "label": "档位单价",
+          "subject": "HSPV33"
+        },
+        {
+          "fen": 5535,
+          "label": "试算单价",
+          "subject": "HSPV33"
+        },
+        {
+          "fen": 55350,
+          "label": "试算行金额",
+          "subject": "HSPV33"
+        },
+        {
+          "fen": 55350,
+          "label": "试算合计",
+          "subject": "HSPV33"
+        },
+        {
+          "fen": 5535,
+          "label": "试算单价",
+          "subject": "HSPV33"
+        },
+        {
+          "fen": 55350,
+          "label": "试算行金额",
+          "subject": "HSPV33"
+        },
+        {
+          "fen": 55350,
+          "label": "试算合计",
+          "subject": "HSPV33"
+        }
+      ]
+    },
+    "orders": []
+  },
+  "turns": [
+    {
+      "say": "那能不能整体再减五十元？",
+      "script": [
+        {
+          "toolCalls": [
+            {
+              "name": "handoff_to_human",
+              "args": {
+                "reason": "客户为长期合作备货，请求整体再减50元，属额外优惠请求，转顾问评估"
+              }
+            }
+          ]
+        },
+        {
+          "content": "额外减50元超出了我能承诺的范围，我已将您的长期合作备货需求转给顾问评估，稍后会有人联系您。如需先出具正式报价单（10件，553.50元档位价），请告诉我。\n试算：\nHS-PV33 × 10：单价55.35元，小计553.50元；现货，以顾问确认为准；满50件49.20元\n合计553.50元"
+        }
+      ],
+      "expect": {
+        "replyMatches": ["已转(?:交|给)顾问|顾问会继续确认"],
+        "replyExcludes": ["(?:减|优惠)50元"],
+        "handoff": true
+      }
+    }
+  ]
+}

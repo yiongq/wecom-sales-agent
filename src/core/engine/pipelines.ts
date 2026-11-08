@@ -16,7 +16,10 @@ export function packPipelines(runtime: PackRuntime) {
 
 function assemblePipelines(runtime: PackRuntime) {
   const pending: GuardStep<ReplyGuardContext>[] = [
-    ...(runtime.replyBlocks ? replyBlockSteps(runtime.replyBlocks) : []),
+    ...(runtime.replyBlocks ? replyBlockSteps(runtime.replyBlocks) : []).map((step) => {
+      const anchor = runtime.replyAnchors?.[step.id];
+      return anchor ? { ...step, after: [...(step.after ?? []), anchor] } : step;
+    }),
     ...coreReplySteps().map((original) => {
       const step = runtime.replyAnchors?.[original.id] ? { ...original, after: [runtime.replyAnchors[original.id]!] } : original;
       if (!runtime.replyBlocks) return step;

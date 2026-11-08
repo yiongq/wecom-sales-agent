@@ -873,7 +873,7 @@ export interface PackRuntime<T extends PackRuntimeTypes = PackRuntimeTypes> {
   preModel?(ctx: T['TurnContext']): T['DeterministicReply'] | null;
   replyBlocks?: ReplyBlocks;
   replySteps: GuardStep<T['GuardContext']>[];
-  /** 行业步骤的结束位置，用于把后续核心步骤接回原顺序。 */
+  /** 行业步骤的结束位置：核心步骤替换 after；价格块 render/place 追加依赖，保留其原有 after。 */
   replyAnchors?: Readonly<Record<string, string>>;
   followupSteps: GuardStep<FollowupGuardContext>[];
   engineHooks: EnginePackHooks;

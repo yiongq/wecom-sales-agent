@@ -127,3 +127,47 @@ const policyCtx = {
 assert.deepEqual(await steps.get('policy_claims')!.run(policyCtx), { action: 'pass' }, 'policy_claims 没有 policy 时不动');
 
 console.log('pipelines 自测：33 步顺序、新步骤锚点、shape_check 装载校验通过');
+
+// 18：价格块锚点追加依赖；核心锚点仍替换，旅游包上面的逐项顺序不变。
+const { createIndustrialRuntime } = await import('../packs/industrial/runtime.js');
+const industrial = createIndustrialRuntime(packSources());
+const industrialSteps = packPipelines(industrial).reply.steps;
+assert.deepEqual(industrialSteps.map((step) => step.id).slice(-8), [
+  'link_whitelist',
+  'money_provenance',
+  'rfq_trim',
+  'handoff_claims',
+  'reply_blocks:place',
+  'takeover_check:post',
+  'turn_failure',
+  'final_clean',
+]);
+assert.deepEqual(industrialSteps.find((step) => step.id === 'reply_blocks:place')!.after, [
+  'rfq_trim',
+  'reply_blocks:render',
+  'handoff_claims',
+]);
+const renderAnchor = packPipelines({
+  ...industrial,
+  replyAnchors: { ...industrial.replyAnchors, 'reply_blocks:render': 'industrial_claims' },
+}).reply.steps;
+assert.deepEqual(renderAnchor.find((step) => step.id === 'reply_blocks:render')!.after, ['stage_advance', 'industrial_claims']);
+assert.ok(
+  renderAnchor.findIndex((step) => step.id === 'industrial_claims') < renderAnchor.findIndex((step) => step.id === 'reply_blocks:render'),
+);
+for (const id of ['reply_blocks:render', 'reply_blocks:place']) {
+  assert.throws(
+    () => packPipelines({ ...industrial, replyAnchors: { ...industrial.replyAnchors, [id]: 'missing_step' } }),
+    (error: unknown) => {
+      assert.ok(error instanceof GuardStepValidationError);
+      assert.equal(error.stepId, id);
+      assert.equal(error.conflictingStepId, 'missing_step');
+      return true;
+    },
+  );
+}
+assert.equal(
+  packPipelines(industrial).followup.steps.some((step) => step.id === 'handoff_claims'),
+  false,
+);
+console.log('INDUSTRIAL PIPELINE PASS: 删句后校正转人工、价格块追加锚点保留原依赖、缺失锚点拒绝、跟进不注册');
