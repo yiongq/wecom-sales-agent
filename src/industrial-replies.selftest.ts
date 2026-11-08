@@ -1126,8 +1126,9 @@ try {
   orderStore.set(pendingOrder.id, pendingOrder);
   pendingBlock.session.orderIds = [pendingOrder.id];
   await pipes.reply.run(pendingBlock);
-  assert.equal(pendingBlock.text, FIXED.pending, '18 待审整段固定话术抑制块');
-  assert.equal(pendingBlock.turn.flags.blocksSuppressed, true);
+  // 只删违规金额句，独立的有效占位符仍可给出逐行标「试算」的价格，不再整段抑制。
+  assert.match(pendingBlock.text, /^试算：\nHS1000 × 3：试算单价10\.00元，小计30\.00元[\s\S]*试算合计30\.00元$/);
+  assert.ok(!pendingBlock.turn.flags.blocksSuppressed, '18 待审局部删句保留有效价格块');
   // 09 R11：正式单待审、正文没违规时块照常附上，但块里每一行金额都自己标「试算」（块不经过护栏逐句检查）。
   const pendingSafe = await blockTurn('已提交，等待顾问审核。{{试算明细}}{{档位价}}');
   pendingSafe.toolSources.push(tierBlock.toolSources[0]!);

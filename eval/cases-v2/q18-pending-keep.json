@@ -1,0 +1,182 @@
+{
+  "version": 2,
+  "id": "q18-pending-keep",
+  "desc": "仿真回归：第6次main j-change-01第1遍第4轮，待审重出保留正文、纠正旧已批准单作废说法，金额逐行标试算",
+  "tags": ["q18", "industrial", "pending"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:08:36.550Z",
+    "session": {
+      "stage": "closing",
+      "messages": [
+        {
+          "role": "customer",
+          "content": "先看看 HS-K02-24 这个料号。",
+          "at": 1791605298905
+        },
+        {
+          "role": "agent",
+          "content": "查到了，是精确匹配：\nHS-K02-24 控制继电器，线圈DC24V，额定电流4A，防护IP20，现货，交期约4天。有货，起订1件，100件以上有更低单价。\n需要多少件？我可以帮您试算。",
+          "at": 1791605303260
+        },
+        {
+          "role": "customer",
+          "content": "先按10件试算一下。",
+          "at": 1791605305349
+        },
+        {
+          "role": "agent",
+          "content": "试算：\nHS-K02-24 × 10：单价18.99元，小计189.90元；现货，以顾问确认为准；满50件16.88元\n合计189.90元\n按10件试算完成，HS-K02-24现货，报价含13%税。另提示：达到50件单价可降至更优档位（16.88元/件），如需可重新试算。需要正式报价单吗？",
+          "at": 1791605309450
+        },
+        {
+          "role": "customer",
+          "content": "好，请先给我出第一张正式报价单。",
+          "at": 1791605310478
+        },
+        {
+          "role": "agent",
+          "content": "已为您起草正式报价单（HS-K02-24 × 10件，含13%税）。\n该报价单需顾问审核，审核通过后即可生效，请您稍候。",
+          "at": 1791605313464
+        },
+        {
+          "role": "agent",
+          "content": "/quote/{{order:0.id}}",
+          "at": 1791605313666
+        }
+      ],
+      "orderIds": ["{{order:0.id}}"],
+      "handedOver": false,
+      "createdAt": 1791605298904,
+      "updatedAt": 1791605313464,
+      "profile": {},
+      "packState": {
+        "rfqDraft": {
+          "at": 1791605308046,
+          "lines": [
+            {
+              "match": "exact",
+              "code": "electric-02",
+              "version": 1,
+              "qty": 10
+            }
+          ]
+        },
+        "lastQuoteId": "{{order:0.id}}",
+        "partsInPlay": [
+          {
+            "partNo": "HS-K02-24",
+            "specs": ["线圈DC24V", "额定电流4A", "防护IP20"]
+          }
+        ]
+      },
+      "moneyLedger": [
+        {
+          "fen": 2110,
+          "label": "档位单价",
+          "subject": "HSK0224"
+        },
+        {
+          "fen": 1899,
+          "label": "档位单价",
+          "subject": "HSK0224"
+        },
+        {
+          "fen": 1688,
+          "label": "档位单价",
+          "subject": "HSK0224"
+        },
+        {
+          "fen": 1477,
+          "label": "档位单价",
+          "subject": "HSK0224"
+        },
+        {
+          "fen": 1899,
+          "label": "试算单价",
+          "subject": "HSK0224"
+        },
+        {
+          "fen": 18990,
+          "label": "试算行金额",
+          "subject": "HSK0224"
+        },
+        {
+          "fen": 18990,
+          "label": "试算合计",
+          "subject": "HSK0224"
+        },
+        {
+          "fen": 1899,
+          "label": "试算单价",
+          "subject": "HSK0224"
+        },
+        {
+          "fen": 18990,
+          "label": "试算行金额",
+          "subject": "HSK0224"
+        },
+        {
+          "fen": 18990,
+          "label": "试算合计",
+          "subject": "HSK0224"
+        }
+      ]
+    },
+    "orders": [
+      {
+        "status": "pending_payment",
+        "lines": [
+          {
+            "kind": "part",
+            "code": "electric-02",
+            "qty": 10
+          }
+        ],
+        "approval": {
+          "state": "approved",
+          "decidedAt": "2026-10-10T04:08:33.464Z"
+        }
+      }
+    ]
+  },
+  "turns": [
+    {
+      "say": "这张报价单我先不接受，我们的需求有变化：型号不变，改为HS-K02-24共18件，请作废这张旧单，按18件重新出一份正式报价单。",
+      "script": [
+        {
+          "toolCalls": [
+            {
+              "name": "create_quote_sheet",
+              "args": {
+                "items": [
+                  {
+                    "code": "electric-02",
+                    "qty": 18
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "content": "试算：\nHS-K02-24 × 18：单价18.99元，小计341.82元；现货，以顾问确认为准；满50件16.88元\n合计341.82元\n新报价单已按18件重新起草，需顾问审核，审核通过后即可生效。原10件报价单作废处理。满50件还有更低档位，如后续数量再调整可随时告知。"
+        }
+      ],
+      "expect": {
+        "replyMatches": [
+          "新报价单已按18件重新起草",
+          "原报价单仍有效，待新报价单审核通过后才会作废",
+          "HS-K02-24 × 18：试算单价18\\.99元，小计341\\.82元",
+          "试算合计341\\.82元"
+        ],
+        "replyExcludes": [
+          "^最新的报价单还在顾问审核，审好马上发您$",
+          "原10件报价单作废处理",
+          "^(?![^\\n]*试算)[^\\n]*(?:[¥￥]\\s*\\d|\\d+(?:\\.\\d+)?\\s*元)",
+          "\\{\\{|\\}\\}"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,167 @@
+{
+  "version": 2,
+  "id": "q18-approved-not-pending",
+  "desc": "仿真回归：第7次main j-writing-04第3遍第4轮，接受已批准报价时只纠正错误待审说明，应付金额与其余句子保留",
+  "tags": ["q18", "industrial", "approval"],
+  "pack": "industrial",
+  "fixtures": {
+    "now": "2026-10-10T04:38:40.716Z",
+    "session": {
+      "stage": "closing",
+      "messages": [
+        {
+          "role": "customer",
+          "content": "螺栓记的是 m10 x 30，按这个帮我找找。",
+          "at": 1791607104693
+        },
+        {
+          "role": "agent",
+          "content": "查到了：六角螺栓 M10×30，螺纹M10、长度30mm、8.8级，起订10件，现货，交期约5天。\n需要多少件？数量确认后我帮您算价格。",
+          "at": 1791607106402
+        },
+        {
+          "role": "customer",
+          "content": "要一百二十个。",
+          "at": 1791607107456
+        },
+        {
+          "role": "agent",
+          "content": "收到，M10×30 六角螺栓，120件。\n试算：\nM10×30 × 120：单价1.00元，小计120.00元；现货，以顾问确认为准；满500件0.89元\n合计120.00元\n如需正式报价单，告诉我一声即可。",
+          "at": 1791607111915
+        },
+        {
+          "role": "customer",
+          "content": "行，那帮我出一份正式报价单吧。",
+          "at": 1791607115710
+        },
+        {
+          "role": "agent",
+          "content": "报价单已起草，目前待顾问审核，通过后会与您确认。价格有效期7天，付款方式为款到发货、对公转账，可开增值税普通发票或专用发票。有其他问题随时告诉我。",
+          "at": 1791607118579
+        },
+        {
+          "role": "agent",
+          "content": "/quote/{{order:0.id}}",
+          "at": 1791607118782
+        }
+      ],
+      "orderIds": ["{{order:0.id}}"],
+      "handedOver": false,
+      "createdAt": 1791607104693,
+      "updatedAt": 1791607118579,
+      "profile": {},
+      "packState": {
+        "rfqDraft": {
+          "at": 1791607108928,
+          "lines": [
+            {
+              "match": "exact",
+              "code": "fastener-02",
+              "version": 1,
+              "qty": 120
+            }
+          ]
+        },
+        "lastQuoteId": "{{order:0.id}}",
+        "partsInPlay": [
+          {
+            "partNo": "M10×30",
+            "specs": ["螺纹M10", "长度30mm", "强度8.8级"]
+          }
+        ]
+      },
+      "moneyLedger": [
+        {
+          "fen": 111,
+          "label": "档位单价",
+          "subject": "M10×30"
+        },
+        {
+          "fen": 100,
+          "label": "档位单价",
+          "subject": "M10×30"
+        },
+        {
+          "fen": 89,
+          "label": "档位单价",
+          "subject": "M10×30"
+        },
+        {
+          "fen": 78,
+          "label": "档位单价",
+          "subject": "M10×30"
+        },
+        {
+          "fen": 100,
+          "label": "试算单价",
+          "subject": "M10×30"
+        },
+        {
+          "fen": 12000,
+          "label": "试算行金额",
+          "subject": "M10×30"
+        },
+        {
+          "fen": 12000,
+          "label": "试算合计",
+          "subject": "M10×30"
+        },
+        {
+          "fen": 111,
+          "label": "档位单价",
+          "subject": "M10×30"
+        },
+        {
+          "fen": 100,
+          "label": "档位单价",
+          "subject": "M10×30"
+        },
+        {
+          "fen": 89,
+          "label": "档位单价",
+          "subject": "M10×30"
+        },
+        {
+          "fen": 78,
+          "label": "档位单价",
+          "subject": "M10×30"
+        }
+      ]
+    },
+    "orders": [
+      {
+        "status": "pending_payment",
+        "lines": [
+          {
+            "kind": "part",
+            "code": "fastener-02",
+            "qty": 120
+          }
+        ],
+        "approval": {
+          "state": "approved",
+          "decidedAt": "2026-10-10T04:38:38.580Z"
+        }
+      }
+    ]
+  },
+  "turns": [
+    {
+      "say": "报价单没问题，我接受这份报价，就按这个采购。",
+      "script": [
+        {
+          "content": "好的，已确认您接受这份报价。单子目前还在顾问审核中，审核通过后会安排后续订单与付款事宜，届时顾问会与您联系确认。有其他需要随时找我。"
+        }
+      ],
+      "expect": {
+        "replyMatches": [
+          "^好的，已确认您接受这份报价。",
+          "这份报价已批准，顾问会尽快联系您确认付款和发货。",
+          "有其他需要随时找我。",
+          "您接受的这份报价合计120\\.00元$"
+        ],
+        "replyExcludes": ["审核中|待顾问审核|审核通过后", "\\{\\{|\\}\\}"]
+      }
+    }
+  ]
+}

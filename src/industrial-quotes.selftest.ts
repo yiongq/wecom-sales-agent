@@ -183,6 +183,182 @@ try {
   assert.equal(coreReuse.order.id, pending.order.id);
   console.log('INDUSTRIAL REUSE PASS: 默认人审、pending复用、人工批准、approved复用原id/链接/金额，不重审/通知');
 
+  // 18 / 09 R11：待审重出只删违规金额句；真实工具负责取代旧待审单，价格块逐行标试算。
+  {
+    const action = mockAction;
+    const seen: import('./trace/recorder.js').FinishedTurn[] = [];
+    const stop = onTurnEnd((turn) => seen.push(turn));
+    const followGuard = industrialFollowupGuard(config.packSources());
+    const r11 = (text: string) => {
+      for (const line of text.split('\n'))
+        if (/(?:[¥￥]\s*\d|\d+(?:\.\d+)?\s*元)/.test(line)) assert.match(line, /试算/, `待审金额行标试算：${line}`);
+    };
+    try {
+      setPolicy({ autoApproveMaxFen: 0 });
+      for (const claim of ['原10件报价单作废处理。', '之前那张以本张为准。']) {
+        const session = fresh();
+        // 更早的已批准单仍有效，不应据此误改刚被取代的旧待审单的说明。
+        await estimate(session, 5);
+        const earlier = await make(session, 5);
+        await actions.approveQuote(earlier.order.id, actor);
+        await estimate(session, 10);
+        const old = await make(session, 10);
+        now++;
+        mockAction = async (opts) => {
+          await opts.executeTool('quote_items', { items: [{ query: data.partNo, qty: 18 }] });
+          await opts.executeTool('create_quote_sheet', { items: [{ code: data.id, qty: 18 }] });
+          return `试算：\n6205-2RS × 18：单价8元，小计144元\n合计144元\n新报价单已按18件重新起草，需顾问审核。${claim}`;
+        };
+        const reply = await handleMessage(session.id, '请作废旧报价单，改为6205-2RS共18件，重出正式报价单', 'wecom');
+        const latest = store.getAnyOrder(session.orderIds.at(-1)!) as LineOrder;
+        assert.equal(quoteState(old.order, now), 'superseded', '建新单立即取代旧待审单');
+        assert.equal(old.order.supersededBy, latest.id);
+        assert.equal(quoteState(earlier.order, now), 'approved');
+        assert.equal(quoteState(latest, now), 'pending');
+        assert.match(reply.text, /新报价单已按18件重新起草，需顾问审核/);
+        assert.ok(reply.text.includes(claim), '旧待审单已被取代，保留真实说明');
+        assert.match(reply.text, /6205-2RS × 18：试算单价8\.00元，小计144\.00元/);
+        assert.match(reply.text, /试算合计144\.00元/);
+        assert.equal(seen.at(-1)!.turn.blocks!.suppressed, false);
+        r11(reply.text);
+      }
+      for (const claim of ['原10件报价单作废处理。', '之前那张以本张为准。', '之前那张10件的报价单您可以不予理会。']) {
+        const session = fresh();
+        await estimate(session, 10);
+        const old = await make(session, 10);
+        await actions.approveQuote(old.order.id, actor);
+        now++;
+        mockAction = async (opts) => {
+          await opts.executeTool('quote_items', { items: [{ query: data.partNo, qty: 18 }] });
+          await opts.executeTool('create_quote_sheet', { items: [{ code: data.id, qty: 18 }] });
+          return `合计144元。新报价单已按18件重新起草，需顾问审核。${claim}`;
+        };
+        const reply = await handleMessage(session.id, '请作废旧报价单，改为6205-2RS共18件，重出正式报价单', 'wecom');
+        assert.equal(quoteState(old.order, now), 'approved', '新单待审不取代已批准且有效的旧单');
+        assert.equal(old.order.supersededBy, undefined);
+        assert.ok(!reply.text.includes(claim), '删掉旧单已作废的不实说法');
+        assert.match(reply.text, /原报价单仍有效，待新报价单审核通过后才会作废。/);
+        assert.match(reply.text, /新报价单已按18件重新起草，需顾问审核/);
+        assert.match(reply.text, /试算合计144\.00元/);
+        assert.equal(seen.at(-1)!.turn.blocks!.suppressed, false, '纠正旧单状态仍属局部改写');
+        r11(reply.text);
+      }
+      for (const draft of ['合计144元。', '试算正式报价单合计144元。', '试算：\n合计144元\n另外，']) {
+        const session = fresh();
+        await estimate(session, 18);
+        await make(session, 18);
+        now++;
+        mockAction = async (opts) => {
+          await opts.executeTool('quote_items', { items: [{ query: data.partNo, qty: 18 }] });
+          return draft;
+        };
+        const reply = await handleMessage(session.id, '请核对这次试算', 'wecom');
+        assert.equal(reply.text, FIXED.pending, `删空或只剩残句仍整段兜底：${draft}`);
+        assert.equal(seen.at(-1)!.turn.blocks!.suppressed, true);
+        r11(reply.text);
+      }
+      const session = fresh();
+      await estimate(session, 18);
+      await make(session, 18);
+      for (const [draft, expected] of [
+        ['合计144元。新报价单在顾问审核中。', '新报价单在顾问审核中。'],
+        ['试算正式报价单合计144元。请核对数量。', '请核对数量。'],
+        ['合计144元。', ''],
+        ['试算：\n合计144元。', '试算：'],
+      ]) {
+        const result = await followGuard.run({ session, text: draft, toolSources: [], recordGuard: () => undefined } as never);
+        assert.equal(result && 'text' in result ? result.text : draft, expected, '跟进仍仅删句，不加固定话术或块');
+        r11(expected);
+      }
+    } finally {
+      stop();
+      mockAction = action;
+    }
+    console.log('PENDING REPLY PASS: 重出保留正文、旧待审单被取代、逐行试算、删空抑制块、跟进不变');
+  }
+
+  // 18：已批准 / 本轮接受的报价不能再说待审，只换错的状态句，应付金额照常附上。
+  {
+    const action = mockAction;
+    const seen: import('./trace/recorder.js').FinishedTurn[] = [];
+    const stop = onTurnEnd((turn) => seen.push(turn));
+    const truth = '这份报价已批准，顾问会尽快联系您确认付款和发货。';
+    const prefix = '型号数量已核对。';
+    const suffix = '有其他需要随时找我。';
+    try {
+      setPolicy({ autoApproveMaxFen: 0 });
+      for (const claim of [
+        '单子目前还在顾问审核中，审核通过后会安排后续订单与付款事宜，届时顾问会与您联系确认。',
+        '这份报价待顾问审核。',
+        '审核通过后才安排付款。',
+        '新报价单还在审核中。',
+        '报价单仍在顾问审核。审核通过后才安排发货。',
+      ]) {
+        for (const mode of ['approved', 'accepting', 'pending'] as const) {
+          const session = fresh();
+          await estimate(session, 15);
+          const { order } = await make(session, 15);
+          if (mode !== 'pending') await actions.approveQuote(order.id, actor);
+          now++;
+          mockAction = async () => `${prefix}${claim}${suffix}`;
+          const reply = await handleMessage(
+            session.id,
+            mode === 'accepting' ? '报价单没问题，我接受这份报价，就按这个采购。' : '请说明这份报价的状态。',
+            'wecom',
+          );
+          const expected = `${prefix}${mode === 'pending' ? claim : truth}${suffix}`;
+          assert.equal(
+            reply.text,
+            mode === 'accepting' ? `${expected}\n您接受的这份报价合计120.00元` : expected,
+            `${mode}：局部纠正、其余句子保留、多处错话只补一次实话`,
+          );
+          assert.equal(order.approval!.acceptedAt !== undefined, mode === 'accepting');
+          assert.equal(seen.at(-1)!.turn.blocks!.suppressed, false, '状态句局部改写不抑制应付金额');
+        }
+      }
+      const approved = fresh();
+      await estimate(approved, 15);
+      const { order } = await make(approved, 15);
+      await actions.approveQuote(order.id, actor);
+      for (const statement of [
+        '这份报价已审核通过，不用再等顾问审核。',
+        '审核通过后已经给您发出报价单。',
+        '这份报价还在审核中吗？',
+        '发票资料还在顾问审核中。',
+      ]) {
+        now++;
+        mockAction = async () => statement;
+        assert.equal((await handleMessage(approved.id, '请说明报价状态。', 'wecom')).text, statement, '否定、问句、其他事项不改');
+      }
+
+      // 接受入口选中旧批准单后，本轮模型另建新待审单；acceptedId 仍指向旧单，新单的待审说明属实。
+      now++;
+      const newPending = '新报价单审核通过后会通知您。';
+      mockAction = async (opts) => {
+        await opts.executeTool('quote_items', { items: [{ query: data.partNo, qty: 18 }] });
+        await opts.executeTool('create_quote_sheet', { items: [{ code: data.id, qty: 18 }] });
+        return `您接受的这份报价还在审核中。${newPending}${suffix}`;
+      };
+      const reply = await handleMessage(approved.id, '报价单没问题，我接受这份报价，就按这个采购。', 'wecom');
+      const latest = store.getAnyOrder(approved.orderIds.at(-1)!) as LineOrder;
+      assert.notEqual(latest.id, order.id);
+      assert.equal(quoteState(latest, now), 'pending');
+      assert.equal(quoteState(order, now), 'approved');
+      assert.ok(order.approval!.acceptedAt);
+      assert.match(reply.text, new RegExp(`^${truth}${newPending}${suffix}`));
+      assert.match(reply.text, /您接受的这份报价合计120\.00元/);
+      assert.equal(seen.at(-1)!.turn.blocks!.suppressed, false);
+      // 没有 acceptingOrderId 时看最新单：不能借旧单的批准状态改写新单的真实待审状态。
+      now++;
+      mockAction = async () => `${newPending}单子目前还在顾问审核中。`;
+      assert.equal((await handleMessage(approved.id, '请说明最新报价单的状态。', 'wecom')).text, `${newPending}单子目前还在顾问审核中。`);
+    } finally {
+      stop();
+      mockAction = action;
+    }
+    console.log('APPROVED STATE PASS: 已批/接受局部纠正、应付块保留、真待审/另一张新单/否定与问句不改');
+  }
+
   {
     const id = 'ord_seed_0123456789abcdef-0123456789abcdef01234567';
     const seed = structuredClone(store.getAnyOrder(pending.order.id)!) as LineOrder;
