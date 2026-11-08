@@ -3,7 +3,8 @@ import type { GuardStep, ReplyGuardContext, StepVerdict } from '../pack-api.js';
 import { cleanText } from '../../shared/text.js';
 import { stripAdvisorPrefix } from '../../shared/conversation.js';
 import { FAILURE_WINDOW, failureThresholdReached, pushWindow, turnFailed, type TurnSignals } from '../../handoff/trigger-rules.js';
-import { IDENTITY_QUESTION, stripMarkdown, trimDangling } from './text.js';
+import { IDENTITY_QUESTION, META_REPLY, stripMarkdown, trimDangling } from './text.js';
+import { sentenceUnits } from '../parse/sentences.js';
 import { replyStep } from './reply-step.js';
 import { finalizeReplyBlocks } from './reply-blocks.js';
 import { shapeCheckStep } from './shape.js';
@@ -21,11 +22,18 @@ export function coreReplySteps<Context extends ReplyGuardContext>(): GuardStep<C
     replyStep('pre_clean', '', [], ['emptyModelReply', 'guardHit', 'handedOverSelfDecided'], (ctx) => {
       ctx.turn.flags.guardHit = null;
       ctx.turn.flags.handedOverSelfDecided = false;
-      const usable = ctx.raw
+      const visible = ctx.raw
         .replace(/<state>[\s\S]*?<\/state>/g, '')
         .replace(/<tool_call>[\s\S]*?<\/tool_call>/gi, '')
         .replace(/<\/?(?:think|tool_call|arg_key|arg_value)>/gi, '')
         .trim();
+      const usable = META_REPLY.test(visible)
+        ? sentenceUnits(visible)
+            .map(({ start, end }) => visible.slice(start, end))
+            .filter((unit) => !META_REPLY.test(unit))
+            .join('')
+            .trim()
+        : visible;
       ctx.turn.flags.emptyModelReply = !usable;
       ctx.text = usable || ctx.fallbackReply(ctx.session.stage);
       return ctx.text === ctx.raw ? { action: 'pass' } : { action: usable ? 'strip' : 'replace', text: ctx.text };

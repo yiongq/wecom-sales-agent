@@ -9,6 +9,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { industrial } from './packs/industrial/console-pack.js';
 import { FIXED } from './packs/industrial/turn.js';
+import { NEXT } from './packs/industrial/reply-blocks.js';
 import { ACCEPT_ASK } from './packs/industrial/guards.js';
 import { industrialFollowupGuard } from './packs/industrial/guards.js';
 import { createIndustrialRuntime } from './packs/industrial/runtime.js';
@@ -983,7 +984,8 @@ try {
     const reply = await handleMessage(session.id, '接受这份报价，另外 6205-2RS 100 件多少钱？', 'wecom');
     assert.equal(
       reply.text,
-      '试算：\n6205-2RS × 100：单价9.00元，小计900.00元；现货，以顾问确认为准\n合计900.00元\n您接受的这份报价合计449.28元',
+      `试算：\n6205-2RS × 100：单价9.00元，小计900.00元；现货，以顾问确认为准\n合计900.00元\n您接受的这份报价合计449.28元\n${NEXT.accepted}`,
+      '18 金额句删空正文后块后补下一步',
     );
     assert.ok(current.approval!.acceptedAt !== undefined);
     const failed = await makePair();

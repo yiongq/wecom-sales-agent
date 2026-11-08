@@ -11,6 +11,7 @@ import { defaultIndustrialPolicy } from './packs/industrial/policy.js';
 import { industrialReplyGuard, trimRfq, TRIM_FALLBACK } from './packs/industrial/guards.js';
 import { preModel, contextNote, inquiryLines, prefetch, FIXED } from './packs/industrial/turn.js';
 import { latestQuoteCandidate } from './packs/industrial/quote-candidate.js';
+import { NEXT } from './packs/industrial/reply-blocks.js';
 import { writeState } from './packs/industrial/state.js';
 import type { ReplyGuardContext, TurnContext, LineOrder, MoneyEntry } from './core/pack-api.js';
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'industrial-replies-'));
@@ -469,6 +470,27 @@ try {
     rfqIntake: { id: 'int_0123456789ab', at: now, status: 'pending', lines: [{ q: 'HS1000', qty: 2, m: 'exact' }] },
   });
   assert.deepEqual(await prefetched('改成20件'), []);
+  // 第 6 次 main 的 j-rejection-01：上一句只报了一个型号，这一句「先按6件来试算」，还没有试算单；模型写了占位符却没调工具。
+  fresh.packState = {};
+  const said = (...texts: string[]) => {
+    fresh.messages = texts.flatMap((content, i) => [
+      { role: 'customer' as const, content, at: now + i },
+      { role: 'agent' as const, content: '好的。', at: now + i },
+    ]);
+  };
+  said('HS1000 有一批采购要走正式报价。');
+  assert.deepEqual(await prefetched('先按6件来试算。后面需要走正式报价流程。'), quoted(['HS1000', 6]), '18 上一句单个型号、这句只给数量');
+  assert.deepEqual(await prefetched('6件就够了。'), quoted(['HS1000', 6]));
+  fresh.messages.push({ role: 'customer', content: '先按6件来试算。', at: now + 9 });
+  assert.deepEqual(await prefetched('先按6件来试算。'), quoted(['HS1000', 6]), '18 本句已记进会话时看再上一句');
+  for (const previous of ['HS1000 和 HS1001 都要报价。', 'HS10 有货吗？', 'HS1000 要5件。', '您好'])
+    for (const text of ['先按6件来试算。']) {
+      said(previous);
+      assert.deepEqual(await prefetched(text), [], `18 上一句「${previous}」不替算`);
+    }
+  said('HS1000 有一批采购要走正式报价。');
+  assert.deepEqual(await prefetched('交期多久？'), [], '18 这句没给数量不替算');
+  fresh.messages = [];
   console.log(
     '工业预取：品名夹在中间/无单位/×、多行、精确未给数量查、否定与年份不算数量、重复与未决走旧路、进行中询价只整份重算、单行改数量替算通过',
   );
@@ -824,7 +846,11 @@ try {
   const missingDelivery = await blockTurn('{{试算明细}}');
   missingDelivery.toolSources[0]!.result = JSON.stringify({ lines: [{ partNo: 'HS1000', qty: 3, unitPrice: 10, amount: 30 }], total: 30 });
   await pipes.reply.run(missingDelivery);
-  assert.equal(missingDelivery.text, '试算：\nHS1000 × 3：单价10.00元，小计30.00元\n合计30.00元', '18 无交期省掉整段交期与免责声明');
+  assert.equal(
+    missingDelivery.text,
+    `试算：\nHS1000 × 3：单价10.00元，小计30.00元\n合计30.00元\n${NEXT.quoted}`,
+    '18 无交期省掉整段交期与免责声明',
+  );
   assert.doesNotMatch(missingDelivery.text, /；，|确认为准/);
   const mixedBudget = await blockTurn('请核对型号。\n请核对数量。\n{{试算明细}}');
   mixedBudget.toolSources[0]!.result = JSON.stringify({
@@ -977,7 +1003,26 @@ try {
     { ...approved, id: 'ord_other', sessionId: payable.session.id, totalFen: 99999 },
   ];
   await pipes.reply.run(payable);
-  assert.equal(payable.text, '您接受的这份报价合计123.45元', '18 应付只读本轮接受订单');
+  assert.equal(payable.text, `您接受的这份报价合计123.45元\n${NEXT.accepted}`, '18 应付只读本轮接受订单，正文只有占位符时补下一步');
+  // 第 6 次 main 的 j-list-02：客户接受报价，模型回了一段与对话无关的「没有需要翻译的内容」。整句删掉按空回复处理，
+  // 兜底句让位给块，块后补下一步。
+  const metaReply = await blockTurn(
+    '本次会话未提供需要翻译的 内容，因此没有可输出的译文。如果您能提供该标签内的文本，我将按要求进行翻译。',
+  );
+  metaReply.toolSources = [];
+  metaReply.acceptingOrderId = approved.id;
+  metaReply.orderSources = [{ ...approved, sessionId: metaReply.session.id, totalFen: 209189 }];
+  await pipes.reply.run(metaReply);
+  assert.equal(metaReply.text, `您接受的这份报价合计2091.89元\n${NEXT.accepted}`, '18 答非所问整句删除，块后补下一步');
+  assert.equal(metaReply.turn.flags.emptyModelReply, true, '18 答非所问记作模型空回复');
+  const metaOnly = await blockTurn('本次会话未提供需要翻译的内容。');
+  metaOnly.toolSources = [];
+  await pipes.reply.run(metaOnly);
+  assert.equal(metaOnly.text, '请告诉我型号和数量', '18 答非所问且没有块时仍用兜底句');
+  const realTranslate = await blockTurn('说明书翻译需要顾问确认，我请顾问继续跟您核对。');
+  realTranslate.toolSources = [];
+  await pipes.reply.run(realTranslate);
+  assert.equal(realTranslate.text, '说明书翻译需要顾问确认，我请顾问继续跟您核对。', '18 正常提到翻译的回答不删');
   const noData = await blockTurn('旧数据不可借用{{试算明细}}。');
   noData.toolSources.push({ name: 'quote_items', args: {}, result: '{invalid' });
   await pipes.reply.run(noData);
@@ -1022,6 +1067,55 @@ try {
   ];
   await pipes.reply.run(multiTier);
   assert.match(multiTier.text, /HS1000：[\s\S]*HS1001：/, '18 档位包含本轮各次精确查询');
+  // 第 6 次 main 的 j-standard-04：find_parts 每查一个型号都提示写 {{档位价}}，模型在每个型号下各写一处；
+  // 原先整块挤在第一处，现在按型号分行放到各自那一处。
+  // find_parts 把查到的型号记进本会话，对客文本里提到的型号要在本会话查过，所以每个用例在自己的会话里查。
+  const tiersFor = async (ctx: ReplyGuardContext) => {
+    ctx.toolSources = [];
+    for (const query of ['HS1000', 'HS1001'])
+      ctx.toolSources.push({
+        name: 'find_parts',
+        args: {},
+        result: await registry.execute('find_parts', { query }, { ...toolContext, session: ctx.session }),
+      });
+  };
+  const perItem = await blockTurn('两个型号都查到了：\n1. HS1000\n{{档位价}}\n\n2. HS1001\n{{档位价}}\n\n请告知各型号的采购数量。');
+  await tiersFor(perItem);
+  await pipes.reply.run(perItem);
+  assert.match(
+    perItem.text,
+    /^两个型号都查到了：\n1\. HS1000\nHS1000：[^\n]*起订量1件\n2\. HS1001\nHS1001：[^\n]*\n请告知各型号的采购数量。$/,
+    '18 多处档位占位符按型号分行放',
+  );
+  assert.doesNotMatch(perItem.text, /试算档位价：/, '18 分行时不重复块头');
+  assert.deepEqual(perItem.replyBlocks!.trace.rendered, [{ name: '档位价', placed: 'inline', rows: 2, trimmedRows: 0 }]);
+  const introFirst = await blockTurn('查到 HS1000、HS1001：\n1. HS1000\n{{档位价}}\n2. HS1001\n{{档位价}}');
+  await tiersFor(introFirst);
+  await pipes.reply.run(introFirst);
+  assert.match(introFirst.text, /1\. HS1000\nHS1000：[^\n]*\n2\. HS1001\nHS1001：/, '18 开头一起提到的型号按最后一次提到的位置放');
+  const unnamed = await blockTurn('1. 第一款\n{{档位价}}\n2. 第二款\n{{档位价}}');
+  await tiersFor(unnamed);
+  await pipes.reply.run(unnamed);
+  assert.match(
+    unnamed.text,
+    /^1\. 第一款\n试算档位价：\nHS1000：[^\n]*\nHS1001：[^\n]*\n2\. 第二款/,
+    '18 一行都对不上型号时照旧整块放第一处',
+  );
+  const partialTier = await blockTurn('1. HS1001\n{{档位价}}\n2. 另一款\n{{档位价}}');
+  await tiersFor(partialTier);
+  await pipes.reply.run(partialTier);
+  assert.match(partialTier.text, /^1\. HS1001\nHS1001：[^\n]*\n2\. 另一款\nHS1000：/, '18 对不上型号的行放最后一处');
+  const tierOnly = await blockTurn('{{档位价}}');
+  await tiersFor(tierOnly);
+  await pipes.reply.run(tierOnly);
+  assert.match(tierOnly.text, new RegExp(`HS1001：[^\\n]*\\n${NEXT.tiers}$`), '18 只有档位块时补问数量');
+  // 第 6 次 main 的 j-tier-01：模型照抄了试算块，代码删掉照抄部分后正文为空，块后补下一步。
+  const copiedBlock = await blockTurn('按3件重新试算：\nHS1000 × 3：单价10.00元，小计30.00元\n合计30.00元');
+  await pipes.reply.run(copiedBlock);
+  assert.match(copiedBlock.text, new RegExp(`^试算：\\n[\\s\\S]*合计30\\.00元\\n${NEXT.quoted}$`), '18 照抄块删空正文后补下一步');
+  const withBody = await blockTurn('请核对型号。\n{{试算明细}}');
+  await pipes.reply.run(withBody);
+  assert.doesNotMatch(withBody.text, new RegExp(NEXT.quoted), '18 正文还在时不补下一步');
   const pendingBlock = await blockTurn('正式报价单合计30元。{{试算明细}}');
   const pendingOrder = {
     ...approved,

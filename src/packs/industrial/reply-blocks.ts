@@ -18,6 +18,8 @@ type Block = {
   name: string;
   head: string[];
   details: string[];
+  /** 与 details 一一对应的归属型号；只有可分行放置的块有。 */
+  keys?: string[];
   tail: string[];
   trimmed: number;
   confirmation?: { prefix: string; items: string[]; omitted: boolean };
@@ -28,6 +30,12 @@ const plain = (value: string): string =>
     .replace(/\s+/g, ' ')
     .trim();
 const money = (amount: number): string => `${amount.toFixed(2)}元`;
+/** 正文只剩块时补的下一步。 */
+export const NEXT = {
+  quoted: '数量没问题的话，我可以为您起草正式报价单。',
+  tiers: '告诉我采购数量，我按档位为您试算。',
+  accepted: '顾问会尽快联系您确认付款和发货。',
+} as const;
 const chars = (text: string): number => [...text.replace(/\s/g, '')].length;
 
 function lastResult<T>(ctx: ReplyGuardContext, name: string): T | null {
@@ -107,6 +115,7 @@ export const industrialReplyBlocks: ReplyBlocks = {
       }
     }
     // 档位始终可渲染，但未请求时不附加、不占试算预算。
+    const keys = [...exact.values()].map((part) => plain(part.partNo));
     const details = [...exact.values()].map(
       (part) =>
         `${plain(part.partNo)}${pending ? ' 试算档位' : ''}：` +
@@ -115,7 +124,7 @@ export const industrialReplyBlocks: ReplyBlocks = {
           .join('；') +
         `；起订量${part.moq}件`,
     );
-    if (details.length) blocks.push({ name: '档位价', head: ['试算档位价：'], details, tail: [], trimmed: 0 });
+    if (details.length) blocks.push({ name: '档位价', head: ['试算档位价：'], details, keys, tail: [], trimmed: 0 });
     const render = (block: Block): string =>
       [
         ...block.head,
@@ -150,8 +159,26 @@ export const industrialReplyBlocks: ReplyBlocks = {
     const values: Record<string, string | null> = {};
     for (const block of blocks) {
       values[block.name] = render(block);
-      if (ctx.replyBlocks) ctx.replyBlocks.trimmedRows[block.name] = block.trimmed;
+      if (!ctx.replyBlocks) continue;
+      ctx.replyBlocks.trimmedRows[block.name] = block.trimmed;
+      // 模型在每个型号下各写一处占位符时按型号分行放；行内已带型号，不再重复块头。
+      if (block.keys)
+        ctx.replyBlocks.rows[block.name] = {
+          rows: block.details.map((text, i) => ({ key: block.keys![i]!, text })),
+          after: block.trimmed ? [trimNote(block.trimmed)] : [],
+        };
     }
     return values;
+  },
+  nextStep(ctx, placed) {
+    if (placed.includes('应付金额')) return NEXT.accepted;
+    if (placed.includes('试算明细')) {
+      const lines = lastResult<{ lines?: QuoteLine[] }>(ctx, 'quote_items')?.lines ?? [];
+      const allPriced = lines.length > 0 && lines.every((line) => line.unitPrice !== undefined && line.amount !== undefined);
+      // 待审正式单时下一步由顾问审核决定，不另说起草；裁过行时裁剪说明已经问了要不要正式报价单。
+      const trimmed = (ctx.replyBlocks?.trimmedRows['试算明细'] ?? 0) > 0;
+      return allPriced && !trimmed && !pendingQuote(ctx) ? NEXT.quoted : null;
+    }
+    return placed.includes('档位价') ? NEXT.tiers : null;
   },
 };
