@@ -604,6 +604,8 @@ export interface ReplyBlocks {
   names: readonly string[];
   autoAppend: readonly string[];
   render(ctx: ReplyGuardContext): Readonly<Record<string, string | null>>;
+  /** 自动附后前用最终清理的正文判断；false 跳过，缺省照常附，显式占位符不受影响。预算预览也会调用，须无副作用。 */
+  shouldAppend?(ctx: ReplyGuardContext, name: string, body: string): boolean;
   /** 正文没有可读内容、只剩块时补在块后的下一步；placed 是本轮实际放置的块名，返回 null 不补。 */
   nextStep?(ctx: ReplyGuardContext, placed: readonly string[]): string | null;
 }
@@ -630,6 +632,8 @@ export interface ReplyBlockState {
   trimmedRows: Record<string, number>;
   /** render 写入；没有分行的块写了多处时只放第一处。 */
   rows: Record<string, ReplyBlockRows>;
+  /** 与 ReplyBlocks.shouldAppend 同一契约；放置时才读正文，不能缓存原稿的判断。 */
+  shouldAppend?: (name: string, body: string) => boolean;
   nextStep?: (placed: readonly string[]) => string | null;
   trace: TurnBlocks;
 }

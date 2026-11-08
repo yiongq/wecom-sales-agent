@@ -1,4 +1,11 @@
-import { replyBlockBudget, stripMarkdown, type ReplyBlocks, type ReplyGuardContext } from '../../core/pack-api.js';
+import {
+  amountHits,
+  normalizeMoneyText,
+  replyBlockBudget,
+  stripMarkdown,
+  type ReplyBlocks,
+  type ReplyGuardContext,
+} from '../../core/pack-api.js';
 import { trimNote } from './guards.js';
 import { latestQuoteCandidate } from './quote-candidate.js';
 
@@ -93,6 +100,24 @@ function quoteBlock(ctx: ReplyGuardContext, pending: boolean): Block | null {
 export const industrialReplyBlocks: ReplyBlocks = {
   names: ['试算明细', '档位价', '应付金额'],
   autoAppend: ['试算明细', '应付金额'],
+  shouldAppend(ctx, name, body) {
+    if (name !== '应付金额') return true;
+    const order = ctx.orderSources.find((order) => order.id === ctx.acceptingOrderId && order.sessionId === ctx.session.id);
+    if (!order || !('totalFen' in order)) return true;
+    const text = normalizeMoneyText(body);
+    return !amountHits(text, { minimumAmount: 0, precisionTolerance: 0, decimals: true }).some((amount) => {
+      if (amount.tol || Math.round(amount.raw * 100) !== order.totalFen) return false;
+      const prefix = text
+        .slice(0, amount.at)
+        .split(/[，,。；;\n]/u)
+        .at(-1)!;
+      const suffix = text.slice(amount.end);
+      // 金额数值相同还不够：运费、门槛、逐件价格不表示这份订单的合计。
+      if (/运费|包邮|门槛/u.test(prefix)) return false;
+      if (/单价|小计|每(?:件|个|只|套|台|米)/u.test(prefix) && !/合计|总价|总额|货款|应付/u.test(prefix)) return false;
+      return !/^\s*(?:元|块)?\s*(?:[/／]\s*(?:件|个|只|套|台|米)|每(?:件|个|只|套|台|米))/u.test(suffix);
+    });
+  },
   render(ctx) {
     const blocks: Block[] = [];
     const pending = pendingQuote(ctx);
