@@ -1,6 +1,6 @@
 // 消息（02 spec「消息只追加」「identity map 与写入」）：只有批量插入与按窗口读。agent_app 对这张表没有 UPDATE、DELETE
 import { and, asc, desc, eq, gte, isNotNull, lt, sql } from 'drizzle-orm';
-import { currentTenantCtx, type Tx } from '../client.js';
+import { currentTenantCtx, rowsOf, type Tx } from '../client.js';
 import { conversations, messages } from '../schema.js';
 
 export interface MessageValues {
@@ -21,6 +21,34 @@ export interface MessageValues {
 
 export interface MessageRow extends MessageValues {
   conversationId: string;
+}
+
+/**
+ * 18 R4 探针：先取每个会话最后一条客户消息（按追加序号），再比口令与时间，最多两条即能判定歧义。
+ * 默认企微账号兼容 channel_account_id 为 NULL 的旧会话；调用方须在只读 withTenant 里执行，不打印返回的 id。
+ */
+export async function readProbeRecipientMatches(
+  tx: Tx,
+  accountId: string,
+  defaultAccount: boolean,
+  content: string,
+  now: Date,
+): Promise<string[]> {
+  return rowsOf<{ id: string }>(
+    await tx.execute(sql`
+      select c.id from conversations c
+      join lateral (
+        select m.content, m.at from messages m
+        where m.tenant_id = c.tenant_id and m.conversation_id = c.id and m.role = 'customer'
+        order by m.seq desc limit 1
+      ) latest on true
+      where c.channel = 'wecom'
+        and (c.channel_account_id = ${accountId}::uuid or (${defaultAccount} and c.channel_account_id is null))
+        and latest.content = ${content}
+        and latest.at >= ${new Date(now.getTime() - 10 * 60_000).toISOString()}::timestamptz
+        and latest.at <= ${now.toISOString()}::timestamptz
+      limit 2`),
+  ).map((row) => row.id);
 }
 
 /** 一条 INSERT 的行数上限：13 列，远低于 65,535 个参数的上限 */
