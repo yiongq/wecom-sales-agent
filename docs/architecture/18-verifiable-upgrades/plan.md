@@ -57,7 +57,10 @@
   - [x] 7.5 compose `app-standby`、`deploy.sh` 滚动切换与回滚、`deploy/watch.sh` 探两个端口、运维手册、要求停应用的命令行提示、README 与总参考「从单实例到多租户」里单实例的说法
   - [x] 7.6 真实 PG 演练自测：杀主进程、掐锁连接、重取时 epoch 已变、本机 compose 加 Caddy 容器的滚动发版（验收 10–14）
 - [ ] 8. 主备上线前置（owner 点名才做）：服务器 Caddy 改上游、首次以主备方式部署。先只读核对服务器 Caddy 版本（片段按 2.11.2 写）、空闲内存（备用约 200 MiB）、所选固定子网不和已有网络或路由冲突；再按 `docs/guides/deployment.md`「18 主备切换」的首次接入顺序：开关保持 0 单容器部署一次让 app 拿到固定 IP → 核对 IP 上的 `/healthz` → 改 Caddy 上游并 validate / reload → 写 `CADDY_DUAL_UPSTREAM=1` → 部署
+  - [x] 8.1 只读核对（11-10）：内存、网段、路由都够；Caddy 是 2.6.2，本机演练证明 2.6.2 切换时 POST 改投不了，要先升级，见交接记录
+  - [x] 8.2 开关保持 0 部署 `demo-v14-rc1`，app 取得固定 IP，宿主端口与固定 IP 的 `/healthz` 都正常（11-10）
 - [ ] 9. 企微去重实测：`src/cli/wecom-dedup-probe.ts`（每个间隔独立 msgid 的成对实验）；owner 授权后在服务器上跑，owner 手机看每一对；按结果改窗口规则与发送层截止检查（03 顶部标记已在 ready 时加）（验收 15）
+  - [x] 9.1 探针 `src/cli/wecom-dedup-probe.ts` 与自测。用法：`--tenant <slug> --account <key 或 id> --match-text <口令> [--gaps 0,2,60,300,1800] [--stagger 5]`；只读库找最近 10 分钟内最后一条客户消息等于口令的唯一会话，自测用假接口，没跑真实企微
 - [ ] 10. 对照全部验收标准逐条验证，结果记在下面
   - [x] 10.1 除第 15、21 条外逐条核对（11-09），结果见交接记录；第 15 条等第 9 步，第 21 条等 owner；第 2、4 条 owner 定第 7、8 次可代替（11-09），算达到；第 5 条 owner 定先不修（11-09），维持没达到
 - [ ] 11. 清理临时探针、演练容器与 `var/` 里的临时文件
@@ -368,3 +371,17 @@
 2026-11-10：开放问题 4 owner 答「不设线」：检测器误报率不设门槛，理由记进 spec 开放问题 4。开放问题 1–5 里，只剩第 1 条等第 9 步实测。
 
 - 下一步不变：第 8、9 步等 owner 点名，之后补第 15 条；第 21 条等 owner。
+
+2026-11-10：第 8 步前半。
+
+- 服务器只读核对：可用内存约 3.5 GB、根分区余 16 GB、当日备份正常；已有 Docker 网段与路由都不和 `172.30.250.0/28` 重叠；`.env.ops` 没有开关。Caddy 是发行版包 2.6.2，不是片段按的 2.11.2。
+- 本机把容器演练的 Caddy 换成 2.6.2 重跑：片段的 `{args[0]}` 2.6 不认（2.6 写法是 `{args.0}`），validate 能过、转发时 502；换成 2.6 写法后 kill 10 发 5 收、rolling 16 发 9 收。Caddy 日志显示首个上游拨号失败、改投另一边时报 `invalid Read on closed Body`（请求体已被关，POST 改投不了），两边都不可用时立即 503、不等 `lb_try_duration`。2.6.2 下不能开双上游。
+- 线上站点块的 `reverse_proxy` 带 `header_up`，接入时不能整段 import 片段：把两个固定 IP 写进各块，参数放进一个命名片段在块内 import；这种写法已在本机用 2.6.2 adapt 核过。
+- 按首次接入第 3 步，开关保持 0 部署 `demo-v14-rc1`（dev `e096894f`）：迁移 0028 完成，app 取得 `172.30.250.10`，宿主端口和固定 IP 的 `/healthz` 都是 `ok`、`role: host`、revision 对；经 Caddy 的应用入口 200；巡检无告警。Caddy 仍反代 `127.0.0.1:3210`。
+- 下一步：owner 定是否把服务器 Caddy 升到 2.11.2（同机还有别的站点）；升级后改上游、validate / reload、写开关，再部署带探针的 tag。
+
+2026-11-10：第 9.1 步探针（Codex 写，协调者审查与提交）。只读租户事务里读账号、解密、按口令找收件人，关库后发送；不取锁、不经发送账本、不读写 `var/`。各对独立排期，重发逐字节用原请求体；token 失效全程只重取一次，重取后首发重新起算间隔；首发 48002 取消其余请求。
+
+- 自测 `src/cli/wecom-dedup-probe.selftest.ts`：独立 msgid、请求体相同、stagger、实际间隔、48002、40014/42001、输出脱敏、参数拒绝，以及 PGlite 上 0/1/2 个收件人、10 分钟边界、只看最后一条客户消息、默认账号、租户隔离。
+- 对 app 的影响：探针消息在 sync_msg 里不是 origin 3，app 跳过（`src/adapters/wecom.ts` 拉取循环）；它的 `msg_send_fail` 回执找不到账本行，回执照常记 done，不建出站行。
+- 服务器上的跑法：`docker compose -f deploy/compose.yml run --rm app-cli node --import tsx src/cli/wecom-dedup-probe.ts --tenant <slug> --account <key> --match-text <口令>`，app 不用停。
